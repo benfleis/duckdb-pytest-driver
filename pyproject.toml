@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "duckdb-pytest-driver"
+version = "0.1.0"
+description = "Generic pytest front-end over the duckdb unittest (Catch2) binary: collect & run .test files, Python drivers, @requires provisioning."
+readme = "README.md"
+# >=3.9: str.removeprefix (plugin.py terminal-summary) is 3.9+; back-compat isn't a goal.
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "DuckDB contributors" }]
+keywords = ["duckdb", "pytest", "sqllogic", "testing"]
+classifiers = [
+    "Framework :: Pytest",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+]
+# >=7.4: the pytest_ignore_collect hook uses the collection_path arg (added in 7.4).
+dependencies = ["pytest>=7.4"]
+
+[project.optional-dependencies]
+xdist = ["pytest-xdist"]
+
+[project.urls]
+Homepage = "https://github.com/duckdb/duckdb"
+
+# Auto-registers the plugin in any pytest process that has this package installed —
+# replaces the old `pytest_plugins = ["driver.plugin"]` line + sys.path hacks.
+[project.entry-points.pytest11]
+duckdb_driver = "duckdb_pytest_driver.plugin"
+
+# `duck-test` front-end (currently: `duck-test configure`) — writes the base pytest
+# config a plugin can't inject, so bare `pytest` works afterward.
+[project.scripts]
+duck-test = "duckdb_pytest_driver.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/duckdb_pytest_driver", "src/driver"]
+
+[tool.ruff]
+line-length = 120
