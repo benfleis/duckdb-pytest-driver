@@ -22,6 +22,7 @@ import tempfile
 
 import pytest
 
+from .fixtures import duckdb_cli_for
 from .mnemonic import run_id as _make_run_id
 from .steps import step
 from .sqllogic import (
@@ -97,20 +98,30 @@ def register_options(parser):
         "--build",
         default="auto",
         choices=["auto", "debug", "release", "reldebug", "relassert", "latest"],
-        help="Which unittest binary to test (default: auto). "
-        "debug/release/reldebug/relassert resolve to build/{type}/test/unittest "
-        "under the repo root. auto = use the single built variant among "
-        "(debug, release, reldebug, relassert), erroring if none or more than one. "
-        "latest = the most-recently-built of those variants. Overridden by "
-        "$BUILD_DIR ($BUILD_DIR/test/unittest) and --unittest-binary.",
+        help="Which build's test tools to use (default: auto). The tools are a "
+        "PRECONDITION for testing; both come from ONE build: debug/release/reldebug/"
+        "relassert resolve to build/{type}/{test/unittest, duckdb} under the repo root. "
+        "auto = the single built variant among (debug, release, reldebug, relassert), "
+        "erroring if none or more than one. latest = the most-recently-built. Overridden "
+        "by $BUILD_DIR and the per-tool --unittest-bin / --duckdb-bin.",
     )
     parser.addoption(
         "--unittest-binary",
+        "--unittest-bin",
         default=None,
         metavar="PATH",
         help="Explicit path to the unittest (Catch2-compatible) test binary. "
         "Overrides --build and $BUILD_DIR. Use this when the binary "
         "lives outside the standard CMake build tree.",
+    )
+    parser.addoption(
+        "--duckdb-bin",
+        "--duckdb-binary",
+        default=None,
+        metavar="PATH",
+        help="Explicit path to the duckdb CLI (used to instantiate table fixtures via "
+        "the middleman, and by --repl). Overrides --build and $BUILD_DIR. Default: the "
+        "`duckdb` next to the resolved unittest binary (build/<variant>/duckdb).",
     )
     parser.addoption(
         "--batch-size",
@@ -272,6 +283,52 @@ def find_binary(config, working_dir):
 
     # explicit variant (debug/release/reldebug/relassert)
     return _variant_binary(working_dir, build)
+
+
+def find_duckdb(config, working_dir):
+    """Return the duckdb CLI path — the fixture-instantiation / --repl tool.
+
+    Symmetric to find_binary but for the `duckdb` leaf, so both tools resolve from one
+    build: --duckdb-bin > $BUILD_DIR ($BUILD_DIR/duckdb) > the `duckdb` next to the
+    resolved unittest binary (build/<variant>/duckdb). Presence is a PRECONDITION: raises
+    pytest.UsageError, naming the two ways to satisfy it, when the CLI isn't there.
+    """
+    explicit = config.getoption("--duckdb-bin", default=None)
+    if explicit:
+        path = os.path.abspath(explicit)
+    else:
+        build_dir = os.environ.get("BUILD_DIR")
+        path = (
+            os.path.join(build_dir, "duckdb")
+            if build_dir
+            else duckdb_cli_for(find_binary(config, working_dir))
+        )
+    if not os.path.isfile(path):
+        raise pytest.UsageError(
+            f"duckdb CLI not found at {path}. The test tools are a precondition: build "
+            "build/<variant>/duckdb (selected by --build / $BUILD_DIR, alongside the "
+            "unittest binary), or pass --duckdb-bin PATH."
+        )
+    return path
+
+
+def pytest_report_header(config):
+    """Verbose-mode (`-v`) trace of the resolved test tools — which build was picked.
+
+    Prints in the session header (next to rootdir/plugins) so a run's tool provenance
+    (e.g. build/relassert/{test/unittest, duckdb}) is visible. Best-effort: a tool that
+    can't be resolved yet is simply omitted (never breaks the header).
+    """
+    if int(config.getoption("verbose", default=0) or 0) < 1:
+        return None
+    working_dir = getattr(config, "sqllogic_working_dir", None) or os.getcwd()
+    lines = []
+    for label, resolve in (("unittest", find_binary), ("duckdb", find_duckdb)):
+        try:
+            lines.append(f"duckdb-pytest-driver {label}: {resolve(config, working_dir)}")
+        except Exception:
+            pass  # not resolvable yet (e.g. no binary for a pure-collection run) — skip
+    return lines or None
 
 
 # ---------------------------------------------------------------------------

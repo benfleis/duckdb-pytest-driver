@@ -40,5 +40,10 @@ duck-test = "duckdb_pytest_driver.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/duckdb_pytest_driver", "src/driver"]
 
+# Scope the package's own `pytest` run to its self-tests; the runnable examples under
+# examples/ are collected only when targeted explicitly (`pytest examples/...`).
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 120

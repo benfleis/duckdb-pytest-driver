@@ -30,6 +30,8 @@ from dataclasses import dataclass
 
 import pytest
 
+from .fixtures import Fixture
+
 # Marker name carrying the stacked requirements.
 MARKER = "requires"
 
@@ -39,8 +41,10 @@ class Requirement:
     """One declared resource need. Flat by design (see driver/README.md "Resources").
 
     Fields:
-      source  : premade source table FQN, env-templated (``${VAR}`` expanded at
-                provision time, NOT here) — e.g. ``${CATALOG}.source.simple_table``.
+      source  : where the table comes from. Either a ``Fixture("name")`` ref
+                (SQL definition + seed, instantiated via duckdb — see fixtures.py) or a
+                premade source table FQN string, env-templated (``${VAR}`` expanded
+                at provision time, NOT here) — e.g. ``${CATALOG}.source.simple_table``.
       access  : ``ro`` (shared, reference source directly) | ``rw`` (exclusive, the
                 provisioner clones into an isolated namespace).
       commit  : ``cmt`` (catalog-managed commit protocol) | ``plain``. Uninterpreted
@@ -61,6 +65,9 @@ class Requirement:
         """Bare table name to use in the provisioned schema (default: source's base)."""
         if self.name:
             return self.name
+        if isinstance(self.source, Fixture):
+            # A fixture's bare name is its logical name (the CREATE'd table matches it).
+            return self.source.name
         # source may still contain ${...}; take the literal last segment. Env
         # expansion happens in the provisioner, but the base table name is the
         # last dotted token regardless of expansion.
@@ -73,8 +80,10 @@ def requires(source, access="ro", commit="cmt", storage="managed", name=None):
     Validates the small enums up front (fail fast at decoration time) but does NOT
     expand ``${...}`` or interpret commit/storage — that is the provisioner's job.
     """
-    if not source or not isinstance(source, str):
-        raise ValueError("@requires: `source` is required and must be a string")
+    if isinstance(source, Fixture):
+        pass  # a named fixture ref — instantiated by the backend instantiator (fixtures.py)
+    elif not source or not isinstance(source, str):
+        raise ValueError("@requires: `source` must be a Fixture(...) ref or a table FQN string")
     if access not in ("ro", "rw"):
         raise ValueError(f"@requires: access must be 'ro' or 'rw', got {access!r}")
     if commit not in ("cmt", "plain"):

@@ -13,8 +13,10 @@ with Python-side, declarative resolution (env / file / secret tools) — while k
   no `sys.path` hacks, no symlinks.
 
 The full design, model, resource semantics, and roadmap live in **[`docs/`](docs/)**:
-`docs/PRD.md` (why this exists), `docs/EXTRACT_DRIVER_PLAN.md` (this extraction),
-`docs/NOTES.md`, `docs/PLAN.md`, `docs/DISPOSITIONS.md`.
+`docs/PRD.md` (why this exists), `docs/FIXTURES.md` (SQL-defined table fixtures, with
+DuckDB as the middleman), `docs/EXTRACT_DRIVER_PLAN.md` (this extraction),
+`docs/NOTES.md`, `docs/PLAN.md`, `docs/DISPOSITIONS.md`. A runnable pure-DuckDB fixture
+demo lives in [`examples/pure-duckdb/`](examples/pure-duckdb/).
 
 ## Model
 
@@ -53,8 +55,13 @@ pytest --build relassert test/sql/...    # options unchanged
 
 Auto-detection: `working_dir` defaults to pytest's **rootdir**; the test tree to
 `<rootdir>/test`. Both are overridable via ini (`duckdb_working_dir`, `duckdb_test_root`) or
-CLI (`--duckdb-working-dir`, `--duckdb-test-root`). Binary resolution
-(`--build` / `$BUILD_DIR` / `--unittest-binary`) is unchanged.
+CLI (`--duckdb-working-dir`, `--duckdb-test-root`).
+
+**Test tools are a precondition.** Both the `unittest` binary and the `duckdb` CLI come
+from **one build** — `build/<KIND>/{test/unittest, duckdb}`, selected by `--build <KIND>`
+(or `$BUILD_DIR`); each is individually overridable with `--unittest-bin` / `--duckdb-bin`.
+The resolvers are `find_binary(config, working_dir)` and `find_duckdb(config, working_dir)`;
+a backend that instantiates fixtures uses the latter (see `docs/FIXTURES.md`).
 
 ## Writing tests
 
@@ -137,8 +144,9 @@ python_files =
 ## Public API
 
 `from duckdb_pytest_driver import` (or `from driver import`): `SqlLogicFile`,
-`register_options`, `find_binary`, `has_driver`, `is_driver`, `run_paired`, `requires`,
-`Requirement`, `collect_requirements`, `register_provisioner`, `get_provisioner`, `step`.
+`register_options`, `find_binary`, `find_duckdb`, `has_driver`, `is_driver`, `run_paired`,
+`requires`, `Requirement`, `collect_requirements`, `register_provisioner`, `get_provisioner`,
+`Fixture`, `register_instantiator`, `get_instantiator`, `step`.
 
 ## CLI: `duck-test`
 

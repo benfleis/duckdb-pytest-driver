@@ -15,18 +15,25 @@ from .sqllogic import SqlLogicFile  # noqa: F401  (the .test lane)
 from .plugin import (  # noqa: F401  (the harness / plugin)
     register_options,
     find_binary,
+    find_duckdb,
     has_driver,
     is_driver,
     run_paired,
 )
 from .requires import requires, Requirement, collect_requirements  # noqa: F401
 from .provision import register_provisioner, get_provisioner  # noqa: F401
+from .fixtures import (  # noqa: F401  (the table-fixture lane: SQL definition + seed via duckdb)
+    Fixture,
+    register_instantiator,
+    get_instantiator,
+)
 from .steps import step  # noqa: F401
 
 __all__ = [
     "SqlLogicFile",
     "register_options",
     "find_binary",
+    "find_duckdb",
     "has_driver",
     "is_driver",
     "run_paired",
@@ -35,5 +42,8 @@ __all__ = [
     "collect_requirements",
     "register_provisioner",
     "get_provisioner",
+    "Fixture",
+    "register_instantiator",
+    "get_instantiator",
     "step",
 ]
