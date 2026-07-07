@@ -140,8 +140,9 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
 
 ## Driver interface (Fork A — being designed)
 
-- Declarative `@requires(...)` (static metadata: `source` / `access` / `commit` / `storage` /
-  `name`) + `initialize` / `run` / `finalize` hooks + a `Context` (`spark`, `table_fq_name`,
+- Declarative `@requires(...)` (static metadata: `source` / `access` / `properties` (an open,
+  backend-interpreted dict, e.g. `commit`/`storage`) / `name`) + `@requires_matrix(...)` to fan
+  a body across cells + `initialize` / `run` / `finalize` hooks + a `Context` (`spark`, `table_fq_name`,
   `table.DROP(...)`, per-cell vars). The resource model — acquire-mode × create/destroy
   disposition — is in NOTES.
 - The `Context` surface is **not yet specified** — await the external uses doc.

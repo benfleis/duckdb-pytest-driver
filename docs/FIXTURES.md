@@ -10,7 +10,7 @@ A test declares the table it needs; the framework instantiates it. The declarati
 is backend-agnostic; the instantiation is per-provider.
 
 ```python
-@requires(source=Fixture("simple_table"), access="rw", commit="cmt", storage="managed")
+@requires(source=Fixture("simple_table"), access="rw", properties={"commit": "cmt", "storage": "managed"})
 def test_reads(resources):
     t = resources.tables["simple_table"]
     assert t.seed_data == [(1,), (2,), (3,), (4,), (5,)]
@@ -30,8 +30,9 @@ INSERT INTO simple_table VALUES (1), (2), (3), (4), (5);
 ```
 
 The logical/physical split is the whole point. The fixture says *what the table is*.
-The `commit`/`storage` 2×2 (LOCATION, catalog-managed `TBLPROPERTIES`, …) is the
-**instantiator's** job. So one fixture drives every backend; only the instantiator changes.
+The backend-interpreted `properties` (e.g. the `commit`/`storage` 2×2 — LOCATION,
+catalog-managed `TBLPROPERTIES`, …) are the **instantiator's** job. So one fixture drives
+every backend; only the instantiator changes.
 
 ## Why not a bespoke format — DuckDB *is* the converter
 
@@ -104,7 +105,7 @@ returns the resulting table. A non-duckdb instantiator:
 
 1. `canonicalize(duckdb_bin, definition)` → `Table`;
 2. `map_columns(table, TYPE_MAP)` → its own DDL types (fail-loud on unmapped types);
-3. apply the `commit`/`storage` 2×2 (its `TBLPROPERTIES`/`LOCATION`) around that schema;
+3. apply the backend `properties` (e.g. the `commit`/`storage` 2×2 — its `TBLPROPERTIES`/`LOCATION`) around that schema;
 4. seed `table.seed_data` (as `VALUES`, or via a parquet duckdb wrote).
 
 Example provider type map (ships with the provider, not the driver):

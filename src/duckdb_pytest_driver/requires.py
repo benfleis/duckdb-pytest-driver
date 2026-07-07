@@ -2,7 +2,7 @@
 
 GENERIC and extension-AGNOSTIC. This is a thin pytest marker that records a
 small, flat spec per requirement; it does NOT interpret the spec. The concrete
-meaning of `commit`/`storage` (and how to actually provision) is the extension
+meaning of the `properties` dict (and how to actually provision) is the extension
 provisioner's job (see the extension's `test/py/<repo>/` package). Keeping the
 marker dumb is deliberate: the framework stays portable across extensions.
 
@@ -11,22 +11,27 @@ Usage (in a driver `.py`):
     from driver import requires
 
     @requires(source="${CATALOG}.source.simple_table",
-              access="rw", commit="cmt", storage="managed")
+              access="rw", properties={"commit": "cmt", "storage": "managed"})
     def test_write_catalog_managed(request):
         ...
 
 The decorator STACKS — apply it multiple times for multiple resources:
 
     @requires(source="${CAT}.source.a", access="ro")
-    @requires(source="${CAT}.source.b", access="rw", storage="external")
+    @requires(source="${CAT}.source.b", access="rw", properties={"storage": "external"})
     def test_two_tables(request):
         ...
 
 Each application appends one `Requirement` to the test's `requires` marker. Read
 them back (in a hook or the provisioner) via `collect_requirements(item)`.
+
+`@requires_matrix` fans one body out across a CI-style matrix of cells (see its
+docstring): each cell is an independent pytest item carrying its OWN per-cell
+`@requires`, so `resources`/provisioning work unchanged per cell.
 """
 
-from dataclasses import dataclass
+import itertools
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -41,25 +46,32 @@ class Requirement:
     """One declared resource need. Flat by design (see driver/README.md "Resources").
 
     Fields:
-      source  : where the table comes from. Either a ``Fixture("name")`` ref
-                (SQL definition + seed, instantiated via duckdb — see fixtures.py) or a
-                premade source table FQN string, env-templated (``${VAR}`` expanded
-                at provision time, NOT here) — e.g. ``${CATALOG}.source.simple_table``.
-      access  : ``ro`` (shared, reference source directly) | ``rw`` (exclusive, the
-                provisioner clones into an isolated namespace).
-      commit  : ``cmt`` (catalog-managed commit protocol) | ``plain``. Uninterpreted
-                here — the extension provisioner decides what props this implies.
-      storage : ``managed`` (UC-managed, no LOCATION) | ``external`` (explicit
-                LOCATION). Orthogonal to ``commit`` (the 2x2 cell).
-      name    : the table's BARE name in the provisioned schema. Defaults to the
-                source's base table name (last dotted segment of ``source``).
+      source     : where the table comes from. Either a ``Fixture("name")`` ref
+                   (SQL definition + seed, instantiated via duckdb — see fixtures.py) or a
+                   premade source table FQN string, env-templated (``${VAR}`` expanded
+                   at provision time, NOT here) — e.g. ``${CATALOG}.source.simple_table``.
+      access     : ``ro`` (shared, reference source directly) | ``rw`` (exclusive, the
+                   provisioner clones into an isolated namespace). A framework knob
+                   (sharing/isolation), so it stays a top-level field.
+      properties : an OPEN, backend-interpreted dict — e.g. ``{"commit": "cmt",
+                   "storage": "managed"}``. The generic driver does NOT interpret or
+                   validate these; the extension provisioner reads them (via
+                   ``prop.property(key)``) and decides what they imply. Empty by default.
+      name       : the table's BARE name in the provisioned schema. Defaults to the
+                   source's base table name (last dotted segment of ``source``).
+
+    A dict field would make instances unhashable IF hashed; they aren't (stored as mark
+    args, iterated not hashed), so ``frozen=True`` + a mutable ``properties`` is safe.
     """
 
     source: str
     access: str = "ro"
-    commit: str = "cmt"
-    storage: str = "managed"
+    properties: dict = field(default_factory=dict)
     name: str = None
+
+    def property(self, key, default=None):
+        """Read one backend-interpreted property (``None`` if absent)."""
+        return self.properties.get(key, default)
 
     def resolved_name(self) -> str:
         """Bare table name to use in the provisioned schema (default: source's base)."""
@@ -74,11 +86,12 @@ class Requirement:
         return self.source.rsplit(".", 1)[-1]
 
 
-def requires(source, access="ro", commit="cmt", storage="managed", name=None):
+def requires(source, access="ro", properties=None, name=None):
     """Stackable marker declaring one resource requirement. See module docstring.
 
-    Validates the small enums up front (fail fast at decoration time) but does NOT
-    expand ``${...}`` or interpret commit/storage — that is the provisioner's job.
+    Validates only what the framework owns (``source``, ``access``); the ``properties``
+    dict is passed through opaque — backends validate their own keys. ``${...}`` is NOT
+    expanded here (the provisioner's job).
     """
     if isinstance(source, Fixture):
         pass  # a named fixture ref — instantiated by the backend instantiator (fixtures.py)
@@ -86,12 +99,8 @@ def requires(source, access="ro", commit="cmt", storage="managed", name=None):
         raise ValueError("@requires: `source` must be a Fixture(...) ref or a table FQN string")
     if access not in ("ro", "rw"):
         raise ValueError(f"@requires: access must be 'ro' or 'rw', got {access!r}")
-    if commit not in ("cmt", "plain"):
-        raise ValueError(f"@requires: commit must be 'cmt' or 'plain', got {commit!r}")
-    if storage not in ("managed", "external"):
-        raise ValueError(f"@requires: storage must be 'managed' or 'external', got {storage!r}")
 
-    req = Requirement(source=source, access=access, commit=commit, storage=storage, name=name)
+    req = Requirement(source=source, access=access, properties=dict(properties or {}), name=name)
     # pytest.mark.requires(req); stacking yields one mark per application, each with
     # its own args — collect_requirements() flattens them back in declaration order.
     return getattr(pytest.mark, MARKER)(req)
@@ -102,7 +111,8 @@ def collect_requirements(item) -> list:
 
     Empty list if the item carries no `@requires`. pytest yields stacked marks
     nearest-decorator-first; we reverse so the result matches top-to-bottom source
-    order, which is the order a reader expects.
+    order, which is the order a reader expects. Per-cell `requires` marks emitted by
+    `@requires_matrix` (via `pytest.param(marks=...)`) are included natively.
     """
     reqs = []
     for mark in item.iter_markers(name=MARKER):
@@ -111,3 +121,62 @@ def collect_requirements(item) -> list:
             reqs.append(mark.args[0])
     reqs.reverse()
     return reqs
+
+
+# ---------------------------------------------------------------------------
+# @requires_matrix — fan one body out across a CI-style matrix of cells
+# ---------------------------------------------------------------------------
+
+
+def expand_cells(properties) -> list:
+    """Expand a `properties` spec into the list of concrete per-cell property dicts.
+
+    PURE (no pytest, no I/O): the matrix's generation stage, separate from emission.
+    Any value that is a **list is an axis**; scalars are fixed across every cell. The
+    result is the cartesian product of the axes, each with the fixed keys merged in.
+    Zero axes (all scalars) => a single cell (`itertools.product()` yields one empty
+    tuple). Axis-key order is preserved (dict insertion order) so cell ids are stable.
+
+    This list-of-dicts is the SEAM: a future capability-table hole-filter, or an
+    explicit/combined cell set, replaces or post-filters this list without touching the
+    emission below.
+    """
+    properties = dict(properties or {})
+    axis_keys = [k for k, v in properties.items() if isinstance(v, list)]
+    fixed = {k: v for k, v in properties.items() if not isinstance(v, list)}
+    cells = []
+    for combo in itertools.product(*(properties[k] for k in axis_keys)):
+        cell = dict(fixed)
+        cell.update(zip(axis_keys, combo))
+        cells.append((axis_keys, cell))
+    return cells
+
+
+def requires_matrix(source, access="ro", properties=None, name=None, marks=()):
+    """Fan one test body out across a matrix of cells; each cell is its own pytest item.
+
+    A `@requires_matrix` IS a `@requires` that varies per cell: it emits one
+    `pytest.param` per cell, each carrying its own per-cell `requires(...)` mark (read
+    back by `collect_requirements`) plus any user `marks` (for `-m` selection). A static
+    `@requires` can't vary per parametrize cell; this can.
+
+        @requires_matrix(source=Fixture("id_name").Seed(None), access="rw",
+                         properties={"storage": ["managed", "external"]},  # list => axis
+                         marks=["oss_local"])                              # cell tags
+        def test_rw(request, resources): ...
+        # -> items test_rw[managed], test_rw[external]
+
+    Cell generation (`expand_cells`) is separate from emission, so explicit/combined cell
+    sets and per-backend hole-filtering can slot in at the list-of-dicts seam later.
+
+    `marks` entries may be marker names (str -> `pytest.mark.<name>`) or MarkDecorators.
+    Emits an `indirect=True` parametrize over `matrix_cell` — the value routes through the
+    `matrix_cell` fixture (plugin.py) since the body has no `matrix_cell` argument.
+    """
+    user_marks = [getattr(pytest.mark, m) if isinstance(m, str) else m for m in marks]
+    params = []
+    for axis_keys, cell in expand_cells(properties):
+        cell_id = "-".join(str(cell[k]) for k in axis_keys) if axis_keys else None
+        req_mark = requires(source, access=access, properties=cell, name=name)
+        params.append(pytest.param(cell, id=cell_id, marks=[req_mark, *user_marks]))
+    return pytest.mark.parametrize("matrix_cell", params, indirect=True)

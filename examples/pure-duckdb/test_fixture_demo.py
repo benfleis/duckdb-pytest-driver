@@ -2,14 +2,14 @@
 
 Each test DECLARES the table it needs as a `Fixture(...)` ref; the `resources` fixture
 (conftest.py) instantiates it through the registered instantiator and hands back the
-resulting table (schema + seed data). The commit/storage knobs are declared but inert
+resulting table (schema + seed data). The `properties` knobs are declared but inert
 here — pure duckdb has no 2x2; a Databricks/Iceberg instantiator is where they'd bite.
 """
 
 from duckdb_pytest_driver import Fixture, requires
 
 
-@requires(source=Fixture("simple_table"), access="rw", commit="cmt", storage="managed")
+@requires(source=Fixture("simple_table"), access="rw", properties={"commit": "cmt", "storage": "managed"})
 def test_simple_table_roundtrips(resources):
     t = resources.tables["simple_table"]
     assert t.column_names() == ["id"]

@@ -20,7 +20,7 @@ from .plugin import (  # noqa: F401  (the harness / plugin)
     is_driver,
     run_paired,
 )
-from .requires import requires, Requirement, collect_requirements  # noqa: F401
+from .requires import requires, requires_matrix, Requirement, collect_requirements  # noqa: F401
 from .provision import register_provisioner, get_provisioner  # noqa: F401
 from .fixtures import (  # noqa: F401  (the table-fixture lane: SQL definition + seed via duckdb)
     Fixture,
@@ -38,6 +38,7 @@ __all__ = [
     "is_driver",
     "run_paired",
     "requires",
+    "requires_matrix",
     "Requirement",
     "collect_requirements",
     "register_provisioner",

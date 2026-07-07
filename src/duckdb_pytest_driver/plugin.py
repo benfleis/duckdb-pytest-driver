@@ -566,7 +566,20 @@ class _EmptyBindings:
 
 
 @pytest.fixture
-def resources(request):
+def matrix_cell(request):
+    """The current `@requires_matrix` cell (its concrete properties dict); `None` when the
+    test is not a matrix test.
+
+    `@requires_matrix` emits `parametrize("matrix_cell", …, indirect=True)`, so the cell
+    value routes THROUGH this fixture (the body has no `matrix_cell` argument). `resources`
+    depends on it purely to pull it into every matrix test's fixture closure — indirect
+    parametrize requires the fixture to be reachable from the item.
+    """
+    return getattr(request, "param", None)
+
+
+@pytest.fixture
+def resources(request, matrix_cell):  # matrix_cell: closure hook for indirect @requires_matrix (unused here)
     """Provision a test's @requires fixtures, yield the bindings, tear down after.
 
     The generic run-path counterpart of --repl (same provisioner): a driver does
@@ -619,7 +632,7 @@ def pytest_configure(config):
     # shows up in `pytest --markers`.
     config.addinivalue_line(
         "markers",
-        "requires(source, access, commit, storage, name): declare an external "
+        "requires(source, access, properties, name): declare an external "
         "resource need; drives provisioning under --repl (see driver/requires.py).",
     )
 
@@ -760,8 +773,8 @@ def _cli_provision_flow(session, config):
         print("resolved @requires specs:")
         for i, s in enumerate(specs):
             print(
-                f"  [{i}] source={s.source} access={s.access} commit={s.commit} "
-                f"storage={s.storage} name={s.resolved_name()}"
+                f"  [{i}] source={s.source} access={s.access} "
+                f"properties={s.properties} name={s.resolved_name()}"
             )
     else:
         print("no @requires -> minimal provision (REPL only)")
