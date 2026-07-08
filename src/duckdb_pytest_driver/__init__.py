@@ -28,6 +28,12 @@ from .fixtures import (  # noqa: F401  (the table-fixture lane: SQL definition +
     get_instantiator,
 )
 from .steps import step  # noqa: F401
+from .sqldef import (  # noqa: F401  (generic multi-statement SQL-def core)
+    split_statements,
+    sql_literal,
+    build_insert,
+    run_sql_file,
+)
 
 __all__ = [
     "SqlLogicFile",
@@ -47,4 +53,8 @@ __all__ = [
     "register_instantiator",
     "get_instantiator",
     "step",
+    "split_statements",
+    "sql_literal",
+    "build_insert",
+    "run_sql_file",
 ]
