@@ -306,9 +306,13 @@ def _raise_for_result(result: dict) -> None:
     if status == "skip":
         pytest.skip(result.get("reason", "skipped"))
     if status == "fail":
-        raise SqlLogicFailure(result.get("output", ""))
-    # internal_error (e.g. test absent from batch results) or any unexpected
-    # status: surface as a failure rather than silently passing
+        # A SQL-body assertion failure is a TEST failure, not a harness bug: surface it
+        # cleanly (the `.test:NN` location, NO Python traceback) via pytrace=False. This keeps
+        # the invariant that a Python stack means ONLY a pytest/driver/provisioner failure --
+        # a bare `foo.test:NN` is always "the SQL body's assertion failed".
+        pytest.fail(result.get("output", ""), pytrace=False)
+    # internal_error (e.g. test absent from batch results) or any unexpected status IS a
+    # harness bug: raise a real exception (Python traceback) so infra failures stay loud.
     raise SqlLogicFailure(result.get("output", f"internal error: unexpected status {status!r}"))
 
 
