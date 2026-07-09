@@ -813,18 +813,22 @@ def _cli_provision_flow(session, config):
 def _provision_token(config, node=None):
     """SQL-safe per-invocation id for cell-schema names.
 
-    Run-id is `timestamp--mnemonic`; we keep the mnemonic, SQL-safe (dashes →
-    underscores). When `node` is given, a short nodeid hash is appended so each test
-    gets a UNIQUE token — parallel-safe (no two tests share a cell schema) and stable
+    Run-id is `timestamp--mnemonic`; the token is `<YYYYMMDD>_<mnemonic>` (SQL-safe, dashes →
+    underscores). The date prefix makes a cell-schema name carry its birth date, so stragglers
+    are age-sweepable (teardown_stale). When `node` is given, a short nodeid hash is appended so
+    each test gets a UNIQUE token — parallel-safe (no two tests share a cell schema) and stable
     across workers (run-id is broadcast; nodeid differs per test).
     """
     rid = _run_id(config)
-    mnem = rid.split("--", 1)[-1].replace("-", "_")
+    ts, _, mnem = rid.partition("--")
+    mnem = mnem.replace("-", "_")
+    date = ts.split("T", 1)[0].replace("-", "")  # YYYYMMDD, sortable/parseable for age sweeps
+    token = f"{date}_{mnem}"
     if node is None:
-        return mnem
+        return token
     import hashlib
 
-    return f"{mnem}_{hashlib.sha1(node.nodeid.encode()).hexdigest()[:6]}"
+    return f"{token}_{hashlib.sha1(node.nodeid.encode()).hexdigest()[:6]}"
 
 
 def _launch_cli(config, init_sql):
