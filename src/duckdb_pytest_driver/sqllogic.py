@@ -89,7 +89,7 @@ class SqlLogicItem(pytest.Item):
             self._temp_dir_base,
             extra_args=resolve_unittest_args(self.config),
         )
-        _raise_for_result(_parse_result(result))
+        _raise_for_result(_parse_result(result), test_file=str(self.path))
 
     # -- batch path (batch_size > 1) -----------------------------------------
 
@@ -104,7 +104,7 @@ class SqlLogicItem(pytest.Item):
                     extra_args=resolve_unittest_args(self.config),
                 )
         r = _batch_cache[self._batch_id].get(self._test_name, {"status": "internal_error"})
-        _raise_for_result(r)
+        _raise_for_result(r, test_file=str(self.path))
 
     # -- pytest protocol -------------------------------------------------
 
@@ -293,7 +293,7 @@ def _parse_result(result: dict) -> dict:
     return _classify(events, name, result)
 
 
-def _raise_for_result(result: dict) -> None:
+def _raise_for_result(result: dict, *, test_file: str | None = None) -> None:
     # missing status is itself a harness bug, not a pass
     status = result.get("status", "internal_error")
     if status == "pass":
@@ -301,7 +301,14 @@ def _raise_for_result(result: dict) -> None:
         # count as a warning (pytest has no native "passed-with-skips" outcome).
         skipped = (result.get("stats") or {}).get("skip-mode", 0)
         if skipped:
-            warnings.warn(SqlLogicSkipWarning(f"{skipped} statement(s) skipped (mode skip)"))
+            msg = f"{skipped} statement(s) skipped (mode skip)"
+            if test_file:
+                # Attribute to the .test body (where the mode-skip regions live) via warn_explicit,
+                # so the warnings summary points at the test file instead of this internal warn()
+                # call site. lineno=1: we have a count, not the skipped lines.
+                warnings.warn_explicit(msg, SqlLogicSkipWarning, test_file, 1)
+            else:
+                warnings.warn(SqlLogicSkipWarning(msg))
         return
     if status == "skip":
         pytest.skip(result.get("reason", "skipped"))

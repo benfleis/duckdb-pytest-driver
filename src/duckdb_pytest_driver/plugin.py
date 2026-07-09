@@ -543,7 +543,8 @@ def run_paired(request, *, temp_dir_base=None, env=None):
     """
     working_dir = request.config.sqllogic_working_dir
     binary = find_binary(request.config, working_dir)
-    test_name = os.path.relpath(_stem_path(request.path, ".test"), working_dir)
+    test_path = _stem_path(request.path, ".test")
+    test_name = os.path.relpath(test_path, working_dir)
     with step(f"running {test_name}"):
         _raise_for_result(
             _parse_result(
@@ -555,7 +556,8 @@ def run_paired(request, *, temp_dir_base=None, env=None):
                     env=env,
                     extra_args=resolve_unittest_args(request.config),
                 )
-            )
+            ),
+            test_file=str(test_path),
         )
 
 
