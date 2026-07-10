@@ -467,10 +467,51 @@ def _run_dir(config):
     return os.path.join(base, _run_id(config)) if base else None
 
 
+# --- generic controller -> worker broadcast ----------------------------------------------
+# A backend registers a factory that computes an invocation-level value ONCE on the controller;
+# the driver broadcasts it to every xdist worker via workerinput (the same channel the run-id
+# uses). This is the CREDENTIALS-class primitive: fetched once, up-front, never per-worker (unlike
+# services, which are first-worker-wins). Register from a controller-side pytest_configure in an
+# INITIAL conftest, so it runs before workers are set up.
+_BROADCAST_FACTORIES = "_duckdb_broadcast_factories"  # controller: {key: factory(config) -> picklable}
+_BROADCAST_CACHE = "_duckdb_broadcast_cache"          # controller: {key: computed value}
+
+
+def register_broadcast(config, key, factory):
+    """Register `factory(config) -> picklable` to compute `key` ONCE on the controller and
+    broadcast it to all xdist workers under `key`. Retrieve with get_broadcast(config, key).
+    No-op on a worker (the value arrives via workerinput)."""
+    if getattr(config, "workerinput", None) is not None:
+        return
+    reg = getattr(config, _BROADCAST_FACTORIES, None)
+    if reg is None:
+        reg = {}
+        setattr(config, _BROADCAST_FACTORIES, reg)
+    reg[key] = factory
+
+
+def get_broadcast(config, key, default=None):
+    """Value for `key`: on a worker, the controller's broadcast (workerinput); on the controller,
+    computed once via the registered factory (cached). `default` if no factory / not broadcast."""
+    wi = getattr(config, "workerinput", None)
+    if wi is not None and key in wi:
+        return wi[key]
+    cache = getattr(config, _BROADCAST_CACHE, None)
+    if cache is None:
+        cache = {}
+        setattr(config, _BROADCAST_CACHE, cache)
+    if key not in cache:
+        factory = (getattr(config, _BROADCAST_FACTORIES, None) or {}).get(key)
+        cache[key] = factory(config) if factory else default
+    return cache[key]
+
+
 def pytest_configure_node(node):
-    # xdist controller hook: hand each worker the controller's run-id so all
-    # workers share one BASE/<run-id>.
+    # xdist controller hook: hand each worker the controller's run-id (shared BASE/<run-id>) plus
+    # any registered broadcast values (each computed once on the controller, cached).
     node.workerinput["sqllogic_run_id"] = _run_id(node.config)
+    for key in getattr(node.config, _BROADCAST_FACTORIES, None) or {}:
+        node.workerinput[key] = get_broadcast(node.config, key)
 
 
 def pytest_sessionfinish(session, exitstatus):
