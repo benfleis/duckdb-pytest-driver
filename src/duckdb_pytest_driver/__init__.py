@@ -24,6 +24,15 @@ from .plugin import (  # noqa: F401  (the harness / plugin)
 )
 from .requires import requires, requires_matrix, Requirement, collect_requirements  # noqa: F401
 from .provision import register_provisioner, get_provisioner  # noqa: F401
+from .tiers import (  # noqa: F401  (test-tier declaration API + registry; Phase 0: inert)
+    register_tier,
+    get_tiers,
+    credential,
+    service,
+    Tier,
+    Credential,
+    Service,
+)
 from .fixtures import (  # noqa: F401  (the table-fixture lane: SQL definition + seed via duckdb)
     Fixture,
     register_instantiator,
@@ -53,6 +62,13 @@ __all__ = [
     "collect_requirements",
     "register_provisioner",
     "get_provisioner",
+    "register_tier",
+    "get_tiers",
+    "credential",
+    "service",
+    "Tier",
+    "Credential",
+    "Service",
     "Fixture",
     "register_instantiator",
     "get_instantiator",

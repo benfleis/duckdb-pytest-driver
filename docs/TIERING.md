@@ -5,6 +5,26 @@ split, credential fetching, and shared services. The mechanism lives in **the dr
 (`duckdb_pytest_driver`, the auto-registered plugin) — *not* the `duck-test` CLI, which is only
 ingress/config. Everything here works with plain `pytest`.
 
+**Resolved (2026-07):** resources are carried on one uniform **shared-state store**
+(stdlib `multiprocessing.managers`, no dep); credentials are **eager** (pre-fork), services are
+**lazy first-need** — which **defers scan-plan** as unnecessary for the near-term path. See
+*Shared-state store* and *RESOLVED: store-based lazy provisioning* below.
+
+## ⚠️ PARADIGM SHIFT (read first; shout it to users)
+
+duck-test deliberately breaks with the old duckdb `unittest` / `require-env` norm:
+
+| | old world (`require-env`) | new world (duck-test) |
+|---|---|---|
+| selection | run everything; hope | **deliberate** — pick a set |
+| provisioning | manual; `require-env` gates | **(near) automatic** |
+| a *selected* test that can't run | **silent skip** (unremarkable) | **FAILURE** (loud, red, counted) |
+
+The one sentence: **skips that used to happen silently now surface as failures.** A test that is
+*selected* but can't be provisioned (missing credential, provision error) FAILS — it does not skip.
+Only *deselected* tests (a set not in this run) are absent. This is the biggest surprise for anyone
+coming from `require-env`, and it's the whole point: silent skips let "green" mean "didn't run."
+
 ## North star (read first)
 
 The overriding goal is **developer experience — simplicity, consistency, predictability** — NOT
@@ -33,14 +53,73 @@ moving tiering into the driver closes the gap for free.
 
 ## Model
 
-A **tier** = a named subset of the suite with a default-selection policy and a set of up-front
-resources. Two orthogonal resource classes:
+A **tier** = a named subset of the suite with a default-selection policy and a set of resources.
+Resources are delivered + coordinated through one **shared-state store** (next section); each carries
+an **eager/lazy policy**, and two shapes recur:
 
-- **class-1 credential** — fetched *once, up front, on the controller*, broadcast to workers via the
-  existing `register_broadcast`/`get_broadcast` seam. Never per-worker, never mid-run (an
-  `op`/biometric prompt must land at invocation, not deep in a run).
-- **class-2 service** — lazy, *first-worker-wins*, torn down once by the controller (the OSS docker
-  container is the model; recovery-at-next-start is the robust net for leaks).
+- **class-1 credential** — **eager**: fetched *once, up front, on the controller* (pre-fork), so an
+  `op`/biometric prompt lands at invocation, never deep in a run. Eager is a *predictability* policy,
+  not a technical limit — `op` pops a GUI dialog, so a worker *could* fetch late; we deliberately don't
+  let it. The eager-at-start invariant is **execution-mode-independent**: it holds for a serial
+  benchmark run just as much as an xdist run.
+- **class-2 service** — **lazy, first-need-wins**: the first worker that needs it provisions + publishes
+  to the store; others block on the store (configurable timeout) or fail loud. Torn down once by the
+  controller; recovery-at-next-start is the robust net for leaks (the OSS docker container is the model).
+
+## Shared-state store (the resource carrier)
+
+One **uniform carrier** for controller↔worker state, backed by stdlib `multiprocessing.managers` (no
+dependency) over a **platform-native socket** (AF_UNIX on posix, AF_PIPE named-pipe on Windows) — no
+listening TCP port; **off-disk** (values live in the manager's memory). Started by the controller at
+`pytest_configure` (pre-fork); its address + authkey go into `os.environ` so workers connect, torn down
++ reclaimed-stale at session boundaries (mirrors the container lifecycle).
+
+**Portability (Windows CI matters):** use `address=None` (native family, both platforms) and the
+**default start context** — spawn on macOS/Windows, fork on Linux; **no `fork` dependency**. The one
+requirement spawn imposes: the store module must be **import-clean** (the spawned server re-imports it),
+which a normal package module satisfies. Security is a non-goal (local socket; the authkey exists only
+because multiprocessing requires one). **Status:** proven by `spikes/store_poc/` and promoted to
+`src/duckdb_pytest_driver/store.py` (per-key locks; offline tests green under spawn) — added, pending
+review/commit.
+
+**Access verbs, by consumer intent** (require-present and provide-if-missing are genuinely different
+intents — overloading one call with a "don't provision" factory read backwards). Values are stored
+**JSON-serialized**, so every read hands back a private *copy* — hence the verb:
+
+    put(store, key, block)            owner writes a block (the controller, pre-fork)
+    copy(store, key)                  eager consumer -> a private copy, else fail loud
+                                      (never provisions, never blocks)
+    copy_or_provision(store, key, fn) lazy consumer  -> cached copy, else single-flight provision
+                                      (others block; timeout -> ProvisionTimeout)
+
+Creds are **eager**: the controller `put`s them into the store pre-fork, so a worker's `copy()` always
+finds them — an absent one is a real failure, not a skip. Services are **lazy**: the first worker to
+need one provisions via `copy_or_provision`; the rest block, then read what the winner published.
+(Env-adoption — a dev's own env script supplying a credential — is handled at *declaration*: the
+controller reads env into the store on the pre-fork pass, so workers still just `copy()`.)
+
+**Value shape — context blocks, not scalars.** A stored value is a whole struct/JSON block (the shape
+`credential.fetch` already returns from 1Password): a credential is `{TOKEN, ENDPOINT, REGION, …}`; a
+service is `{name, version, state, url, …}`. A couple of type-specific primitives (a `Queue`/`Event`
+for coordination) are available, but the default is "publish a whole block." Keep values flat +
+picklable and **replace wholesale** — `managers` hands out proxies, and *nested* mutation through a
+proxy does **not** propagate (the classic footgun). Don't overbuild this.
+
+**Two comms layers — deliberately not matched.** The store is the *pytest coordinator↔worker* substrate
+(rich: KV blocks, queues, events). The *worker→`unittest`* boundary stays dumb: env vars +
+test-config/init-sql/`--env-passthrough`. The py worker **decodes** the store blocks it needs into that
+flat form right before invoking the binary. Payoff: the `unittest` contract (and `.test` bodies) never
+grows as the pytest-side carrier gains features — data flow at the seam is one-directional and flat
+(`store → worker decodes → env → unittest`).
+
+**v1 vs v2 (deferred).** v1 is the manager child-process above — trivial, ~1 module, Windows-proven.
+A v2 could host the store **in the controller process itself** via a background threaded/async socket
+server (no child): it dissolves the child-process fork/spawn question entirely and simplifies the leak
+story (the server dies *with* the controller — no orphan to reclaim), at the cost of hand-rolling
+framing/auth and running a loop on a side thread. Since v1 is trivial and Windows-safe, **v2 is
+deferred** — revisit only if the orphaned-child-on-`SIGKILL` edge actually bites or the carrier needs
+richer native protocol (queues/pub-sub). The worker-facing API is just `get_or_provision`, so v1→v2 is
+a swap behind that seam, not a rewrite.
 
 ## Declaration API
 
@@ -95,46 +174,102 @@ def pytest_configure(config):
 Everything backend-specific (the creds callables, `start_container`/`teardown_shared`, provisioners,
 the `uc_server` fixture body, the autouse env fixture) **stays in UC** and is merely *referenced*.
 
-## Default selection — "no such thing as bare"
+## Default selection — an explicit scan that overrides pytest's default
 
-Both controller (`pytest_configure`) and workers (`collection_modifyitems`) compute the **same**
-decision from the **same** original args (`config.option.file_or_dir / keyword / markexpr` — verified
-identical everywhere, incl. xdist workers):
-- **Bare** (no path / `-k` / `-m`) → run default tiers + everything untagged; **deselect** non-default
-  tiers (databricks) → fast, credential-free smoke run.
-- **Any explicit selection** → no tier-based deselection; pytest's own path/`-k`/`-m` filtering
-  decides verbatim (`pytest test/databricks`, `-m databricks`, `-k foo`, `pytest test` = everything).
+pytest's default is "collect everything under testpaths." duck-test replaces that with an **explicit
+default scan**, expressed over a **standard vocabulary of sets** (labels) every project shares and
+extends:
 
-**Polarity: default-in** (recommended). Tag only the heavy opt-in tiers; the bare-run set is
-*everything except* `default=False` members. A new/untagged test stays **visible** on a bare run
-(fail-safe). vs default-out (tag the smoke set; new untagged tests silently excluded — fail-dangerous).
+    smoke · slow · local · cloud · regression        (+ project-specific)
 
-## Up-front resource fetch — controller-side, gated, clean-fail
+These are **labels, not a partition** — a test can be `local` *and* `slow`, or `cloud` *and*
+`regression`. So the default run is a **set-expression** (e.g. `local and not slow`), applied **only
+when you gave no explicit selection**. Any explicit selection (`-m`, `-k`, a path) is respected
+verbatim and turns the default scan off — the augment-not-replace relationship you already know from
+pytest's `-m`/`-k`.
 
-The driver's `pytest_configure` (a `trylast` impl, after the tier declarations register), on the
-controller only:
-1. Predict which tiers are **reachable** under the current args (gating, below).
-2. For each reachable tier's class-1 credentials: `register_broadcast(config, key, fetch)` then force
-   `get_broadcast(...)` — runs `fetch` **now, pre-fork, on the controller** (the `op` prompt lands at
-   invocation); workers receive it via `workerinput`, no per-worker `op`.
-3. If `validate()` false → `pytest.UsageError(error())` → clean red ERROR, zero tests, **stop**,
-   carrying the resource's own message.
-4. If `adopt=="env"` → `os.environ.update(value)`.
+- **No selection** → apply the default set-expression (the fast local set); deselect the rest (e.g.
+  `cloud` → the Databricks set). Announced by the banner.
+- **Any selection** → verbatim; no default-scan deselection.
+
+Because these are labels, the mechanism is just **markers**: a tier declaration auto-applies its set
+labels as markers to its members, and the default scan is a marker expression. Both controller
+(`pytest_configure`) and workers (`collection_modifyitems`) derive the **same** decision from the
+**same** original args (`config.option.file_or_dir / keyword / markexpr` — verified identical
+everywhere, incl. xdist workers).
+
+**Selection labels vs provisioning resources are different axes.** `cloud` is a *selection* label;
+"needs Databricks credentials" is a *provisioning* fact tied to the backend. A tier declaration
+carries both, but a set-expression *selects*; a tier's *resources* *provision*.
+
+**Polarity — fail-safe.** A new/untagged test must land in the default run, not be silently excluded.
+So write the default as *exclusions* of heavy sets (`not cloud and not slow`), never as an allowlist
+of one set — tag only the heavy opt-in sets; everything else runs by default.
+
+## Up-front resource fetch — controller-side, gated
+
+The driver's `pytest_configure` — a **`trylast`** implementation (`@pytest.hookimpl(trylast=True)`
+means "run mine *after* other implementations of this hook"; used so your `test/conftest.py` has
+*registered* the tiers before the driver *reads* them) — runs on the **controller only** and, before
+workers fork:
+1. Determine which tiers are **reachable** under the current args (gating, below).
+2. For each reachable tier's class-1 credentials: run `fetch` **now, pre-fork, on the controller** (so
+   an `op`/biometric prompt lands at invocation, never mid-run) and **publish the block to the store**;
+   workers read it via `get_or_provision`, no per-worker `op`. (Supersedes the earlier
+   `register_broadcast`/`workerinput` delivery — the store is the uniform carrier; broadcast survives
+   only for genuinely-inner values like run-id, if kept at all.)
+3. If `validate()` is false → **fail loud + stop, carrying the resource's own message.** Mechanism:
+   `pytest.UsageError(error())` → red `ERROR:` + exit 4 (best *visual*, though "usage" is the wrong
+   *label* — this is a failed setup, not bad CLI). `pytest.exit(error(), returncode=1)` is the more
+   honest "abort the session" but reads less like an error. pytest has no first-class "session
+   prerequisite failed" primitive; pick one and be consistent (leaning `UsageError` for the red).
+4. If `adopt == "env"` → `os.environ.update(value)`. **`adopt` names *how* a fetched value reaches
+   tests.** `"env"` merges the fetched dict (`{DATABRICKS_TOKEN: …}`) into `os.environ`, so three
+   consumers see it: the test subprocess (inherits env), the SDK (reads env), and `{DATABRICKS_TOKEN}`
+   substitution in the `.test` body. Other modes are conceivable (write a config file, hand to the
+   provisioner); `env` is right for Databricks.
 
 A **credential-free run stays possible**: an unreachable tier (bare, `-m 'not databricks'`,
 `pytest test/oss_local`) never fetches → no prompt.
 
-**Gating precision** (controller can't collect, so it predicts from args):
+### RESOLVED: store-based lazy provisioning defers scan-plan
+
+The tension was: the fetch must happen *before workers fork*, but under xdist the real selected set is
+known only *after collection, on the workers* — so an up-front decision could only *predict* from args.
+Two things resolve it:
+
+1. **Services go lazy (first-need) via the store** — the controller **needn't know the service set up
+   front at all**. This dissolves the need for a scan for *provisioning*, and avoids force-serializing
+   fat provisioning ahead of execution.
+2. **Credentials stay eager**, fetched at controller pre-fork `pytest_configure` and published to the
+   store — the GUI prompt lands at invocation, hard-fail early if unmet. This needs no scan, only a
+   *predictive* decision of "is a credentialed tier plausibly in play?" (gating, below).
+
+So **scan-plan is deferred, not needed for the near-term path.** The only things it would still buy are
+a *sharper eager-cred decision* (kill the `-k` over-/under-prompt) and *affinity batching* — both
+nice-to-haves. A spike confirmed a controller collect-first is *feasible* if we ever want it
+(`spike-xdist-collect-first--findings.md`: `pytest_collection` + `perform_collect`, resolves `-k`,
+~1-2% overhead) — but the cleaner future form is a **separate foreground scan → provision → exec** whose
+xdist run inherits the store address + eager env, *not* an in-controller collect (which fires post-fork,
+too late for pre-fork delivery). Revisit only if `-k` over-prompting or affinity batching becomes real.
+
+The residual `-k` imprecision below is therefore **accepted for now** (escape hatch: explicit
+deselection, or your own env script). The rest of this section is the predictive eager-cred decision.
+
+**Gating precision** (predictive, from args):
 - bare → default tiers (exact).
-- path args → tier reachable iff its path **intersects** any `file_or_dir` (so `pytest test` → `test`
-  is an ancestor of `test/databricks` → databricks reachable → **fetched up front → closes the gap**;
+- path args → tier reachable iff its path **intersects** any `file_or_dir` (`pytest test` → `test` is
+  an ancestor of `test/databricks` → databricks reachable → **fetched up front → closes the gap**;
   `pytest test/oss_local` → no intersection → not fetched).
 - `-m` → evaluate the tier's marker against the expr with pytest's `Expression` (exact).
-- `-k` → not predictable pre-collection → **punt to the backstop**.
+- `-k` → **not predictable pre-collection** → punt to the backstop.
 
 **Backstop:** a generic driver `pytest_runtest_setup` — if an item's tier credential `validate()` is
 false, `pytest.fail(error(), pytrace=False)` (loud, never a silent skip). Covers the residual `-k`
-case + defense-in-depth (creds lapse mid-run).
+case + defense-in-depth (creds lapse mid-run). Note the asymmetry it creates (which two-phase would
+remove): `-k oss` selects no live test → nothing prompts or fails; but `-k <a-databricks-test>`
+selects a live test the controller couldn't predict → no up-front fetch → the backstop only *checks*
+(passes iff creds are already in the env, else **fails** — it won't opportunistically `op`-fetch).
 
 ## Selected-set banner
 
@@ -180,11 +315,14 @@ separable later step.
 - **Phase 1** — selection: driver `collection_modifyitems` auto-marker + default-in deselection.
   Migrate UC (two `register_tier` calls; delete hand-rolled marking + `_no_selection`). Verify
   bare/`-m`/path parity.
-- **Phase 2** — up-front class-1 (**closes the gap**): controller `pytest_configure` (trylast) fetch
-  + gate + `UsageError` + env-adopt; generic `runtest_setup` backstop. Delete the databricks conftest
-  creds block. Verify `pytest test` now fetches on the controller; `pytest test/oss_local` does not.
+- **Phase 2** — up-front class-1 (**closes the gap**): stand up the **store** (`multiprocessing.managers`
+  carrier + `get_or_provision`, started at controller `pytest_configure`, address+authkey → env);
+  controller (trylast) fetch + gate + `UsageError` + env-adopt, publish the cred block to the store.
+  Generic `runtest_setup` backstop. Delete the databricks conftest creds block. Verify `pytest test`
+  now fetches on the controller; `pytest test/oss_local` does not.
 - **Phase 3** — banner.
-- **Phase 4** — class-2 gating (start-if-active + controller-stop); migrate oss.
+- **Phase 4** — class-2 **lazy first-need via the store** (single-flight + configurable timeout;
+  replaces the OSS file+`O_EXCL`+reclaim); controller-stop + reclaim-stale. Migrate oss.
 - **Phase 5** — optional: declarative ini/TOML tier home; generic driver `service()` lock; benchmark
   `solo` mode; iceberg onboarding as the first external validation; shared `resources` library.
 
@@ -197,5 +335,5 @@ shared lib / driver). Still to confirm at implementation time:
 2. **`-k` handling** — up-front where predictable + clean per-test hard-fail backstop for `-k`
    (recommended). Accept that a `-k`-selected live test hard-fails rather than getting an up-front
    prompt.
-3. **Service mechanism ownership** — keep UC's docker lock in v0; generic driver `service()` lock is
-   Phase 5.
+3. **Service mechanism ownership** — v0 may keep UC's docker lock, but the target is the driver's
+   store-backed single-flight (`get_or_provision`, Phase 4), which retires the file+`O_EXCL` lock.
