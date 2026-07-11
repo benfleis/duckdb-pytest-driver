@@ -22,9 +22,11 @@ import tempfile
 
 import pytest
 
+from . import store
 from .fixtures import duckdb_cli_for
 from .mnemonic import run_id as _make_run_id
 from .steps import step
+from .tiers import get_tiers
 from .sqllogic import (
     SqlLogicFile,
     SqlLogicItem,
@@ -313,21 +315,24 @@ def find_duckdb(config, working_dir):
 
 
 def pytest_report_header(config):
-    """Verbose-mode (`-v`) trace of the resolved test tools — which build was picked.
+    """Session-header lines: the mandatory tier banner (always) + a verbose (`-v`) tool trace.
 
-    Prints in the session header (next to rootdir/plugins) so a run's tool provenance
-    (e.g. build/relassert/{test/unittest, duckdb}) is visible. Best-effort: a tool that
-    can't be resolved yet is simply omitted (never breaks the header).
+    The tier banner (default-scan deselection) is the north-star "loud" signal — shown whenever a
+    tier is deselected, NOT -v-gated. The tool trace (which build was picked — e.g.
+    build/relassert/{test/unittest, duckdb}) stays -v-gated. Both are controller-side (report_header
+    runs on the controller) and best-effort: a tool that can't be resolved yet is simply omitted.
     """
-    if int(config.getoption("verbose", default=0) or 0) < 1:
-        return None
-    working_dir = getattr(config, "sqllogic_working_dir", None) or os.getcwd()
     lines = []
-    for label, resolve in (("unittest", find_binary), ("duckdb", find_duckdb)):
-        try:
-            lines.append(f"duckdb-pytest-driver {label}: {resolve(config, working_dir)}")
-        except Exception:
-            pass  # not resolvable yet (e.g. no binary for a pure-collection run) — skip
+    banner = _tier_banner(config)
+    if banner:
+        lines.append(banner)
+    if int(config.getoption("verbose", default=0) or 0) >= 1:
+        working_dir = getattr(config, "sqllogic_working_dir", None) or os.getcwd()
+        for label, resolve in (("unittest", find_binary), ("duckdb", find_duckdb)):
+            try:
+                lines.append(f"duckdb-pytest-driver {label}: {resolve(config, working_dir)}")
+            except Exception:
+                pass  # not resolvable yet (e.g. no binary for a pure-collection run) — skip
     return lines or None
 
 
@@ -392,6 +397,11 @@ def pytest_load_initial_conftests(early_config, parser, args):
     # now. hookwrapper: our pre-yield runs before pytest actually loads those conftests. (Bare
     # invocation loads them during collection, after configure — pytest_configure covers that.)
     _ensure_pythonpath(early_config)
+    # Register the trylast tier controller now (pre-configure) so its pytest_configure runs AFTER
+    # the consumer `test/conftest.py` has registered its tiers — a plugin registered here joins the
+    # normal ordering, whereas one registered mid-configure would replay too early. Idempotent.
+    if not early_config.pluginmanager.hasplugin(_TIER_PLUGIN_NAME):
+        early_config.pluginmanager.register(_TierController(), _TIER_PLUGIN_NAME)
     yield
 
 
@@ -514,12 +524,412 @@ def pytest_configure_node(node):
         node.workerinput[key] = get_broadcast(node.config, key)
 
 
+# --- shared-state store lifecycle + tier controller --------------------------------------
+# The store (multiprocessing.managers; see store.py) is the uniform controller<->worker carrier
+# for tier resources: credentials (eager, published pre-fork) and services (lazy, first-need). The
+# controller starts it in a TRYLAST pytest_configure — after consumer conftests have registered
+# their tiers — but ONLY when a tier declares a credential or service. Vanilla stays vanilla: with
+# nothing declared, no manager starts, no env var appears, and nothing about a bare run changes.
+# The address+authkey go into os.environ pre-fork so workers inherit them and connect lazily.
+_TIER_PLUGIN_NAME = "duckdb_driver_tiers"
+_STORE_MGR = "_duckdb_store_mgr"        # controller: the SyncManager (owns the server process)
+_STORE = "_duckdb_store"                # controller/worker: the cached store proxy
+_STARTED_SERVICES = "_duckdb_started_services"  # controller: keys of services it started (teardown)
+
+
+def _any_tier_has_resources(config):
+    """True iff some registered tier declares a credential or a service (the store's raison
+    d'être). The vanilla guard: false => no store, no env, no behavior change."""
+    return any(t.credentials or t.services for t in get_tiers(config))
+
+
+def get_store(config):
+    """The shared-state store proxy for this run, or None if no store was started.
+
+    Controller: returns the proxy stashed when the store was started (in pytest_configure); None
+    if nothing was declared (vanilla). Worker: lazily connects once via the address the controller
+    published to the env, caching the proxy (and its manager) on ``config``; None if no store this
+    run. Use with the store access verbs (``store.copy`` / ``store.copy_or_provision``).
+    """
+    cached = getattr(config, _STORE, None)
+    if cached is not None:
+        return cached
+    if getattr(config, "workerinput", None) is None:
+        return None  # controller: a proxy is stashed at start-time; its absence => no store started
+    loc = store.from_env()
+    if loc is None:
+        return None  # no store address published this run (vanilla)
+    mgr = store.connect(*loc)
+    setattr(config, _STORE_MGR, mgr)  # keep the manager alive alongside the proxy
+    proxy = mgr.store()
+    setattr(config, _STORE, proxy)
+    return proxy
+
+
+def _no_explicit_selection(config):
+    """True iff the invocation gave no path arg, no ``-k``, and no ``-m`` (a bare run).
+
+    The single predicate behind both the eager-cred gate (``_tier_reachable``'s bare branch) and
+    the Phase-1 default-scan deselection — so "bare" means the same thing to creds and to selection.
+    """
+    opt = config.option
+    return not (
+        list(getattr(opt, "file_or_dir", None) or [])
+        or (getattr(opt, "keyword", None) or "")
+        or (getattr(opt, "markexpr", None) or "")
+    )
+
+
+def _tier_reachable(config, tier):
+    """PREDICTIVE (from args, pre-collection) gate for whether ``tier`` is plausibly in play.
+
+    Deliberately smaller than full collection-time selection — enough to decide up-front (pre-fork)
+    credential fetching and service gating without collecting, AND (Phase 1) which tiers a bare run
+    default-scans out. Reachable if:
+      (a) NO selection was given (no path args, no -k, no -m) and the tier is a default tier; or
+      (b) a path arg intersects the tier's path (ancestor-or-descendant either way); or
+      (c) a -m expression matches the tier's marker.
+    ``-k`` is NOT predictable here (needs collected item names) -> never fetches on -k alone; the
+    generic pytest_runtest_setup backstop covers a -k-selected credentialed test.
+    """
+    opt = config.option
+    file_or_dir = list(getattr(opt, "file_or_dir", None) or [])
+    markexpr = getattr(opt, "markexpr", None) or ""
+
+    # (a) bare invocation -> the default tiers are reachable (exact).
+    if _no_explicit_selection(config):
+        return bool(tier.default)
+
+    # (b) path intersection: a path arg is an ancestor-or-descendant of the tier's dir.
+    if tier.path and file_or_dir:
+        tpath = os.path.normpath(tier.path)
+        for arg in file_or_dir:
+            apath = os.path.normpath(arg.split("::", 1)[0])
+            if apath == tpath or _is_subpath(apath, tpath) or _is_subpath(tpath, apath):
+                return True
+
+    # (c) -m marker expression matches the tier's marker.
+    if markexpr and tier.marker and _markexpr_matches(markexpr, tier.marker):
+        return True
+
+    return False
+
+
+def _is_subpath(child, parent):
+    """True if ``child`` is at or under ``parent`` (both already normpath'd, relative-friendly)."""
+    if child == parent:
+        return True
+    return child.startswith(parent + os.sep)
+
+
+def _markexpr_matches(markexpr, marker):
+    """Whether a ``-m`` expression could select an item carrying ``marker``.
+
+    Predictive: models an item that carries just ``marker`` and asks pytest's own Expression engine
+    whether the ``-m`` expr selects it (so ``not databricks`` correctly reports the databricks tier
+    as unreachable). This is the deliberate *mirror* of the real collection-time selection: Phase 1
+    auto-applies each tier's marker to its members, so pytest's builtin ``-m`` deselection is the
+    authority at collection, and this predictive check uses the same ``Expression`` engine — the two
+    agree by construction (same args -> same tiers, so creds are fetched for exactly the tiers that
+    run). Falls back to a coarse substring check only if the internal API shifts.
+    """
+    try:
+        from _pytest.mark.expression import Expression
+
+        expr = Expression.compile(markexpr)
+        return bool(expr.evaluate(lambda name, /, **kw: name == marker))
+    except Exception:
+        return marker in markexpr  # coarse fallback (see TODO above)
+
+
+class _TierController:
+    """Controller-side, trylast: start the store + eager-fetch credentials, pre-fork.
+
+    Registered in pytest_load_initial_conftests so this pytest_configure fires AFTER consumer
+    ``test/conftest.py`` hooks have registered their tiers (pluggy runs trylast last). A separate
+    plugin object is used because the module-level pytest_configure is tryfirst (it must set
+    numprocesses before xdist reads it) — the two orderings genuinely differ.
+    """
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_configure(self, config):
+        # Worker: the controller already started + provisioned; workers connect lazily via env.
+        if getattr(config, "workerinput", None) is not None:
+            return
+        if not _any_tier_has_resources(config):
+            return  # vanilla: nothing declared -> no store, no env, no behavior change
+        mgr, address, authkey = store.start_server()
+        setattr(config, _STORE_MGR, mgr)
+        setattr(config, _STORE, mgr.store())
+        # pre-fork: workers inherit this env at spawn and connect via from_env()
+        os.environ.update(store.to_env(address, authkey))
+        _fetch_credentials(config)
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_collection_modifyitems(self, config, items):
+        # Phase-1 selection, in a HOOKWRAPPER's pre-yield so it runs BEFORE every plain
+        # implementation of this hook — crucially pytest's builtin -m/-k deselection (a plain impl)
+        # and the module-level dedup/batch pass. That ordering is the whole trick: the auto-markers
+        # must exist before `-m <tier>` filtering reads them (verified by test_tier_selection). This
+        # controller is registered in pytest_load_initial_conftests, so the method fires wherever
+        # collection happens — xdist workers and the controller at -n0. Vanilla (no tiers declared)
+        # is a pure passthrough: nothing marked, nothing deselected.
+        tiers = get_tiers(config)
+        if tiers:
+            _apply_tier_markers(config, items, tiers)
+            _default_scan_deselect(config, items, tiers)
+        yield
+
+
+def _fetch_credentials(config):
+    """Controller, pre-fork: eager-fetch each reachable tier's credentials into the store.
+
+    For every credential on a reachable tier: run ``fetch(config)`` NOW (so an op/biometric prompt
+    lands at invocation, never mid-run); if ``validate`` rejects it, raise ``pytest.UsageError`` to
+    stop the session red; else publish the block to the store and, when ``adopt == "env"``, merge it
+    into os.environ so workers (and the test subprocess + SDK + ${VAR} substitution) inherit it.
+    """
+    handle = get_store(config)
+    for tier in get_tiers(config):
+        if not tier.credentials or not _tier_reachable(config, tier):
+            continue
+        for cred in tier.credentials:
+            value = cred.fetch(config)
+            if cred.validate is not None and not cred.validate(value):
+                raise pytest.UsageError(cred.error() if cred.error else f"{cred.key}: unavailable")
+            store.put(handle, cred.key, value)
+            if cred.adopt == "env":
+                os.environ.update(value)  # pre-fork: inherited by workers + the test subprocess
+
+
+def _teardown_store(config):
+    """Controller, at sessionfinish: stop started services, then shut the store manager down.
+
+    Services are stopped BEFORE the manager dies (their started-state lives in the store). No-op
+    when no store was started (vanilla). Shutting the manager down terminates its server process
+    and frees the socket. Idempotent.
+    """
+    mgr = getattr(config, _STORE_MGR, None)
+    if mgr is None:
+        return
+    _stop_services(config)
+    try:
+        mgr.shutdown()
+    except Exception:
+        pass  # already down / never fully started — teardown must not raise at session end
+    setattr(config, _STORE_MGR, None)
+
+
+# --- class-2 services: lazy first-need provisioning via the store ------------------------
+# A service (docker container, etc.) is provisioned the first time a test needs it: the service's
+# session fixture calls provision_service(), which single-flights svc.start() through the store's
+# per-key lock (first worker wins; the rest block then read the published block). Torn down once by
+# the controller at sessionfinish (a block in the store == the service was started).
+
+
+def _service_tier(config, svc):
+    """The tier that owns ``svc`` (by descriptor identity/equality), or None."""
+    for t in get_tiers(config):
+        if svc in t.services:
+            return t
+    return None
+
+
+def _service_block(svc, extra):
+    """Normalize ``svc.start``'s return into a stored dict block.
+
+    ``start`` may return None (pure side effect) or a dict (a context block: url, version, …). The
+    stored block always carries ``{key, started}`` so the controller can detect it ran + tear down.
+    """
+    block = {"key": svc.key, "started": True}
+    if isinstance(extra, dict):
+        block.update(extra)
+    return block
+
+
+def provision_service(config, svc):
+    """Lazy, first-need provisioning of a class-2 service via the store — call from its fixture.
+
+    The first worker to call runs ``svc.start(config)`` under the store's per-key lock and publishes
+    the result block; concurrent callers block, then read what the winner published (single-flight).
+    Gated on the owning tier being reachable this run — the OSS container must not boot for a
+    databricks-only run. Returns the service's context block (a dict).
+    """
+    tier = _service_tier(config, svc)
+    if tier is not None and not _tier_reachable(config, tier):
+        pytest.fail(
+            f"service {svc.key!r}: owning tier {tier.name!r} is not reachable this run — "
+            "select it (a path or -m) to provision its service.",
+            pytrace=False,
+        )
+    handle = get_store(config)
+    if handle is None:
+        # Defensive: no store (nothing declared) — run start locally, no cross-worker coordination.
+        return _service_block(svc, svc.start(config))
+    return store.copy_or_provision(handle, svc.key, lambda: _service_block(svc, svc.start(config)))
+
+
+def _stop_services(config):
+    """Controller, at sessionfinish (pre store-shutdown): stop each service that was started.
+
+    A block exists in the store under a service's key iff some worker provisioned it, so
+    store-presence == started; stop each once here (the controller runs sessionfinish once).
+    # TODO: leak-reclaim (reclaim_stale) — recovering a service leaked by a crashed/killed run —
+    #       is a follow-up (UC's OSS reclaim pattern); v0 relies on this controller-stop.
+    """
+    handle = getattr(config, _STORE, None)
+    if handle is None:
+        return
+    for tier in get_tiers(config):
+        for svc in tier.services:
+            if svc.stop is None:
+                continue
+            try:
+                store.copy(handle, svc.key)  # present => was provisioned this run
+            except store.ResourceMissing:
+                continue
+            try:
+                svc.stop(config)
+            except Exception:
+                pass  # teardown must not raise at session end
+
+
+def _item_in_tier_path(config, item, tier):
+    """Whether ``item``'s file is at/under the tier's repo-relative ``path`` (the path branch of
+    membership; also what the auto-marker keys on). False when the tier declares no ``path``."""
+    if not tier.path:
+        return False
+    tabs = os.path.normpath(os.path.join(_working_dir(config), tier.path))
+    ipath = os.path.normpath(str(getattr(item, "path", "") or ""))
+    return _is_subpath(ipath, tabs)
+
+
+def _item_in_tier(config, item, tier):
+    """Whether ``item`` belongs to ``tier`` — by the tier's marker or by path membership.
+
+    Marker: an auto-applied tier marker (see ``_apply_tier_markers``) or a hand-authored one. Path:
+    the item's file is at/under the tier's repo-relative ``path`` (resolved against the working dir).
+    """
+    if tier.marker and item.get_closest_marker(tier.marker) is not None:
+        return True
+    return _item_in_tier_path(config, item, tier)
+
+
+# --- Phase 1 selection: auto-marker + default-scan deselection ----------------------------
+# The driver turns path-based tier membership into marker-based selection. At collection it stamps
+# each tier's marker on every path-member (so `-m cloud` / `-m 'not cloud'` select or exclude them,
+# including `.test`/SQLLogic bodies that carry no Python @pytest.mark), THEN — on a bare run only —
+# deselects the non-default tiers (the "explicit default scan"). Both run in _TierController's
+# collection_modifyitems hookwrapper pre-yield, so the marks exist BEFORE pytest's builtin -m/-k
+# deselection reads them. The deselect decision reuses `_tier_reachable` (the same from-args gate
+# that decides eager credential fetching): a tier deselected on a bare run == a tier whose creds
+# were not fetched — one source of truth.
+
+
+def _apply_tier_markers(config, items, tiers):
+    """Stamp each tier's marker on every item that belongs to it BY PATH (the auto-marker).
+
+    Makes `-m <tier>` work for path-declared members — including SQLLogic bodies that can't carry a
+    Python `@pytest.mark`. Runs pre-yield so the marks exist before pytest's own mark deselection.
+    Idempotent: an item that already carries the marker (hand-authored, or a prior pass) is skipped.
+    """
+    for tier in tiers:
+        if not tier.marker:
+            continue
+        for item in items:
+            if _item_in_tier_path(config, item, tier) and item.get_closest_marker(tier.marker) is None:
+                item.add_marker(tier.marker)
+
+
+def _default_scan_deselect(config, items, tiers):
+    """On a bare run, deselect items in a non-default (unreachable) tier — the explicit scan.
+
+    Only fires when no explicit selection was given; any `-m`/`-k`/path is respected verbatim
+    (pytest's own filtering handles it, and the auto-markers above make `-m <tier>` work). An item
+    that also belongs to a reachable (default) tier stays. Removal is the pytest-standard
+    `pytest_deselected` + in-place slice. The reachable/unreachable split is `_tier_reachable`, the
+    same gate that decides eager credential fetching (one source of truth).
+    """
+    if not _no_explicit_selection(config):
+        return
+    unreachable = [t for t in tiers if not _tier_reachable(config, t)]
+    if not unreachable:
+        return
+    reachable = [t for t in tiers if _tier_reachable(config, t)]
+    removed, kept = [], []
+    for item in items:
+        in_out = any(_item_in_tier(config, item, t) for t in unreachable)
+        in_keep = any(_item_in_tier(config, item, t) for t in reachable)
+        (removed if in_out and not in_keep else kept).append(item)
+    if removed:
+        config.hook.pytest_deselected(items=removed)
+        items[:] = kept
+
+
+def _deselected_tier_names(config):
+    """Names of the tiers the default scan deselects on THIS invocation (from args alone).
+
+    Empty unless a bare run has ≥1 non-default (unreachable) tier registered — exactly when
+    `_default_scan_deselect` removes that tier's items. Derived from args only, so the controller
+    can announce it pre-collection (the banner) without xdist aggregation.
+    """
+    if not _no_explicit_selection(config):
+        return []
+    return [t.name for t in get_tiers(config) if not _tier_reachable(config, t)]
+
+
+def _tier_banner(config):
+    """The mandatory 'default set selected; deselected: …' banner line, or None when none applies.
+
+    North-star (docs/TIERING.md): any change to a bare `pytest` must be loud. Whenever the default
+    scan deselects ≥1 tier, announce it — always, NOT -v-gated. Returns None for a vanilla run or
+    any explicit selection, so those headers are untouched.
+    """
+    names = _deselected_tier_names(config)
+    if not names:
+        return None
+    listed = ", ".join(sorted(names))
+    hint = names[0] if len(names) == 1 else "<tier>"
+    return f"duck-test tiers: default set selected; deselected: {listed} (pass a path or -m {hint} to include)"
+
+
+def pytest_runtest_setup(item):
+    """Backstop: a selected test in a credentialed tier whose credential is absent/invalid FAILS.
+
+    The paradigm-shift behavior (docs/TIERING.md): a *selected* test that can't be provisioned fails
+    loud — never a silent skip. Catches the ``-k``-selected-live case the predictive up-front fetch
+    can't foresee (``-k`` isn't decidable pre-collection), plus creds that lapse mid-run. Runs in
+    whichever process executes the item (the worker under xdist) and reads the store the controller
+    published; it only *checks* — it never opportunistically fetches.
+    """
+    config = item.config
+    tiers = [t for t in get_tiers(config) if t.credentials and _item_in_tier(config, item, t)]
+    if not tiers:
+        return
+    handle = get_store(config)
+    for tier in tiers:
+        for cred in tier.credentials:
+            value = None
+            if handle is not None:
+                try:
+                    value = store.copy(handle, cred.key)
+                except store.ResourceMissing:
+                    value = None
+            invalid = value is None or (cred.validate is not None and not cred.validate(value))
+            if invalid:
+                pytest.fail(
+                    cred.error() if cred.error else f"{cred.key}: required credential unavailable",
+                    pytrace=False,
+                )
+
+
 def pytest_sessionfinish(session, exitstatus):
     # Controller-only: drop the per-run external dir on a clean run (no failures),
     # unless asked to keep it. Always kept on failure/interruption for debugging.
     config = session.config
     if getattr(config, "workerinput", None) is not None:
         return  # this is a worker
+    _teardown_store(config)
     destroy = config.getoption("--temp-dir-destroy", default="on-success")
     if destroy == "never":
         return

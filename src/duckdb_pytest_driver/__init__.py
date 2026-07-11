@@ -21,6 +21,8 @@ from .plugin import (  # noqa: F401  (the harness / plugin)
     run_paired,
     register_broadcast,
     get_broadcast,
+    get_store,
+    provision_service,
 )
 from .requires import requires, requires_matrix, Requirement, collect_requirements  # noqa: F401
 from .provision import register_provisioner, get_provisioner  # noqa: F401
@@ -56,6 +58,8 @@ __all__ = [
     "run_paired",
     "register_broadcast",
     "get_broadcast",
+    "get_store",
+    "provision_service",
     "requires",
     "requires_matrix",
     "Requirement",

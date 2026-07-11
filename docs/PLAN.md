@@ -90,6 +90,11 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
   at `pytest_configure` (session level) and error there, so an ambiguous / missing binary halts
   the whole session immediately with a single clear message (same for `--unittest-binary` not
   found). Binary resolution is a session invariant, not a per-item decision.
+- **sqllogic failure reports should surface the binary's stdout/stderr** _[bug]_ — a `.test` failure's
+  `repr_failure` doesn't include the `unittest` subprocess's raw stdout/stderr, so an unexpected
+  error-in-query is opaque. Likely either the assertion-fail path doesn't thread the combined output
+  through, or the `[TEST_EVENT]` data is empty for the unexpected-error-in-query case. Needs one
+  instrumented run (capturing the raw subprocess output) to pin which.
 
 ## C++ queued (the opt-in runner changes)
 
