@@ -1,8 +1,8 @@
 """Process-shared state store backing driver resource provisioning.
 
 A :class:`SyncManager` server (started on the xdist controller, pre-fork) holds
-whole-block values plus **per-key** provision locks; workers connect over a
-platform-native socket (AF_UNIX on posix, AF_PIPE on Windows). Access verbs,
+whole-block values plus a **per-key provisioning state machine**; workers connect
+over a platform-native socket (AF_UNIX on posix, AF_PIPE on Windows). Access verbs,
 by consumer intent::
 
     put(store, key, block)              # owner writes a block (the controller, pre-fork)
@@ -12,9 +12,10 @@ by consumer intent::
       | absent  -> ResourceMissing      #   never provisions; never blocks
 
     copy_or_provision(store, key, fn)   # lazy consumer: a private copy, or provision once
-        cached  -> block
-      | miss    -> single-flight (first caller runs fn + publishes; others block)
-      | timeout -> ProvisionTimeout     #   stuck/dead winner, no hang
+        set     -> block                #   write-once/read-many per-key state machine
+      | miss    -> single-flight (owner runs fn + publishes; others block on PENDING)
+      | failed  -> ProvisionFailed      #   poison pill: owner's fn raised; waiters fail fast, no retry
+      | timeout -> ProvisionTimeout     #   stuck/never-terminating owner, no hang
 
 Portability: the default start context is used (spawn on macOS/Windows, fork on
 Linux), so this module must stay **import-clean** — the spawned server re-imports
@@ -29,6 +30,7 @@ aliased or mutated in place, and every read hands back a freshly-parsed private 
 import json
 import os
 import threading
+import time
 from multiprocessing.managers import SyncManager
 
 ADDR_ENV = "DUCKDB_PYTEST_STORE_ADDR"
@@ -40,36 +42,68 @@ class ResourceMissing(Exception):
 
 
 class ProvisionTimeout(Exception):
-    """Blocked waiting on a provision that never arrived (stuck/dead winner)."""
+    """Blocked waiting on a provision that never arrived (stuck/never-terminating owner)."""
+
+
+class ProvisionFailed(Exception):
+    """A provision terminally FAILED (the poison pill): the owner's factory raised, so the key is
+    marked failed and every subsequent reader fails fast — no factory re-run, no retry storm."""
+
+
+# per-key provisioning state — write-once, read-many: absent -> PENDING -> SET | FAILED.
+_PENDING, _SET, _FAILED = "pending", "set", "failed"
 
 
 class _Store:
-    """Server-side singleton: whole-block KV + per-key locks (created on demand)."""
+    """Server-side singleton: whole-block KV + a per-key provisioning state machine.
+
+    ``begin`` atomically claims PENDING (no cross-process lock needed); SET is terminal-success (the
+    block is readable), FAILED is terminal-failure (a poison pill). Waiters poll ``begin`` until a key
+    reaches a terminal state.
+    """
 
     def __init__(self):
-        self._values = {}
-        self._locks = {}
-        self._meta = threading.Lock()  # guards _locks creation
+        self._values = {}  # key -> serialized block (str), present only when SET
+        self._errors = {}  # key -> error message, present only when FAILED
+        self._state = {}   # key -> _PENDING | _SET | _FAILED  (absent => never started)
+        self._meta = threading.Lock()
 
-    def get(self, key):  # returns the serialized block (str), or None if absent
-        return self._values.get(key)
-
-    def put(self, key, value):  # value is a serialized block (str); wholesale replace
-        self._values[key] = value
-
-    def _lock_for(self, key):
+    def get(self, key):  # eager read: the SET block (str), or None if not SET
         with self._meta:
-            lock = self._locks.get(key)
-            if lock is None:
-                lock = self._locks[key] = threading.Lock()
-            return lock
+            return self._values.get(key)
 
-    def acquire(self, key, timeout=None):
-        lock = self._lock_for(key)
-        return lock.acquire() if timeout is None else lock.acquire(timeout=timeout)
+    def put(self, key, value):  # direct write (eager creds): terminal SET
+        with self._meta:
+            self._values[key] = value
+            self._state[key] = _SET
 
-    def release(self, key):
-        self._locks[key].release()
+    def begin(self, key):
+        """Atomically claim provisioning. Returns (role, payload):
+          ("owner", None)   -> you claimed PENDING; run the factory, then set()/fail().
+          ("set", value)    -> already provisioned; use value.
+          ("failed", error) -> terminal failure; poison pill.
+          ("wait", None)    -> another caller is PENDING; poll begin() again.
+        """
+        with self._meta:
+            st = self._state.get(key)
+            if st is None:
+                self._state[key] = _PENDING
+                return ("owner", None)
+            if st == _SET:
+                return ("set", self._values[key])
+            if st == _FAILED:
+                return ("failed", self._errors.get(key, "provision failed"))
+            return ("wait", None)
+
+    def set(self, key, value):
+        with self._meta:
+            self._values[key] = value
+            self._state[key] = _SET
+
+    def fail(self, key, error):
+        with self._meta:
+            self._errors[key] = error
+            self._state[key] = _FAILED
 
 
 _STORE_SINGLETON = None
@@ -86,8 +120,8 @@ class StoreManager(SyncManager):
     pass
 
 
-# one shared _Store for every client that connects (per-key locks live inside it)
-StoreManager.register("store", callable=_get_store, exposed=["get", "put", "acquire", "release"])
+# one shared _Store for every client that connects (the state machine lives inside it)
+StoreManager.register("store", callable=_get_store, exposed=["get", "put", "begin", "set", "fail"])
 
 
 # --- lifecycle -------------------------------------------------------------
@@ -164,26 +198,30 @@ def copy(store, key, missing=None):
     return json.loads(raw)
 
 
-def copy_or_provision(store, key, factory, timeout=None):
+def copy_or_provision(store, key, factory, timeout=None, poll=0.2):
     """Lazy consumer: return a private copy of ``key``'s block, or provision it once.
 
-    ``factory`` returns a block and runs in THIS process (first-need-wins) under the
-    key's provision lock; concurrent callers block, then read what the winner
-    published. ``timeout`` bounds the wait — a stuck/dead winner raises
-    ProvisionTimeout rather than hanging forever.
+    Write-once/read-many via the per-key state machine: the first caller (``owner``) runs ``factory``
+    and publishes the block; concurrent callers block (poll) until it's ``set``, or **fail fast** if
+    the owner's factory raised (``failed`` — the poison pill: no factory re-run, no retry storm).
+    ``timeout`` bounds a waiter's poll for a stuck / never-terminating owner (``ProvisionTimeout``).
     """
-    raw = store.get(key)
-    if raw is not None:
-        return json.loads(raw)
-    acquired = store.acquire(key) if timeout is None else store.acquire(key, timeout)
-    if not acquired:
-        raise ProvisionTimeout(f"timed out after {timeout}s waiting to provision {key!r}")
-    try:
-        raw = store.get(key)  # loser re-reads: the winner published while we blocked
-        if raw is not None:
-            return json.loads(raw)
-        block = factory()  # winner only
-        store.put(key, json.dumps(block))
-        return block
-    finally:
-        store.release(key)
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        role, payload = store.begin(key)
+        if role == "set":
+            return json.loads(payload)
+        if role == "failed":
+            raise ProvisionFailed(payload)
+        if role == "owner":
+            try:
+                block = factory()  # owner only
+            except BaseException as e:
+                store.fail(key, str(e) or repr(e))  # poison the key for every waiter
+                raise
+            store.set(key, json.dumps(block))
+            return block
+        # role == "wait": another caller is provisioning — poll until terminal or timeout
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ProvisionTimeout(f"timed out after {timeout}s waiting to provision {key!r}")
+        time.sleep(poll)

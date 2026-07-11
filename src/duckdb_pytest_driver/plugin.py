@@ -727,14 +727,6 @@ def _teardown_store(config):
 # the controller at sessionfinish (a block in the store == the service was started).
 
 
-def _service_tier(config, svc):
-    """The tier that owns ``svc`` (by descriptor identity/equality), or None."""
-    for t in get_tiers(config):
-        if svc in t.services:
-            return t
-    return None
-
-
 def _service_block(svc, extra):
     """Normalize ``svc.start``'s return into a stored dict block.
 
@@ -752,16 +744,14 @@ def provision_service(config, svc):
 
     The first worker to call runs ``svc.start(config)`` under the store's per-key lock and publishes
     the result block; concurrent callers block, then read what the winner published (single-flight).
-    Gated on the owning tier being reachable this run — the OSS container must not boot for a
-    databricks-only run. Returns the service's context block (a dict).
+    Returns the service's context block (a dict).
+
+    No reachability gate: a service is DEMAND-driven — a test that pulls its fixture needs it, which
+    holds even under ``-k`` (where args can't predict the tier). A tier that isn't selected simply
+    never pulls the fixture, so "don't boot OSS for a databricks-only run" holds without a gate.
+    (Contrast credentials, which must be fetched up front, so their ``-k`` case falls to the runtest
+    backstop instead.)
     """
-    tier = _service_tier(config, svc)
-    if tier is not None and not _tier_reachable(config, tier):
-        pytest.fail(
-            f"service {svc.key!r}: owning tier {tier.name!r} is not reachable this run — "
-            "select it (a path or -m) to provision its service.",
-            pytrace=False,
-        )
     handle = get_store(config)
     if handle is None:
         # Defensive: no store (nothing declared) — run start locally, no cross-worker coordination.
@@ -893,14 +883,38 @@ def _tier_banner(config):
     return f"duck-test tiers: default set selected; deselected: {listed} (pass a path or -m {hint} to include)"
 
 
+# A late (backstop) credential fetch — the winner runs the interactive prompt; other workers block
+# on the store's PENDING state. This bounds how long a WAITER polls for that winner (a human at a
+# biometric prompt), NOT the winner's own prompt (op owns that). Generous by intent; 2 min.
+_LATE_FETCH_TIMEOUT_S = int(os.environ.get("DUCKDB_PYTEST_LATE_FETCH_TIMEOUT_S", "120"))
+
+
+def _late_fetch(cred, config):
+    """Backstop factory: fetch + validate a credential; raise (poison the key) if it doesn't validate.
+
+    Runs as the single-flight owner inside `copy_or_provision`, so exactly one worker performs the
+    (possibly op-prompting) fetch; the rest read the published block or the poison pill.
+    """
+    value = cred.fetch(config)
+    if cred.validate is not None and not cred.validate(value):
+        raise store.ProvisionFailed(cred.error() if cred.error else f"{cred.key}: unavailable")
+    return value
+
+
 def pytest_runtest_setup(item):
-    """Backstop: a selected test in a credentialed tier whose credential is absent/invalid FAILS.
+    """Backstop: a selected test in a credentialed tier whose credential can't be obtained FAILS.
 
     The paradigm-shift behavior (docs/TIERING.md): a *selected* test that can't be provisioned fails
     loud — never a silent skip. Catches the ``-k``-selected-live case the predictive up-front fetch
-    can't foresee (``-k`` isn't decidable pre-collection), plus creds that lapse mid-run. Runs in
-    whichever process executes the item (the worker under xdist) and reads the store the controller
-    published; it only *checks* — it never opportunistically fetches.
+    can't foresee (``-k`` isn't decidable pre-collection). Runs in whichever process executes the item
+    (the worker under xdist). Resolution order per credential:
+
+      1. valid in the store (the up-front path) — pass;
+      2. ``available()`` in the env — pass (NON-INTERACTIVE, no ``op``, e.g. preset env / the ``-k`` case);
+      3. ``late_fetch`` (default on) — a LATE ``fetch``, single-flighted across workers via the store
+         so at most ONE interactive prompt happens (others block on PENDING, then read the block or the
+         poison pill); on success the block is adopted into env when ``adopt == "env"``;
+      4. else fail loud.
     """
     config = item.config
     tiers = [t for t in get_tiers(config) if t.credentials and _item_in_tier(config, item, t)]
@@ -915,12 +929,26 @@ def pytest_runtest_setup(item):
                     value = store.copy(handle, cred.key)
                 except store.ResourceMissing:
                     value = None
-            invalid = value is None or (cred.validate is not None and not cred.validate(value))
-            if invalid:
-                pytest.fail(
-                    cred.error() if cred.error else f"{cred.key}: required credential unavailable",
-                    pytrace=False,
-                )
+            if value is not None and (cred.validate is None or cred.validate(value)):
+                continue  # 1. up-front path published valid creds to the store
+            if cred.available is not None and cred.available():
+                continue  # 2. already usable in the env (non-interactive), no fetch/op needed
+            if cred.late_fetch and handle is not None:  # 3. single-flight late fetch (one op prompt)
+                try:
+                    value = store.copy_or_provision(
+                        handle, cred.key, lambda c=cred: _late_fetch(c, config),
+                        timeout=_LATE_FETCH_TIMEOUT_S,
+                    )
+                except (store.ProvisionFailed, store.ProvisionTimeout):
+                    value = None
+                if value is not None:
+                    if cred.adopt == "env":
+                        os.environ.update(value)
+                    continue
+            pytest.fail(  # 4. no store, no env, no (successful) late fetch
+                cred.error() if cred.error else f"{cred.key}: required credential unavailable",
+                pytrace=False,
+            )
 
 
 def pytest_sessionfinish(session, exitstatus):

@@ -75,22 +75,30 @@ def test_single_flight_under_thread_contention(st):
     assert all(r == {"v": 1} for r in results)  # all saw the same block
 
 
-def test_timeout_bails_when_lock_held(st):
-    assert st.acquire("k")  # simulate a winner stuck holding the provision lock
-    try:
-        with pytest.raises(S.ProvisionTimeout):
-            S.copy_or_provision(st, "k", lambda: {"never": True}, timeout=0.2)
-    finally:
-        st.release("k")
+def test_wait_times_out_on_stuck_owner(st):
+    st.begin("k")  # claim PENDING and never terminate -> a stuck/never-finishing owner
+    with pytest.raises(S.ProvisionTimeout):
+        S.copy_or_provision(st, "k", lambda: {"never": True}, timeout=0.2)
 
 
-def test_per_key_locks_are_independent(st):
-    assert st.acquire("a")  # hold key "a"
-    try:
-        # a different key must not be blocked by "a" being held
-        assert S.copy_or_provision(st, "b", lambda: {"ok": True}, timeout=1.0) == {"ok": True}
-    finally:
-        st.release("a")
+def test_per_key_state_is_independent(st):
+    st.begin("a")  # "a" stuck PENDING
+    # a different key must not be blocked by "a" being pending
+    assert S.copy_or_provision(st, "b", lambda: {"ok": True}, timeout=1.0) == {"ok": True}
+
+
+def test_poison_pill_fails_fast_without_retry(st):
+    def boom():
+        raise ValueError("kaboom")
+
+    # the owner sees the original exception (and poisons the key)
+    with pytest.raises(ValueError, match="kaboom"):
+        S.copy_or_provision(st, "k", boom)
+    # every subsequent caller fails fast with ProvisionFailed — the factory is NOT re-run
+    calls = []
+    with pytest.raises(S.ProvisionFailed, match="kaboom"):
+        S.copy_or_provision(st, "k", lambda: calls.append(1) or {"x": 1})
+    assert calls == []  # poison pill: no retry storm
 
 
 # --- env round-trip -------------------------------------------------------

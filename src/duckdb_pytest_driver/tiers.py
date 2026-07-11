@@ -50,6 +50,15 @@ class Credential:
                  message when ``validate`` is false; None => a generic message later.
       adopt    : ``"env"`` => ``os.environ.update(value)`` on every process that receives
                  the value; None => the value is broadcast but not adopted into the env.
+      available: ``available() -> bool`` -- a NON-INTERACTIVE check of whether the credential is
+                 already usable in this process's environment (e.g. preset env vars), independent of
+                 the store. The per-test backstop consults it so a ``-k``-selected live test with
+                 creds already in the env passes without an (op-prompting) fetch; None => the backstop
+                 checks only the store.
+      late_fetch: default True -- when a selected test's credential is absent up front AND not
+                 ``available()`` in env, the backstop performs a LATE ``fetch`` (single-flighted across
+                 workers via the store, so at most one interactive prompt), rescuing e.g. a
+                 ``-k``-selected run. Set False for strict "fail fast, never prompt mid-run" (CI).
     """
 
     key: str
@@ -57,6 +66,8 @@ class Credential:
     validate: Optional[Callable] = None
     error: Optional[Callable] = None
     adopt: Optional[str] = None
+    available: Optional[Callable] = None
+    late_fetch: bool = True
 
 
 @dataclass(frozen=True)
@@ -105,12 +116,13 @@ class Tier:
     provisioner: object = field(default=None)
 
 
-def credential(key, *, fetch, validate=None, error=None, adopt=None) -> Credential:
+def credential(key, *, fetch, validate=None, error=None, adopt=None, available=None,
+               late_fetch=True) -> Credential:
     """Build a frozen :class:`Credential` descriptor (see its docstring for the fields).
 
-    Validates only shape: ``key`` non-empty, ``fetch`` (and any ``validate`` / ``error``)
-    callable, ``adopt`` one of ``None`` / ``"env"``. Nothing is fetched — Phase 0 just
-    holds the callables.
+    Validates only shape: ``key`` non-empty, ``fetch`` (and any ``validate`` / ``error`` /
+    ``available``) callable, ``adopt`` one of ``None`` / ``"env"``. Nothing is fetched — Phase 0
+    just holds the callables.
     """
     if not key or not isinstance(key, str):
         raise ValueError("credential: `key` must be a non-empty string")
@@ -120,9 +132,12 @@ def credential(key, *, fetch, validate=None, error=None, adopt=None) -> Credenti
         raise TypeError("credential: `validate` must be callable or None")
     if error is not None and not callable(error):
         raise TypeError("credential: `error` must be callable or None")
+    if available is not None and not callable(available):
+        raise TypeError("credential: `available` must be callable or None")
     if adopt not in (None, "env"):
         raise ValueError(f"credential: `adopt` must be None or 'env', got {adopt!r}")
-    return Credential(key=key, fetch=fetch, validate=validate, error=error, adopt=adopt)
+    return Credential(key=key, fetch=fetch, validate=validate, error=error, adopt=adopt,
+                      available=available, late_fetch=bool(late_fetch))
 
 
 def service(key, *, start, stop=None, fixture=None) -> Service:
