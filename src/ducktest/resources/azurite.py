@@ -77,6 +77,20 @@ def azurite_block(**overrides):
     return b
 
 
+def azurite_env(block):
+    """The generic Azure-client env derived from an Azurite block — the connection string + account.
+
+    Feed this as (part of) a suite's ``to_env`` (``use_service(AZURITE_SERVICE, to_env=…)``) so a bare
+    ``.test`` body gets `${AZURE_STORAGE_CONNECTION_STRING}` etc. without a `.py` driver. A suite layers
+    its own vars (e.g. ``AZ_DATA_DIR``) on top. See docs/SERVICES.md.
+    """
+    return {
+        "AZURE_STORAGE_CONNECTION_STRING": block["connection_string"],
+        "AZURE_STORAGE_ACCOUNT": block["account"],
+        "AZ_STORAGE_ACCOUNT": block["account"],
+    }
+
+
 def azurite_alive(block):
     """Cheap, non-authenticating liveness probe: any HTTP response from the endpoint means Azurite is up.
 

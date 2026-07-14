@@ -10,7 +10,7 @@ Three layers, all offline (no docker):
 import textwrap
 
 from ducktest.plugin import _norm_service_key, _parse_existing_services
-from ducktest.resources.azurite import ACCOUNT, azurite_alive, azurite_block
+from ducktest.resources.azurite import ACCOUNT, azurite_alive, azurite_block, azurite_env
 
 
 # --- 1. the pure parser -------------------------------------------------------------------
@@ -84,6 +84,13 @@ def test_azurite_block_boot_and_attach_shapes_match():
     boot = azurite_block(endpoint="http://127.0.0.1:10000")
     attach = azurite_block(endpoint="http://127.0.0.1:10000")
     assert boot == attach
+
+
+def test_azurite_env_derives_connection_string_and_account():
+    env = azurite_env(azurite_block())
+    assert env["AZ_STORAGE_ACCOUNT"] == ACCOUNT
+    assert env["AZURE_STORAGE_ACCOUNT"] == ACCOUNT
+    assert "BlobEndpoint=" in env["AZURE_STORAGE_CONNECTION_STRING"]
 
 
 def test_azurite_alive_probe(monkeypatch):

@@ -91,6 +91,28 @@ class Service:
       alive   : ``alive(block) -> bool`` — a cheap, non-authenticating liveness probe. Run once on
                 attach so a declared-but-dead service FAILS LOUD instead of dying opaquely in a query;
                 None => no probe (attach trusts the declaration).
+      depends_on: keys of other registered services that must be up first. RESERVED — the field +
+                validation land now (so the ``Service`` shape is agreed across the three converging
+                efforts), but start-order resolution + reverse-order teardown are implemented with the
+                multi-service work (docs/PLAN.md § *Pre-0.1 release gates*, driven by Iceberg's
+                ``rest``→``minio``). ``()`` => no dependencies.
+      provision: WHEN the service is provisioned (its disposition). One of :data:`PROVISION`:
+                ``"on_demand"`` (default — lazy, first fixture-pull, today's behavior); ``"eager"``
+                (up-front on suite-selection, controller pre-fork — so a bare ``.test`` with no fixture
+                to pull still gets it, and its ``to_env`` lands before workers fork); ``"per_test"`` and
+                ``"never"`` are named to fix the vocabulary but not wired (they FAIL LOUD if reached —
+                ``never`` overlaps the ``--existing-service`` attach path already).
+      to_env  : ``to_env(block) -> dict`` — a derived env map merged into ``os.environ`` when the
+                service is provisioned (the service analog of ``credential(adopt="env")``). This is how a
+                bare ``.test`` body gets a service's connection env. None => no env adoption.
+      populate: ``populate(block, config)`` — bring the service to its known initial state (structure +
+                data — the store-scope analog of the fixture lane's ``instantiate``), run ONCE after the
+                service is up. MUST be idempotent (it re-runs against an attached, possibly-seeded
+                instance). None => nothing to populate.
+
+    Policy fields (``provision`` / ``to_env`` / ``populate``) are usually set via :func:`use_service`,
+    which binds a *shared* descriptor (e.g. ``AZURITE_SERVICE``) to one suite's policy without mutating
+    the shared one. See ``docs/SERVICES.md``.
     """
 
     key: str
@@ -99,6 +121,10 @@ class Service:
     fixture: Optional[str] = None
     attach: Optional[Callable] = None
     alive: Optional[Callable] = None
+    depends_on: Tuple[str, ...] = ()
+    provision: str = "on_demand"
+    to_env: Optional[Callable] = None
+    populate: Optional[Callable] = None
 
 
 @dataclass(frozen=True)
@@ -157,11 +183,30 @@ def credential(key, *, fetch, validate=None, error=None, adopt=None, available=N
     )
 
 
-def service(key, *, start, stop=None, fixture=None, attach=None, alive=None) -> Service:
+# The provisioning-disposition vocabulary (Service.provision). `eager`/`on_demand` are wired; `per_test`
+# and `never` are named to fix the vocabulary but FAIL LOUD if reached (see _provision_disposition in
+# plugin.py). Kept as a tuple so a typo is caught at construction.
+PROVISION = ("eager", "on_demand", "per_test", "never")
+
+
+def service(
+    key,
+    *,
+    start,
+    stop=None,
+    fixture=None,
+    attach=None,
+    alive=None,
+    depends_on=(),
+    provision="on_demand",
+    to_env=None,
+    populate=None,
+) -> Service:
     """Build a frozen :class:`Service` descriptor (see its docstring for the fields).
 
-    Validates only shape: ``key`` non-empty, ``start`` (and any ``stop`` / ``attach`` / ``alive``)
-    callable, ``fixture`` a string or None. Nothing is started — Phase 0 just holds the callables.
+    Validates only shape: ``key`` non-empty, the callables callable, ``fixture`` a string or None,
+    ``provision`` in :data:`PROVISION`, ``depends_on`` a tuple of keys. Nothing is started here.
+    Policy (``provision`` / ``to_env`` / ``populate``) is usually applied via :func:`use_service`.
     """
     if not key or not isinstance(key, str):
         raise ValueError("service: `key` must be a non-empty string")
@@ -175,7 +220,58 @@ def service(key, *, start, stop=None, fixture=None, attach=None, alive=None) -> 
         raise TypeError("service: `attach` must be callable or None (attach(overrides, config) -> block)")
     if alive is not None and not callable(alive):
         raise TypeError("service: `alive` must be callable or None (alive(block) -> bool)")
-    return Service(key=key, start=start, stop=stop, fixture=fixture, attach=attach, alive=alive)
+    if provision not in PROVISION:
+        raise ValueError(f"service: `provision` must be one of {PROVISION}, got {provision!r}")
+    if to_env is not None and not callable(to_env):
+        raise TypeError("service: `to_env` must be callable or None (to_env(block) -> dict)")
+    if populate is not None and not callable(populate):
+        raise TypeError("service: `populate` must be callable or None (populate(block, config))")
+    deps = tuple(depends_on)
+    if not all(isinstance(d, str) and d for d in deps):
+        raise TypeError("service: `depends_on` must be a tuple of non-empty service-key strings")
+    return Service(
+        key=key,
+        start=start,
+        stop=stop,
+        fixture=fixture,
+        attach=attach,
+        alive=alive,
+        depends_on=deps,
+        provision=provision,
+        to_env=to_env,
+        populate=populate,
+    )
+
+
+def use_service(base, *, provision="eager", to_env=None, populate=None, depends_on=None) -> Service:
+    """Bind a *shared* :class:`Service` descriptor to one suite's provisioning policy.
+
+    Returns a COPY of ``base`` with the policy fields set — so a shared descriptor (e.g. azurite's
+    ``AZURITE_SERVICE``, reused across azure/delta/uc) stays generic while each suite supplies its own
+    ``provision`` disposition, ``to_env`` (derived env), and ``populate`` (structure+data). ``provision``
+    defaults to ``"eager"`` (the usual reason to bind). Values not given fall back to ``base``'s. See
+    ``docs/SERVICES.md``.
+    """
+    import dataclasses
+
+    if not isinstance(base, Service):
+        raise TypeError("use_service: `base` must be a service(...) descriptor")
+    if provision not in PROVISION:
+        raise ValueError(f"use_service: `provision` must be one of {PROVISION}, got {provision!r}")
+    if to_env is not None and not callable(to_env):
+        raise TypeError("use_service: `to_env` must be callable or None")
+    if populate is not None and not callable(populate):
+        raise TypeError("use_service: `populate` must be callable or None")
+    deps = base.depends_on if depends_on is None else tuple(depends_on)
+    if not all(isinstance(d, str) and d for d in deps):
+        raise TypeError("use_service: `depends_on` must be a tuple of non-empty service-key strings")
+    return dataclasses.replace(
+        base,
+        provision=provision,
+        to_env=to_env if to_env is not None else base.to_env,
+        populate=populate if populate is not None else base.populate,
+        depends_on=deps,
+    )
 
 
 def register_suite(

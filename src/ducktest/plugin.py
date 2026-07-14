@@ -699,6 +699,7 @@ class _SuiteController:
         # pre-fork: workers inherit this env at spawn and connect via from_env()
         os.environ.update(store.to_env(address, authkey))
         _fetch_credentials(config)
+        _provision_eager_services(config)
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_collection_modifyitems(self, config, items):
@@ -741,6 +742,35 @@ def _fetch_credentials(config):
             store.put(handle, cred.key, value)
             if cred.adopt == "env":
                 os.environ.update(value)  # pre-fork: inherited by workers + the test subprocess
+
+
+def _provision_eager_services(config):
+    """Controller, pre-fork: boot each reachable suite's ``provision="eager"`` services, run their
+    ``populate`` once, and adopt their ``to_env`` into ``os.environ`` — the service analog of the eager
+    credential path (:func:`_fetch_credentials`).
+
+    Why up front, on the controller: a bare ``.test`` body has no ``.py`` driver and pulls no fixture, so
+    the lazy (fixture-driven) path never boots the service or sets its env. Booting here, pre-fork, means
+    workers + the ``unittest`` subprocess inherit ``to_env`` and the service is already up. Also unblocks
+    ``--repl`` on a service-backed suite. Reachable = the same predictive gate credentials use, so an
+    unrelated run (e.g. a databricks-only selection) does NOT eagerly boot azurite.
+
+    Boots via :func:`provision_service` (not a bespoke path) so it single-flights through the store,
+    reuses the ``--existing-service`` attach path (attach => no boot/teardown, still ``populate`` +
+    ``to_env``), and inherits ``depends_on`` ordering for free once that lands.
+    """
+    for suite in get_suites(config):
+        if not _suite_reachable(config, suite):
+            continue
+        for svc in suite.services:
+            if svc.provision != "eager":
+                continue
+            block = provision_service(config, svc)  # boots or attaches; single-flighted via the store
+            if svc.populate is not None:
+                with step(f"populating service {svc.key}"):
+                    svc.populate(block, config)  # once, idempotent (safe against an attached/seeded one)
+            if svc.to_env is not None:
+                os.environ.update(svc.to_env(block))  # pre-fork: workers + the .test subprocess inherit
 
 
 def _teardown_store(config):
@@ -989,6 +1019,19 @@ def provision_service(config, svc):
     existing = _existing_services(config)
     if _norm_service_key(svc.key) in existing:
         return _attach_service(config, svc, existing[_norm_service_key(svc.key)])
+    # Disposition gate: `eager`/`on_demand` boot here; `per_test`/`never` are named but not wired, so
+    # they FAIL LOUD rather than silently booting on-demand (never silent-wrong). `never` == "you bring
+    # it" — already delivered by the --existing-service attach path checked just above.
+    if svc.provision == "never":
+        pytest.fail(
+            f"service {svc.key!r} is provision='never' but was pulled with no `--existing-service "
+            f"{svc.key}=…` to attach to. Start it and attach, or change its disposition.",
+            pytrace=False,
+        )
+    if svc.provision == "per_test":
+        raise NotImplementedError(f"service {svc.key!r}: provision='per_test' is reserved, not yet wired.")
+    # TODO(multiservice): before booting, resolve svc.depends_on — provision_service each dep first
+    # (topological, cycle-checked). Reverse of this order drives _stop_services teardown. See docs/PLAN.md.
     handle = get_store(config)
     if handle is None:
         # Defensive: no store (nothing declared) — run start locally, no cross-worker coordination.

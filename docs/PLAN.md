@@ -80,31 +80,40 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
   calling `provision_service` on another descriptor) and **teardown order is worse** —
   `_stop_services` (`plugin.py:969-`) flat-loops `suite.services` in registration order, so a dependency
   can be stopped before its dependent. Iceberg's `rest` depending on `minio`
-  (`ice/scripts/docker-compose.yml`) is the forcing case; azurite work may surface a second one
-  independently (see the *Base `Provisioner`* section below). Needs: a `depends_on=(...)` field on
-  `Service`, start-order resolution (topological, cycle-checked), and dependency-aware teardown
-  (reverse of start order). Full design in `HANDOFF-multiservice.md` (ducktest sandbox root, not
-  git-tracked — fold its content in here properly once this is picked up, don't just leave it there).
-- **Suite-level service eager-adoption** _(found 2026-07-14, from azure-side work on bare `.test`
-  conversion)_ — the service analog of `credential(adopt="env")`. Today a service only boots via
-  `provision_service` from a **fixture** a `.py` driver pulls (`ARCHITECTURE.md:91-99`); a *bare* `.test`
-  with no `.py` driver has no fixture to pull, so its service never boots, never seeds, and its
-  connection env is never set — the collector invokes the `unittest` binary directly, no Python
-  involved. Concretely: azure's 25 bare `.test` files need `AZURE_STORAGE_CONNECTION_STRING`/
-  `AZ_STORAGE_ACCOUNT`/`AZ_DATA_DIR`/etc. in the subprocess env, derived from the azurite `Service`
-  block + a seed step, with **no** `.py` driver available to request it. Needed: when a service-backed
-  suite is selected (mirrors the existing eager-credential path, `_fetch_credentials`,
-  `plugin.py:725`, wired from `_SuiteController.pytest_configure`, `plugin.py:682-701`), boot the
-  service(s) once, run its seed, and adopt a **derived env** into `os.environ` — same shape as
-  credential `adopt="env"`, just for services. This also unblocks `--repl` on a service-backed suite
-  (identical gap: `--repl` provisions `@requires` tables but never boots suite services or sets their
-  env either).
+  (`ice/scripts/docker-compose.yml`) is the forcing case; **azure has a second, independent one — its
+  `proxy` suite: squid (`az/scripts/run_squid.sh`) is useless until the thing it proxies (azurite) is up,
+  so a proxy `.test` genuinely needs `azurite` before `squid`** (deferred with the proxy suite, but it
+  means azure validates `depends_on` too, not just Iceberg). The `Service` **`depends_on` field is now
+  present** (validated; `suites.py`) and **eager boot routes through `provision_service`** (so ordering
+  applies for free once resolution lands). What remains: start-order **resolution** (topological,
+  cycle-checked) inside `provision_service`, and **dependency-aware teardown** (`_stop_services`, reverse
+  of start order — currently a flat registration-order loop). Full design in `HANDOFF-multiservice.md`
+  (ducktest sandbox root, not git-tracked — fold its content in here once picked up).
+- **Suite-level service eager-adoption** _(found 2026-07-14; **SHIPPED 2026-07-14** — azure-side work on
+  bare `.test` conversion)_ — the service analog of `credential(adopt="env")`. A *bare* `.test` with no
+  `.py` driver has no fixture to pull, so lazily-provisioned services never boot for it and its connection
+  env is never set — the collector invokes the `unittest` binary directly, no Python involved. **Built:**
+  `Service` gained `provision={eager,on_demand,per_test,never}` (only `eager`/`on_demand` wired;
+  `per_test`/`never` named + fail-loud), `to_env(block)->dict` (env merged into `os.environ`), and
+  `populate(block,config)` (structure+data, run once, must be idempotent); `use_service(base, provision=,
+  to_env=, populate=)` binds a **shared** descriptor (e.g. `AZURITE_SERVICE`) to a suite's policy without
+  mutating it. `_provision_eager_services` (`plugin.py`, in `_SuiteController.pytest_configure` right after
+  `_fetch_credentials`, controller pre-fork) boots each reachable suite's eager services via
+  `provision_service`, runs `populate` once, adopts `to_env` — so workers + the `.test` subprocess inherit
+  it. Also unblocks `--repl` on a service-backed suite (same gap). Azure uses it:
+  `use_service(AZURITE_SERVICE, provision="eager", to_env=azurite_env+AZ_DATA_DIR, populate=rclone-sync
+  data/)`; live-verified boot + attach paths. See `docs/SERVICES.md`.
+  - **`attach` × eager compose (resolved):** an `--existing-service`-attached eager service adopts
+    `to_env` and runs `populate` (idempotent) but does **not** boot or teardown — env-yes / boot-no /
+    seed-idempotent. (The intersection of the attach + eager paths; verified.)
+  - **Reserved for `depends_on`:** the field is on `Service` now (validated), and eager boot routes
+    **through `provision_service`**, so `depends_on` start-ordering will apply to eager boots for free once
+    implemented; the disposition gate carries a `TODO(multiservice)` at the boot site. The remaining
+    open piece is `depends_on` *resolution* + reverse-order teardown (below), driven by Iceberg.
   - **Overlaps with *Multi-service dependencies* above — same `Service` dataclass, same suite-controller
-    boot hook, three efforts converging on it in short order** (`attach`/`alive` — shipped; `depends_on`
-    — open; this — new). Not a merge conflict, but a real risk of independently-built `Service` lifecycle
-    semantics not composing (what does "eagerly adopt this service's env" mean for a service with
-    unresolved `depends_on`s?). Reconcile `Service`'s shape once both this and `depends_on` have real
-    designs, don't let either assume the other doesn't exist.
+    boot hook.** `attach`/`alive` + eager-adoption are shipped; `depends_on` resolution is the last of the
+    three. They compose (eager-via-`provision_service`); build `depends_on` without assuming eager-adoption
+    isn't there.
   - **Explicitly does not touch the base `Provisioner`/`Bindings` work above** — different delivery
     mechanism (`os.environ` pre-subprocess vs. `Bindings.env`→`run_paired` per-test substitution) for a
     different test shape (bare `.test`, no `.py`, vs. `@requires`-driven paired tests). The
