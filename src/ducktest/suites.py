@@ -82,12 +82,23 @@ class Service:
                 ``teardown_shared``); None => no explicit teardown.
       fixture : name of the session fixture this service backs (e.g. ``"uc_server"``), used
                 for gating in a later phase; the fixture body itself stays in the backend.
+      attach  : ``attach(overrides, config) -> block`` — build this service's block from an
+                override map when the service is declared **existing** (``--existing-service``),
+                i.e. already running and NOT managed by this run. ``overrides`` is ``{}`` for the
+                all-defaults form, ``{"endpoint": url}`` for the ``KEY=URL`` form, or a full dict
+                for the ``KEY={json}`` form. None => the service can't be externalized (attaching
+                falls back to using the raw overrides as the block). See ``docs/SERVICES.md``.
+      alive   : ``alive(block) -> bool`` — a cheap, non-authenticating liveness probe. Run once on
+                attach so a declared-but-dead service FAILS LOUD instead of dying opaquely in a query;
+                None => no probe (attach trusts the declaration).
     """
 
     key: str
     start: Callable
     stop: Optional[Callable] = None
     fixture: Optional[str] = None
+    attach: Optional[Callable] = None
+    alive: Optional[Callable] = None
 
 
 @dataclass(frozen=True)
@@ -146,11 +157,11 @@ def credential(key, *, fetch, validate=None, error=None, adopt=None, available=N
     )
 
 
-def service(key, *, start, stop=None, fixture=None) -> Service:
+def service(key, *, start, stop=None, fixture=None, attach=None, alive=None) -> Service:
     """Build a frozen :class:`Service` descriptor (see its docstring for the fields).
 
-    Validates only shape: ``key`` non-empty, ``start`` (and any ``stop``) callable,
-    ``fixture`` a string or None. Nothing is started — Phase 0 just holds the callables.
+    Validates only shape: ``key`` non-empty, ``start`` (and any ``stop`` / ``attach`` / ``alive``)
+    callable, ``fixture`` a string or None. Nothing is started — Phase 0 just holds the callables.
     """
     if not key or not isinstance(key, str):
         raise ValueError("service: `key` must be a non-empty string")
@@ -160,7 +171,11 @@ def service(key, *, start, stop=None, fixture=None) -> Service:
         raise TypeError("service: `stop` must be callable or None")
     if fixture is not None and not isinstance(fixture, str):
         raise TypeError("service: `fixture` must be a string or None")
-    return Service(key=key, start=start, stop=stop, fixture=fixture)
+    if attach is not None and not callable(attach):
+        raise TypeError("service: `attach` must be callable or None (attach(overrides, config) -> block)")
+    if alive is not None and not callable(alive):
+        raise TypeError("service: `alive` must be callable or None (alive(block) -> bool)")
+    return Service(key=key, start=start, stop=stop, fixture=fixture, attach=attach, alive=alive)
 
 
 def register_suite(

@@ -85,6 +85,31 @@ the driver).
    registry home (conftest `register_profile` vs a declarative file — lean declarative for
    shareability), and profile × `@requires`/matrix interaction (a profile may pin an axis).
 
+## Base `Provisioner` + object-store `@requires` wiring (next up — being worked on)
+
+The provisioner seam today is *just* a protocol + registry (`register_provisioner` / `get_provisioner`);
+every backend (UC OSS, Databricks) re-implements the same spec-loop + access-policy + `Bindings` + env
+assembly. Slide that generic core into the driver as a **base `Provisioner` + `Bindings`** (the
+multi-statement SQL-def utils already slid down to `ducktest/sqldef.py`):
+
+- **`Bindings`** dataclass: `catalog` / `default_schema` / `token`, `tables`, `isolated` (namespaces to
+  drop at teardown), `env`, `plan`.
+- **`Provisioner`** base: `provision(specs, token)` runs the access-policy loop — `rw` → isolated target
+  + `instantiate` + track for teardown; `ro` → shared FQN + once-guard (`_shared_ro`) — then assembles
+  `env` via `env_for`; `teardown` drops `isolated`. Backend hooks: `execute(sql)`, `rw_target`,
+  `ro_target`, `instantiate`, `env_for`. Refactor **Databricks + OSS onto it (2-backend proof)** before a
+  third backend (iceberg) lands. (See the iceberg starter handoff for the first consumer.)
+
+**Object-store `@requires` wiring rides this.** P3's rclone runner (`ducktest/tools/rclone.py`, built +
+live-verified — see docs/SERVICES.md § *Object-store seeding*) is standalone today (a conftest calls
+`rclone.seed(...)` directly). Route it through **`@requires` → the `Instantiator` seam** so a dataset
+declared `@requires(source=…, access="ro"|"rw")` provisions via `rclone.seed(...)` and yields a **URI**
+into `resources.env` — **not** a canonicalized `Table` (no duckdb middleman; opaque parquet/delta files,
+per § *Fixtures* "archive/directory fixtures" below). `ro` → shared seeded prefix (seed-once / cheap
+`rclone check` verify); `rw` → per-test token prefix (`container/<token>/name`, xdist-collision-free).
+This object-store instantiator is the piece that plugs into the base `Provisioner` above. The
+`provision-service --seed` conf-dump (SERVICES.md § P2) lands with this wiring.
+
 ## Roadmap (future)
 
 - **Matrix** — one body × N cells (catalog/engine), via pytest `parametrize` / scoped
@@ -114,6 +139,15 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
 - **Shared `resources` library** — ship ready-made `service()`/`credential()` descriptors (minio /
   azurite / docker + s3 / 1Password) in `ducktest.resources` so a backend imports instead of
   re-writing them. _(from TIERING)_
+- **Managed-service diagnostics — logs to the run temp dir + keep-on-failure** — a managed service is
+  `docker rm -f`'d at sessionfinish **regardless of pass/fail** (`_stop_services`), so a failing run
+  loses the container before you can `docker logs` it, and nothing is persisted. Generic fix (every
+  managed service, not azurite-specific): where a service can emit logs, route them into the per-run temp
+  dir — capture `docker logs <container>` to `BASE/<run-id>/services/<key>.log` at teardown and/or
+  bind-mount a per-run host dir for the service's own debug log (e.g. `azurite -d /data/debug.log`) — and
+  **retain on failure**, mirroring `--temp-dir-destroy on-success`: skip `stop` (or at least keep the
+  captured logs) when the run had failures. Wants a small `service(..., logs=)`/keep-on-failure hook on
+  the descriptor + `_stop_services`.
 - **Declarative suite home** — allow suite/resource declaration from an ini/TOML file, not only
   `register_suite` in `test/conftest.py`. _(from TIERING)_
 - **Named test sets as first-class presets (`smoke`/`local`/`cloud`/`slow`/`all`)** — today `smoke` ==

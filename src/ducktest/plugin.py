@@ -134,6 +134,37 @@ def register_options(parser):
         "overhead; use with -n for parallel batches.",
     )
     parser.addoption(
+        "--existing-service",
+        action="append",
+        default=[],
+        metavar="KEY[=URL|=JSON]",
+        help="Attach to an ALREADY-RUNNING service instead of booting it (no boot, no store, "
+        "no teardown — the run doesn't own its lifecycle). Repeatable; each value is a comma/"
+        "semicolon list of entries. Entry forms: KEY (all defaults), KEY=URL (endpoint override), "
+        "KEY={json} (full override map). Also read from env DUCKTEST_EXISTING_SERVICE_<KEY> "
+        "(=1 | =URL | =JSON) and DUCKTEST_EXISTING_SERVICES (list). Precedence: CLI > per-service "
+        "env > list env. See docs/SERVICES.md.",
+    )
+    parser.addoption(
+        "--provision-service",
+        nargs="?",
+        const="*",
+        default=None,
+        metavar="KEY[,KEY]",
+        help="OUT-OF-SESSION: start the named declared service(s) (all if no value) and LEAVE them "
+        "running, then exit WITHOUT collecting or running tests. Idempotent — skips one already up. "
+        "Pair with --existing-service in later runs; stop with --teardown-service. `ducktest "
+        "provision-service <key>` is the shim for this. See docs/SERVICES.md.",
+    )
+    parser.addoption(
+        "--teardown-service",
+        nargs="?",
+        const="*",
+        default=None,
+        metavar="KEY[,KEY]",
+        help="OUT-OF-SESSION: stop the named declared service(s) (all if no value), then exit.",
+    )
+    parser.addoption(
         "--unittest-args",
         action="append",
         default=[],
@@ -652,6 +683,14 @@ class _SuiteController:
         # Worker: the controller already started + provisioned; workers connect lazily via env.
         if getattr(config, "workerinput", None) is not None:
             return
+        # P2: out-of-session provision/teardown commands run here (after suites are registered) and
+        # EXIT before any collection/tests — so they work in an unbuilt checkout (no binary needed).
+        if (
+            config.getoption("--provision-service", default=None) is not None
+            or config.getoption("--teardown-service", default=None) is not None
+        ):
+            _run_service_command(config)  # does the op + pytest.exit(); never returns
+            return
         if not _any_suite_has_resources(config):
             return  # vanilla: nothing declared -> no store, no env, no behavior change
         mgr, address, authkey = store.start_server()
@@ -672,6 +711,12 @@ class _SuiteController:
         # is a pure passthrough: nothing marked, nothing deselected.
         suites = get_suites(config)
         if suites:
+            # Register each suite's marker so the auto-applied mark doesn't warn (PytestUnknownMark)
+            # and shows in `pytest --markers`. Done here (the collecting process, workers under xdist)
+            # because suites aren't known at the tryfirst module pytest_configure.
+            for suite in suites:
+                if suite.marker:
+                    config.addinivalue_line("markers", f"{suite.marker}: ducktest suite {suite.name!r}")
             _apply_suite_markers(config, items, suites)
             _default_scan_deselect(config, items, suites)
         yield
@@ -735,19 +780,185 @@ def _service_block(svc, extra):
     return block
 
 
-def provision_service(config, svc):
-    """Lazy, first-need provisioning of a class-2 service via the store — call from its fixture.
+# --- existing (external) services: attach instead of boot ---------------------------------
+# A service declared "existing" is ALREADY RUNNING and NOT owned by this run: --existing-service KEY
+# (or =URL / ={json}), or env DUCKTEST_EXISTING_SERVICE_<KEY> / DUCKTEST_EXISTING_SERVICES. provision_service
+# then builds the block via svc.attach(overrides) + probes svc.alive, skipping the store boot/teardown
+# entirely (an attached service is never entered into the store, so the controller never stops it).
+# See docs/SERVICES.md.
+_EXISTING = "_duckdb_existing_services"  # cached {norm_key: overrides_dict} on config
+_TRUTHY = {"", "1", "true", "yes", "on"}
 
-    The first worker to call runs ``svc.start(config)`` under the store's per-key lock and publishes
-    the result block; concurrent callers block, then read what the winner published (single-flight).
-    Returns the service's context block (a dict).
 
-    No reachability gate: a service is DEMAND-driven — a test that pulls its fixture needs it, which
-    holds even under ``-k`` (where args can't predict the suite). A suite that isn't selected simply
-    never pulls the fixture, so "don't boot OSS for a databricks-only run" holds without a gate.
-    (Contrast credentials, which must be fetched up front, so their ``-k`` case falls to the runtest
-    backstop instead.)
+def _norm_service_key(key):
+    """Canonical service-key form so a dashed key resolves from an env-var name too
+    (``oss-uc-server`` == ``OSS_UC_SERVER`` == ``oss_uc_server``)."""
+    return key.replace("-", "_").lower()
+
+
+def _existing_entry_value(val):
+    """Map an entry's raw value to an overrides dict: '' / truthy -> {} (all defaults),
+    '{...}' -> parsed json (full override), else -> {"endpoint": val}."""
+    import json
+
+    v = (val or "").strip()
+    if v in _TRUTHY:
+        return {}
+    if v.startswith("{"):
+        return json.loads(v)
+    return {"endpoint": v}
+
+
+def _parse_existing_services(cli_values, environ):
+    """Resolve existing-service declarations to ``{norm_key: overrides}`` (pure, unit-testable).
+
+    Precedence low->high (later wins per key): DUCKTEST_EXISTING_SERVICES (list env) < per-service env
+    DUCKTEST_EXISTING_SERVICE_<KEY> < --existing-service (CLI). Entry grammar everywhere: KEY (all
+    defaults) | KEY=URL (endpoint override) | KEY={json} (full override). Each CLI value / the list env
+    may itself be a comma/semicolon list.
     """
+
+    def _split(s):
+        # comma/semicolon separated, but NOT inside a {json} value (which carries its own commas).
+        out, buf, depth = [], [], 0
+        for ch in s or "":
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth = max(0, depth - 1)
+            if ch in ",;" and depth == 0:
+                part = "".join(buf).strip()
+                if part:
+                    out.append(part)
+                buf = []
+            else:
+                buf.append(ch)
+        part = "".join(buf).strip()
+        if part:
+            out.append(part)
+        return out
+
+    def _add(result, entry):
+        key, sep, val = entry.partition("=")
+        key = key.strip()
+        if key:
+            result[_norm_service_key(key)] = _existing_entry_value(val if sep else "")
+
+    result = {}
+    for entry in _split(environ.get("DUCKTEST_EXISTING_SERVICES", "")):  # lowest: list env
+        _add(result, entry)
+    prefix = "DUCKTEST_EXISTING_SERVICE_"  # per-service env (DUCKTEST_EXISTING_SERVICES lacks the '_', excluded)
+    for name, val in environ.items():
+        if name.startswith(prefix) and name[len(prefix) :]:
+            result[_norm_service_key(name[len(prefix) :])] = _existing_entry_value(val)
+    for value in cli_values or []:  # highest: CLI (each value may itself be a list)
+        for entry in _split(value):
+            _add(result, entry)
+    return result
+
+
+def _existing_services(config):
+    """Cached ``{norm_key: overrides}`` for this run (CLI + env). Correct on controller AND workers:
+    options are serialized to workers and env is inherited at spawn, so a direct read suffices."""
+    cached = getattr(config, _EXISTING, None)
+    if cached is not None:
+        return cached
+    resolved = _parse_existing_services(config.getoption("--existing-service", default=[]) or [], os.environ)
+    setattr(config, _EXISTING, resolved)
+    return resolved
+
+
+def _attach_service(config, svc, overrides):
+    """Build an EXISTING service's block from ``overrides`` + probe it — no boot, no store, no teardown.
+
+    The block is ``svc.attach(overrides, config)`` (or the raw overrides if the service declares no
+    ``attach`` builder). If the service has an ``alive`` probe and it reports dead, FAIL LOUD — the
+    paradigm shift applied to attach: a selected test whose declared service isn't reachable fails
+    clearly, rather than dying opaquely deep in a query.
+    """
+    block = svc.attach(dict(overrides), config) if svc.attach is not None else dict(overrides)
+    if svc.alive is not None and not svc.alive(block):
+        where = (block or {}).get("endpoint") or "<default endpoint>"
+        pytest.fail(
+            f"--existing-service {svc.key}: declared as running at {where}, but nothing is responding "
+            f"there. Start it, or drop --existing-service {svc.key} to let this run boot it.",
+            pytrace=False,
+        )
+    # started=False: WE didn't start it; attached=True marks the stance. Functional fields (endpoint,
+    # connection_string, …) are identical to the boot block — the whole point (docs/SERVICES.md).
+    return _service_block(svc, {**block, "attached": True, "started": False})
+
+
+def _service_targets(config, spec):
+    """The (suite, service) pairs a provision/teardown command targets: all if ``spec`` is ``*``/empty,
+    else the ones whose (normalized) key is in the comma/semicolon list ``spec``."""
+    import re
+
+    services = [(t, s) for t in get_suites(config) for s in t.services]
+    if spec in (None, "*", ""):
+        return services
+    keys = {_norm_service_key(k) for k in re.split(r"[,;]", spec) if k.strip()}
+    return [(t, s) for (t, s) in services if _norm_service_key(s.key) in keys]
+
+
+def _run_service_command(config):
+    """P2 out-of-session lifecycle: provision or tear down declared services, then ``pytest.exit``.
+
+    Runs on the controller (trylast pytest_configure), BEFORE collection — so it needs no unittest
+    binary. **provision** starts each target directly (NOT via the store), so the normal sessionfinish
+    teardown leaves it running; idempotent via the ``alive`` probe. **teardown** stops each target.
+    Prints the endpoint + the exact ``--existing-service`` line to attach with next.
+    """
+    teardown = config.getoption("--teardown-service", default=None)
+    prov = config.getoption("--provision-service", default=None)
+
+    if teardown is not None:
+        targets = _service_targets(config, teardown)
+        for _, svc in targets:
+            if svc.stop is not None:
+                with step(f"tearing down service {svc.key}"):
+                    svc.stop(config)
+            print(f"✓ {svc.key}: stopped")
+        pytest.exit(f"ducktest: torn down {len(targets)} service(s)", returncode=0)
+
+    targets = _service_targets(config, prov)
+    if not targets:
+        pytest.exit("ducktest --provision-service: no matching declared service(s)", returncode=1)
+    for _, svc in targets:
+        probe = svc.attach({}, config) if svc.attach is not None else {}
+        if svc.alive is not None and svc.alive(probe):
+            print(f"✓ {svc.key}: already running at {probe.get('endpoint', '<default>')} (skipped)")
+            block = probe
+        else:
+            started = svc.start(config)
+            block = started if isinstance(started, dict) else probe
+            print(f"✓ {svc.key}: up at {block.get('endpoint', '<started>')}")
+        env_key = svc.key.upper().replace("-", "_")
+        ep = block.get("endpoint", "")
+        print(f"    attach: --existing-service {svc.key}={ep}   (or env DUCKTEST_EXISTING_SERVICE_{env_key}={ep})")
+    pytest.exit(f"ducktest: provisioned {len(targets)} service(s); left running", returncode=0)
+
+
+def provision_service(config, svc):
+    """Provision a class-2 service — call from its session fixture. Routes by lifecycle stance:
+
+    - **existing** (``--existing-service <key>`` / env): attach to the already-running service via
+      ``_attach_service`` (build block + probe ``alive``); no boot, no store, no teardown.
+    - **managed** (default): lazy, first-need boot via the store. The first worker runs
+      ``svc.start(config)`` under the store's per-key lock and publishes the block; concurrent callers
+      block then read it (single-flight). The controller stops it once at session end.
+
+    Returns the service's context block (a dict). A test cannot tell which stance ran — the block shape
+    is identical (docs/SERVICES.md).
+
+    No reachability gate on the managed path: a service is DEMAND-driven — pulling its fixture is the
+    signal it's needed, true even under ``-k`` (where args can't predict the suite). An unselected suite
+    simply never pulls the fixture. (Contrast credentials, fetched up front, whose ``-k`` case falls to
+    the runtest backstop.)
+    """
+    existing = _existing_services(config)
+    if _norm_service_key(svc.key) in existing:
+        return _attach_service(config, svc, existing[_norm_service_key(svc.key)])
     handle = get_store(config)
     if handle is None:
         # Defensive: no store (nothing declared) — run start locally, no cross-worker coordination.

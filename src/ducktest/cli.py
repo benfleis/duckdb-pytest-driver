@@ -1,17 +1,25 @@
 """`ducktest` — a thin front-end over pytest for the duckdb test lane.
 
 Subcommands:
-  configure   Write the base pytest config into a repo so bare `pytest` just works.
+  configure           Write the base pytest config into a repo so bare `pytest` just works.
+  provision-service   Start declared service(s) out-of-session and leave them running.
+  teardown-service    Stop declared service(s) started out-of-session.
 
 The plugin (auto-registered via the pytest11 entry point) supplies every default it can at
 runtime — working dir, test root, `.test` collection, `--build`. The few settings a plugin
 *cannot* inject (addopts/xdist, testpaths, --import-mode, python_files) live in the config
 this command writes; after `ducktest configure`, plain `pytest` works with no other setup.
+
+`provision-service` / `teardown-service` are THIN SHIMS over pytest: they shell
+`python -m pytest --provision-service <keys>` in THIS interpreter's env (so pytest + the plugin +
+the test deps are the same env the shim runs in — the install model). The real work is the pytest
+invocation-mode; see docs/SERVICES.md.
 """
 
 import argparse
 import difflib
 import os
+import subprocess
 import sys
 
 # The canonical config `configure` writes. Kept in sync with README.md's documented stub.
@@ -65,12 +73,29 @@ def _configure(args):
     return rc
 
 
+def _service_cmd(args, flag):
+    """Shim: shell `python -m pytest <flag>[=keys] <passthrough>` in this interpreter's env."""
+    opt = flag if not args.keys else f"{flag}={args.keys}"
+    cmd = [sys.executable, "-m", "pytest", opt, *args.pytest_args]
+    return subprocess.call(cmd)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="ducktest", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_cfg = sub.add_parser("configure", help="write the base pytest config so bare `pytest` works")
     p_cfg.add_argument("dir", nargs="?", default=".", help="target repo dir (default: cwd)")
     p_cfg.set_defaults(func=_configure)
+
+    for name, flag, helptext in (
+        ("provision-service", "--provision-service", "start declared service(s) and leave them running"),
+        ("teardown-service", "--teardown-service", "stop declared service(s)"),
+    ):
+        p = sub.add_parser(name, help=helptext)
+        p.add_argument("keys", nargs="?", default=None, help="comma-list of service keys (default: all)")
+        p.add_argument("pytest_args", nargs=argparse.REMAINDER, help="extra args forwarded to pytest")
+        p.set_defaults(func=lambda a, _flag=flag: _service_cmd(a, _flag))
+
     args = parser.parse_args(argv)
     return args.func(args)
 
