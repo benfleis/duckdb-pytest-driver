@@ -222,3 +222,40 @@ def test_provision_never_pulled_without_attach_fails_loud(pytester):
     result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider")
     result.assert_outcomes(errors=1)  # pulled with no --existing-service to attach to
     result.stdout.fnmatch_lines(["*provision='never'*attach*"])
+
+
+def test_shared_service_across_suites_boots_and_stops_once(pytester, monkeypatch):
+    """A service shared across two suites (the use_service pattern) is ONE physical resource:
+    dedup by key means it boots once and — the regression this guards — stops exactly once, not
+    once per suite that binds it (a non-idempotent stop() would otherwise double-fire)."""
+    boot = pytester.path / "boot.log"
+    stop = pytester.path / "stop.log"
+    monkeypatch.setenv("BOOT_LOG", str(boot))
+    monkeypatch.setenv("STOP_LOG", str(stop))
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        import os
+        from ducktest import register_suite, service, use_service
+
+        def _start(config):
+            with open(os.environ["BOOT_LOG"], "a") as f: f.write("b\\n")
+            return {"endpoint": "svc://up"}
+
+        def _stop(config):
+            with open(os.environ["STOP_LOG"], "a") as f: f.write("s\\n")
+
+        _BASE = service("svc", start=_start, stop=_stop, provision="on_demand")
+
+        def pytest_configure(config):
+            # two DIFFERENT suites, each binding the SAME shared descriptor eagerly
+            register_suite(config, "a", path="a", default=True, services=[use_service(_BASE)])
+            register_suite(config, "b", path="b", default=True, services=[use_service(_BASE)])
+        """,
+    )
+    _write(pytester, "test_inner.py", "def test_a():\n    assert True\n")
+    result = pytester.runpytest_subprocess("-n", "2", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1)
+    assert boot.read_text().count("b") == 1  # shared service booted once (store single-flight)
+    assert stop.read_text().count("s") == 1  # stopped ONCE, not once per binding suite (the fix)

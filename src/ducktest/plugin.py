@@ -766,11 +766,13 @@ def _provision_eager_services(config):
     boot via the store, reuses the ``--existing-service`` attach path, and inherits ``depends_on`` ordering
     for free once that lands.
     """
+    seen = set()  # dedup by key: a service shared across suites (use_service) is ONE physical resource
     for suite in get_suites(config):
         if not _suite_reachable(config, suite):
             continue
         for svc in suite.services:
-            if svc.provision == "eager":
+            if svc.provision == "eager" and svc.key not in seen:
+                seen.add(svc.key)
                 provision_service(config, svc)  # boot + populate + adopt to_env, on the controller pre-fork
 
 
@@ -1114,10 +1116,12 @@ def _stop_services(config):
     handle = getattr(config, _STORE, None)
     if handle is None:
         return
+    seen = set()  # dedup by key: a service shared across suites (use_service) is ONE physical resource
     for suite in get_suites(config):
         for svc in suite.services:
-            if svc.stop is None:
+            if svc.stop is None or svc.key in seen:
                 continue
+            seen.add(svc.key)
             try:
                 store.copy(handle, svc.key)  # present => was provisioned this run
             except store.ResourceMissing:
