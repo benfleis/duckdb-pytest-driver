@@ -1299,7 +1299,7 @@ def resources(request, matrix_cell):  # matrix_cell: closure hook for indirect @
     try:
         yield bindings
     finally:
-        provisioner.teardown(token, bindings=bindings)
+        provisioner.teardown(bindings=bindings)
 
 
 # ---------------------------------------------------------------------------
@@ -1471,7 +1471,7 @@ def _cli_provision_flow(session, config):
         bindings = provisioner.provision(specs, token, dry_run=True, params=_item_params(item))
         print()
         print("----- would-be duckdb init SQL (secrets redacted) -----")
-        print(provisioner.make_init(bindings, redact=True))
+        print(provisioner.make_init_sql(bindings, redact=True))
         print("-------------------------------------------------------")
         print()
         print("--provision-dry-run: NO DDL executed, CLI NOT launched, NO teardown.")
@@ -1480,16 +1480,16 @@ def _cli_provision_flow(session, config):
 
     bindings = provisioner.provision(specs, token, dry_run=False, params=_item_params(item))
     try:
-        init_sql = provisioner.make_init(bindings)
+        init_sql = provisioner.make_init_sql(bindings)
         _launch_cli(config, init_sql)
     finally:
         if keep:
             print()
             print(f"--provision-keep: leaving fixtures (token={token}) in place.")
-            print("Tear them down later via the backend's clean tool / teardown(token).")
+            print("Tear them down later via the backend's clean tool / teardown(bindings).")
         else:
             with step(f"tearing down provisioned fixtures (token={token})"):
-                provisioner.teardown(token, bindings=bindings)
+                provisioner.teardown(bindings=bindings)
     pytest.exit("--repl session complete", returncode=0)
 
 

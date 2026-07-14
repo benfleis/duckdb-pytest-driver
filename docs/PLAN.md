@@ -144,19 +144,38 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
    registry home (conftest `register_profile` vs a declarative file — lean declarative for
    shareability), and profile × `@requires`/matrix interaction (a profile may pin an axis).
 
-## Base `Provisioner` + object-store `@requires` wiring (next up — being worked on)
+## Base `Provisioner` + object-store `@requires` wiring
 
-The provisioner seam today is *just* a protocol + registry (`register_provisioner` / `get_provisioner`);
-every backend (UC OSS, Databricks) re-implements the same spec-loop + access-policy + `Bindings` + env
-assembly. Slide that generic core into the driver as a **base `Provisioner` + `Bindings`** (the
-multi-statement SQL-def utils already slid down to `ducktest/sqldef.py`):
+**Status (2026-07-14): base class built + proven against Databricks.** `ducktest.provision.Provisioner`
++ `Bindings` now live in `provision.py` (exported from `ducktest`); `uc.databricks.engine.DatabricksProvisioner`
+is refactored onto it (subclasses `Provisioner`, implements `before_provision`/`new_bindings`/`rw_target`/
+`ro_target`/`finalize_bindings`/`env_for`/`dry_run_summary`/`instantiate`/`execute`/`teardown`/
+`make_init_sql`). Verified: driver self-tests green (90 passed/5 skipped, up from 68 pre-azurite-commit —
+no regressions), `ruff check` clean on both repos, and a live dry-run smoke-test (fake `rw`+`ro`
+`Requirement`s through `provision()` → `make_init_sql(redact=True)`) reproduces the pre-refactor output
+byte-for-byte (plan lines, `cell schema(s)`/`DEFAULT_SCHEMA` prints, `bindings.env`, generated init SQL).
+`OssProvisioner` got the mechanical naming fixes only (`make_init_sql`, `teardown(bindings)` — no
+internal refactor, still blocked on `uctl` separately, per below) so it stays protocol-compatible with
+the shared `plugin.py` call sites without inheriting the base (duck-typed, same as before).
+**Remaining: Iceberg is the second proof consumer** (not OSS — see *Iceberg onboarding* below); its
+`IcebergProvisioner` hasn't been built yet.
+
+The provisioner seam used to be *just* a protocol + registry (`register_provisioner` / `get_provisioner`);
+every backend (UC OSS, Databricks) re-implemented the same spec-loop + access-policy + `Bindings` + env
+assembly. That generic core is now the **base `Provisioner` + `Bindings`** below (the multi-statement
+SQL-def utils already slid down to `ducktest/sqldef.py` earlier):
 
 - **`Bindings`** dataclass: `catalog` / `default_schema` / `token`, `tables`, `isolated` (namespaces to
   drop at teardown), `env`, `plan`.
 - **`Provisioner`** base: `provision(specs, token)` runs the access-policy loop — `rw` → isolated target
   + `instantiate` + track for teardown; `ro` → shared FQN + once-guard (`_shared_ro`) — then assembles
-  `env` via `env_for`; `teardown` drops `isolated`. Backend hooks: `execute(sql)`, `rw_target`,
-  `ro_target`, `instantiate`, `env_for`.
+  `env` via `env_for`; `teardown` drops `isolated`. Required backend hooks: `execute(sql)`, `rw_target`,
+  `ro_target`, `instantiate`, `make_init_sql`. Hooks with workable defaults: `new_bindings`, `env_for`,
+  `drop_sql`, `dry_run_summary`. Two hooks the sketch below didn't anticipate but real Databricks logic
+  needed: `before_provision(specs, token, dry_run)` (upfront validation/env-setup — the `--repl`-with-no-
+  `@requires` guard, credential checks) and `finalize_bindings(bindings)` (post-loop bookkeeping a
+  backend tracked itself during the loop, e.g. Databricks' mono-cell `default_schema` reconciliation —
+  the base intentionally doesn't track per-spec state itself, that's backend-shaped).
 - **Reconcile with `uc/test/py/uc/WIP-identity-design.md` § *B* before building this** — it's a richer
   design than the sketch above (which came from a session that hadn't seen it) and already informed
   today's `credential()`/`service()` shape. It splits **`Backend`/`Service`** (session-scoped —
@@ -253,11 +272,12 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
     later step once the base below is proven.
   - **Base `Provisioner`/`Backend` design + sequencing:** see § *Base `Provisioner` + object-store
     `@requires` wiring* above (Databricks + Iceberg are the 2-consumer proof, not Databricks + OSS —
-    OSS is separately blocked on `uctl`). **Status (2026-07-14): the azurite/service-layer commit
-    (`f95d33b`) landed** — `Service` `attach`/`alive` + `provision-service`/`teardown-service` +
-    the rclone object-store runner (`docs/SERVICES.md`) — but the base `Provisioner`/`Bindings` class
-    itself is still not built (confirmed by `SERVICES.md` itself: object-store `@requires` wiring
-    "should land on top of the base `Provisioner` refactor"). That's still the next real task here.
+    OSS is separately blocked on `uctl`). **Status (2026-07-14): Databricks half done.** The base class
+    is built and `DatabricksProvisioner` is refactored onto it (verified: self-tests + a live dry-run
+    smoke test reproduce pre-refactor output exactly — see the section above for detail). **Iceberg half
+    not started** — no `IcebergProvisioner`, no `ducktest/ice` scaffolding (`test/py/iceberg/`) yet. That's
+    the next real task: build `IcebergProvisioner(Provisioner)` for the `spark_local` connection, wire the
+    `schema_evolve_int_to_bigint` starter test through it.
   - **Open (small, low-stakes):** `IcebergDef` — a new small lazy ref (mirrors `Fixture("name")`) vs. a
     plain FQN-string + convention lookup. Leaning `IcebergDef`: keeps def-vs-fixture dispatch explicit,
     consistent with the existing lazy-ref architecture.
