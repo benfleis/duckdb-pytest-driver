@@ -296,15 +296,41 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
     later step once the base below is proven.
   - **Base `Provisioner`/`Backend` design + sequencing:** see § *Base `Provisioner` + object-store
     `@requires` wiring* above (Databricks + Iceberg are the 2-consumer proof, not Databricks + OSS —
-    OSS is separately blocked on `uctl`). **Status (2026-07-14): Databricks half done.** The base class
-    is built and `DatabricksProvisioner` is refactored onto it (verified: self-tests + a live dry-run
-    smoke test reproduce pre-refactor output exactly — see the section above for detail). **Iceberg half
-    not started** — no `IcebergProvisioner`, no `ducktest/ice` scaffolding (`test/py/iceberg/`) yet. That's
-    the next real task: build `IcebergProvisioner(Provisioner)` for the `spark_local` connection, wire the
-    `schema_evolve_int_to_bigint` starter test through it.
-  - **Open (small, low-stakes):** `IcebergDef` — a new small lazy ref (mirrors `Fixture("name")`) vs. a
-    plain FQN-string + convention lookup. Leaning `IcebergDef`: keeps def-vs-fixture dispatch explicit,
-    consistent with the existing lazy-ref architecture.
+    OSS is separately blocked on `uctl`). **Status (2026-07-14): both halves built, code-complete.**
+    Databricks: base class built, `DatabricksProvisioner` refactored onto it (verified: self-tests + a
+    live dry-run smoke test reproduce pre-refactor output exactly). Iceberg: `ice/test/py/iceberg/`
+    scaffolding (`iceberg_def.py`, `provisioner.py`), `ice/test/conftest.py` (registers the `iceberg_local`
+    suite, `default=False` — opt-in until proven live) + `ice/test/sql/provisioned/conftest.py`
+    (registers `IcebergProvisioner`, scope-limited to that subtree, mirroring UC's
+    `register_provisioner(..., scope=...)` seam), and the paired starter test
+    (`ice/test/sql/provisioned/schema_evolve_int_to_bigint.{py,test}`), wrapping the EXISTING generator
+    def (`scripts/data_generators/tests/default/schema_evolve_int_to_bigint`) instead of reimplementing
+    generation. `IcebergDef` (the lazy ref — see below) required widening `ducktest.requires.requires()`'s
+    `source` validation, previously hardcoded to `Fixture`-or-string only; now any truthy object is
+    accepted as a backend-defined lazy ref, **requiring an explicit `name=`** since `resolved_name()` has
+    no generic way to derive a bare name from an arbitrary object (self-tested, `tests/test_requires.py`).
+    **Verified without Spark** (this sandbox has no Java/PySpark — see `SANDBOX-NOTES.md`): `IcebergDef`
+    resolves against the REAL `IcebergTest` registry; the full `IcebergProvisioner.provision(...,
+    dry_run=True)` flow runs end-to-end (plan/tables/env all correct) against that real registry; the
+    paired `.py` driver imports cleanly with the `@requires` marker correctly applied; driver self-tests
+    (96 passed/5 skipped) + `ruff` clean on both repos. **Found and fixed one real bug during this**:
+    `IcebergDef.resolve()`'s first draft instantiated *every* registered `IcebergTest` to find a match —
+    one unrelated def (`deletion_vectors`) has a real side effect in `__init__` (opens a `duckdb`
+    connection) that crashed in this environment. Fixed to match by each class's own file path
+    (`inspect.getfile`, no instantiation) and only construct the actual match.
+    **NOT verified — needs a real Java+PySpark+jar environment** (this sandbox has none; the
+    `iceberg-spark-runtime` jar is intentionally deleted right now, see the repo-location note above):
+    the live `generate()` call (does the Spark session actually boot, create the format-v2 table,
+    insert, `ALTER…TYPE BIGINT`, insert again) and the final `ICEBERG_SCAN` read matching the expected 10
+    rows. **Also not done, deliberately out of scope for this pass**: running `ducktest configure` for
+    `ice` (would write a repo-wide `pytest.ini` — a bigger, separate decision given `ice` already has an
+    established hand-rolled `test/python/conftest.py` suite predating ducktest; didn't want to change
+    repo-wide pytest defaults as a side effect of one starter test).
+  - **Decided:** `IcebergDef` — a new small lazy ref (mirrors `Fixture("name")`), not a plain
+    FQN-string + convention lookup — keeps def-vs-fixture(-vs-IcebergDef) dispatch explicit, consistent
+    with the existing lazy-ref architecture. Built in `ice/test/py/iceberg/iceberg_def.py` (extension-side,
+    not the driver — it's specific to this repo's own generator registry, the same reasoning UC's
+    `identity.py` lives in UC not the driver).
 - **Min duckdb (unittest) version contract** _[real, mechanism TBD]_ — the driver assumes unittest flags
   (`--emit-test-events`, `--temp-dir-*`, `--select-tag`); a stale binary errors `Unrecognised token:
   --temp-dir-base`. A standalone release needs a pinned/probed floor (probe `unittest --version`/features

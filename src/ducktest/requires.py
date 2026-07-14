@@ -46,10 +46,17 @@ class Requirement:
     """One declared resource need. Flat by design (see driver/README.md "Resources").
 
     Fields:
-      source     : where the table comes from. Either a ``Fixture("name")`` ref
-                   (SQL definition + seed, instantiated via duckdb — see fixtures.py) or a
-                   premade source table FQN string, env-templated (``${VAR}`` expanded
-                   at provision time, NOT here) — e.g. ``${CATALOG}.source.simple_table``.
+      source     : where the table comes from. One of:
+                     - a ``Fixture("name")`` ref (SQL definition + seed, instantiated via
+                       duckdb — see fixtures.py);
+                     - a premade source table FQN string, env-templated (``${VAR}`` expanded
+                       at provision time, NOT here) — e.g. ``${CATALOG}.source.simple_table``;
+                     - a backend-defined lazy ref (any other object — e.g. an extension's own
+                       ``IcebergDef``) — OPAQUE to the framework, interpreted entirely by the
+                       provisioner's ``instantiate()`` hook, the same way ``properties`` is
+                       open/backend-interpreted. ``name=`` is REQUIRED in this case (see
+                       ``resolved_name()`` — there's no generic way to derive a bare name from
+                       an arbitrary object).
       access     : ``ro`` (shared, reference source directly) | ``rw`` (exclusive, the
                    provisioner clones into an isolated namespace). A framework knob
                    (sharing/isolation), so it stays a top-level field.
@@ -58,7 +65,8 @@ class Requirement:
                    validate these; the extension provisioner reads them (via
                    ``prop.property(key)``) and decides what they imply. Empty by default.
       name       : the table's BARE name in the provisioned schema. Defaults to the
-                   source's base table name (last dotted segment of ``source``).
+                   source's base table name (last dotted segment of ``source``) for a
+                   ``Fixture``/string source; REQUIRED for a backend-defined lazy ref.
 
     A dict field would make instances unhashable IF hashed; they aren't (stored as mark
     args, iterated not hashed), so ``frozen=True`` + a mutable ``properties`` is safe.
@@ -74,7 +82,13 @@ class Requirement:
         return self.properties.get(key, default)
 
     def resolved_name(self) -> str:
-        """Bare table name to use in the provisioned schema (default: source's base)."""
+        """Bare table name to use in the provisioned schema (default: source's base).
+
+        A backend-defined lazy-ref source (neither a ``Fixture`` nor a string) has no generic
+        way to derive a bare name, so it always falls in the ``self.name`` branch above —
+        ``requires()`` enforces ``name=`` is given for that case, so this never reaches the
+        string-splitting fallback for one.
+        """
         if self.name:
             return self.name
         if isinstance(self.source, Fixture):
@@ -92,11 +106,26 @@ def requires(source, access="ro", properties=None, name=None):
     Validates only what the framework owns (``source``, ``access``); the ``properties``
     dict is passed through opaque — backends validate their own keys. ``${...}`` is NOT
     expanded here (the provisioner's job).
+
+    ``source`` is a ``Fixture(...)`` ref, a table FQN string, or a backend-defined lazy ref
+    (any other truthy object — e.g. an extension's own ``IcebergDef``; interpreted entirely by
+    the provisioner's ``instantiate()``, the same open/backend-interpreted spirit as
+    ``properties``). That third case REQUIRES an explicit ``name=`` — ``resolved_name()`` has
+    no generic way to derive a bare name from an arbitrary object.
     """
     if isinstance(source, Fixture):
         pass  # a named fixture ref — instantiated by the backend instantiator (fixtures.py)
-    elif not source or not isinstance(source, str):
-        raise ValueError("@requires: `source` must be a Fixture(...) ref or a table FQN string")
+    elif isinstance(source, str):
+        if not source:
+            raise ValueError("@requires: `source` must be a Fixture(...) ref, a non-empty table FQN string, or a backend-defined lazy ref (with `name=`)")
+    elif not source:
+        raise ValueError("@requires: `source` must be a Fixture(...) ref, a table FQN string, or a backend-defined lazy ref (with `name=`)")
+    elif not name:
+        raise ValueError(
+            f"@requires: source={source!r} is neither a Fixture(...) nor a string, so it's a "
+            "backend-defined lazy ref (opaque to the framework) -- `name=` is required for one, "
+            "since resolved_name() can't derive a bare name from an arbitrary object."
+        )
     if access not in ("ro", "rw"):
         raise ValueError(f"@requires: access must be 'ro' or 'rw', got {access!r}")
 
