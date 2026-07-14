@@ -102,13 +102,20 @@ class Service:
                 to pull still gets it, and its ``to_env`` lands before workers fork); ``"per_test"`` and
                 ``"never"`` are named to fix the vocabulary but not wired (they FAIL LOUD if reached —
                 ``never`` overlaps the ``--existing-service`` attach path already).
-      to_env  : ``to_env(block) -> dict`` — a derived env map merged into ``os.environ`` when the
-                service is provisioned (the service analog of ``credential(adopt="env")``). This is how a
-                bare ``.test`` body gets a service's connection env. None => no env adoption.
+      to_env  : ``to_env(block) -> dict`` — a derived env map merged into ``os.environ`` (the service
+                analog of ``credential(adopt="env")``); how a test gets a service's connection env.
+                Adopted by EVERY process that provisions the service (in ``provision_service``): the
+                controller on the eager path, or a worker on the on_demand fixture-pull — the ``.test``
+                subprocess inherits its provisioning process's ``os.environ`` (``_invoke`` merges it).
+                Works for any disposition — BUT a bare ``.test`` (no ``.py`` driver, no fixture to pull)
+                only gets it under ``provision="eager"``, since nothing else triggers worker-side
+                adoption for it. None => no env adoption.
       populate: ``populate(block, config)`` — bring the service to its known initial state (structure +
                 data — the store-scope analog of the fixture lane's ``instantiate``), run ONCE after the
-                service is up. MUST be idempotent (it re-runs against an attached, possibly-seeded
-                instance). None => nothing to populate.
+                service is up. **Disposition-independent** (runs for ``eager`` and ``on_demand`` alike):
+                it mutates the shared service, not per-process state, so timing is orthogonal — unlike
+                ``to_env``. MUST be idempotent (it re-runs against an attached, possibly-seeded instance).
+                None => nothing to populate.
 
     Policy fields (``provision`` / ``to_env`` / ``populate``) are usually set via :func:`use_service`,
     which binds a *shared* descriptor (e.g. ``AZURITE_SERVICE``) to one suite's policy without mutating

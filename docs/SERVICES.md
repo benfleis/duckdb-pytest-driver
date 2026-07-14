@@ -46,12 +46,17 @@ service-backed suite of bare `.test` files needs its service **up, populated, an
 the subprocess environment** before any test runs. `eager` does exactly that — the service analog of
 `credential(adopt="env")`:
 
-- **`to_env(block) -> dict`** — a derived env map merged into `os.environ` on the controller **pre-fork**,
-  so workers and the `unittest` subprocess inherit it. This is how `${AZURE_STORAGE_CONNECTION_STRING}` /
-  `${AZ_DATA_DIR}` reach a bare `.test`.
+- **`to_env(block) -> dict`** — a derived env map merged into `os.environ` by *every process that
+  provisions the service* (in `provision_service`): the controller on the eager path (pre-fork, so a bare
+  `.test` subprocess inherits it), or a worker on the on_demand fixture-pull (its `run_paired` subprocess
+  inherits it, since `_invoke` merges `os.environ`). This is how `${AZURE_STORAGE_CONNECTION_STRING}` /
+  `${AZ_DATA_DIR}` reach a test. Works for any disposition — but a **bare `.test` needs `eager`**: with no
+  `.py` driver there's no fixture to trigger worker-side provisioning for it.
 - **`populate(block, config)`** — bring the service to its known initial state (**structure + data** — the
-  store-scope analog of the fixture lane's `instantiate`), run **once**. **Must be idempotent** (it
-  re-runs against an attached, possibly-already-seeded instance).
+  store-scope analog of the fixture lane's `instantiate`), run **once**. **Disposition-independent** — it
+  mutates the *shared service*, not per-process state, so it runs for `on_demand` too (folded into the
+  store single-flight boot + the attach path), not just `eager`. **Must be idempotent** (it re-runs
+  against an attached, possibly-already-seeded instance).
 
 Eager services boot **through `provision_service`** (single-flighted, attach-aware, `depends_on`-ready),
 in `_provision_eager_services` right after the eager-credential fetch — same reachability gate, so an
