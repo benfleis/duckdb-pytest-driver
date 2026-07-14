@@ -1,15 +1,15 @@
-"""Test-tier declaration API + registry (Phase 0: inert registration only).
+"""Test-suite declaration API + registry (Phase 0: inert registration only).
 
-A **tier** is a named subset of the suite with a default-selection policy and a set of
-up-front resources (see ``docs/TIERING.md``). This module owns the *declaration* half:
-frozen descriptors (``Credential``, ``Service``, ``Tier``) plus ``register_tier`` /
-``get_tiers``, mirroring the ``register_broadcast`` / ``register_provisioner`` idiom of
+A **suite** is a named subset of the tests with a default-selection policy and a set of
+up-front resources (see ``docs/ARCHITECTURE.md``). This module owns the *declaration* half:
+frozen descriptors (``Credential``, ``Service``, ``Suite``) plus ``register_suite`` /
+``get_suites``, mirroring the ``register_broadcast`` / ``register_provisioner`` idiom of
 stashing config-scoped state on ``config``.
 
 **Phase 0 is behavior-free.** Nothing here fetches a credential, starts a service,
 deselects an item, or adds a pytest hook — it only records the callables so later phases
 (selection, up-front fetch, service gating) can act on them. Two orthogonal resource
-classes ride on a tier:
+classes ride on a suite:
 
 - **class-1 credential** — fetched once, up front, on the controller, then broadcast to
   workers. ``credential(key, fetch=..., validate=..., error=..., adopt=...)``.
@@ -20,10 +20,10 @@ The descriptors just *hold* these callables; they are dumb by design (same porta
 stance as ``@requires`` / the provisioner protocol — the framework never imports a
 backend). Declare from a repo's ``test/conftest.py`` ``pytest_configure``::
 
-    from driver import register_tier, credential, service
+    from ducktest import register_suite, credential, service
 
     def pytest_configure(config):
-        register_tier(config, "databricks", path="test/databricks", default=False,
+        register_suite(config, "databricks", path="test/databricks", default=False,
             credentials=[credential("databricks_creds", fetch=load_creds,
                          validate=have_core_creds, error=cred_failure_detail, adopt="env")])
 """
@@ -31,9 +31,9 @@ backend). Declare from a repo's ``test/conftest.py`` ``pytest_configure``::
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
-# Config attribute holding the ordered list of registered Tiers (mirrors
+# Config attribute holding the ordered list of registered Suites (mirrors
 # `_duckdb_broadcast_factories` / `_driver_provisioners`). Created lazily.
-_ATTR = "_duckdb_tiers"
+_ATTR = "_duckdb_suites"
 
 
 @dataclass(frozen=True)
@@ -91,20 +91,20 @@ class Service:
 
 
 @dataclass(frozen=True)
-class Tier:
-    """A named subset of the suite + its default-selection policy + up-front resources.
+class Suite:
+    """A named subset of the tests + its default-selection policy + up-front resources.
 
     Fields:
-      name        : the tier's name; also the default marker (see ``marker``).
-      path        : repo-relative dir whose members belong to the tier (path-based
+      name        : the suite's name; also the default marker (see ``marker``).
+      path        : repo-relative dir whose members belong to the suite (path-based
                     membership); None => no path membership.
       marker      : the marker auto-applied to members (``-m <marker>`` selection);
                     defaults to ``name``.
-      default     : whether the tier runs on a bare invocation (default-in polarity).
-                    ``False`` => an opt-in heavy tier, deselected on a bare run in Phase 1.
+      default     : whether the suite runs on a bare invocation (default-in polarity).
+                    ``False`` => an opt-in heavy suite, deselected on a bare run in Phase 1.
       credentials : tuple of ``Credential`` descriptors (class-1).
       services    : tuple of ``Service`` descriptors (class-2).
-      provisioner : the backend provisioner for this tier's ``@requires`` tests, or None.
+      provisioner : the backend provisioner for this suite's ``@requires`` tests, or None.
     """
 
     name: str
@@ -116,8 +116,7 @@ class Tier:
     provisioner: object = field(default=None)
 
 
-def credential(key, *, fetch, validate=None, error=None, adopt=None, available=None,
-               late_fetch=True) -> Credential:
+def credential(key, *, fetch, validate=None, error=None, adopt=None, available=None, late_fetch=True) -> Credential:
     """Build a frozen :class:`Credential` descriptor (see its docstring for the fields).
 
     Validates only shape: ``key`` non-empty, ``fetch`` (and any ``validate`` / ``error`` /
@@ -136,8 +135,15 @@ def credential(key, *, fetch, validate=None, error=None, adopt=None, available=N
         raise TypeError("credential: `available` must be callable or None")
     if adopt not in (None, "env"):
         raise ValueError(f"credential: `adopt` must be None or 'env', got {adopt!r}")
-    return Credential(key=key, fetch=fetch, validate=validate, error=error, adopt=adopt,
-                      available=available, late_fetch=bool(late_fetch))
+    return Credential(
+        key=key,
+        fetch=fetch,
+        validate=validate,
+        error=error,
+        adopt=adopt,
+        available=available,
+        late_fetch=bool(late_fetch),
+    )
 
 
 def service(key, *, start, stop=None, fixture=None) -> Service:
@@ -157,7 +163,7 @@ def service(key, *, start, stop=None, fixture=None) -> Service:
     return Service(key=key, start=start, stop=stop, fixture=fixture)
 
 
-def register_tier(
+def register_suite(
     config,
     name,
     *,
@@ -168,42 +174,40 @@ def register_tier(
     services=(),
     provisioner=None,
 ) -> None:
-    """Register a tier on ``config`` (call from a ``test/conftest.py`` ``pytest_configure``).
+    """Register a suite on ``config`` (call from a ``test/conftest.py`` ``pytest_configure``).
 
-    Stores a frozen :class:`Tier` in ``config._duckdb_tiers`` (a list created lazily, the
+    Stores a frozen :class:`Suite` in ``config._duckdb_suites`` (a list created lazily, the
     same idiom as ``register_broadcast`` / ``register_provisioner``). ``marker`` defaults
     to ``name``. ``credentials`` / ``services`` must be the descriptors built by
     :func:`credential` / :func:`service`. Phase 0 records only — no fetch, no selection,
     no hooks.
 
     Re-registering an already-registered ``name`` **raises** ``ValueError`` (a duplicate
-    tier name is almost certainly a double-declaration bug; failing loud matches the
-    tiering design's "any change must be loud" stance). Retrieve with :func:`get_tiers`.
+    suite name is almost certainly a double-declaration bug; failing loud matches the
+    suite design's "any change must be loud" stance). Retrieve with :func:`get_suites`.
     """
     if not name or not isinstance(name, str):
-        raise ValueError("register_tier: `name` must be a non-empty string")
+        raise ValueError("register_suite: `name` must be a non-empty string")
     creds = tuple(credentials)
     for c in creds:
         if not isinstance(c, Credential):
             raise TypeError(
-                f"register_tier: `credentials` must be credential(...) descriptors, got {type(c).__name__}"
+                f"register_suite: `credentials` must be credential(...) descriptors, got {type(c).__name__}"
             )
     svcs = tuple(services)
     for s in svcs:
         if not isinstance(s, Service):
-            raise TypeError(
-                f"register_tier: `services` must be service(...) descriptors, got {type(s).__name__}"
-            )
+            raise TypeError(f"register_suite: `services` must be service(...) descriptors, got {type(s).__name__}")
 
     regs = getattr(config, _ATTR, None)
     if regs is None:
         regs = []
         setattr(config, _ATTR, regs)
     if any(t.name == name for t in regs):
-        raise ValueError(f"register_tier: tier {name!r} is already registered")
+        raise ValueError(f"register_suite: suite {name!r} is already registered")
 
     regs.append(
-        Tier(
+        Suite(
             name=name,
             path=path,
             marker=marker if marker is not None else name,
@@ -215,6 +219,6 @@ def register_tier(
     )
 
 
-def get_tiers(config) -> list:
-    """Return the list of registered :class:`Tier`s on ``config`` (``[]`` if none)."""
+def get_suites(config) -> list:
+    """Return the list of registered :class:`Suite`s on ``config`` (``[]`` if none)."""
     return list(getattr(config, _ATTR, None) or [])

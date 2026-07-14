@@ -12,7 +12,7 @@ import shutil
 
 import pytest
 
-from duckdb_pytest_driver.fixtures import (
+from ducktest.fixtures import (
     _UNSET,
     Column,
     DuckDBInstantiator,
@@ -129,8 +129,8 @@ def test_loading_is_deferred_to_test_run(pytester):
     pytester.makeconftest(
         """
         import pytest
-        from duckdb_pytest_driver import collect_requirements
-        from duckdb_pytest_driver.fixtures import load_fixture
+        from ducktest import collect_requirements
+        from ducktest.fixtures import load_fixture
 
         @pytest.fixture
         def resources(request):
@@ -141,7 +141,7 @@ def test_loading_is_deferred_to_test_run(pytester):
     pytester.makepyfile(
         """
         import pytest
-        from duckdb_pytest_driver import requires, Fixture
+        from ducktest import requires, Fixture
 
         @pytest.mark.skip(reason="lazy: resources must not load for a skipped test")
         @requires(source=Fixture("missing"))

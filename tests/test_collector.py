@@ -100,12 +100,9 @@ def test_ignore_dirs_are_skipped(pytester):
     result.assert_outcomes(passed=1)
 
 
-def test_public_api_and_compat_alias():
-    import duckdb_pytest_driver as d
-    import driver
+def test_public_api():
+    import ducktest as d
 
     for name in d.__all__:
         assert hasattr(d, name), name
-    # the `driver` shim re-exports the same objects
-    assert driver.run_paired is d.run_paired
-    assert driver.plugin is d.plugin
+    assert d.plugin and d.sqllogic  # submodules reachable

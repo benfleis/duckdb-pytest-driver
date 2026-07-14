@@ -1,172 +1,278 @@
-# duckdb-pytest-driver
+# ducktest
 
-A generic **pytest front-end over the duckdb `unittest` (Catch2) binary**. It collects
-`.test` (SQLLogic) files and runs them through the binary, adds Python `initialize`/`finalize`
-drivers, declarative `@requires` provisioning, managed temp dirs, and batching/parallelism. It
-also aims to replace the `THIS_THING_IS_PRESENT` env-var sprawl and ad-hoc credential plumbing
-with Python-side, declarative resolution (env / file / secret tools) — while keeping
-`.test`/`.sql` the central artifact.
+> **Naming:** the tool, CLI, and import are all **`ducktest`**. The published **distribution** stays
+> **`duckdb-pytest-driver`** — so you `uv pip install … duckdb-pytest-driver` but `import ducktest` and
+> run `ducktest` (the same split as `pip install pillow` → `import PIL`). If you had an older checkout
+> installed, **reinstall** to pick up the renamed `ducktest` entry point.
 
-- **Distribution:** `duckdb-pytest-driver` — **import package:** `duckdb_pytest_driver`
-  (a short `driver` compat alias also re-exports the public API).
-- **Auto-registered** pytest plugin via a `pytest11` entry point: no `pytest_plugins` line,
-  no `sys.path` hacks, no symlinks.
+A **pytest front-end for DuckDB, its extensions, and clients**, over the existing **`unittest` (Catch2)
+binary**. It runs the binary's **SQLLogic `.test` files** (C++ `TEST_CASE`s are a planned lane) and adds
+a Python layer: **first-class Python tests**, declarative `@requires` table provisioning, **suite**-based
+selection, credential + service handling, and xdist parallelism.
 
-The full design, model, resource semantics, and roadmap live in **[`docs/`](docs/)**:
-`docs/PRD.md` (why this exists), `docs/FIXTURES.md` (SQL-defined table fixtures, with
-DuckDB as the middleman), `docs/EXTRACT_DRIVER_PLAN.md` (this extraction),
-`docs/NOTES.md`, `docs/PLAN.md`, `docs/DISPOSITIONS.md`. A runnable pure-DuckDB fixture
-demo lives in [`examples/pure-duckdb/`](examples/pure-duckdb/).
+The **`.test` file is the central artifact** — run alone, or paired with a same-stem `.py` sibling. And
+**Python tests are first-class too**: a `.py` can carry its own assertions and skip SQLLogic where that
+fits better — it's a real test, not thin glue.
 
-## Model
+- Auto-registered pytest plugin (a `pytest11` entry point) — no `pytest_plugins`, no `sys.path` hacks.
+- Design & internals: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (the model),
+  **[docs/INTERNALS.md](docs/INTERNALS.md)** (extending), **[docs/PLAN.md](docs/PLAN.md)** (roadmap).
 
-- A **test** is the set of same-stem **members** under `test/**` (e.g. `foo.test` + `foo.py`).
-- A member plays role(s): a **body** (`.test` — `.sql` planned; or a `.py` carrying its own
-  assertions) and/or a **driver** (`.py` — Python `initialize`/`finalize` around the body).
-  Roles aren't file types: a `.py` can be both.
-- A **driverless** body runs directly through the binary; a body with a same-stem `.py`
-  **driver** runs only via that driver (the standalone body is suppressed).
+## The three ways to write a test
 
-## Install
+- **`.test` alone** — SQLLogic, run through the binary. Zero Python. The default.
+- **`.test` + `.py` sibling** — the `.py` provisions/decorates, runs the body via `run_paired`, and may
+  add its own assertions.
+- **`.py` (Python-native)** — own assertions, no SQLLogic. Set **`python_files = test_*.py`** in your
+  `pytest.ini` to auto-collect them (it's off by default only to shield duckdb *core*, which has many
+  non-test `test_*.py` scripts — a clean extension repo just turns it on). Name them `test_*.py` so
+  they stay distinct from `<stem>.py` drivers. All suite / credential / `@requires` machinery applies
+  unchanged — they're ordinary pytest tests.
 
-A pytest plugin must live in the **same environment as pytest** (it's imported by the pytest
-process). Pick one:
+---
 
-```bash
-# editable / dev
-uv pip install -e /path/to/duckdb-pytest-driver          # add [xdist] for -n parallelism
-uv pip install -e '/path/to/duckdb-pytest-driver[xdist]'
+## Getting started
 
-# ephemeral, no venv mutation
-uv run --with duckdb-pytest-driver pytest ...
-```
-
-## Quickstart
-
-In a **built** duckdb (or extension) checkout:
+pytest imports your test modules, so **pytest + its plugins (this driver) + all your test
+dependencies must share one environment.** For any suite with real deps (pyspark, a SQL connector,
+your own package), install them together:
 
 ```bash
-cd <duckdb-checkout>
-duck-test configure .                    # once: writes pytest.ini (settings a plugin can't inject)
-pytest                                   # auto-detects rootdir + test/; finds
-                                         # build/<variant>/test/unittest; collects & runs .test
-pytest --build relassert test/sql/...    # options unchanged
+# a venv holding EVERYTHING pytest needs to import
+uv venv && source .venv/bin/activate
+uv pip install -e /path/to/duckdb-pytest-driver pytest pytest-xdist \
+    pyspark databricks-sql-connector <your test deps>
+pytest
+
+# or let uv build the env from your test project's declared deps
+uv run --group test pytest        # `test` group = pytest, pytest-xdist, the driver, pyspark, …
 ```
 
-Auto-detection: `working_dir` defaults to pytest's **rootdir**; the test tree to
-`<rootdir>/test`. Both are overridable via ini (`duckdb_working_dir`, `duckdb_test_root`) or
-CLI (`--duckdb-working-dir`, `--duckdb-test-root`).
-
-**Test tools are a precondition.** Both the `unittest` binary and the `duckdb` CLI come
-from **one build** — `build/<KIND>/{test/unittest, duckdb}`, selected by `--build <KIND>`
-(or `$BUILD_DIR`); each is individually overridable with `--unittest-bin` / `--duckdb-bin`.
-The resolvers are `find_binary(config, working_dir)` and `find_duckdb(config, working_dir)`;
-a backend that instantiates fixtures uses the latter (see `docs/FIXTURES.md`).
-
-## Writing tests
-
-**Plain SQL (no Python).** Drop a `.test` under `test/sql/<area>/`; it runs through the binary
-automatically:
-
-    # test/sql/demo/answer.test
-    # name: test/sql/demo/answer.test
-    # group: [demo]
-
-    query I
-    SELECT 42;
-    ----
-    42
-
-Run it: `pytest test/sql/demo/answer.test` (or a subtree: `pytest test/sql/demo/`).
-
-**Add Python setup/teardown (a driver).** Put a same-stem `.py` next to the body; it becomes
-the test and drives the body via `run_paired`. The standalone `.test` is then suppressed:
-
-    # test/sql/demo/answer.py
-    import pytest
-    from duckdb_pytest_driver import run_paired
-
-    @pytest.fixture
-    def staged(tmp_path):
-        yield tmp_path            # initialize before / finalize after the yield
-
-    def test_answer(request, staged):
-        run_paired(request)       # drives answer.test through the binary
-
-**Declare external resources (`@requires`).** Declare the need; the backend provisioner
-satisfies it and the body sees provisioned values via `${...}`. Skips cleanly when the
-creds/backend are absent:
-
-    from duckdb_pytest_driver import run_paired, requires
-
-    @requires(source="sales", access="ro")
-    def test_reads_sales(request, resources):
-        run_paired(request, env=resources.env)
-
-Provisioners + helpers live per-extension (e.g. `test/py/<repo>/`); a backend registers its
-provisioner from a small conftest via `register_provisioner`. The resource model is in
-`docs/NOTES.md`; the `@requires`/matrix roadmap in `docs/PLAN.md`.
-
-**Interactive (`--repl`).** `pytest --repl <test>` provisions the single selected test's
-`@requires` resources and drops into a shell attached to them (repl-kind = body-kind: a SQL
-body → duckdb CLI; a pure-`.py` body → python shell, planned). Named `--repl` (not `--cli`) to
-dodge pytest's `--log-cli-*` and stay body-agnostic.
-
-## Consumer config (`duck-test configure`)
-
-A plugin **cannot** inject `addopts` / `testpaths` / `--import-mode` / `python_files`. Run
-**`duck-test configure`** once at the repo root; it writes the base `pytest.ini` (no-op if
-already identical, stops with a diff if it exists and differs — never clobbers a hand-edited
-copy). After that, bare `pytest` works with no other setup:
+**`uv tool install pytest` is dependency-free only.** It's handy for a pure-`.test` (or stdlib-only)
+suite — but its environment is **isolated**, so it will **not** see test deps you install elsewhere.
+Once your tests `import` a third-party package, use a venv/project as above.
 
 ```bash
-duck-test configure .        # writes ./pytest.ini
-pytest                       # just works
+# only for dependency-free suites (no imports beyond the stdlib):
+uv tool install pytest --with pytest-xdist --with-editable /path/to/duckdb-pytest-driver
 ```
 
-The file it writes:
+Then, in a **built** duckdb (or extension) checkout:
 
-```ini
-[pytest]
-addopts = -n auto --dist=loadgroup --import-mode=importlib
-testpaths = test
-python_files =
+```bash
+ducktest configure           # once: writes pytest.ini (testpaths, -n auto, importlib — a plugin
+                             # can't inject these). Re-run to refresh; it won't clobber hand-edits.
+pytest                       # auto-detects rootdir + test/, resolves build/<variant>/test/unittest,
+                             # collects & runs every .test
 ```
 
-- `--import-mode=importlib` is required so same-stem sibling drivers
-  (`table-cmt/read.py` vs `table-plain/read.py`) don't collide.
-- `python_files =` disables pytest's native `test_*.py` pickup — many duckdb repos ship
-  non-pytest scripts named `test_*.py` that `sys.exit` at import, which crashes collection.
-- **No conftest is needed for the base `.test` lane.** Only backends that provision external
-  resources add a small conftest calling `register_provisioner(config, MyProvisioner())`
-  (extension-specific; unchanged protocol).
+Tools come from **one build** (`build/<KIND>/{test/unittest, duckdb}`), selected by `--build <KIND>`
+(or `$BUILD_DIR`); override individually with `--unittest-bin` / `--duckdb-bin`.
 
-## Public API
+### Keep runs fast and uninterrupted — preset creds in the env
 
-`from duckdb_pytest_driver import` (or `from driver import`): `SqlLogicFile`,
-`register_options`, `find_binary`, `find_duckdb`, `has_driver`, `is_driver`, `run_paired`,
-`requires`, `Requirement`, `collect_requirements`, `register_provisioner`, `get_provisioner`,
-`Fixture`, `register_instantiator`, `get_instantiator`, `step`.
+For suites that need credentials, the framework fetches them **once, up front**, prompting your secret
+tool (e.g. `op`) only for what's missing. To avoid *any* prompt — essential for `-n auto` and
+benchmarks, where an interactive pause mid-run is fatal — **have the credentials already in the
+environment**:
 
-## CLI: `duck-test`
+```bash
+source your-databricks-env.sh && pytest -m databricks     # env pre-populated → no prompt
+op run --env-file=creds.env -- pytest -m databricks       # or let your secret tool populate it
+```
 
-`duck-test configure` (above) writes the base config a plugin can't inject, so bare `pytest`
-works afterward — **installing the tool + one `configure` is enough.** A future `duck-test run`
-passthrough (wrapping pytest with those flags on the command line, nothing written to disk) is
-the zero-file-touch variant; not built yet. **North star:** installing the test tool is enough
-and it just works.
+The framework's `available()` check sees them and skips the fetch. A run that *does* need to prompt does
+so at invocation (never minutes in), and a genuinely missing credential **fails loud** — never a silent
+skip.
 
-## How we got here
+## Everyday use (pytest conventions)
 
-Background, kept for context — not needed to use the tool:
+ducktest honors pytest's conventions — there's no new run command to learn; you run **`pytest`** and use
+its flags:
 
-- **Why this shape.** `.test` files run SQL well but offer little setup/fixtures/matrix, so
-  extensions (Delta, Iceberg, Azure) bolted external setup and non-SQL checks onto ad-hoc scripts.
-  Alternatives weighed — more bash glue, an external orchestrator (Dagger/Go/Rust), extending the
-  C++ `unittest` binary — lost to a thin **pytest front-end over the existing binary**, keeping
-  `.test`/`.sql` central and the binary the source of truth. Full rationale: **[`docs/PRD.md`](docs/PRD.md)**.
-- **`pytest-cpp` was evaluated and not used** — the driver invokes the binary and parses its
-  output itself, rather than binding duckdb's (dated) Catch fork via pytest-cpp.
-- The framework began **in-tree** (`test/py/driver/`, consumed by symlink) and was extracted to
-  this standalone installable package; it stays import-agnostic so it can also be vendored back
-  into duckdb core. See **[`docs/EXTRACT_DRIVER_PLAN.md`](docs/EXTRACT_DRIVER_PLAN.md)**.
+```bash
+pytest                       # the default set — your de-facto "smoke" run (bare; no -m needed)
+pytest -m databricks         # a suite by its marker (the driver auto-applies suite markers)
+pytest test/rest             # a path — directory or single file
+pytest -k roundtrip          # substring / boolean-expr match on test names
+pytest -n 8                  # parallelism (-n auto is the default from `ducktest configure`; -n0 serializes)
+pytest -m 'databricks and not slow' -k attach -n 8   # combine freely
+```
+
+A **bare `pytest`** *is* the default set — the union of `default=True` suites — i.e. your de-facto
+**smoke** run (there's no built-in `smoke` mark; the driver auto-applies *suite* markers like
+`databricks`, not `smoke`). The standard vocabulary — `smoke · local · cloud · slow · all` — is a
+**convention** you adopt by naming suites / marking tests; turning it into first-class presets (so
+`-m smoke` "just works") is on the roadmap (PLAN.md § *Named test sets*).
+
+---
+
+## Integrating a backend (worked example — Iceberg)
+
+Getting an extension's `.test` files + Python tests running, some against a live REST catalog that needs
+**credentials** and a **docker service** — with the framework owning selection, credential handling,
+container sharing, and xdist coordination. Concepts are one-lined here and linked to
+**[ARCHITECTURE.md](docs/ARCHITECTURE.md)** for depth.
+
+### 1. A pure-SQLLogic test (no Python)
+
+Drop a body under `test/`; it runs through the binary:
+
+```
+# test/iceberg/scan.test
+require iceberg
+
+statement ok
+CREATE TABLE t AS SELECT * FROM iceberg_scan('...');
+
+query I
+SELECT count(*) FROM t;
+----
+42
+```
+
+```
+pytest test/iceberg/scan.test        # one file
+pytest                               # all .test under test/
+```
+
+That's the whole "hello world". Everything below is only for tests that need **live resources**.
+
+### 2. Declare your suites (`test/conftest.py`)
+
+A **suite** is a named slice of the tests (by directory `path`) with a default-run policy and its
+resources. Declare them in `test/conftest.py` (an *initial* conftest, so the driver sees them on the
+controller up front):
+
+```python
+# test/conftest.py
+def pytest_configure(config):
+    # deferred imports: resolve after the driver has put test/py on sys.path
+    from ducktest import register_suite, credential, service
+    from iceberg_test.rest import (RestProvisioner, REST_SERVICE,
+                                    load_token, token_ok, token_error, have_token)
+
+    register_suite(config, "iceberg_local", path="test/iceberg", marker="iceberg",
+                   default=True)                       # runs on a bare `pytest` (the smoke set)
+
+    register_suite(config, "rest", path="test/rest", marker="rest",
+                   default=False,                      # opt-in: NOT on a bare run
+                   provisioner=RestProvisioner(config),
+                   credentials=[credential("iceberg_rest_token",
+                                           fetch=load_token, validate=token_ok,
+                                           error=token_error, adopt="env",
+                                           available=have_token)],
+                   services=[REST_SERVICE])
+```
+
+For free: the driver auto-applies the suite's `marker` to every `.test`/`.py` under its `path`, so
+`-m rest` / `-m 'not rest'` work; a **bare `pytest`** runs only `default=True` suites and prints a banner
+naming what it deselected. (ARCHITECTURE.md § *Selection*.)
+
+### 3. Credentials (the REST token)
+
+Fetched **once, up front, on the controller**, then broadcast to workers. You supply four callables:
+
+```python
+# iceberg_test/rest.py
+_VARS = ("ICEBERG_REST_URI", "ICEBERG_REST_TOKEN")
+
+def load_token(config=None):            # fetch: env-wins, else your secret manager
+    env = {k: os.environ[k] for k in _VARS if os.environ.get(k)}
+    if all(k in env for k in _VARS):
+        return env
+    return {**_fetch_from_secret_store(), **env}   # e.g. `op read ...`
+
+def token_ok(value):                    # validate: value-based (the fetched dict)
+    return bool(value) and all(value.get(k) for k in _VARS)
+
+def have_token():                       # available: NON-interactive env check (no fetch/op)
+    return all(os.environ.get(k) for k in _VARS)
+
+def token_error():                      # error: shown when creds are missing
+    return "Iceberg REST creds unavailable — set ICEBERG_REST_URI/TOKEN or run the env script."
+```
+
+- `adopt="env"` merges the fetched dict into `os.environ` so the body's `${ICEBERG_REST_TOKEN}` and any
+  SDK see it.
+- A test **selected but unprovisionable fails loud** — never a silent skip. (The paradigm shift.)
+- Predictable selections (`-m rest`, a path) fetch up front. A `-k`-selected rest test falls back to
+  `available()`, then a single-flighted **late fetch** (one prompt across workers, default on).
+  (ARCHITECTURE.md § *Credentials*.)
+
+### 4. A docker service (the REST catalog container)
+
+Provisioned **lazily, on first need**, shared across all workers, stopped once by the controller. Write a
+start/stop plus a session fixture that routes through the store:
+
+```python
+# iceberg_test/rest.py
+from ducktest import service, provision_service
+
+def _start(config):                     # boot it; return a JSON-able block
+    port = _run_container()
+    return {"uri": f"http://127.0.0.1:{port}", "port": port}
+
+def _stop(config):                      # stop it (controller, at session end)
+    _kill_container()
+
+REST_SERVICE = service("iceberg-rest", start=_start, stop=_stop, fixture="iceberg_rest")
+
+@pytest.fixture(scope="session")
+def iceberg_rest(request):
+    block = provision_service(request.config, REST_SERVICE)   # first worker boots; rest share
+    return types.SimpleNamespace(**block)                     # tests read .uri / .port
+```
+
+The first worker to pull `iceberg_rest` boots the container; the rest **block, then reuse** it. If the
+boot fails, every waiter fails fast (no retry). (ARCHITECTURE.md § *Services*.)
+
+### 5. A Python-driven test (provision a table, run the body, assert)
+
+Pair a `.py` **driver** with a same-stem `.test` **body**. The driver declares the tables it needs
+(`@requires`); the `resources` fixture provisions them into an isolated schema; `run_paired` injects the
+resulting env into the body:
+
+```python
+# test/rest/roundtrip.py           (driver — collected; runs the same-stem .test)
+from ducktest import Fixture, requires, run_paired
+
+@requires(source=Fixture("id_name").Seed(None), access="rw")   # a fresh isolated table
+def test_roundtrip(request, iceberg_rest, resources):
+    run_paired(request, env={**resources.env, "REST_URI": iceberg_rest.uri})
+    # ... optional plain-Python assertions here too (the .py can assert, not just drive)
+```
+
+```
+# test/rest/roundtrip.test          (body — SQLLogic; ${...} filled by resources.env)
+statement ok
+ATTACH '${CATALOG}' AS ice (TYPE iceberg, ...);
+
+query I
+SELECT count(*) FROM ice.${SCHEMA}.${TABLE};
+----
+3
+```
+
+The provisioner (registered on the suite) turns each `@requires` into a real table and returns its
+bindings as `resources.env`; `access="rw"` gets an isolated per-test schema (no collisions under xdist).
+The `${CATALOG}/${SCHEMA}/${TABLE}` vocabulary is a **convention you produce in your provisioner** (reuse
+UC's `identity.py` or roll your own) — the driver's `resources` fixture is opaque about the env's keys;
+it isn't yet driver-provided. (ARCHITECTURE.md § *Provisioning*.)
+
+### 6. Run it
+
+```
+pytest                     # local/smoke: iceberg_local only; rest deselected + banner; no creds
+pytest -m rest             # rest suite: token fetched up front (one prompt), container boots once
+pytest test/rest           # same, by path
+pytest -k roundtrip        # -k can't be predicted → token via available()/late-fetch, else fails loud
+```
+
+### What you did NOT write
+
+Selection/marking, the smoke default + banner, the credential fetch-once-broadcast + backstop +
+late-fetch, the container start-lock + sharing + teardown, and all the xdist coordination — those are
+the driver's. You wrote two `register_suite` calls, four cred callables, a start/stop + fixture, a
+provisioner, and your tests. The rest is **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** and
+**[docs/INTERNALS.md](docs/INTERNALS.md)**.

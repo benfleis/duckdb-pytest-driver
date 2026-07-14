@@ -8,7 +8,7 @@ dict -- mirroring what pytest/xdist provide.
 
 import pytest
 
-from duckdb_pytest_driver import get_broadcast, register_broadcast
+from ducktest import get_broadcast, register_broadcast
 
 
 class _Cfg:

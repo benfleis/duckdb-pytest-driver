@@ -24,7 +24,7 @@ REGISTRATION SEAM (the architecture decision):
     A backend registers from the conftest that scopes it (e.g.
     test/sql/databricks/conftest.py) via:
 
-        from driver import register_provisioner
+        from ducktest import register_provisioner
         def pytest_configure(config):
             register_provisioner(config, MyProvisioner())
 

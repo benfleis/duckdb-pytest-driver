@@ -28,17 +28,17 @@ xdist = ["pytest-xdist"]
 Homepage = "https://github.com/duckdb/duckdb"
 
 # Auto-registers the plugin in any pytest process that has this package installed —
-# replaces the old `pytest_plugins = ["driver.plugin"]` line + sys.path hacks.
+# replaces the old `pytest_plugins = ["ducktest.plugin"]` line + sys.path hacks.
 [project.entry-points.pytest11]
-duckdb_driver = "duckdb_pytest_driver.plugin"
+ducktest = "ducktest.plugin"
 
-# `duck-test` front-end (currently: `duck-test configure`) — writes the base pytest
+# `ducktest` front-end (currently: `ducktest configure`) — writes the base pytest
 # config a plugin can't inject, so bare `pytest` works afterward.
 [project.scripts]
-duck-test = "duckdb_pytest_driver.cli:main"
+ducktest = "ducktest.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/duckdb_pytest_driver", "src/driver"]
+packages = ["src/ducktest"]
 
 # Scope the package's own `pytest` run to its self-tests; the runnable examples under
 # examples/ are collected only when targeted explicitly (`pytest examples/...`).

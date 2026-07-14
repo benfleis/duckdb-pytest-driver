@@ -1,6 +1,6 @@
-"""Tests for the generic SQL-def core (duckdb_pytest_driver.sqldef)."""
+"""Tests for the generic SQL-def core (ducktest.sqldef)."""
 
-from duckdb_pytest_driver import split_statements, run_sql_file
+from ducktest import split_statements, run_sql_file
 
 
 def test_split_statements_preserves_semicolons_in_strings():
@@ -14,11 +14,7 @@ def test_split_statements_preserves_semicolons_in_strings():
 
 def test_run_sql_file_subs_comments_and_dry_run(tmp_path):
     f = tmp_path / "def.sql"
-    f.write_text(
-        "-- a leading comment\n"
-        "CREATE TABLE {table_name} (id INT);\n"
-        "INSERT INTO {table_name} VALUES (1)\n"
-    )
+    f.write_text("-- a leading comment\nCREATE TABLE {table_name} (id INT);\nINSERT INTO {table_name} VALUES (1)\n")
 
     calls = []
     stmts = run_sql_file(str(f), calls.append, subs={"table_name": "c.s.t"})

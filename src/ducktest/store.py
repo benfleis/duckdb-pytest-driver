@@ -65,7 +65,7 @@ class _Store:
     def __init__(self):
         self._values = {}  # key -> serialized block (str), present only when SET
         self._errors = {}  # key -> error message, present only when FAILED
-        self._state = {}   # key -> _PENDING | _SET | _FAILED  (absent => never started)
+        self._state = {}  # key -> _PENDING | _SET | _FAILED  (absent => never started)
         self._meta = threading.Lock()
 
     def get(self, key):  # eager read: the SET block (str), or None if not SET
@@ -79,10 +79,10 @@ class _Store:
 
     def begin(self, key):
         """Atomically claim provisioning. Returns (role, payload):
-          ("owner", None)   -> you claimed PENDING; run the factory, then set()/fail().
-          ("set", value)    -> already provisioned; use value.
-          ("failed", error) -> terminal failure; poison pill.
-          ("wait", None)    -> another caller is PENDING; poll begin() again.
+        ("owner", None)   -> you claimed PENDING; run the factory, then set()/fail().
+        ("set", value)    -> already provisioned; use value.
+        ("failed", error) -> terminal failure; poison pill.
+        ("wait", None)    -> another caller is PENDING; poll begin() again.
         """
         with self._meta:
             st = self._state.get(key)

@@ -35,7 +35,7 @@ read or instantiated until a test that *runs* asks for it (via the backend's
 fixture files. Resolution/caching policy is the consumer's `resources` fixture's job,
 not this module's — the loader stays pure so the consumer controls scope.
 
-THREE TIERS of `source=` (driver/requires.py):
+THREE KINDS of `source=` (driver/requires.py):
   * `Fixture("simple_table")` — this module: SQL definition + seed, instantiated via duckdb.
   * a generator (future)      — computed/large data (e.g. tpc*); duckdb -> parquet.
   * an FQN string / Clone     — CTAS from a pre-existing source (only earns its keep at
@@ -287,15 +287,13 @@ def introspect(duckdb_bin: str, db_path: str, *, table: str = None, keys=None) -
         found = _run_json(
             duckdb_bin,
             db_path,
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'main' ORDER BY table_name",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' ORDER BY table_name",
             readonly=True,
         )
         names = [r["table_name"] for r in found]
         if len(names) != 1:
             raise FixtureError(
-                f"expected exactly one table, found {names or 'none'}; "
-                "set a `-- table:` header to disambiguate"
+                f"expected exactly one table, found {names or 'none'}; set a `-- table:` header to disambiguate"
             )
         table = names[0]
     described = _run_json(duckdb_bin, db_path, f'DESCRIBE "{table}"', readonly=True)
@@ -373,7 +371,7 @@ def map_columns(table: Table, type_map: dict, *, on_missing: str = "error") -> l
                 )
             target = col.type
         # carry parameterization (e.g. DECIMAL(10,2)) through when the target keeps it
-        params = col.type[len(base):] if col.type[len(base):].startswith("(") else ""
+        params = col.type[len(base) :] if col.type[len(base) :].startswith("(") else ""
         out.append((col.name, target + (params if "(" not in target else "")))
     return out
 

@@ -1,7 +1,8 @@
 # PLAN — roadmap, TODOs, open questions
 
-Forward-looking only; "what is" lives in README.md / NOTES.md. Problem statement & pitch:
-`PRD.md` at the pytest repo root.
+Forward-looking only. "What is" lives in **[README.md](../README.md)** (use + integrate),
+**[ARCHITECTURE.md](ARCHITECTURE.md)** (the model), and **[INTERNALS.md](INTERNALS.md)** (extending
+the driver).
 
 ## Status snapshot
 
@@ -19,6 +20,20 @@ Forward-looking only; "what is" lives in README.md / NOTES.md. Problem statement
 - SoT-by-symlink consumption (`conftest.py`, `pytest.ini`, `test/py/driver`); `@requires` +
   `resources` fixture + provisioner registry; UC scaffold (`test/py/uc`).
 - Module split: `driver.sqllogic` (the `.test` lane) vs `driver.plugin` (harness / hooks).
+- **Suite-based selection** — `register_suite` (path-defined groups; auto-marker so `-m <suite>` selects
+  `.test` bodies too; a bare `pytest` runs the default set (smoke) + deselects the rest with a banner).
+  Declared in `test/conftest.py`; vanilla repos unaffected.
+- **Shared-state store** — a `multiprocessing.managers` carrier the controller starts pre-fork (workers
+  connect via env); per-key **write-once/read-many state machine** (`pending → set | failed`, **poison
+  pill** = waiters fail fast, no retry); spawn-safe (native socket, import-clean).
+- **Up-front credentials** — `credential(...)` fetched ONCE on the controller (prompt at invocation),
+  published to the store + env-adopted; a per-test **backstop** resolves store → `available()` (env,
+  non-interactive) → **single-flight late-fetch** (one prompt across workers; `late_fetch=` opt-out) →
+  **fail loud**. Paradigm shift: a *selected* test that can't provision FAILS, never skips.
+- **Lazy services** — `service(...)` provisioned first-need via the store's single-flight (shared across
+  workers), stopped once by the controller; retires the OSS filesystem lock + `reclaim_stale`.
+- **UC migrated** — creds + selection + the OSS container all on the driver (`test/conftest.py`
+  `register_suite`s; the hand-rolled subtree machinery deleted).
 
 **Pending / to verify**
 
@@ -28,8 +43,17 @@ Forward-looking only; "what is" lives in README.md / NOTES.md. Problem statement
   planned (repl-kind = body-kind). _(planned)_
 - **uuid → `timestamp-mnemonic` / per-invocation → per-test** temp subdir — C++ change
   unbuilt; today the binary appends a per-invocation `<uuid>`. _(unbuilt)_
-- **py-exclusive lane** — `python_files=` is off (drop-in robustness); re-scope to let pure
-  `.py` tests collect in a normal run. _(pending)_
+- **Python-native lane — `ducktest configure --test-kinds`** — pure-`.py` tests already collect once
+  `python_files = test_*.py` is set (verified); today that's a manual `pytest.ini` edit. Add a
+  `configure --test-kinds sqllogic,python[,cpp]` flag that writes the right `python_files` per declared
+  lane (default sqllogic-only, keeping `python_files` empty to shield duckdb core's non-test
+  `test_*.py` scripts). Record the choice (header marker) so `configure` re-runs preserve it. _(the
+  py-exclusive-lane ergonomics; the lane itself works today)_
+- **`ducktest` tool scope** _(decided)_ — `ducktest` stays a **config tool** (`configure`; env-agnostic,
+  fine as an isolated `uv tool`). **Running is `pytest` / `uv run pytest`** — pytest + the driver plugin
+  + the test deps must share one env, and `uv run` already does local-venv resolution, so don't reinvent
+  it. A future `ducktest run` (if any) should be a **thin `uv run pytest` shim**, not its own env
+  manager. Keep the run path clearly documented in the README.
 - `${TEST_DIR_BASE}` substitutes empty in a `.test` (env-refresh timing); `__TEST_DIR__`
   (live) works — pick a live token / general var-injection channel. _(open)_
 - **`.test_slow` files are silently ignored** — the collector matches the suffix `.test`
@@ -41,8 +65,6 @@ Forward-looking only; "what is" lives in README.md / NOTES.md. Problem statement
   design/handle tags like slow
 
 ## v0-dev sprints (post-commit, near-term)
-
-Design detail for the first two: **`DESIGN-v0-collection-and-profiles.md`**.
 
 1. **Collection trust — scan-reconcile** _(the "100% trust" blocker)_. Collection is FS-only today;
    the binary's registered set (via `unittest -l`) differs — `.test_slow`/`.test_coverage`,
@@ -59,8 +81,9 @@ Design detail for the first two: **`DESIGN-v0-collection-and-profiles.md`**.
 4. **`.sql` body lane** _(planned, marked in code)_. Extend the collector gate + `_stem_path`
    pairing once the lane is real; docstrings currently mark it "`.sql` planned".
 5. **Labeled configs — `--profile`**. Named bundles (env + `--unittest-args` + provisioner
-   selection) resolved above the binary; delta (minio/s3/gh-workflows) + iceberg need it. Registry
-   in conftest (`register_profile`) or a declarative file. Design in the doc above.
+   selection) resolved above the binary; delta (minio/s3/gh-workflows) + iceberg need it. Open:
+   registry home (conftest `register_profile` vs a declarative file — lean declarative for
+   shareability), and profile × `@requires`/matrix interaction (a profile may pin an axis).
 
 ## Roadmap (future)
 
@@ -71,15 +94,6 @@ Design detail for the first two: **`DESIGN-v0-collection-and-profiles.md`**.
 - **`.cpp` lane** — `--cpp` + `unittest -l` as a second gather source, deduped against the FS
   scan. Deferrable.
 - **Cutover** — per-extension; `.test` files stay until each extension is stable on pytest.
-- **Credentials** — env-first; resolve secrets in the launching shell (`op run -- pytest …`),
-  not inside pytest (see NOTES "global, once, before any worker"). The per-test hook only
-  _verifies_ + skips.
-  - _[debug]_ `op` prompted REPEATEDLY when fetched in-pytest — it should cache the authN and
-    ask once itself. Root-cause before any re-introduction (likely each xdist worker process
-    invokes `op` with no shared session; once-before-fork is the fix).
-  - _[reconsider]_ re-inject an in-pytest creds fetch — IF `op` caches correctly (one prompt),
-    auto-fetch simplifies UX (bare `pytest` "just works" for databricks) without the popup
-    storm. Gated on the debug above.
 - **Seed reuse** — standardize the OSS seed on the convention table `id_name (id INT, name
 STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provisioning stays
   one shape. (The checkpoint port reuses `id_name`.)
@@ -95,6 +109,33 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
   error-in-query is opaque. Likely either the assertion-fail path doesn't thread the combined output
   through, or the `[TEST_EVENT]` data is empty for the unexpected-error-in-query case. Needs one
   instrumented run (capturing the raw subprocess output) to pin which.
+- **Benchmark `solo` run-mode** — a `register_suite(..., solo=True)` (or a `benchmark` convention) that
+  forces single-process / stable-timing for benchmark suites; service-backed, no creds. _(from TIERING)_
+- **Shared `resources` library** — ship ready-made `service()`/`credential()` descriptors (minio /
+  azurite / docker + s3 / 1Password) in `ducktest.resources` so a backend imports instead of
+  re-writing them. _(from TIERING)_
+- **Declarative suite home** — allow suite/resource declaration from an ini/TOML file, not only
+  `register_suite` in `test/conftest.py`. _(from TIERING)_
+- **Named test sets as first-class presets (`smoke`/`local`/`cloud`/`slow`/`all`)** — today `smoke` ==
+  the default-scan set (the union of `default=True` suites). But a named set won't always map to a
+  high-level suite; it should be definable as an arbitrary **preset** — a marker, a `-k`-style name
+  expression, an explicit test list, or a union of those — decoupled from suite `default=` flags. Design
+  the declaration (e.g. conftest `register_set(name, marks=/keyword=/tests=)` or a declarative file) and
+  how it composes with the default-scan + banner and with `--profile`. Turns the standard set vocabulary
+  (smoke·local·cloud·slow·all) into real, composable selectors rather than just suite aliases.
+- **Iceberg onboarding** — the first *external* backend to exercise the suite/resource API (today only UC
+  does), validating that the surface generalizes. _(from TIERING)_
+- **Min duckdb (unittest) version contract** _[real, mechanism TBD]_ — the driver assumes unittest flags
+  (`--emit-test-events`, `--temp-dir-*`, `--select-tag`); a stale binary errors `Unrecognised token:
+  --temp-dir-base`. A standalone release needs a pinned/probed floor (probe `unittest --version`/features
+  or a documented minimum). _(from EXTRACT_DRIVER_PLAN)_
+- **Versioning scheme — decide NOW** _[process]_ — the driver moves fast and will break consumers; pin a
+  version scheme + policy (semver vs date-based; how API / `pytest.ini`-stub breaks are signaled) before
+  more repos depend on it. Pairs with the min-duckdb-version contract above.
+- **Scope-model unification** — map the temp-dir `create × destroy × scope` triple onto pytest fixture
+  scopes AND the `@requires` resource model (one lifecycle vocabulary, not two); acquire-mode
+  (shared/exclusive == ro/rw) generalizes the same triple. (Also separable: an absolute
+  `$TMP/duckdb-test-temp` default base.) _(from DISPOSITIONS)_
 
 ## C++ queued (the opt-in runner changes)
 
@@ -136,7 +177,7 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
     fix would let the natural `[]` array load. No PR strictly needed.
   - **dir flag** — **HOLD.** `--external-test-dir` == create=never/destroy=never + `random`
     placement; finalize the placement set (`random`/`exact`/`stem`) + the create×destroy×scope
-    contract first so the merged C++ surface is final. See **DISPOSITIONS.md**.
+    contract first so the merged C++ surface is final.
 - (optional) move the destroy-on-success disposition down into the binary.
 - **WAIT / debugger-attach primitive** — a way to pause a specific executing test (a `.test`
   directive or runner flag: wait-on-signal / sleep / wait-for-stdin) so `lldb` can attach to
@@ -149,14 +190,14 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
   backend-interpreted dict, e.g. `commit`/`storage`) / `name`) + `@requires_matrix(...)` to fan
   a body across cells + `initialize` / `run` / `finalize` hooks + a `Context` (`spark`, `table_fq_name`,
   `table.DROP(...)`, per-cell vars). The resource model — acquire-mode × create/destroy
-  disposition — is in NOTES.
+  disposition — see ARCHITECTURE.md § *Provisioning*.
 - The `Context` surface is **not yet specified** — await the external uses doc.
 - Matrix maps onto pytest parametrize; **isolation = lifecycle** (cheap / OSS) vs
   **namespace** (slow / DB), the provisioner's choice; the run-id is the shared namespace token.
 - Lifecycle naming is `initialize` / `run` / `finalize` (not setup/teardown — hooks may
   assert); two layers (cell ⊃ test); ordering is LIFO.
-- **Cell-schema granularity — per-RUN (documented) vs per-TEST (implemented).** NOTES says the
-  run-id IS the namespace (`temp_<run-id>`, shared), but `_provision_token` appends a per-nodeid
+- **Cell-schema granularity — per-RUN (documented) vs per-TEST (implemented).** The design intent was
+  the run-id IS the namespace (`temp_<run-id>`, shared), but `_provision_token` appends a per-nodeid
   `sha1[:6]` → per-TEST schemas (`temp_<run-id>_<hash>`). That hash is currently **load-bearing**:
   the `@requires` lane is NOT batched (batching is sqllogic-only + size-based) and has no dep-aware
   scheduling, so the per-test name is the sole cross-worker collision guard. **Dep-aware
@@ -185,3 +226,38 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
    block. So filename encoding is the right lever for tags that gate COLLECTION (`slow` = don't
    even collect by default); header directives suit richer metadata read only once a file is in
    scope. Likely filename-for-collect-gates + headers-for-config, not one replacing the other.
+
+## Fixtures — future kinds (folded from the retired FIXTURES.md)
+
+Built today: the `Fixture` named ref (lazy, no I/O at collection); the SQL format + loader + duckdb
+canonicalizer + `Instantiator` seam + `DuckDBInstantiator` + `map_columns` (see ARCHITECTURE.md §
+*Fixtures*). Next:
+
+- **`domain=` — a shared fixture library.** A named, registered fixture root so fixtures cross repos:
+  duckdb core ships a large set; an external repo submodules core (+ others) and
+  `register_fixture_root(config, path, domain="core")`, then references `Fixture("t", domain="core")`.
+  Default (no `domain=`) = the registering conftest's root(s), in order.
+- **Explicit-kind constructors** — `Fixture.parquet(...)` (`… AS SELECT * FROM read_parquet`),
+  `Fixture.gen("tpch", sf=1)` (`CALL dbgen`); bare `Fixture(name)` stays the SQL default. Each is just a
+  different duckdb *body*, so canonicalization is invariant.
+- **Seed sources / def-vs-data split** — generalize `.Seed()` from `None`/literal rows to a lazily
+  resolved seed source: a generator (`.Seed(Gen("tpch", sf=1))`) or another fixture's rows
+  (`.Seed(Fixture("big").data)` — one table *definition*, rows borrowed, structurally proving the same
+  shape). Same "data producer" abstraction as `source=`; one row source plugs into either slot.
+- **`Clone("cat.sch.tbl")`** — the escape hatch (CTAS from a live catalog table); the one non-self-
+  contained kind, kept a separate marker (today still a bare FQN string for back-compat). Largely
+  vestigial once `.gen` covers "large data self-containedly."
+- **Backend instantiators / consumers** — a Spark/Databricks instantiator (type map + rows-as-VALUES
+  into the existing 2×2); route the OSS + Databricks *run* paths through `resources`/`Fixture` so the
+  driver `.py` collapses to one shape across backends.
+
+### Archive / directory fixtures (a deliberate exception)
+
+Some fixtures are a **pre-formatted directory tree** (zip/archive) a test runs against as-is — e.g.
+Delta Acceptance Tests (`_delta_log/`, parquet). Self-contained, so a `Fixture` *kind*, but its
+instantiation is "unpack a dir," not "make a table." Keep the kind/instantiator seam general enough
+that `instantiate()` can yield **either a table (duckdb middleman) or a directory** (unpack into a
+managed per-test TEMP_DIR, torn down after) — plus an optional **artifact-capture** teardown hook
+(the run's output stored for an external diff) — **without** bending the common table path around this
+case. Archive is the one kind that bypasses the DuckDB middleman (no schema/rows to canonicalize);
+`resources` must then expose heterogeneous kinds (table → `Table`, archive → path).

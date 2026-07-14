@@ -8,7 +8,7 @@ marker dumb is deliberate: the framework stays portable across extensions.
 
 Usage (in a driver `.py`):
 
-    from driver import requires
+    from ducktest import requires
 
     @requires(source="${CATALOG}.source.simple_table",
               access="rw", properties={"commit": "cmt", "storage": "managed"})

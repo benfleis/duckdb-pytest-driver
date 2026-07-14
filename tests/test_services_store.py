@@ -28,7 +28,7 @@ def test_service_started_once_and_stopped_once(pytester, monkeypatch):
 
         import pytest
 
-        from duckdb_pytest_driver import register_tier, service, get_tiers, provision_service
+        from ducktest import register_suite, service, get_suites, provision_service
 
 
         def _start(config):
@@ -41,12 +41,12 @@ def test_service_started_once_and_stopped_once(pytester, monkeypatch):
                 f.write(str(os.getpid()) + "\\n")
 
         def pytest_configure(config):
-            register_tier(config, "svc_tier", default=True,
+            register_suite(config, "svc_suite", default=True,
                 services=[service("dummy", start=_start, stop=_stop, fixture="dummy_service")])
 
         @pytest.fixture(scope="session")
         def dummy_service(request):
-            svc = next(s for t in get_tiers(request.config) for s in t.services if s.key == "dummy")
+            svc = next(s for t in get_suites(request.config) for s in t.services if s.key == "dummy")
             return provision_service(request.config, svc)
         """,
     )
@@ -80,7 +80,7 @@ def test_service_provisions_under_k_selection(pytester, monkeypatch):
 
         import pytest
 
-        from duckdb_pytest_driver import register_tier, service, get_tiers, provision_service
+        from ducktest import register_suite, service, get_suites, provision_service
 
 
         def _start(config):
@@ -89,12 +89,12 @@ def test_service_provisions_under_k_selection(pytester, monkeypatch):
             return {"url": "svc://local"}
 
         def pytest_configure(config):
-            register_tier(config, "svc_tier", default=True,
+            register_suite(config, "svc_suite", default=True,
                 services=[service("dummy", start=_start, fixture="dummy_service")])
 
         @pytest.fixture(scope="session")
         def dummy_service(request):
-            svc = next(s for t in get_tiers(request.config) for s in t.services if s.key == "dummy")
+            svc = next(s for t in get_suites(request.config) for s in t.services if s.key == "dummy")
             return provision_service(request.config, svc)
         """,
     )
@@ -109,7 +109,7 @@ def test_service_provisions_under_k_selection(pytester, monkeypatch):
             assert True
         """,
     )
-    # -k selects only test_wanted; args can't predict the tier, but the fixture request provisions it.
+    # -k selects only test_wanted; args can't predict the suite, but the fixture request provisions it.
     # (xdist doesn't surface `deselected` in the controller aggregate, so assert only passed + the log.)
     result = pytester.runpytest_subprocess("-n", "2", "-k", "wanted", "-p", "no:cacheprovider")
     result.assert_outcomes(passed=1)

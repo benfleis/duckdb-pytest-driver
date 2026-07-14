@@ -1,9 +1,9 @@
-"""Self-tests for Phase-1 tier selection: auto-marker + default-scan deselection + banner.
+"""Self-tests for Phase-1 suite selection: auto-marker + default-scan deselection + banner.
 
 Offline: no duckdb/op/docker/network. Each case spins up an isolated inner pytest run (subprocess,
 via pytester) so REAL hook ordering — our auto-marker vs pytest's builtin `-m`/`-k` deselection —
-is exercised, not a mocked config. An inner ``test/conftest.py`` registers two tiers: a default
-"smoke" tier and a non-default "cloud" tier (path + marker). Dummy items live in and out of the
+is exercised, not a mocked config. An inner ``test/conftest.py`` registers two suites: a default
+"smoke" suite and a non-default "cloud" suite (path + marker). Dummy items live in and out of the
 cloud path; ``cloud_body.py`` carries NO Python marker (only path membership) to prove the
 auto-marker beats `-m cloud` filtering the way a real `.test`/SQLLogic body would.
 
@@ -13,7 +13,7 @@ Proven:
   * -m 'not cloud'        -> cloud deselected.
   * a path into the cloud dir -> cloud selected, NO banner (explicit selection).
   * -k <substr>           -> no default deselection (respected verbatim).
-  * vanilla (no tiers)    -> identical to today: no banner, nothing deselected.
+  * vanilla (no suites)    -> identical to today: no banner, nothing deselected.
 """
 
 import textwrap
@@ -25,14 +25,14 @@ def _write(pytester, name, body):
     p.write_text(textwrap.dedent(body))
 
 
-# A conftest registering a default "smoke" tier and a non-default "cloud" tier (path + marker).
-_TIER_CONFTEST = """
-    from duckdb_pytest_driver import register_tier
+# A conftest registering a default "smoke" suite and a non-default "cloud" suite (path + marker).
+_SUITE_CONFTEST = """
+    from ducktest import register_suite
 
 
     def pytest_configure(config):
-        register_tier(config, "smoke", path="test/smoke", default=True)
-        register_tier(config, "cloud", path="test/cloud", default=False)
+        register_suite(config, "smoke", path="test/smoke", default=True)
+        register_suite(config, "cloud", path="test/cloud", default=False)
 """
 
 # Dummy items: two smoke, one cloud with a Python @pytest.mark.cloud, and one cloud "body" with NO
@@ -49,11 +49,11 @@ _CLOUD_BODY = "def test_cloud_body(): pass"  # no marker: only path membership -
 
 
 def _lay_out(pytester):
-    _write(pytester, "test/conftest.py", _TIER_CONFTEST)
+    _write(pytester, "test/conftest.py", _SUITE_CONFTEST)
     _write(pytester, "test/smoke/test_smoke_a.py", _SMOKE_A)
     _write(pytester, "test/smoke/test_smoke_b.py", _SMOKE_B)
     _write(pytester, "test/cloud/test_cloud_marked.py", _CLOUD_MARKED)
-    # A body-like item: carries NO Python @pytest.mark, belongs to the cloud tier only by path
+    # A body-like item: carries NO Python @pytest.mark, belongs to the cloud suite only by path
     # (the proxy for a `.test`/SQLLogic body). The auto-marker must give it the `cloud` marker.
     _write(pytester, "test/cloud/test_cloud_body.py", _CLOUD_BODY)
 
@@ -68,7 +68,7 @@ def test_bare_run_deselects_cloud_and_shows_banner(pytester):
     # smoke kept (2), cloud (2) deselected on the bare/default run.
     result.assert_outcomes(passed=2, deselected=2)
     result.stdout.fnmatch_lines(
-        ["*duck-test tiers: default set selected; deselected: cloud (pass a path or -m cloud to include)*"]
+        ["*duck-test suites: default set selected; deselected: cloud (pass a path or -m cloud to include)*"]
     )
 
 
@@ -79,7 +79,7 @@ def test_m_cloud_selects_cloud_including_markerless_body(pytester):
     result = _run(pytester, "-m", "cloud")
     result.assert_outcomes(passed=2, deselected=2)  # 2 cloud selected, 2 smoke deselected by -m
     # No default-scan banner on an explicit selection.
-    result.stdout.no_fnmatch_line("*duck-test tiers: default set selected*")
+    result.stdout.no_fnmatch_line("*duck-test suites: default set selected*")
 
 
 def test_m_not_cloud_deselects_cloud(pytester):
@@ -92,7 +92,7 @@ def test_path_into_cloud_selects_cloud_no_banner(pytester):
     _lay_out(pytester)
     result = _run(pytester, "test/cloud")
     result.assert_outcomes(passed=2)  # both cloud items run
-    result.stdout.no_fnmatch_line("*duck-test tiers: default set selected*")
+    result.stdout.no_fnmatch_line("*duck-test suites: default set selected*")
 
 
 def test_k_selection_is_respected_verbatim(pytester):
@@ -102,7 +102,7 @@ def test_k_selection_is_respected_verbatim(pytester):
     _lay_out(pytester)
     result = _run(pytester, "-k", "smoke")
     result.assert_outcomes(passed=2, deselected=2)
-    result.stdout.no_fnmatch_line("*duck-test tiers: default set selected*")
+    result.stdout.no_fnmatch_line("*duck-test suites: default set selected*")
 
 
 def test_k_cloud_selects_cloud_no_default_scan(pytester):
@@ -110,13 +110,13 @@ def test_k_cloud_selects_cloud_no_default_scan(pytester):
     _lay_out(pytester)
     result = _run(pytester, "-k", "cloud")
     result.assert_outcomes(passed=2, deselected=2)  # 2 cloud kept, 2 smoke dropped by -k
-    result.stdout.no_fnmatch_line("*duck-test tiers: default set selected*")
+    result.stdout.no_fnmatch_line("*duck-test suites: default set selected*")
 
 
-def test_vanilla_no_tiers_is_unaffected(pytester):
-    # No tier declared anywhere -> vanilla: nothing deselected, no banner, everything runs.
+def test_vanilla_no_suites_is_unaffected(pytester):
+    # No suite declared anywhere -> vanilla: nothing deselected, no banner, everything runs.
     _write(pytester, "test/test_a.py", "def test_a(): pass")
     _write(pytester, "test/test_b.py", "def test_b(): pass")
     result = _run(pytester)
     result.assert_outcomes(passed=2)
-    result.stdout.no_fnmatch_line("*duck-test tiers*")
+    result.stdout.no_fnmatch_line("*duck-test suites*")

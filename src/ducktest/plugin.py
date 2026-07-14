@@ -9,7 +9,7 @@ collection/run/report hooks. The SQLLogic `.test` *lane* (collecting and running
 files through the binary) lives in `sqllogic`, which this module imports.
 
 Import-name-agnostic on purpose (dual-mode): the same code works pip-installed as
-``duckdb_pytest_driver`` OR vendored back into ``duckdb/test/py/``. Layout, model, and
+``ducktest`` OR vendored back into ``duckdb/test/py/``. Layout, model, and
 consumer setup: see the repo README + docs/.
 """
 
@@ -26,7 +26,7 @@ from . import store
 from .fixtures import duckdb_cli_for
 from .mnemonic import run_id as _make_run_id
 from .steps import step
-from .tiers import get_tiers
+from .suites import get_suites
 from .sqllogic import (
     SqlLogicFile,
     SqlLogicItem,
@@ -279,7 +279,7 @@ def find_binary(config, working_dir):
         found = _built_variants(working_dir)
         if not found:
             raise pytest.UsageError(
-                f"--build latest: no unittest binary in any of {_variants_listing()} " f"(under {working_dir})."
+                f"--build latest: no unittest binary in any of {_variants_listing()} (under {working_dir})."
             )
         return max(found, key=lambda t: t[2])[1]
 
@@ -300,11 +300,7 @@ def find_duckdb(config, working_dir):
         path = os.path.abspath(explicit)
     else:
         build_dir = os.environ.get("BUILD_DIR")
-        path = (
-            os.path.join(build_dir, "duckdb")
-            if build_dir
-            else duckdb_cli_for(find_binary(config, working_dir))
-        )
+        path = os.path.join(build_dir, "duckdb") if build_dir else duckdb_cli_for(find_binary(config, working_dir))
     if not os.path.isfile(path):
         raise pytest.UsageError(
             f"duckdb CLI not found at {path}. The test tools are a precondition: build "
@@ -315,15 +311,15 @@ def find_duckdb(config, working_dir):
 
 
 def pytest_report_header(config):
-    """Session-header lines: the mandatory tier banner (always) + a verbose (`-v`) tool trace.
+    """Session-header lines: the mandatory suite banner (always) + a verbose (`-v`) tool trace.
 
-    The tier banner (default-scan deselection) is the north-star "loud" signal — shown whenever a
-    tier is deselected, NOT -v-gated. The tool trace (which build was picked — e.g.
+    The suite banner (default-scan deselection) is the north-star "loud" signal — shown whenever a
+    suite is deselected, NOT -v-gated. The tool trace (which build was picked — e.g.
     build/relassert/{test/unittest, duckdb}) stays -v-gated. Both are controller-side (report_header
     runs on the controller) and best-effort: a tool that can't be resolved yet is simply omitted.
     """
     lines = []
-    banner = _tier_banner(config)
+    banner = _suite_banner(config)
     if banner:
         lines.append(banner)
     if int(config.getoption("verbose", default=0) or 0) >= 1:
@@ -397,11 +393,11 @@ def pytest_load_initial_conftests(early_config, parser, args):
     # now. hookwrapper: our pre-yield runs before pytest actually loads those conftests. (Bare
     # invocation loads them during collection, after configure — pytest_configure covers that.)
     _ensure_pythonpath(early_config)
-    # Register the trylast tier controller now (pre-configure) so its pytest_configure runs AFTER
-    # the consumer `test/conftest.py` has registered its tiers — a plugin registered here joins the
+    # Register the trylast suite controller now (pre-configure) so its pytest_configure runs AFTER
+    # the consumer `test/conftest.py` has registered its suites — a plugin registered here joins the
     # normal ordering, whereas one registered mid-configure would replay too early. Idempotent.
-    if not early_config.pluginmanager.hasplugin(_TIER_PLUGIN_NAME):
-        early_config.pluginmanager.register(_TierController(), _TIER_PLUGIN_NAME)
+    if not early_config.pluginmanager.hasplugin(_SUITE_PLUGIN_NAME):
+        early_config.pluginmanager.register(_SuiteController(), _SUITE_PLUGIN_NAME)
     yield
 
 
@@ -484,7 +480,7 @@ def _run_dir(config):
 # services, which are first-worker-wins). Register from a controller-side pytest_configure in an
 # INITIAL conftest, so it runs before workers are set up.
 _BROADCAST_FACTORIES = "_duckdb_broadcast_factories"  # controller: {key: factory(config) -> picklable}
-_BROADCAST_CACHE = "_duckdb_broadcast_cache"          # controller: {key: computed value}
+_BROADCAST_CACHE = "_duckdb_broadcast_cache"  # controller: {key: computed value}
 
 
 def register_broadcast(config, key, factory):
@@ -524,23 +520,23 @@ def pytest_configure_node(node):
         node.workerinput[key] = get_broadcast(node.config, key)
 
 
-# --- shared-state store lifecycle + tier controller --------------------------------------
+# --- shared-state store lifecycle + suite controller --------------------------------------
 # The store (multiprocessing.managers; see store.py) is the uniform controller<->worker carrier
-# for tier resources: credentials (eager, published pre-fork) and services (lazy, first-need). The
+# for suite resources: credentials (eager, published pre-fork) and services (lazy, first-need). The
 # controller starts it in a TRYLAST pytest_configure — after consumer conftests have registered
-# their tiers — but ONLY when a tier declares a credential or service. Vanilla stays vanilla: with
+# their suites — but ONLY when a suite declares a credential or service. Vanilla stays vanilla: with
 # nothing declared, no manager starts, no env var appears, and nothing about a bare run changes.
 # The address+authkey go into os.environ pre-fork so workers inherit them and connect lazily.
-_TIER_PLUGIN_NAME = "duckdb_driver_tiers"
-_STORE_MGR = "_duckdb_store_mgr"        # controller: the SyncManager (owns the server process)
-_STORE = "_duckdb_store"                # controller/worker: the cached store proxy
+_SUITE_PLUGIN_NAME = "ducktest_suites"
+_STORE_MGR = "_duckdb_store_mgr"  # controller: the SyncManager (owns the server process)
+_STORE = "_duckdb_store"  # controller/worker: the cached store proxy
 _STARTED_SERVICES = "_duckdb_started_services"  # controller: keys of services it started (teardown)
 
 
-def _any_tier_has_resources(config):
-    """True iff some registered tier declares a credential or a service (the store's raison
+def _any_suite_has_resources(config):
+    """True iff some registered suite declares a credential or a service (the store's raison
     d'être). The vanilla guard: false => no store, no env, no behavior change."""
-    return any(t.credentials or t.services for t in get_tiers(config))
+    return any(t.credentials or t.services for t in get_suites(config))
 
 
 def get_store(config):
@@ -569,7 +565,7 @@ def get_store(config):
 def _no_explicit_selection(config):
     """True iff the invocation gave no path arg, no ``-k``, and no ``-m`` (a bare run).
 
-    The single predicate behind both the eager-cred gate (``_tier_reachable``'s bare branch) and
+    The single predicate behind both the eager-cred gate (``_suite_reachable``'s bare branch) and
     the Phase-1 default-scan deselection — so "bare" means the same thing to creds and to selection.
     """
     opt = config.option
@@ -580,15 +576,15 @@ def _no_explicit_selection(config):
     )
 
 
-def _tier_reachable(config, tier):
-    """PREDICTIVE (from args, pre-collection) gate for whether ``tier`` is plausibly in play.
+def _suite_reachable(config, suite):
+    """PREDICTIVE (from args, pre-collection) gate for whether ``suite`` is plausibly in play.
 
     Deliberately smaller than full collection-time selection — enough to decide up-front (pre-fork)
-    credential fetching and service gating without collecting, AND (Phase 1) which tiers a bare run
+    credential fetching and service gating without collecting, AND (Phase 1) which suites a bare run
     default-scans out. Reachable if:
-      (a) NO selection was given (no path args, no -k, no -m) and the tier is a default tier; or
-      (b) a path arg intersects the tier's path (ancestor-or-descendant either way); or
-      (c) a -m expression matches the tier's marker.
+      (a) NO selection was given (no path args, no -k, no -m) and the suite is a default suite; or
+      (b) a path arg intersects the suite's path (ancestor-or-descendant either way); or
+      (c) a -m expression matches the suite's marker.
     ``-k`` is NOT predictable here (needs collected item names) -> never fetches on -k alone; the
     generic pytest_runtest_setup backstop covers a -k-selected credentialed test.
     """
@@ -596,20 +592,20 @@ def _tier_reachable(config, tier):
     file_or_dir = list(getattr(opt, "file_or_dir", None) or [])
     markexpr = getattr(opt, "markexpr", None) or ""
 
-    # (a) bare invocation -> the default tiers are reachable (exact).
+    # (a) bare invocation -> the default suites are reachable (exact).
     if _no_explicit_selection(config):
-        return bool(tier.default)
+        return bool(suite.default)
 
-    # (b) path intersection: a path arg is an ancestor-or-descendant of the tier's dir.
-    if tier.path and file_or_dir:
-        tpath = os.path.normpath(tier.path)
+    # (b) path intersection: a path arg is an ancestor-or-descendant of the suite's dir.
+    if suite.path and file_or_dir:
+        tpath = os.path.normpath(suite.path)
         for arg in file_or_dir:
             apath = os.path.normpath(arg.split("::", 1)[0])
             if apath == tpath or _is_subpath(apath, tpath) or _is_subpath(tpath, apath):
                 return True
 
-    # (c) -m marker expression matches the tier's marker.
-    if markexpr and tier.marker and _markexpr_matches(markexpr, tier.marker):
+    # (c) -m marker expression matches the suite's marker.
+    if markexpr and suite.marker and _markexpr_matches(markexpr, suite.marker):
         return True
 
     return False
@@ -626,11 +622,11 @@ def _markexpr_matches(markexpr, marker):
     """Whether a ``-m`` expression could select an item carrying ``marker``.
 
     Predictive: models an item that carries just ``marker`` and asks pytest's own Expression engine
-    whether the ``-m`` expr selects it (so ``not databricks`` correctly reports the databricks tier
+    whether the ``-m`` expr selects it (so ``not databricks`` correctly reports the databricks suite
     as unreachable). This is the deliberate *mirror* of the real collection-time selection: Phase 1
-    auto-applies each tier's marker to its members, so pytest's builtin ``-m`` deselection is the
+    auto-applies each suite's marker to its members, so pytest's builtin ``-m`` deselection is the
     authority at collection, and this predictive check uses the same ``Expression`` engine — the two
-    agree by construction (same args -> same tiers, so creds are fetched for exactly the tiers that
+    agree by construction (same args -> same suites, so creds are fetched for exactly the suites that
     run). Falls back to a coarse substring check only if the internal API shifts.
     """
     try:
@@ -642,11 +638,11 @@ def _markexpr_matches(markexpr, marker):
         return marker in markexpr  # coarse fallback (see TODO above)
 
 
-class _TierController:
+class _SuiteController:
     """Controller-side, trylast: start the store + eager-fetch credentials, pre-fork.
 
     Registered in pytest_load_initial_conftests so this pytest_configure fires AFTER consumer
-    ``test/conftest.py`` hooks have registered their tiers (pluggy runs trylast last). A separate
+    ``test/conftest.py`` hooks have registered their suites (pluggy runs trylast last). A separate
     plugin object is used because the module-level pytest_configure is tryfirst (it must set
     numprocesses before xdist reads it) — the two orderings genuinely differ.
     """
@@ -656,7 +652,7 @@ class _TierController:
         # Worker: the controller already started + provisioned; workers connect lazily via env.
         if getattr(config, "workerinput", None) is not None:
             return
-        if not _any_tier_has_resources(config):
+        if not _any_suite_has_resources(config):
             return  # vanilla: nothing declared -> no store, no env, no behavior change
         mgr, address, authkey = store.start_server()
         setattr(config, _STORE_MGR, mgr)
@@ -670,30 +666,30 @@ class _TierController:
         # Phase-1 selection, in a HOOKWRAPPER's pre-yield so it runs BEFORE every plain
         # implementation of this hook — crucially pytest's builtin -m/-k deselection (a plain impl)
         # and the module-level dedup/batch pass. That ordering is the whole trick: the auto-markers
-        # must exist before `-m <tier>` filtering reads them (verified by test_tier_selection). This
+        # must exist before `-m <suite>` filtering reads them (verified by test_suite_selection). This
         # controller is registered in pytest_load_initial_conftests, so the method fires wherever
-        # collection happens — xdist workers and the controller at -n0. Vanilla (no tiers declared)
+        # collection happens — xdist workers and the controller at -n0. Vanilla (no suites declared)
         # is a pure passthrough: nothing marked, nothing deselected.
-        tiers = get_tiers(config)
-        if tiers:
-            _apply_tier_markers(config, items, tiers)
-            _default_scan_deselect(config, items, tiers)
+        suites = get_suites(config)
+        if suites:
+            _apply_suite_markers(config, items, suites)
+            _default_scan_deselect(config, items, suites)
         yield
 
 
 def _fetch_credentials(config):
-    """Controller, pre-fork: eager-fetch each reachable tier's credentials into the store.
+    """Controller, pre-fork: eager-fetch each reachable suite's credentials into the store.
 
-    For every credential on a reachable tier: run ``fetch(config)`` NOW (so an op/biometric prompt
+    For every credential on a reachable suite: run ``fetch(config)`` NOW (so an op/biometric prompt
     lands at invocation, never mid-run); if ``validate`` rejects it, raise ``pytest.UsageError`` to
     stop the session red; else publish the block to the store and, when ``adopt == "env"``, merge it
     into os.environ so workers (and the test subprocess + SDK + ${VAR} substitution) inherit it.
     """
     handle = get_store(config)
-    for tier in get_tiers(config):
-        if not tier.credentials or not _tier_reachable(config, tier):
+    for suite in get_suites(config):
+        if not suite.credentials or not _suite_reachable(config, suite):
             continue
-        for cred in tier.credentials:
+        for cred in suite.credentials:
             value = cred.fetch(config)
             if cred.validate is not None and not cred.validate(value):
                 raise pytest.UsageError(cred.error() if cred.error else f"{cred.key}: unavailable")
@@ -747,7 +743,7 @@ def provision_service(config, svc):
     Returns the service's context block (a dict).
 
     No reachability gate: a service is DEMAND-driven — a test that pulls its fixture needs it, which
-    holds even under ``-k`` (where args can't predict the tier). A tier that isn't selected simply
+    holds even under ``-k`` (where args can't predict the suite). A suite that isn't selected simply
     never pulls the fixture, so "don't boot OSS for a databricks-only run" holds without a gate.
     (Contrast credentials, which must be fetched up front, so their ``-k`` case falls to the runtest
     backstop instead.)
@@ -770,8 +766,8 @@ def _stop_services(config):
     handle = getattr(config, _STORE, None)
     if handle is None:
         return
-    for tier in get_tiers(config):
-        for svc in tier.services:
+    for suite in get_suites(config):
+        for svc in suite.services:
             if svc.stop is None:
                 continue
             try:
@@ -784,103 +780,103 @@ def _stop_services(config):
                 pass  # teardown must not raise at session end
 
 
-def _item_in_tier_path(config, item, tier):
-    """Whether ``item``'s file is at/under the tier's repo-relative ``path`` (the path branch of
-    membership; also what the auto-marker keys on). False when the tier declares no ``path``."""
-    if not tier.path:
+def _item_in_suite_path(config, item, suite):
+    """Whether ``item``'s file is at/under the suite's repo-relative ``path`` (the path branch of
+    membership; also what the auto-marker keys on). False when the suite declares no ``path``."""
+    if not suite.path:
         return False
-    tabs = os.path.normpath(os.path.join(_working_dir(config), tier.path))
+    tabs = os.path.normpath(os.path.join(_working_dir(config), suite.path))
     ipath = os.path.normpath(str(getattr(item, "path", "") or ""))
     return _is_subpath(ipath, tabs)
 
 
-def _item_in_tier(config, item, tier):
-    """Whether ``item`` belongs to ``tier`` — by the tier's marker or by path membership.
+def _item_in_suite(config, item, suite):
+    """Whether ``item`` belongs to ``suite`` — by the suite's marker or by path membership.
 
-    Marker: an auto-applied tier marker (see ``_apply_tier_markers``) or a hand-authored one. Path:
-    the item's file is at/under the tier's repo-relative ``path`` (resolved against the working dir).
+    Marker: an auto-applied suite marker (see ``_apply_suite_markers``) or a hand-authored one. Path:
+    the item's file is at/under the suite's repo-relative ``path`` (resolved against the working dir).
     """
-    if tier.marker and item.get_closest_marker(tier.marker) is not None:
+    if suite.marker and item.get_closest_marker(suite.marker) is not None:
         return True
-    return _item_in_tier_path(config, item, tier)
+    return _item_in_suite_path(config, item, suite)
 
 
 # --- Phase 1 selection: auto-marker + default-scan deselection ----------------------------
-# The driver turns path-based tier membership into marker-based selection. At collection it stamps
-# each tier's marker on every path-member (so `-m cloud` / `-m 'not cloud'` select or exclude them,
+# The driver turns path-based suite membership into marker-based selection. At collection it stamps
+# each suite's marker on every path-member (so `-m cloud` / `-m 'not cloud'` select or exclude them,
 # including `.test`/SQLLogic bodies that carry no Python @pytest.mark), THEN — on a bare run only —
-# deselects the non-default tiers (the "explicit default scan"). Both run in _TierController's
+# deselects the non-default suites (the "explicit default scan"). Both run in _SuiteController's
 # collection_modifyitems hookwrapper pre-yield, so the marks exist BEFORE pytest's builtin -m/-k
-# deselection reads them. The deselect decision reuses `_tier_reachable` (the same from-args gate
-# that decides eager credential fetching): a tier deselected on a bare run == a tier whose creds
+# deselection reads them. The deselect decision reuses `_suite_reachable` (the same from-args gate
+# that decides eager credential fetching): a suite deselected on a bare run == a suite whose creds
 # were not fetched — one source of truth.
 
 
-def _apply_tier_markers(config, items, tiers):
-    """Stamp each tier's marker on every item that belongs to it BY PATH (the auto-marker).
+def _apply_suite_markers(config, items, suites):
+    """Stamp each suite's marker on every item that belongs to it BY PATH (the auto-marker).
 
-    Makes `-m <tier>` work for path-declared members — including SQLLogic bodies that can't carry a
+    Makes `-m <suite>` work for path-declared members — including SQLLogic bodies that can't carry a
     Python `@pytest.mark`. Runs pre-yield so the marks exist before pytest's own mark deselection.
     Idempotent: an item that already carries the marker (hand-authored, or a prior pass) is skipped.
     """
-    for tier in tiers:
-        if not tier.marker:
+    for suite in suites:
+        if not suite.marker:
             continue
         for item in items:
-            if _item_in_tier_path(config, item, tier) and item.get_closest_marker(tier.marker) is None:
-                item.add_marker(tier.marker)
+            if _item_in_suite_path(config, item, suite) and item.get_closest_marker(suite.marker) is None:
+                item.add_marker(suite.marker)
 
 
-def _default_scan_deselect(config, items, tiers):
-    """On a bare run, deselect items in a non-default (unreachable) tier — the explicit scan.
+def _default_scan_deselect(config, items, suites):
+    """On a bare run, deselect items in a non-default (unreachable) suite — the explicit scan.
 
     Only fires when no explicit selection was given; any `-m`/`-k`/path is respected verbatim
-    (pytest's own filtering handles it, and the auto-markers above make `-m <tier>` work). An item
-    that also belongs to a reachable (default) tier stays. Removal is the pytest-standard
-    `pytest_deselected` + in-place slice. The reachable/unreachable split is `_tier_reachable`, the
+    (pytest's own filtering handles it, and the auto-markers above make `-m <suite>` work). An item
+    that also belongs to a reachable (default) suite stays. Removal is the pytest-standard
+    `pytest_deselected` + in-place slice. The reachable/unreachable split is `_suite_reachable`, the
     same gate that decides eager credential fetching (one source of truth).
     """
     if not _no_explicit_selection(config):
         return
-    unreachable = [t for t in tiers if not _tier_reachable(config, t)]
+    unreachable = [t for t in suites if not _suite_reachable(config, t)]
     if not unreachable:
         return
-    reachable = [t for t in tiers if _tier_reachable(config, t)]
+    reachable = [t for t in suites if _suite_reachable(config, t)]
     removed, kept = [], []
     for item in items:
-        in_out = any(_item_in_tier(config, item, t) for t in unreachable)
-        in_keep = any(_item_in_tier(config, item, t) for t in reachable)
+        in_out = any(_item_in_suite(config, item, t) for t in unreachable)
+        in_keep = any(_item_in_suite(config, item, t) for t in reachable)
         (removed if in_out and not in_keep else kept).append(item)
     if removed:
         config.hook.pytest_deselected(items=removed)
         items[:] = kept
 
 
-def _deselected_tier_names(config):
-    """Names of the tiers the default scan deselects on THIS invocation (from args alone).
+def _deselected_suite_names(config):
+    """Names of the suites the default scan deselects on THIS invocation (from args alone).
 
-    Empty unless a bare run has ≥1 non-default (unreachable) tier registered — exactly when
-    `_default_scan_deselect` removes that tier's items. Derived from args only, so the controller
+    Empty unless a bare run has ≥1 non-default (unreachable) suite registered — exactly when
+    `_default_scan_deselect` removes that suite's items. Derived from args only, so the controller
     can announce it pre-collection (the banner) without xdist aggregation.
     """
     if not _no_explicit_selection(config):
         return []
-    return [t.name for t in get_tiers(config) if not _tier_reachable(config, t)]
+    return [t.name for t in get_suites(config) if not _suite_reachable(config, t)]
 
 
-def _tier_banner(config):
+def _suite_banner(config):
     """The mandatory 'default set selected; deselected: …' banner line, or None when none applies.
 
-    North-star (docs/TIERING.md): any change to a bare `pytest` must be loud. Whenever the default
-    scan deselects ≥1 tier, announce it — always, NOT -v-gated. Returns None for a vanilla run or
+    North-star (docs/ARCHITECTURE.md): any change to a bare `pytest` must be loud. Whenever the default
+    scan deselects ≥1 suite, announce it — always, NOT -v-gated. Returns None for a vanilla run or
     any explicit selection, so those headers are untouched.
     """
-    names = _deselected_tier_names(config)
+    names = _deselected_suite_names(config)
     if not names:
         return None
     listed = ", ".join(sorted(names))
-    hint = names[0] if len(names) == 1 else "<tier>"
-    return f"duck-test tiers: default set selected; deselected: {listed} (pass a path or -m {hint} to include)"
+    hint = names[0] if len(names) == 1 else "<suite>"
+    return f"duck-test suites: default set selected; deselected: {listed} (pass a path or -m {hint} to include)"
 
 
 # A late (backstop) credential fetch — the winner runs the interactive prompt; other workers block
@@ -902,9 +898,9 @@ def _late_fetch(cred, config):
 
 
 def pytest_runtest_setup(item):
-    """Backstop: a selected test in a credentialed tier whose credential can't be obtained FAILS.
+    """Backstop: a selected test in a credentialed suite whose credential can't be obtained FAILS.
 
-    The paradigm-shift behavior (docs/TIERING.md): a *selected* test that can't be provisioned fails
+    The paradigm-shift behavior (docs/ARCHITECTURE.md): a *selected* test that can't be provisioned fails
     loud — never a silent skip. Catches the ``-k``-selected-live case the predictive up-front fetch
     can't foresee (``-k`` isn't decidable pre-collection). Runs in whichever process executes the item
     (the worker under xdist). Resolution order per credential:
@@ -917,12 +913,12 @@ def pytest_runtest_setup(item):
       4. else fail loud.
     """
     config = item.config
-    tiers = [t for t in get_tiers(config) if t.credentials and _item_in_tier(config, item, t)]
-    if not tiers:
+    suites = [t for t in get_suites(config) if t.credentials and _item_in_suite(config, item, t)]
+    if not suites:
         return
     handle = get_store(config)
-    for tier in tiers:
-        for cred in tier.credentials:
+    for suite in suites:
+        for cred in suite.credentials:
             value = None
             if handle is not None:
                 try:
@@ -936,7 +932,9 @@ def pytest_runtest_setup(item):
             if cred.late_fetch and handle is not None:  # 3. single-flight late fetch (one op prompt)
                 try:
                     value = store.copy_or_provision(
-                        handle, cred.key, lambda c=cred: _late_fetch(c, config),
+                        handle,
+                        cred.key,
+                        lambda c=cred: _late_fetch(c, config),
                         timeout=_LATE_FETCH_TIMEOUT_S,
                     )
                 except (store.ProvisionFailed, store.ProvisionTimeout):
@@ -1137,9 +1135,7 @@ def pytest_configure(config):
     # ("no tests ran"). --steps: live-log (its only channel) is disabled on xdist workers,
     # so steps would never print. tryfirst so this lands before pytest-xdist reads
     # numprocesses.
-    if config.getoption("--repl", default=False) or config.getoption(
-        "--steps", default=False
-    ):
+    if config.getoption("--repl", default=False) or config.getoption("--steps", default=False):
         if getattr(config.option, "numprocesses", None):
             config.option.numprocesses = 0
         if getattr(config.option, "dist", "no") not in (None, "no"):
@@ -1253,10 +1249,7 @@ def _cli_provision_flow(session, config):
     if specs:
         print("resolved @requires specs:")
         for i, s in enumerate(specs):
-            print(
-                f"  [{i}] source={s.source} access={s.access} "
-                f"properties={s.properties} name={s.resolved_name()}"
-            )
+            print(f"  [{i}] source={s.source} access={s.access} properties={s.properties} name={s.resolved_name()}")
     else:
         print("no @requires -> minimal provision (REPL only)")
     print("=" * 70)
@@ -1323,9 +1316,7 @@ def _launch_cli(config, init_sql):
     build_dir = os.path.dirname(os.path.dirname(binary))
     duckdb_bin = os.path.join(build_dir, "duckdb")
     if not os.path.isfile(duckdb_bin):
-        raise pytest.UsageError(
-            f"--repl: duckdb CLI not found at {duckdb_bin}. Build it (e.g. make release)."
-        )
+        raise pytest.UsageError(f"--repl: duckdb CLI not found at {duckdb_bin}. Build it (e.g. make release).")
     with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", prefix="cli_init.", delete=False) as f:
         f.write(init_sql)
         init_path = f.name
@@ -1437,4 +1428,3 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     terminalreporter.write_sep("-", f"skipped: {len(skipped)} by reason", yellow=True, bold=True)
     for reason, n in counts.most_common():
         terminalreporter.write_line(f"  {n:>4}  {reason}", yellow=True)
-

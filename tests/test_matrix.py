@@ -10,7 +10,7 @@ assert is the MECHANISM — one item per cell, each with its own per-cell `requi
 # is taken directly (indirect parametrize needs it in the closure; real drivers reach it
 # via `resources`). Fixture("id_name") stays a pure value — never resolved (no `resources`).
 _MATRIX_TEST = """
-from duckdb_pytest_driver import requires_matrix, Fixture, collect_requirements
+from ducktest import requires_matrix, Fixture, collect_requirements
 
 @requires_matrix(source=Fixture("id_name").Seed(None), access="rw",
                  properties={"storage": ["managed", "external"]},
@@ -40,7 +40,7 @@ def test_matrix_cell_ids(pytester):
 
 def test_expand_cells_is_pure_product():
     """The generation stage is separable + pure: axes -> cartesian product, scalars fixed."""
-    from duckdb_pytest_driver.requires import expand_cells
+    from ducktest.requires import expand_cells
 
     cells = [cell for _keys, cell in expand_cells({"storage": ["managed", "external"], "commit": "cmt"})]
     assert cells == [

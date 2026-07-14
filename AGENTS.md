@@ -11,13 +11,14 @@ A generic **pytest front-end over the duckdb `unittest` (Catch2) binary**: colle
 declarative `@requires` provisioning, managed temp dirs, and batching/parallelism. **The
 `.test`/`.sql` file stays the central artifact** — the Python is thin glue, never the test itself.
 
-- **Distribution:** `duckdb-pytest-driver` · **import:** `duckdb_pytest_driver` (+ short `driver` alias).
+- **Distribution:** `duckdb-pytest-driver` · **import + CLI:** `ducktest` (dist name ≠ import name, à la pillow/PIL).
 - **Auto-registered** pytest plugin via a `pytest11` entry point — no `pytest_plugins`, no `sys.path`
   hacks, no symlinks.
-- **`duck-test configure`** writes the base `pytest.ini` a plugin can't inject; after it, bare
+- **`ducktest configure`** writes the base `pytest.ini` a plugin can't inject; after it, bare
   `pytest` in a built checkout just works.
-- Full design, rationale, and roadmap live in **`docs/`** (`EXTRACT_DRIVER_PLAN.md`, `NOTES.md`,
-  `PLAN.md`, `DISPOSITIONS.md`). Read the relevant doc before changing behavior it describes.
+- Canonical docs: **`README.md`** (use + integrate, worked example), **`docs/ARCHITECTURE.md`** (the
+  model — suites, resources, store, provisioning), **`docs/INTERNALS.md`** (hooks/ordering/extending),
+  **`docs/PLAN.md`** (roadmap/TODOs). Read the relevant one before changing behavior it describes.
 
 ## Ground rules
 
@@ -34,20 +35,20 @@ declarative `@requires` provisioning, managed temp dirs, and batching/parallelis
 - **Ruff is the linter** (line-length 120; on PATH). Run `ruff check .` before calling work done;
   prefer it over `py_compile`.
 - **The tool owns config.** A pytest plugin _cannot_ inject `addopts` / `testpaths` /
-  `--import-mode` / `python_files` — those live in what `duck-test configure` writes. Don't try to
+  `--import-mode` / `python_files` — those live in what `ducktest configure` writes. Don't try to
   smuggle them into the plugin; extend the CLI instead.
-- **Docs discipline.** `docs/` is canonical for design; the README is the skeletal quickstart that
-  points at it. Change behavior → update the doc that owns it (and the README if the workflow shifts).
-  The env-var _contract_ (`TEMP_DIR`, `{TEST_DIR}`, …) is owned by duckdb's `test/README.md`, not here.
+- **Docs discipline.** `README.md` owns "how to use + integrate" (the worked example is its bulk);
+  `docs/ARCHITECTURE.md` owns the model; `docs/INTERNALS.md` owns hooks/internals; `docs/PLAN.md` owns
+  the roadmap. Change behavior → update the doc that owns it. The env-var _contract_ (`TEMP_DIR`,
+  `{TEST_DIR}`, …) is owned by duckdb's `test/README.md`, not here.
 
 ## Layout
 
 ```
-src/duckdb_pytest_driver/   plugin.py sqllogic.py provision.py requires.py steps.py mnemonic.py cli.py
-src/driver/                 compat-alias shim  (`import driver` -> duckdb_pytest_driver)
+src/ducktest/   plugin.py suites.py store.py provision.py requires.py fixtures.py sqllogic.py sqldef.py steps.py mnemonic.py cli.py
 tests/                      self-tests vs a stub unittest binary (offline)
 docs/                       design + roadmap (canonical)
-pyproject.toml              hatchling; pytest11 + duck-test entry points; deps (pytest>=7.4, xdist extra)
+pyproject.toml              hatchling; pytest11 + ducktest entry points; deps (pytest>=7.4, xdist extra)
 ```
 
 ## Dev loop

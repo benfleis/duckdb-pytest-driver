@@ -4,7 +4,7 @@
 so it shows up with timing. It logs at INFO via `logging`: visible live with
 `pytest --log-cli-level=INFO`, and in the per-phase "Captured log" section on failure.
 
-    from driver import step
+    from ducktest import step
 
     with step("starting OSS UC docker image"):
         ...

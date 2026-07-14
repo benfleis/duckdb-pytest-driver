@@ -1,4 +1,4 @@
-"""Self-tests for the tier declaration API + registry (register_tier/get_tiers, Phase 0).
+"""Self-tests for the suite declaration API + registry (register_suite/get_suites, Phase 0).
 
 Phase 0 is INERT: registration records frozen descriptors on `config`; nothing is fetched,
 started, or deselected. These exercise the pure registry offline (no real pytest run): a
@@ -7,13 +7,13 @@ plain object stands in for `config`, mirroring test_broadcast.py.
 
 import pytest
 
-from duckdb_pytest_driver import (
+from ducktest import (
     Credential,
     Service,
-    Tier,
+    Suite,
     credential,
-    get_tiers,
-    register_tier,
+    get_suites,
+    register_suite,
     service,
 )
 
@@ -31,7 +31,7 @@ def _start(config):
 
 
 def test_empty_config_returns_empty_list():
-    assert get_tiers(_Cfg()) == []
+    assert get_suites(_Cfg()) == []
 
 
 def test_credential_holds_callables():
@@ -66,16 +66,16 @@ def test_service_holds_callables():
     assert bare.fixture is None
 
 
-def test_register_and_get_tiers_round_trip():
+def test_register_and_get_suites_round_trip():
     cfg = _Cfg()
-    register_tier(
+    register_suite(
         cfg,
         "oss_local",
         path="test/oss_local",
         default=True,
         services=[service("oss-uc-server", start=_start, fixture="uc_server")],
     )
-    register_tier(
+    register_suite(
         cfg,
         "databricks",
         path="test/databricks",
@@ -83,11 +83,11 @@ def test_register_and_get_tiers_round_trip():
         credentials=[credential("databricks_creds", fetch=_load_creds, adopt="env")],
     )
 
-    tiers = get_tiers(cfg)
-    assert [t.name for t in tiers] == ["oss_local", "databricks"]  # registration order
-    assert all(isinstance(t, Tier) for t in tiers)
+    suites = get_suites(cfg)
+    assert [t.name for t in suites] == ["oss_local", "databricks"]  # registration order
+    assert all(isinstance(t, Suite) for t in suites)
 
-    oss, dbx = tiers
+    oss, dbx = suites
     assert oss.default is True
     assert oss.path == "test/oss_local"
     assert len(oss.services) == 1 and oss.services[0].key == "oss-uc-server"
@@ -100,9 +100,9 @@ def test_register_and_get_tiers_round_trip():
 
 def test_marker_defaults_to_name():
     cfg = _Cfg()
-    register_tier(cfg, "databricks", path="test/databricks")
-    register_tier(cfg, "smoke", marker="fast")
-    by_name = {t.name: t for t in get_tiers(cfg)}
+    register_suite(cfg, "databricks", path="test/databricks")
+    register_suite(cfg, "smoke", marker="fast")
+    by_name = {t.name: t for t in get_suites(cfg)}
     assert by_name["databricks"].marker == "databricks"  # defaulted
     assert by_name["smoke"].marker == "fast"  # explicit wins
 
@@ -110,7 +110,7 @@ def test_marker_defaults_to_name():
 def test_no_fetch_or_start_in_phase0():
     cfg = _Cfg()
     calls = []
-    register_tier(
+    register_suite(
         cfg,
         "databricks",
         default=False,
@@ -122,21 +122,21 @@ def test_no_fetch_or_start_in_phase0():
 
 def test_duplicate_name_raises():
     cfg = _Cfg()
-    register_tier(cfg, "databricks")
+    register_suite(cfg, "databricks")
     with pytest.raises(ValueError, match="already registered"):
-        register_tier(cfg, "databricks")
+        register_suite(cfg, "databricks")
 
 
 def test_credentials_must_be_descriptors():
     cfg = _Cfg()
     with pytest.raises(TypeError, match="credential"):
-        register_tier(cfg, "t", credentials=[{"key": "nope"}])
+        register_suite(cfg, "t", credentials=[{"key": "nope"}])
 
 
 def test_services_must_be_descriptors():
     cfg = _Cfg()
     with pytest.raises(TypeError, match="service"):
-        register_tier(cfg, "t", services=["nope"])
+        register_suite(cfg, "t", services=["nope"])
 
 
 def test_credential_shape_validation():

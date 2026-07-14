@@ -1,9 +1,10 @@
-"""Self-tests for the process-shared state store (duckdb_pytest_driver.store).
+"""Self-tests for the process-shared state store (ducktest.store).
 
 Offline, no duckdb/op/docker. Logic is exercised in-process against a real manager
 (fast, threads); one test spawns real subprocess workers to prove cross-process
 single-flight + eager delivery over the socket (using the default, spawn-safe ctx).
 """
+
 import json
 import os
 import subprocess
@@ -14,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from duckdb_pytest_driver import store as S
+from ducktest import store as S
 
 _WORKER = os.path.join(os.path.dirname(__file__), "_store_worker.py")
 
@@ -36,6 +37,7 @@ def st(server):
 
 # --- eager path -----------------------------------------------------------
 
+
 def test_copy_returns_present_value(st):
     S.put(st, "creds", {"token": "T"})
     assert S.copy(st, "creds") == {"token": "T"}
@@ -54,6 +56,7 @@ def test_copy_missing_fails_loud(st):
 
 
 # --- single-flight + locking ----------------------------------------------
+
 
 def test_single_flight_under_thread_contention(st):
     calls = []
@@ -103,6 +106,7 @@ def test_poison_pill_fails_fast_without_retry(st):
 
 # --- env round-trip -------------------------------------------------------
 
+
 @pytest.mark.parametrize("address", ["/tmp/pymp-abc/sock-123", ("127.0.0.1", 51234)])
 def test_env_address_round_trip(address):
     env = S.to_env(address, b"\x00\x01\x02\x03")
@@ -117,15 +121,13 @@ def test_from_env_absent_is_none():
 
 # --- cross-process (real subprocess workers over the socket) ---------------
 
+
 def test_cross_process_single_flight_and_eager_delivery(server, tmp_path):
     mgr, address, authkey = server
     S.put(mgr.store(), "creds", {"token": "EAGER-OK"})  # eager pre-fill, pre-workers
 
     env = dict(os.environ, **S.to_env(address, authkey))
-    procs = [
-        subprocess.Popen([sys.executable, _WORKER, str(tmp_path), str(i)], env=env)
-        for i in range(4)
-    ]
+    procs = [subprocess.Popen([sys.executable, _WORKER, str(tmp_path), str(i)], env=env) for i in range(4)]
     for p in procs:
         assert p.wait(timeout=60) == 0
 

@@ -2,12 +2,13 @@
 not collected). Connects to a store via env, reads the eager credential, and races
 to provision the shared service; writes what it saw to <results_dir>/<idx>.json.
 """
+
 import json
 import os
 import sys
 import time
 
-from duckdb_pytest_driver import store as S
+from ducktest import store as S
 
 
 def main():

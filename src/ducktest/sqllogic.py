@@ -45,6 +45,7 @@ class SqlLogicFile(pytest.File):
 
     def collect(self):
         from .plugin import _run_dir  # lazy: plugin imports this lane (avoid import cycle)
+
         test_name = os.path.relpath(str(self.path), self._working_dir)
         yield SqlLogicItem.from_parent(
             self,
@@ -226,7 +227,7 @@ def _invoke(
         return {
             "returncode": 1,
             "stdout": "",
-            "stderr": f"unittest binary not found: {binary}\n" "Build the extension first (e.g. make debug).",
+            "stderr": f"unittest binary not found: {binary}\nBuild the extension first (e.g. make debug).",
         }
     return {
         "returncode": proc.returncode,
@@ -258,7 +259,7 @@ def _scan_test_events(output: str) -> dict:
         if i < 0:
             continue
         try:
-            ev = json.loads(line[i + len(_FLARE):])
+            ev = json.loads(line[i + len(_FLARE) :])
         except ValueError:
             continue
         if ev.get("event") == "end":

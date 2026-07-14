@@ -23,7 +23,7 @@ def _write(pytester, name, body):
 _CRED_CONFTEST = """
     import os
 
-    from duckdb_pytest_driver import register_tier, credential
+    from ducktest import register_suite, credential
 
 
     def _fetch(config):
@@ -41,7 +41,7 @@ _CRED_CONFTEST = """
         return "DBX creds unavailable: run your env script"
 
     def pytest_configure(config):
-        register_tier(config, "dbx", path="test/dbx", default=True,
+        register_suite(config, "dbx", path="test/dbx", default=True,
             credentials=[credential("dbx_creds", fetch=_fetch, validate=_validate,
                          error=_error, adopt="env", available=_available,
                          late_fetch=os.environ.get("LATE_FETCH", "1") == "1")])
@@ -58,7 +58,7 @@ def test_credential_fetched_once_up_front_and_reaches_worker(pytester, monkeypat
         """
         import os
 
-        from duckdb_pytest_driver import get_store, store as S
+        from ducktest import get_store, store as S
 
 
         def _check(request):
@@ -75,12 +75,12 @@ def test_credential_fetched_once_up_front_and_reaches_worker(pytester, monkeypat
     assert log.read_text().count("\n") == 1  # up-front fetch, controller only
 
 
-def test_unreachable_tier_not_fetched(pytester, monkeypatch):
+def test_unreachable_suite_not_fetched(pytester, monkeypatch):
     log = pytester.path / "fetch.log"
     monkeypatch.setenv("FETCH_LOG", str(log))
     _write(pytester, "conftest.py", _CRED_CONFTEST)
     _write(pytester, "test_inner.py", "def test_a(): pass")
-    # -m other: nothing matches -> no in-tier item runs -> no fetch (up-front OR backstop).
+    # -m other: nothing matches -> no in-suite item runs -> no fetch (up-front OR backstop).
     pytester.runpytest_subprocess("-m", "other", "-p", "no:cacheprovider")
     assert not log.exists()
 
@@ -144,7 +144,7 @@ def test_backstop_fails_fast_when_late_fetch_disabled(pytester, monkeypatch):
 
 
 def test_vanilla_credential_free_run_unaffected(pytester, monkeypatch):
-    # A test outside the tier's path -> not in tier -> no backstop, no fetch.
+    # A test outside the suite's path -> not in suite -> no backstop, no fetch.
     log = pytester.path / "fetch.log"
     monkeypatch.setenv("FETCH_LOG", str(log))
     _write(pytester, "conftest.py", _CRED_CONFTEST)
