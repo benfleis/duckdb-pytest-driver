@@ -13,6 +13,7 @@ Import-name-agnostic on purpose (dual-mode): the same code works pip-installed a
 consumer setup: see the repo README + docs/.
 """
 
+import contextlib
 import logging
 import os
 import shutil
@@ -698,7 +699,12 @@ class _SuiteController:
         setattr(config, _STORE, mgr.store())
         # pre-fork: workers inherit this env at spawn and connect via from_env()
         os.environ.update(store.to_env(address, authkey))
-        _fetch_credentials(config)
+        # Narrate the eager credential/service provisioning under --steps: it runs HERE, at configure
+        # time, before pytest's live-log handler exists — so without this its step()s (starting Azurite,
+        # populating, …) are invisible even with --steps (docs/SERVICES.md).
+        with _narrate_driver_log(config):
+            _fetch_credentials(config)
+            _provision_eager_services(config)
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_collection_modifyitems(self, config, items):
@@ -741,6 +747,65 @@ def _fetch_credentials(config):
             store.put(handle, cred.key, value)
             if cred.adopt == "env":
                 os.environ.update(value)  # pre-fork: inherited by workers + the test subprocess
+
+
+def _provision_eager_services(config):
+    """Controller, pre-fork: provision each reachable suite's ``provision="eager"`` service — the service
+    analog of the eager credential path (:func:`_fetch_credentials`).
+
+    Why up front, on the controller: a bare ``.test`` body has no ``.py`` driver and pulls no fixture, so
+    the lazy (fixture-driven) path never provisions the service for it — nothing boots it or sets its env.
+    Provisioning here, pre-fork, means the controller's ``os.environ`` (with ``to_env``) is inherited by
+    every worker + the ``unittest`` subprocess, and the service is already up. Also unblocks ``--repl`` on
+    a service-backed suite. Reachable = the same predictive gate credentials use, so an unrelated run
+    (e.g. a databricks-only selection) does NOT eagerly boot azurite.
+
+    :func:`provision_service` does everything (boot + ``populate`` once + adopt ``to_env``), so this just
+    triggers it on the controller for eager services — an ``on_demand`` service instead gets all three
+    when its fixture is pulled worker-side. Going through ``provision_service`` also single-flights the
+    boot via the store, reuses the ``--existing-service`` attach path, and inherits ``depends_on`` ordering
+    for free once that lands.
+    """
+    for suite in get_suites(config):
+        if not _suite_reachable(config, suite):
+            continue
+        for svc in suite.services:
+            if svc.provision == "eager":
+                provision_service(config, svc)  # boot + populate + adopt to_env, on the controller pre-fork
+
+
+def _narrating(config):
+    """Whether ``step()`` narration should be surfaced live — mirrors the module ``pytest_configure``
+    logic: ``--steps``, or a ``--repl`` / ``--provision-keep`` session unless ``--no-steps``."""
+    steps = config.getoption("--steps", default=False)
+    repl_like = config.getoption("--repl", default=False) or config.getoption("--provision-keep", default=False)
+    return bool(steps or (repl_like and not config.getoption("--no-steps", default=False)))
+
+
+@contextlib.contextmanager
+def _narrate_driver_log(config):
+    """Surface the ``driver`` logger's INFO ``step()`` output live during CONFIGURE-TIME provisioning
+    (eager credentials + services). That work runs before pytest's live-log handler is attached, so
+    ``--steps`` otherwise shows nothing for the eager boot/populate. Attach a temporary stderr handler
+    with capture suspended for the duration, then detach — so test-phase ``step()``s still go through
+    live-log (no double output). No-op unless narrating.
+    """
+    if not _narrating(config):
+        yield
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    driver_log = logging.getLogger("driver")
+    driver_log.addHandler(handler)
+    capman = config.pluginmanager.getplugin("capturemanager")
+    try:
+        if capman is not None:
+            with capman.global_and_fixture_disabled():
+                yield
+        else:
+            yield
+    finally:
+        driver_log.removeHandler(handler)
 
 
 def _teardown_store(config):
@@ -903,7 +968,9 @@ def _attach_service(config, svc, overrides):
         )
     # started=False: WE didn't start it; attached=True marks the stance. Functional fields (endpoint,
     # connection_string, …) are identical to the boot block — the whole point (docs/SERVICES.md).
-    return _service_block(svc, {**block, "attached": True, "started": False})
+    block = _service_block(svc, {**block, "attached": True, "started": False})
+    _run_populate(config, svc, block)  # idempotent — an externally-owned instance may already be seeded
+    return block
 
 
 def _service_targets(config, spec):
@@ -969,6 +1036,23 @@ def _run_service_command(config):
     pytest.exit(f"ducktest: provisioned {len(targets)} service(s); left running", returncode=0)
 
 
+def _run_populate(config, svc, block):
+    """Run ``svc.populate`` (structure+data) if declared. Idempotent by contract, so it's safe both on the
+    single-flight boot factory (runs once) AND on the attach path (may re-run against a seeded instance)."""
+    if svc.populate is not None:
+        with step(f"populating service {svc.key}"):
+            svc.populate(block, config)
+
+
+def _boot_and_populate(config, svc):
+    """The store single-flight factory: ``start`` then ``populate``, both exactly once (first-worker-wins),
+    for ANY disposition. ``populate`` mutates the shared SERVICE (external state), so — unlike ``to_env``
+    (per-process env, hence eager-only) — it is disposition-independent (docs/SERVICES.md)."""
+    block = _service_block(svc, svc.start(config))
+    _run_populate(config, svc, block)
+    return block
+
+
 def provision_service(config, svc):
     """Provision a class-2 service — call from its session fixture. Routes by lifecycle stance:
 
@@ -988,12 +1072,35 @@ def provision_service(config, svc):
     """
     existing = _existing_services(config)
     if _norm_service_key(svc.key) in existing:
-        return _attach_service(config, svc, existing[_norm_service_key(svc.key)])
-    handle = get_store(config)
-    if handle is None:
-        # Defensive: no store (nothing declared) — run start locally, no cross-worker coordination.
-        return _service_block(svc, svc.start(config))
-    return store.copy_or_provision(handle, svc.key, lambda: _service_block(svc, svc.start(config)))
+        block = _attach_service(config, svc, existing[_norm_service_key(svc.key)])
+    else:
+        # Disposition gate: `eager`/`on_demand` boot here; `per_test`/`never` are named but not wired, so
+        # they FAIL LOUD rather than silently booting on-demand (never silent-wrong). `never` == "you bring
+        # it" — already delivered by the --existing-service attach path checked just above.
+        if svc.provision == "never":
+            pytest.fail(
+                f"service {svc.key!r} is provision='never' but was pulled with no `--existing-service "
+                f"{svc.key}=…` to attach to. Start it and attach, or change its disposition.",
+                pytrace=False,
+            )
+        if svc.provision == "per_test":
+            raise NotImplementedError(f"service {svc.key!r}: provision='per_test' is reserved, not yet wired.")
+        # TODO(multiservice): before booting, resolve svc.depends_on — provision_service each dep first
+        # (topological, cycle-checked). Reverse of this order drives _stop_services teardown. See docs/PLAN.md.
+        handle = get_store(config)
+        if handle is None:
+            # Defensive: no store (nothing declared) — start+populate locally, no cross-worker coordination.
+            block = _boot_and_populate(config, svc)
+        else:
+            block = store.copy_or_provision(handle, svc.key, lambda: _boot_and_populate(config, svc))
+    # Adopt to_env into THIS process's os.environ. Every provisioning process does it — the controller on
+    # the eager path (pre-fork, so a bare .test subprocess inherits it) OR a worker on the on_demand
+    # fixture-pull (its run_paired subprocess inherits, since _invoke merges os.environ). The store shares
+    # the block, so to_env is derivable in any process. (A bare .test still needs eager: nothing triggers
+    # worker-side adoption for it — docs/SERVICES.md.)
+    if svc.to_env is not None:
+        os.environ.update(svc.to_env(block))
+    return block
 
 
 def _stop_services(config):
@@ -1397,11 +1504,7 @@ def pytest_configure(config):
     # turns on pytest's live-log — the only channel that cooperates with output capture, and it
     # also reaches the collection hook --repl runs from; it's dead on xdist workers, so this path
     # forces -n0 (above). Don't override an explicit --log-cli-level the user already passed.
-    repl_like = config.getoption("--repl", default=False) or config.getoption("--provision-keep", default=False)
-    narrate = config.getoption("--steps", default=False) or (
-        repl_like and not config.getoption("--no-steps", default=False)
-    )
-    if narrate:
+    if _narrating(config):  # same predicate the configure-time eager-provisioning narration uses
         if config.getoption("--log-cli-level", default=None) is None:
             config.option.log_cli_level = "INFO"
 

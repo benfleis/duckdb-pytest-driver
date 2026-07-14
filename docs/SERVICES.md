@@ -29,6 +29,64 @@ The #1 driver for "existing" is **Claude/pytest inside a container, service on t
 want the container booting (or killing) a service it doesn't own. "Leave it running across many runs
 for speed" is the same mechanism.
 
+## When it's provisioned — disposition, eager env adoption, `populate`
+
+Orthogonal to *who owns* the lifecycle (above) is *when* a service is provisioned — its **disposition**,
+`Service.provision`:
+
+| disposition | when | for |
+|---|---|---|
+| `on_demand` (default) | lazy — first worker to pull its fixture (store single-flight) | `.py`-driven tests |
+| `eager` | up front, on **suite-selection**, controller pre-fork | **bare `.test` bodies** (+ `--repl`) |
+| `per_test` / `never` | *named, not wired* — **fail loud** if reached (`never` == the attach path) | vocabulary only |
+
+**Why `eager` exists — the bare-`.test` problem.** A driverless `.test` runs straight through the
+collector→binary; it pulls **no fixture**, so the lazy path never boots the service or sets its env. So a
+service-backed suite of bare `.test` files needs its service **up, populated, and its connection env in
+the subprocess environment** before any test runs. `eager` does exactly that — the service analog of
+`credential(adopt="env")`:
+
+- **`to_env(block) -> dict`** — a derived env map merged into `os.environ` by *every process that
+  provisions the service* (in `provision_service`): the controller on the eager path (pre-fork, so a bare
+  `.test` subprocess inherits it), or a worker on the on_demand fixture-pull (its `run_paired` subprocess
+  inherits it, since `_invoke` merges `os.environ`). This is how `${AZURE_STORAGE_CONNECTION_STRING}` /
+  `${AZ_DATA_DIR}` reach a test. Works for any disposition — but a **bare `.test` needs `eager`**: with no
+  `.py` driver there's no fixture to trigger worker-side provisioning for it.
+- **`populate(block, config)`** — bring the service to its known initial state (**structure + data** — the
+  store-scope analog of the fixture lane's `instantiate`), run **once**. **Disposition-independent** — it
+  mutates the *shared service*, not per-process state, so it runs for `on_demand` too (folded into the
+  store single-flight boot + the attach path), not just `eager`. **Must be idempotent** (it re-runs
+  against an attached, possibly-already-seeded instance).
+
+Eager services boot **through `provision_service`** (single-flighted, attach-aware, `depends_on`-ready),
+in `_provision_eager_services` right after the eager-credential fetch — same reachability gate, so an
+unrelated selection (a databricks-only run) does **not** eagerly boot azurite.
+
+**`attach` × `eager` compose:** an `--existing-service`-attached eager service **adopts `to_env` and runs
+`populate` (idempotent)** but does **not** boot or tear down — env-yes / boot-no / seed-idempotent.
+
+**Binding policy to a shared descriptor — `use_service`.** `provision`/`to_env`/`populate` are *suite
+policy*, but `AZURITE_SERVICE` is a **shared** descriptor (reused by azure/delta/uc). So bind, don't bake:
+
+```python
+from ducktest import use_service, register_suite
+from ducktest.resources.azurite import AZURITE_SERVICE, azurite_env, rclone_remote
+from ducktest.tools import rclone
+
+def _populate(block, config):                 # idempotent: containers + data
+    r = rclone_remote(block)
+    for c in ("testing-private", "testing-public", "writes"): rclone.mkdir(r, c)
+    for c in ("testing-private", "testing-public"): rclone.sync("data", r, c)
+
+def _env(block):                              # what a bare .test require-env needs
+    return {**azurite_env(block), "AZ_DATA_DIR": "testing-private"}
+
+register_suite(config, "azurite", path="test/azure", marker="azure", default=True,
+    services=[use_service(AZURITE_SERVICE, provision="eager", to_env=_env, populate=_populate)])
+```
+
+`use_service` returns a *copy* of the shared descriptor with the policy set — the shared one stays generic.
+
 ## The block, and the derive contract
 
 A service's runtime facts — endpoint, port, account, connection string — are a **block**: a plain
