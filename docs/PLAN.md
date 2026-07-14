@@ -64,6 +64,65 @@ the driver).
   `slow` marker so they run only when asked). _(known gap)_; additionally need to
   design/handle tags like slow
 
+## Pre-0.1 release gates (decided 2026-07-14)
+
+**Release plan:** push `0.0.1` to the real `duckdb`-org repo now, as-is — iterate publicly there — land
+`0.1.0` after some real hardening against Iceberg (and other consumers), not before. The items below are
+what "some real hardening" means concretely; treat this list, not vibes, as the 0.1.0 gate.
+
+- Everything in **v0-dev sprints** below (collection trust is explicitly the "100% trust" blocker).
+- **Reported-unit flip** and **`.test_slow`/`.test_coverage` silently ignored** (Status snapshot /
+  PLAN.md:59-65) — both are silent-wrongness risks, not nice-to-haves.
+- **Multi-service dependencies** (new, found 2026-07-14 pushing on Iceberg — see *Roadmap* below).
+  **Still open after the azurite/service-layer commit (`f95d33b`)** — that landed `attach`/`alive` on
+  `Service` (`suites.py:74-101`, the `--existing-service` mechanism, see `docs/SERVICES.md`) but nothing
+  about inter-service ordering. Boot order is unenforced (composable today only by a `start()` manually
+  calling `provision_service` on another descriptor) and **teardown order is worse** —
+  `_stop_services` (`plugin.py:969-`) flat-loops `suite.services` in registration order, so a dependency
+  can be stopped before its dependent. Iceberg's `rest` depending on `minio`
+  (`ice/scripts/docker-compose.yml`) is the forcing case; azurite work may surface a second one
+  independently (see the *Base `Provisioner`* section below). Needs: a `depends_on=(...)` field on
+  `Service`, start-order resolution (topological, cycle-checked), and dependency-aware teardown
+  (reverse of start order). Full design in `HANDOFF-multiservice.md` (ducktest sandbox root, not
+  git-tracked — fold its content in here properly once this is picked up, don't just leave it there).
+- **Suite-level service eager-adoption** _(found 2026-07-14, from azure-side work on bare `.test`
+  conversion)_ — the service analog of `credential(adopt="env")`. Today a service only boots via
+  `provision_service` from a **fixture** a `.py` driver pulls (`ARCHITECTURE.md:91-99`); a *bare* `.test`
+  with no `.py` driver has no fixture to pull, so its service never boots, never seeds, and its
+  connection env is never set — the collector invokes the `unittest` binary directly, no Python
+  involved. Concretely: azure's 25 bare `.test` files need `AZURE_STORAGE_CONNECTION_STRING`/
+  `AZ_STORAGE_ACCOUNT`/`AZ_DATA_DIR`/etc. in the subprocess env, derived from the azurite `Service`
+  block + a seed step, with **no** `.py` driver available to request it. Needed: when a service-backed
+  suite is selected (mirrors the existing eager-credential path, `_fetch_credentials`,
+  `plugin.py:725`, wired from `_SuiteController.pytest_configure`, `plugin.py:682-701`), boot the
+  service(s) once, run its seed, and adopt a **derived env** into `os.environ` — same shape as
+  credential `adopt="env"`, just for services. This also unblocks `--repl` on a service-backed suite
+  (identical gap: `--repl` provisions `@requires` tables but never boots suite services or sets their
+  env either).
+  - **Overlaps with *Multi-service dependencies* above — same `Service` dataclass, same suite-controller
+    boot hook, three efforts converging on it in short order** (`attach`/`alive` — shipped; `depends_on`
+    — open; this — new). Not a merge conflict, but a real risk of independently-built `Service` lifecycle
+    semantics not composing (what does "eagerly adopt this service's env" mean for a service with
+    unresolved `depends_on`s?). Reconcile `Service`'s shape once both this and `depends_on` have real
+    designs, don't let either assume the other doesn't exist.
+  - **Explicitly does not touch the base `Provisioner`/`Bindings` work above** — different delivery
+    mechanism (`os.environ` pre-subprocess vs. `Bindings.env`→`run_paired` per-test substitution) for a
+    different test shape (bare `.test`, no `.py`, vs. `@requires`-driven paired tests). The
+    `Provisioner` work should not assume a service became available *only* via fixture-pull, so it
+    doesn't fight whatever eager-adoption path lands here.
+- **UC CI isn't wired to the new suite at all yet** _(found 2026-07-14; UC-side, not driver behavior, but
+  tracked here since it gates landing UC's PR)_. Verified by grepping `uc/.github/workflows/`: neither
+  `LocalTesting.yml` nor `CloudTesting.yml` runs `pytest`/`ducktest` — both still call the pre-migration
+  `make test_release`/`make write_tests_run`; `LocalTesting.yml` boots UC's JVM server bare on the runner
+  and never touches `scripts/oss_uc_image/`. Separately, that image's build+push
+  (`scripts/oss_uc_image/build_image --push`) is entirely manual today, to personal `ghcr.io/benfleis/*`
+  — no `docker/login-action`, `packages: write` permission, or registry reference anywhere in CI.
+  **Decided 2026-07-14 (not a landing blocker):** keep hand-running `--push` to `ghcr.io/benfleis` for
+  now — ship UC's PR / this driver's `0.0.1` without waiting on this. But get the real infra —
+  automated CI build+push, and the personal-vs-org-namespace call (`ghcr.io/benfleis/*` needs a stored
+  PAT in org CI; `ghcr.io/duckdb/*` is clean with the free per-run `GITHUB_TOKEN` but needs org buy-in)
+  — **developing in parallel**, not deferred indefinitely.
+
 ## v0-dev sprints (post-commit, near-term)
 
 1. **Collection trust — scan-reconcile** _(the "100% trust" blocker)_. Collection is FS-only today;
@@ -97,8 +156,23 @@ multi-statement SQL-def utils already slid down to `ducktest/sqldef.py`):
 - **`Provisioner`** base: `provision(specs, token)` runs the access-policy loop — `rw` → isolated target
   + `instantiate` + track for teardown; `ro` → shared FQN + once-guard (`_shared_ro`) — then assembles
   `env` via `env_for`; `teardown` drops `isolated`. Backend hooks: `execute(sql)`, `rw_target`,
-  `ro_target`, `instantiate`, `env_for`. Refactor **Databricks + OSS onto it (2-backend proof)** before a
-  third backend (iceberg) lands. (See the iceberg starter handoff for the first consumer.)
+  `ro_target`, `instantiate`, `env_for`.
+- **Reconcile with `uc/test/py/uc/WIP-identity-design.md` § *B* before building this** — it's a richer
+  design than the sketch above (which came from a session that hadn't seen it) and already informed
+  today's `credential()`/`service()` shape. It splits **`Backend`/`Service`** (session-scoped —
+  `start`/`stop`, `endpoint`+`execute` transport; ~5 primitives: `execute`, `instantiate_fixture`,
+  `table_exists`, `attach_sql`, `catalog_for(access)` — this is now largely the azurite-commit's
+  `Service`/`attach`/`alive` shape, see `docs/SERVICES.md`) from **`Provisioner`** (per-test — identity,
+  lifecycle, RO presence-policy `assume`/`validate`/`provision`, `teardown_stale`). Naming fixes decided
+  there: `make_init`→`make_init_sql` (still real/load-bearing for `--repl`/`--provision-dry-run`,
+  `plugin.py:1263,1272` — keep it, the sketch above dropped it), `teardown(bindings)` (no redundant
+  `token` arg), `sweep_stale`→`teardown_stale(older_than)`.
+- **Proof consumers: Databricks + Iceberg, not Databricks + OSS.** Per `WIP-identity-design.md` §A,
+  Databricks is **already fully migrated** to the unified `bindings.env` model (item 5 ✅); OSS is
+  **not** — item 2 is blocked on `uctl` (hardcoded to `duck.cmt.*`/`duck.plain.*`, no dynamic
+  schema/catalog creation), a container-image gap, not a refactor. So prove the base against Databricks
+  (done) + Iceberg (new, see § *Iceberg onboarding* in Roadmap below), and fold OSS on once its `uctl`
+  blocker clears separately — don't gate this work on that.
 
 **Object-store `@requires` wiring rides this.** P3's rclone runner (`ducktest/tools/rclone.py`, built +
 live-verified — see docs/SERVICES.md § *Object-store seeding*) is standalone today (a conftest calls
@@ -158,14 +232,43 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
   how it composes with the default-scan + banner and with `--profile`. Turns the standard set vocabulary
   (smoke·local·cloud·slow·all) into real, composable selectors rather than just suite aliases.
 - **Iceberg onboarding** — the first *external* backend to exercise the suite/resource API (today only UC
-  does), validating that the surface generalizes. _(from TIERING)_
+  does), validating that the surface generalizes. _(from TIERING)_ **Approach (decided 2026-07-14):** not
+  a 100%-parity port — `ice`'s own team will work warts with us. Instead, a deliberately staged sequence
+  of tests, each one chosen to force a specific expansion of the driver rather than exercised
+  incidentally. Track each forcing case here as it's found, don't just fix it invisibly.
+  - **Repo location**: `ice` moved from `d/ice` to **`ducktest/ice`** (2026-07-14, plain relocate — no
+    linked worktrees, no submodule-path issues, so a straight `mv` was safe/correct here, unlike
+    `driver`/`uc` which needed actual worktree splits). 4 uncommitted jar deletions in its tree
+    (`scripts/data_generators/iceberg-spark-runtime-*.jar`) are intentional — large, not currently
+    needed, reconstitute later — not a blocker.
+  - **Starter test (decided 2026-07-14):** `schema_evolve_int_to_bigint` (def:
+    `scripts/data_generators/tests/default/schema_evolve_int_to_bigint/{test.sql,__init__.py}`; read:
+    `test/sql/local/schema_evolve_int_to_bigint.test`) — picked deliberately for *serious provisioning
+    generation, trivial read* (multi-step Spark write: create format-v2/MOR table, insert, in-place
+    `ALTER…TYPE BIGINT` schema-evolution commit, insert again; read is a flat `ICEBERG_SCAN` of one int
+    column) — so any failure is unambiguously a provisioning-layer failure, not a read/assertion one.
+    Close second if less schema surface wanted: `schema_evolve_widen_decimal` (same shape, decimals).
+    Starts on the **`spark_local` connection (no docker)** — deliberate, matches this sandbox's own
+    docker-free constraint too; REST/docker-backed catalogs (`fixture`/`spark_rest`, MinIO/S3) are a
+    later step once the base below is proven.
+  - **Base `Provisioner`/`Backend` design + sequencing:** see § *Base `Provisioner` + object-store
+    `@requires` wiring* above (Databricks + Iceberg are the 2-consumer proof, not Databricks + OSS —
+    OSS is separately blocked on `uctl`). **Status (2026-07-14): the azurite/service-layer commit
+    (`f95d33b`) landed** — `Service` `attach`/`alive` + `provision-service`/`teardown-service` +
+    the rclone object-store runner (`docs/SERVICES.md`) — but the base `Provisioner`/`Bindings` class
+    itself is still not built (confirmed by `SERVICES.md` itself: object-store `@requires` wiring
+    "should land on top of the base `Provisioner` refactor"). That's still the next real task here.
+  - **Open (small, low-stakes):** `IcebergDef` — a new small lazy ref (mirrors `Fixture("name")`) vs. a
+    plain FQN-string + convention lookup. Leaning `IcebergDef`: keeps def-vs-fixture dispatch explicit,
+    consistent with the existing lazy-ref architecture.
 - **Min duckdb (unittest) version contract** _[real, mechanism TBD]_ — the driver assumes unittest flags
   (`--emit-test-events`, `--temp-dir-*`, `--select-tag`); a stale binary errors `Unrecognised token:
   --temp-dir-base`. A standalone release needs a pinned/probed floor (probe `unittest --version`/features
   or a documented minimum). _(from EXTRACT_DRIVER_PLAN)_
-- **Versioning scheme — decide NOW** _[process]_ — the driver moves fast and will break consumers; pin a
-  version scheme + policy (semver vs date-based; how API / `pytest.ini`-stub breaks are signaled) before
-  more repos depend on it. Pairs with the min-duckdb-version contract above.
+- **Versioning scheme** _[decided 2026-07-14]_ — see *Pre-0.1 release gates* above: `0.0.1` pushed to the
+  real `duckdb`-org repo as-is, iterate publicly, `0.1.0` once hardened against Iceberg + others. Still
+  open: the semver-vs-date-based policy question itself, and how API / `pytest.ini`-stub breaks get
+  signaled to consumers — pairs with the min-duckdb-version contract above.
 - **Scope-model unification** — map the temp-dir `create × destroy × scope` triple onto pytest fixture
   scopes AND the `@requires` resource model (one lifecycle vocabulary, not two); acquire-mode
   (shared/exclusive == ro/rw) generalizes the same triple. (Also separable: an absolute
@@ -267,6 +370,20 @@ Built today: the `Fixture` named ref (lazy, no I/O at collection); the SQL forma
 canonicalizer + `Instantiator` seam + `DuckDBInstantiator` + `map_columns` (see ARCHITECTURE.md §
 *Fixtures*). Next:
 
+- **Promote the table-naming contract into a driver `Provisioner` base** _(rename pending — see note)_ —
+  today it's UC-local (`uc/test/py/uc/identity.py`: `TableRef` + `build_env`, ARCHITECTURE.md §
+  *Provisioning*): turns a `@requires`-provisioned table into the env vars a `.test` body's `${VAR}`s
+  substitute from (namespaced `{KEY}_CATALOG`/`_SCHEMA`/`_TABLE`/`{KEY}`-as-FQN per requirement, plus bare
+  `{CATALOG}`/`{SCHEMA}`/`{TABLE}` for the primary). Nothing UC-specific is in it — it's already generic,
+  just in the wrong repo. **Naming (flagged 2026-07-14):** the docs currently call this the "identity
+  contract," which reads as auth/credentials to anyone coming in cold (confirmed — that's the first thing
+  it suggested here too) when it's actually about *addressing provisioned tables*, fully disjoint from the
+  credential system. Rename to something like **"table naming/addressing contract"** when this promotes —
+  update `ARCHITECTURE.md` § *Provisioning*, this bullet, the module name/docstring, **and the filename
+  itself** (`identity.py` → e.g. `table_naming.py` or `addressing.py` — same "reads as auth" problem
+  encoded right into the path) together, not piecemeal. Also test whether the 3-field `TableRef` (catalog/schema/table) survives a non-table
+  resource (a REST catalog namespace, a bucket) — Iceberg onboarding is the natural forcing case, per
+  the *Pre-0.1 release gates* / Iceberg-onboarding entries above.
 - **`domain=` — a shared fixture library.** A named, registered fixture root so fixtures cross repos:
   duckdb core ships a large set; an external repo submodules core (+ others) and
   `register_fixture_root(config, path, domain="core")`, then references `Fixture("t", domain="core")`.

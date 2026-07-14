@@ -144,7 +144,11 @@ provisioner's **bindings as `resources.env`**, and tears them down after. A driv
 `run_paired(request, env=resources.env)` and the body's `${…}` substitute to the provisioned table.
 `--repl` runs the same provisioner interactively for one selected test.
 
-**Identity contract — a recommended convention, not (yet) a driver feature.** The driver's `resources`
+**Table naming/addressing contract — a recommended convention, not (yet) a driver feature.** (Called the
+"identity contract" elsewhere in older notes — avoid that name going forward: it reads as
+auth/credentials, but this is entirely about *addressing provisioned tables*, disjoint from the
+credential system above. Rename the module/docs together when this promotes — see PLAN.md § *Fixtures*.)
+The driver's `resources`
 fixture is **opaque about `resources.env`'s shape**: it hands back whatever your `provision()` returns
 (the driver only requires a `.env` dict for `run_paired(env=…)`). *Which* keys go in it is your
 provisioner's choice. The convention worth adopting is a small uniform vocabulary
