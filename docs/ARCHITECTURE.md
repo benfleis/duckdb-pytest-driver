@@ -63,10 +63,10 @@ Resources ride on a suite and come in two shapes, distinguished by *when* they'r
 
 | | **credential** (class-1) | **service** (class-2) |
 |---|---|---|
-| when | **eager** — once, up front, on the controller | **lazy** — first worker to need it |
-| why eager/lazy | an `op`/biometric prompt must land at invocation | expensive; only boot if a test actually pulls it |
+| when | **eager** — once, up front, on the controller | **`on_demand`** (default) — first worker to need it; or **`eager`** — up front on suite-selection (its `provision=` disposition) |
+| why | an `op`/biometric prompt must land at invocation | expensive → boot only if pulled; but a *bare `.test`* has no fixture to pull, so a bare-`.test` suite makes its service `eager` |
 | shared how | fetched once, broadcast to workers | one instance, shared across workers |
-| you write | `credential(fetch, validate, error, adopt, available)` | `service(start, stop, fixture)` + a fixture |
+| you write | `credential(fetch, validate, error, adopt, available)` | `service(start, stop, fixture, attach, alive)`; suite policy via `use_service(provision, to_env, populate)` |
 
 Both are carried between the controller and workers by **the store** (below).
 
@@ -105,8 +105,19 @@ which ran**, the block shape is identical either way:
   grammar, and the `ducktest provision-service`/`teardown-service` out-of-session commands that pair with
   it — bring a service up, hand you the exact attach line, leave it running for a later in-container run).
 
-A service is **demand-driven**: pulling its fixture is the signal it's needed (true even under `-k`), so
-there's no reachability gate — an unselected suite simply never pulls the fixture.
+An **`on_demand`** service (the default) is **demand-driven**: pulling its fixture is the signal it's
+needed (true even under `-k`), so there's no reachability gate — an unselected suite simply never pulls
+the fixture.
+
+**Disposition + env — for bare `.test` bodies.** A driverless `.test` pulls no fixture, so an
+`on_demand` service never boots for it and its connection env is never set. A suite fixes this by binding
+its service `provision="eager"` (via `use_service(SVC, provision="eager", to_env=…, populate=…)`): the
+controller boots it **on suite-selection**, pre-fork (same reachability gate credentials use — so an
+unrelated run doesn't boot it), runs **`populate(block, config)`** (structure + data, once — the
+store-scope analog of `instantiate`) and adopts **`to_env(block)`** into `os.environ` so the `.test`
+subprocess inherits the connection env. `populate` runs for *any* disposition; `to_env` is adopted by
+whichever process provisions the service. The `provision` vocabulary is `{eager, on_demand, per_test,
+never}` (`per_test`/`never` are named but not wired — fail loud). Full model: **docs/SERVICES.md**.
 
 ## The store
 

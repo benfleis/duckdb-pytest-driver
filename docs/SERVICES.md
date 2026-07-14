@@ -239,6 +239,11 @@ deps co-installed — the install model). Both accept a comma-list of keys or no
 is **idempotent**: an already-`alive` service is skipped, not clobbered. Started services are launched
 directly (not through the store), so the normal sessionfinish teardown **leaves them running**.
 
+> **Known gap (2026-07-14):** `provision-service` calls `start` only — it does **not** run `populate`, so
+> it currently leaves an *empty* instance (azurite with no containers/data). A later `pytest` run
+> repopulates on attach (masking it), but a hand-run against the provisioned instance hits e.g.
+> `ContainerNotFound`. Fix is to route it through the same one-shot `populate` (PLAN.md).
+
 This is only a **thin slice** of lifecycle — `provision`/`teardown` — **not** a persistent registry. The
 endpoint is carried from provision to attach by *you* (an env var, a script). If that carrying ever gets
 annoying, that's when a **registry** (a liveness-probed on-disk record so runs auto-discover a running

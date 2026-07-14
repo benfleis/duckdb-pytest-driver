@@ -38,7 +38,7 @@ The ordering is the thing most likely to bite an extender:
 |---|---|---|---|
 | `pytest_load_initial_conftests` | controller | **registers `_SuiteController`** as a plugin | must register here so its `trylast` joins normal ordering |
 | `pytest_configure` (module) | controller + workers | working dir, markers, forces `-n0` for `--repl`/`--steps` | **`tryfirst`** — must set `numprocesses` before xdist reads it |
-| `_SuiteController.pytest_configure` | controller only | start the **store** (pre-fork) + eager-fetch credentials | **`trylast`** — runs *after* the repo's `test/conftest.py` has `register_suite`'d |
+| `_SuiteController.pytest_configure` | controller only | start the **store** (pre-fork) + eager-fetch credentials + eager-provision services (`_provision_eager_services`) | **`trylast`** — runs *after* the repo's `test/conftest.py` has `register_suite`'d |
 | `pytest_collection_modifyitems` (in `_SuiteController`) | workers (+ `-n0` controller) | **auto-marker + default-scan deselect** | **`hookwrapper`** — pre-yield runs before pytest's builtin `-m`/`-k` deselection |
 | `pytest_collection_modifyitems` (module) | workers | dedup + xdist_group **batching** | plain (yield phase) |
 | `pytest_report_header` | controller | the **suite banner** (always) + `-v` tool trace | banner ungated |
@@ -111,7 +111,7 @@ its sibling `.test` and invokes the binary. Batching groups adjacent same-binary
 - **A new test lane** (`.sql`, `.py`-only) — extend `pytest_collect_file`'s gate + the `has_driver` /
   `is_driver` pairing; see the `# PLANNED` markers in `plugin.py` and PLAN.md.
 - **A shared `resources` library** — ready-made `service()`/`credential()` descriptors (minio/azurite/
-  docker + s3/1Password) live (or will) in `ducktest.resources` for any backend to import.
+  docker + s3/1Password) live in `ducktest.resources` (azurite shipped) for any backend to import; object-store seed/clean via `ducktest.tools.rclone`.
 
 ## Testing the driver (offline, always)
 

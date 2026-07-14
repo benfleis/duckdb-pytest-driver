@@ -46,6 +46,8 @@ declarative `@requires` provisioning, managed temp dirs, and batching/parallelis
 
 ```
 src/ducktest/   plugin.py suites.py store.py provision.py requires.py fixtures.py sqllogic.py sqldef.py steps.py mnemonic.py cli.py
+  resources/    ready-made service()/credential() descriptors — azurite.py (see docs/SERVICES.md)
+  tools/        rclone.py — object-store seed/clean runner (a means, not core framework surface)
 tests/                      self-tests vs a stub unittest binary (offline)
 docs/                       design + roadmap (canonical)
 pyproject.toml              hatchling; pytest11 + ducktest entry points; deps (pytest>=7.4, xdist extra)

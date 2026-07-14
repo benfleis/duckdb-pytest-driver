@@ -255,11 +255,17 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
   at `pytest_configure` (session level) and error there, so an ambiguous / missing binary halts
   the whole session immediately with a single clear message (same for `--unittest-binary` not
   found). Binary resolution is a session invariant, not a per-item decision.
-- **sqllogic failure reports should surface the binary's stdout/stderr** _[bug]_ — a `.test` failure's
-  `repr_failure` doesn't include the `unittest` subprocess's raw stdout/stderr, so an unexpected
-  error-in-query is opaque. Likely either the assertion-fail path doesn't thread the combined output
-  through, or the `[TEST_EVENT]` data is empty for the unexpected-error-in-query case. Needs one
-  instrumented run (capturing the raw subprocess output) to pin which.
+- **sqllogic failure output** _(FIXED 2026-07-14, `20268c7`)_ — a `.test` failure now surfaces the
+  binary's full "Wrong result / Expected / Actual" diff. Root cause was `_classify` returning
+  `data or combined`: for a query mismatch the `end`-event `data` is just the `.test:NN` location
+  (truthy), so the diff in stdout got dropped. Now surfaces the binary output (`[TEST_EVENT]` lines
+  stripped), falling back to `data` only when nothing was captured.
+- **`provision-service` doesn't run `populate`** _[bug, found 2026-07-14]_ — the out-of-session
+  `--provision-service` command calls `svc.start` directly, NOT the boot+populate factory that
+  `provision_service` uses, so it leaves an EMPTY instance (azurite with no containers/data). A later
+  `pytest` run repopulates on attach (masking it), but a hand-run against the provisioned instance hits
+  `ContainerNotFound`. Route the command through the same one-shot `populate` so a provisioned service is
+  actually ready to use.
 - **Benchmark `solo` run-mode** — a `register_suite(..., solo=True)` (or a `benchmark` convention) that
   forces single-process / stable-timing for benchmark suites; service-backed, no creds. _(from TIERING)_
 - **Shared `resources` library** — ship ready-made `service()`/`credential()` descriptors (minio /
