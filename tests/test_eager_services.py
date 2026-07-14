@@ -29,6 +29,24 @@ def test_service_rejects_bad_provision():
         service("x", start=lambda c: None, provision="whenever")
 
 
+def test_narrating_flag_logic():
+    # --steps narrates; --repl/--provision-keep narrate unless --no-steps; --steps wins over --no-steps.
+    from ducktest.plugin import _narrating
+
+    class Cfg:
+        def __init__(self, **o):
+            self._o = o
+
+        def getoption(self, k, default=None):
+            return self._o.get(k, default)
+
+    assert _narrating(Cfg()) is False
+    assert _narrating(Cfg(**{"--steps": True})) is True
+    assert _narrating(Cfg(**{"--repl": True})) is True
+    assert _narrating(Cfg(**{"--repl": True, "--no-steps": True})) is False
+    assert _narrating(Cfg(**{"--steps": True, "--no-steps": True})) is True
+
+
 def test_to_env_allowed_for_any_disposition():
     # to_env is adopted by whatever process provisions (controller on eager, worker on the on_demand
     # fixture-pull), so it's NOT eager-only — the store shares the block. (A bare .test still needs eager,

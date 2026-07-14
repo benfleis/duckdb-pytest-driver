@@ -267,6 +267,13 @@ def _scan_test_events(output: str) -> dict:
     return tests
 
 
+def _binary_output(combined: str) -> str:
+    """The binary's human output with the machine ``[TEST_EVENT]`` flare lines stripped — i.e. the
+    "Wrong result / Expected / Actual" diff a failing ``.test`` prints, for surfacing in the pytest
+    failure repr. (The events are parsed separately; here they'd just be noise.)"""
+    return "\n".join(ln for ln in combined.splitlines() if _FLARE not in ln).strip()
+
+
 def _classify(events: dict, name, result: dict) -> dict:
     """Resolve one test's pass/skip/fail from its `end` event, falling back to the return code."""
     combined = result["stdout"] + result["stderr"]
@@ -274,16 +281,24 @@ def _classify(events: dict, name, result: dict) -> dict:
     if ev is None:
         # No terminal event for this test (e.g. a crash before `end`, or an old binary): trust rc.
         if result.get("returncode", 1) != 0:
-            return {"status": "fail", "output": combined}
+            return {"status": "fail", "output": _binary_output(combined) or "test failed (no output captured)"}
         return {"status": "pass", "stats": {}}
     stats = {"passes": ev.get("passes", 0), "fails": ev.get("fails", 0), "skip-mode": ev.get("skip-mode", 0)}
     status = ev.get("status")
     if status == "skip-requirement":
         return {"status": "skip", "reason": ev.get("data") or "skipped", "stats": stats}
     if status == "error":
-        # `data` carries the message for infra errors; a statement assertion fail has none, so fall
-        # back to the captured output (the full diff lives there).
-        return {"status": "fail", "output": ev.get("data") or combined, "stats": stats}
+        # Surface the binary's FULL failure output — the "Wrong result in query! / Expected: / Actual:"
+        # block that lives in stdout. The event `data` (when present) is usually just the `.test:NN`
+        # location, already in that output — so prefer the rich text, falling back to `data` only when
+        # nothing was captured (an infra error with no stdout). (Was: `data or combined`, which dropped
+        # the whole diff whenever `data` held a bare location — the "opaque failure" bug.)
+        text = _binary_output(combined)
+        if not text:
+            text = ev.get("data") or "test failed (no output captured)"
+        elif ev.get("data") and ev["data"] not in text:
+            text = f"{ev['data']}\n\n{text}"
+        return {"status": "fail", "output": text, "stats": stats}
     return {"status": "pass", "stats": stats}
 
 

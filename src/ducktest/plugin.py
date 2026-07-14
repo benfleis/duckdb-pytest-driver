@@ -13,6 +13,7 @@ Import-name-agnostic on purpose (dual-mode): the same code works pip-installed a
 consumer setup: see the repo README + docs/.
 """
 
+import contextlib
 import logging
 import os
 import shutil
@@ -698,8 +699,12 @@ class _SuiteController:
         setattr(config, _STORE, mgr.store())
         # pre-fork: workers inherit this env at spawn and connect via from_env()
         os.environ.update(store.to_env(address, authkey))
-        _fetch_credentials(config)
-        _provision_eager_services(config)
+        # Narrate the eager credential/service provisioning under --steps: it runs HERE, at configure
+        # time, before pytest's live-log handler exists — so without this its step()s (starting Azurite,
+        # populating, …) are invisible even with --steps (docs/SERVICES.md).
+        with _narrate_driver_log(config):
+            _fetch_credentials(config)
+            _provision_eager_services(config)
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_collection_modifyitems(self, config, items):
@@ -767,6 +772,40 @@ def _provision_eager_services(config):
         for svc in suite.services:
             if svc.provision == "eager":
                 provision_service(config, svc)  # boot + populate + adopt to_env, on the controller pre-fork
+
+
+def _narrating(config):
+    """Whether ``step()`` narration should be surfaced live — mirrors the module ``pytest_configure``
+    logic: ``--steps``, or a ``--repl`` / ``--provision-keep`` session unless ``--no-steps``."""
+    steps = config.getoption("--steps", default=False)
+    repl_like = config.getoption("--repl", default=False) or config.getoption("--provision-keep", default=False)
+    return bool(steps or (repl_like and not config.getoption("--no-steps", default=False)))
+
+
+@contextlib.contextmanager
+def _narrate_driver_log(config):
+    """Surface the ``driver`` logger's INFO ``step()`` output live during CONFIGURE-TIME provisioning
+    (eager credentials + services). That work runs before pytest's live-log handler is attached, so
+    ``--steps`` otherwise shows nothing for the eager boot/populate. Attach a temporary stderr handler
+    with capture suspended for the duration, then detach — so test-phase ``step()``s still go through
+    live-log (no double output). No-op unless narrating.
+    """
+    if not _narrating(config):
+        yield
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    driver_log = logging.getLogger("driver")
+    driver_log.addHandler(handler)
+    capman = config.pluginmanager.getplugin("capturemanager")
+    try:
+        if capman is not None:
+            with capman.global_and_fixture_disabled():
+                yield
+        else:
+            yield
+    finally:
+        driver_log.removeHandler(handler)
 
 
 def _teardown_store(config):
@@ -1465,11 +1504,7 @@ def pytest_configure(config):
     # turns on pytest's live-log — the only channel that cooperates with output capture, and it
     # also reaches the collection hook --repl runs from; it's dead on xdist workers, so this path
     # forces -n0 (above). Don't override an explicit --log-cli-level the user already passed.
-    repl_like = config.getoption("--repl", default=False) or config.getoption("--provision-keep", default=False)
-    narrate = config.getoption("--steps", default=False) or (
-        repl_like and not config.getoption("--no-steps", default=False)
-    )
-    if narrate:
+    if _narrating(config):  # same predicate the configure-time eager-provisioning narration uses
         if config.getoption("--log-cli-level", default=None) is None:
             config.option.log_cli_level = "INFO"
 

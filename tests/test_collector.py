@@ -38,6 +38,8 @@ STUB = textwrap.dedent(
     for n in names(sys.argv[1:]):
         sys.stdout.write("running %s\\n" % n)
         if "fail" in n:
+            # A real binary prints the diff to stdout; the `end` event's `data` is just a short tag.
+            sys.stdout.write("Wrong result in query! Expected: 42 Actual: 99\\n")
             ev = {"event": "end", "name": n, "status": "error",
                   "passes": 0, "fails": 1, "skip-mode": 0, "data": "forced mismatch"}
         else:
@@ -81,6 +83,16 @@ def test_forced_mismatch_is_reported_as_failure(pytester):
     _make_test(pytester, "test/sql/mismatch_fail.test")
     result = _run(pytester, stub)
     result.assert_outcomes(failed=1)
+
+
+def test_failure_surfaces_the_binary_output(pytester):
+    # The binary's Expected/Actual diff (stdout) must appear in the pytest failure repr — not just the
+    # short event `data`/location (the "opaque failure" bug: `data or combined` dropped the diff).
+    stub = _stub_binary(pytester)
+    _make_test(pytester, "test/sql/diff_fail.test")
+    result = _run(pytester, stub)
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*Wrong result in query! Expected: 42 Actual: 99*"])
 
 
 def test_batch_attributes_pass_and_fail_per_test(pytester):
