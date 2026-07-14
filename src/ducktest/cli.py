@@ -87,13 +87,25 @@ def main(argv=None):
     p_cfg.add_argument("dir", nargs="?", default=".", help="target repo dir (default: cwd)")
     p_cfg.set_defaults(func=_configure)
 
+    # KNOWN LIMITATION (found in code review, 2026-07-14, not fixed): argparse can't disambiguate a
+    # dash-leading pytest_args token from the optional `keys` positional when `keys` is omitted --
+    # `ducktest teardown-service -p no:cacheprovider` errors "unrecognized arguments" instead of
+    # targeting all services + forwarding -p. A `--` separator does NOT help either: argparse still
+    # greedily binds the first REMAINDER-adjacent token to `keys` (`teardown-service -- -p no:x` parses
+    # `-p` into `keys`, silently mistargeting the service filter instead of erroring). Workaround: pass
+    # `keys` explicitly (`teardown-service '*' -p no:cacheprovider`) whenever forwarding a pytest flag.
     for name, flag, helptext in (
         ("provision-service", "--provision-service", "start declared service(s) and leave them running"),
         ("teardown-service", "--teardown-service", "stop declared service(s)"),
     ):
         p = sub.add_parser(name, help=helptext)
         p.add_argument("keys", nargs="?", default=None, help="comma-list of service keys (default: all)")
-        p.add_argument("pytest_args", nargs=argparse.REMAINDER, help="extra args forwarded to pytest")
+        p.add_argument(
+            "pytest_args",
+            nargs=argparse.REMAINDER,
+            help="extra args forwarded to pytest (pass `keys` explicitly, e.g. '*', when using this -- "
+            "a dash-leading arg can't be forwarded if `keys` is omitted, see the comment above)",
+        )
         p.set_defaults(func=lambda a, _flag=flag: _service_cmd(a, _flag))
 
     args = parser.parse_args(argv)

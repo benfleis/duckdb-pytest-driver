@@ -90,10 +90,20 @@ missing credential fails clearly instead of skipping.
 
 ### Services
 
-Declared with `service(key, start=, stop=, fixture=)`. Its session fixture calls
-`provision_service(config, SVC)`, which routes `start` through the store's single-flight: the **first**
-worker to pull the fixture boots the service and publishes its block; the rest **block, then reuse** it.
-The controller **stops it once** at session end. If `start` fails, every waiter fails fast (poison).
+Declared with `service(key, start=, stop=, fixture=, attach=, alive=)`. Its session fixture calls
+`provision_service(config, SVC)`, which routes to one of two lifecycle stances — a test **cannot tell
+which ran**, the block shape is identical either way:
+
+- **Managed** (default) — `start` routes through the store's single-flight: the **first** worker to pull
+  the fixture boots the service and publishes its block; the rest **block, then reuse** it. The
+  controller **stops it once** at session end. If `start` fails, every waiter fails fast (poison).
+- **Existing (external)** — the service is already running (started by you, or living on the host while
+  pytest runs in a container); declare it via `--existing-service KEY[=URL|={json}]` (or an env var) and
+  the run **attaches** instead of booting: `attach(overrides, config)` builds the block, `alive(block)`
+  probes it once (a declared-but-dead service **fails loud**, the paradigm shift applied to attach) — no
+  store, no teardown. `docs/SERVICES.md` is the deep-dive (the block/derive contract, the attach entry
+  grammar, and the `ducktest provision-service`/`teardown-service` out-of-session commands that pair with
+  it — bring a service up, hand you the exact attach line, leave it running for a later in-container run).
 
 A service is **demand-driven**: pulling its fixture is the signal it's needed (true even under `-k`), so
 there's no reachability gate — an unselected suite simply never pulls the fixture.

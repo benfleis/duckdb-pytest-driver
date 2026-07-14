@@ -21,7 +21,15 @@ from ..steps import step
 from ..tools.rclone import Remote
 from ..suites import service
 
-# Azure's PUBLIC well-known emulator account + key (Microsoft-published; NOT a secret).
+# EXEMPTION (documented per code review, 2026-07-14) from AGENTS.md's "No secrets in files... use
+# ${ENV_VAR} placeholders" rule: this account/key pair is NOT a secret. It's Azure's fixed, PUBLIC,
+# Microsoft-published Storage Emulator credential -- identical in every Azurite install worldwide,
+# published in Microsoft's own docs (e.g. https://learn.microsoft.com/azure/storage/common/storage-use-
+# azurite) and reproduced verbatim across the whole ecosystem's tooling. Hardcoding it is intentional and
+# correct: an ${ENV_VAR} placeholder would incorrectly imply a deployment-specific value to configure,
+# when in fact using anything OTHER than this exact string is what would be wrong (it wouldn't
+# authenticate against a real Azurite emulator). A secret-scanner may still flag this line; that's a
+# false positive, not a policy violation -- this comment is the record of that call for future reviewers.
 ACCOUNT = "devstoreaccount1"
 KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
 

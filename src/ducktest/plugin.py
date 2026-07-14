@@ -819,9 +819,26 @@ def _parse_existing_services(cli_values, environ):
     """
 
     def _split(s):
-        # comma/semicolon separated, but NOT inside a {json} value (which carries its own commas).
-        out, buf, depth = [], [], 0
+        # comma/semicolon separated, but NOT inside a {json} value (which carries its own commas/braces)
+        # -- including braces/separators inside a JSON STRING literal, which must not affect brace depth
+        # or trigger a split (e.g. --existing-service foo={"note": "a}b"} would otherwise be cut mid-JSON
+        # on that literal '}'). Track quote state (with backslash-escape awareness) so a quoted string's
+        # contents are opaque to the depth/separator logic below.
+        out, buf, depth, in_str, escape = [], [], 0, False, False
         for ch in s or "":
+            if in_str:
+                buf.append(ch)
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+                buf.append(ch)
+                continue
             if ch == "{":
                 depth += 1
             elif ch == "}":
@@ -891,10 +908,21 @@ def _attach_service(config, svc, overrides):
 
 def _service_targets(config, spec):
     """The (suite, service) pairs a provision/teardown command targets: all if ``spec`` is ``*``/empty,
-    else the ones whose (normalized) key is in the comma/semicolon list ``spec``."""
+    else the ones whose (normalized) key is in the comma/semicolon list ``spec``.
+
+    Deduplicated by service ``key``: the same ``Service`` (e.g. one shared across several suites'
+    declarations, the intended reuse pattern — see ``ducktest.resources``) is ONE physical resource and
+    must be provisioned/torn down exactly once, not once per suite that happens to declare it.
+    """
     import re
 
-    services = [(t, s) for t in get_suites(config) for s in t.services]
+    seen, services = set(), []
+    for t in get_suites(config):
+        for s in t.services:
+            if s.key in seen:
+                continue
+            seen.add(s.key)
+            services.append((t, s))
     if spec in (None, "*", ""):
         return services
     keys = {_norm_service_key(k) for k in re.split(r"[,;]", spec) if k.strip()}
@@ -914,6 +942,8 @@ def _run_service_command(config):
 
     if teardown is not None:
         targets = _service_targets(config, teardown)
+        if not targets:
+            pytest.exit("ducktest --teardown-service: no matching declared service(s)", returncode=1)
         for _, svc in targets:
             if svc.stop is not None:
                 with step(f"tearing down service {svc.key}"):

@@ -205,6 +205,30 @@ This object-store instantiator is the piece that plugs into the base `Provisione
 
 ## Roadmap (future)
 
+- **Cross-process safety for `provision-service`/`teardown-service`** _(found in code review of
+  `f95d33b`, 2026-07-14)_ — two related gaps, both stemming from the same root cause: no out-of-process
+  ownership registry exists (`docs/SERVICES.md`'s own "deferred until needed" registry). Not fixed now —
+  concurrent invocations aren't (yet) an expected usage pattern — but tracked here rather than silently:
+  1. **Provision race.** `_run_service_command`'s provision path calls `svc.start(config)` directly, not
+     through the store's single-flight lock — two concurrent `ducktest provision-service X` invocations
+     can race on the same `docker run --name`. **This is NOT fixable by "routing through the store"**:
+     `_run_service_command` runs *before* `store.start_server()` in `_SuiteController.pytest_configure`
+     (the store doesn't exist yet in-process at that point), and even if it did, the store is a fresh
+     per-process `multiprocessing.managers` instance (new address/authkey every run) — a separate OS
+     process invoking `ducktest provision-service` gets its own independent store, not a shared one. The
+     store coordinates workers *within* one pytest invocation; it cannot provide cross-process locking,
+     full stop. A real fix needs a different primitive entirely — e.g. a plain file lock per service key,
+     or making `start()` idempotent against a losing `docker run --name` race (catch and re-probe instead
+     of crash).
+  2. **Teardown-vs-running-session race.** `teardown-service`'s stop path has no ownership check — it
+     will happily `svc.stop()` a service a *different*, still-running managed pytest session is using.
+     No token/mechanism exists to detect this today: the block written to the store (`_service_block`:
+     `{key, started}` + whatever `start()`/`attach()` add) carries no PID/run-id, and the store doesn't
+     persist across processes anyway (same reasoning as #1). A real fix needs the out-of-process registry
+     `SERVICES.md` already flags as deliberately deferred ("a liveness-probed on-disk record so runs
+     auto-discover a running service... build it when we know we need it") — likely: record the owning
+     PID/run-id in a small on-disk file per service key at boot (both the managed and `provision-service`
+     paths), have teardown/stop check it and refuse (or `--force`) if the owner is still alive.
 - **Matrix** — one body × N cells (catalog/engine), via pytest `parametrize` / scoped
   fixtures / `pytest_generate_tests`. Cells are batch-1 and likely imply `slow`. Per-cell
   variable injection into the body is the open mechanism (the default-schema trick covers many
