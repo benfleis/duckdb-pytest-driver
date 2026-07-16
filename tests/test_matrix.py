@@ -8,11 +8,11 @@ assert is the MECHANISM — one item per cell, each with its own per-cell `requi
 
 # The matrix test under test: a 2-value `storage` axis, tagged `oss_local`. `matrix_cell`
 # is taken directly (indirect parametrize needs it in the closure; real drivers reach it
-# via `resources`). Fixture("id_name") stays a pure value — never resolved (no `resources`).
+# via `resources`). TableSpec("id_name") stays a pure value — never resolved (no `resources`).
 _MATRIX_TEST = """
-from ducktest import requires_matrix, Fixture, collect_requirements
+from ducktest import requires_matrix, TableSpec, collect_requirements
 
-@requires_matrix(source=Fixture("id_name").Seed(None), access="rw",
+@requires_matrix(source=TableSpec("id_name").Seed(None), access="rw",
                  properties={"storage": ["managed", "external"]},
                  marks=["oss_local"])
 def test_rw(request, matrix_cell):

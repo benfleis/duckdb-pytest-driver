@@ -56,13 +56,25 @@ pyproject.toml              hatchling; pytest11 + ducktest entry points; deps (p
 ## Dev loop
 
 ```bash
-uv pip install -e '.[xdist]'         # editable: plain .py edits are live, no reinstall
-.venv/bin/python -m pytest tests/    # self-tests (offline, stub binary)
+uv run pytest                        # self-tests (offline, stub binary). This is THE command.
+uv run pytest --run-docker -m docker # opt-in tier: boots real azurite/minio (needs docker + rclone; CI docker job)
 ruff check .
 ```
 
-Re-run `uv pip install -e` **only** when you touch `pyproject.toml` entry points / deps /
-`[project.scripts]` — those are baked into the install at build time. Editing `.py` needs no reinstall.
+The docker tier is gated by the `--run-docker` flag (tests/conftest.py), NOT `-m docker` alone — `-m` is
+single-valued, so an `addopts = -m 'not docker'` default would be silently replaced by any user `-m` and
+let real containers boot. `-m docker` just narrows the run to that tier; `--run-docker` is what enables it.
+
+`uv run` runs *in the project's env* — it installs this editable package (so `import ducktest` resolves)
+plus the `dev` dependency group (which carries `pytest-xdist`, required because the self-tests spin up
+inner `pytest -n 2` subprocesses). Plain `.py` edits are live, no reinstall.
+
+Do **not** use `uvx pytest` / `uv tool run pytest` — that's a dependency-free ISOLATED env with no
+project, so every `import ducktest` fails with `ModuleNotFoundError`. `uv run` is the one that works.
+
+The explicit-venv form (equivalent): `uv venv && uv pip install -e '.[xdist]'` then
+`.venv/bin/python -m pytest tests/`. Re-run the install only when `pyproject.toml` entry points / deps /
+`[project.scripts]` change (baked in at build time); editing `.py` needs no reinstall.
 
 ## Conventions
 

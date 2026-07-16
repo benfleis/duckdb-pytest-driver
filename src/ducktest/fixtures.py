@@ -1,50 +1,56 @@
-"""Table fixtures: a fixture table is INSTANTIATED from its (fixture) DEFINITION and
-optional SEED DATA, with DuckDB as the middleman.
+"""Table specs: a `TableSpec` names a table's BASIS state (schema + optional seed) and is
+INSTANTIATED into a real table, with DuckDB as the middleman.
 
-THE VOCABULARY. When we *provision*, we gather/reference `Fixture` definitions and
-*instantiate* them into `Table`s which may or may not contain seed data:
+A `TableSpec` is one STATE, not a lifecycle. It's the table a test starts from. Any mutation
+the test relies on (ALTER, INSERT, checkpoint, ...) belongs to the test itself, run against
+the instantiated table; provisioning produces the basis and the test does the rest. (An
+`IcebergDef`-style "run this whole generator recipe" ref is the exception, and it's about
+reusing an expensive pre-built artifact, not about a different kind of definition.)
 
-    provision ─▶ Fixture (ref)  ─load─▶ FixtureDef (schema + optional seed)
+THE VOCABULARY. When we *provision*, we reference a `TableSpec` and *instantiate* it into a
+`Table` that may or may not carry seed data:
+
+    provision ─▶ TableSpec (ref)  ─load─▶ LoadedTableSpec (the parsed spec: schema + seed)
                                         │ instantiate (per backend)
                                         ▼
                                       Table (columns + optional seed_data)
 
-A `FixtureDef` is a tiny SQL file that defines ONE table's schema + seed rows and
-NOTHING about physical storage:
+The spec lives in a tiny SQL file defining ONE table's schema + seed rows and NOTHING about
+physical storage:
 
-    -- fixture: simple_table
+    -- table: simple_table          (`-- fixture:` is also accepted, for back-compat)
     -- keys: [id]
     CREATE TABLE simple_table (id INTEGER);
     INSERT INTO simple_table VALUES (1), (2), (3), (4), (5);
 
-The logical/physical split is deliberate: the definition says *what the table is*; the
-2x2 commit/storage properties (LOCATION, catalog-managed TBLPROPERTIES, ...) are the
-per-backend INSTANTIATOR's job. So the SAME definition instantiates on pure-duckdb,
-Databricks, Iceberg, ... — only the instantiator changes. One definition can be
-instantiated into MANY tables (a table per parallel test, several data variants).
+The logical/physical split is deliberate: the spec says *what the table is*; physical
+properties (LOCATION, catalog-managed TBLPROPERTIES, storage layout) are the per-backend
+INSTANTIATOR's job. So the SAME spec instantiates on pure-duckdb, Databricks, Iceberg, ...,
+and only the instantiator changes. One spec can become MANY tables (one per parallel test,
+several data variants).
 
-DUCKDB IS THE CONVERTER. We never hand-parse the SQL or hand-declare column types:
-we run the definition body through the located duckdb CLI (the `<build>/duckdb` next to
-the unittest binary — same one `--repl` uses; NO python-duckdb dependency) and read
-back the resolved schema (`DESCRIBE`) + rows (`SELECT *`) as JSON. That canonical
-`Table` is what non-duckdb instantiators translate.
+DUCKDB IS THE CONVERTER. We never hand-parse the SQL or hand-declare column types: we run the
+spec body through the located duckdb CLI (the `<build>/duckdb` next to the unittest binary,
+the same one `--repl` uses; NO python-duckdb dependency) and read back the resolved schema
+(`DESCRIBE`) + rows (`SELECT *`) as JSON. That canonical `Table` is what non-duckdb
+instantiators translate.
 
-LAZY BY CONSTRUCTION. A `Fixture(name)` is a pure value — it does NO I/O. Nothing is
-read or instantiated until a test that *runs* asks for it (via the backend's
-`resources` fixture at test-setup time). Collecting or skipping a test touches no
-fixture files. Resolution/caching policy is the consumer's `resources` fixture's job,
-not this module's — the loader stays pure so the consumer controls scope.
+LAZY BY CONSTRUCTION. A `TableSpec(name)` is a pure value that does NO I/O. Nothing is read or
+instantiated until a test that *runs* asks for it (via the backend's `resources` fixture at
+test-setup time). Collecting or skipping a test reads no spec files. Resolution/caching policy
+is the consumer's `resources` fixture's job, not this module's; the loader stays pure so the
+consumer controls scope.
 
-THREE KINDS of `source=` (driver/requires.py):
-  * `Fixture("simple_table")` — this module: SQL definition + seed, instantiated via duckdb.
-  * a generator (future)      — computed/large data (e.g. tpc*); duckdb -> parquet.
-  * an FQN string / Clone     — CTAS from a pre-existing source (only earns its keep at
-                                scale; the legacy Databricks path). Not self-contained.
+KINDS of `source=` (see requires.py). A `TableSpec` is the portable, engine-agnostic one; a
+backend may also accept its own source ref (opaque to the framework, interpreted by its
+provisioner). Future `TableSpec` kinds: a generator (computed/large data, e.g. tpc*, duckdb ->
+parquet) and an FQN string / Clone (CTAS from a pre-existing source; only earns its keep at
+scale, not self-contained).
 
-INSTANTIATOR SEAM. The generic core (format, load, canonicalize) lives here; the
-per-backend step is a registered `Instantiator`. `DuckDBInstantiator` is the built-in
-default (instantiate into a duckdb db file). A backend registers its own from a
-conftest, the same scoped seam as provision.py's `register_provisioner`.
+INSTANTIATOR SEAM. The generic core (parse, load, canonicalize) lives here; the per-backend
+step is a registered `Instantiator`. `DuckDBInstantiator` is the built-in default (instantiate
+into a duckdb db file). A backend registers its own from a conftest, the same scoped seam as
+provision.py's `register_provisioner`.
 """
 
 import json
@@ -54,12 +60,12 @@ import subprocess
 from dataclasses import dataclass, field, replace
 
 
-class FixtureError(RuntimeError):
-    """A fixture failed to load, instantiate, or introspect."""
+class TableSpecError(RuntimeError):
+    """A table spec failed to load, instantiate, or introspect."""
 
 
 class _Unset:
-    """Sentinel: a `Fixture`'s seed was not overridden — use the fixture's own seed."""
+    """Sentinel: a `TableSpec`'s seed was not overridden — use the spec's own seed."""
 
     def __repr__(self):
         return "UNSET"
@@ -71,7 +77,7 @@ _UNSET = _Unset()
 def resolve_seed(seed, default_rows):
     """Effective rows to load for one instantiation.
 
-    `_UNSET` -> the fixture's own seed (`default_rows`); `None` -> empty table (drop the
+    `_UNSET` -> the spec's own seed (`default_rows`); `None` -> empty table (drop the
     coupled seed); a list of row tuples -> replace the seed with those rows.
     """
     if seed is _UNSET:
@@ -82,7 +88,7 @@ def resolve_seed(seed, default_rows):
 
 
 # ---------------------------------------------------------------------------
-# Fixture reference (a NAMED entry, not a path) + parsed definition
+# TableSpec reference (a NAMED entry, not a path) + parsed definition
 # ---------------------------------------------------------------------------
 
 
@@ -92,47 +98,48 @@ def _stem(path: str) -> str:
 
 
 @dataclass(frozen=True)
-class Fixture:
-    """A reference to a named table fixture — resolved by the framework, not a path.
+class TableSpec:
+    """A reference to a named table spec — resolved by the framework, not a path.
 
-    Write it in `@requires(source=Fixture("simple_table"), ...)`. The name is LOGICAL
-    (extension-less by convention; a trailing `.sql` is tolerated and stripped). It is
-    a pure value: constructing it does no I/O — resolution against the search path
-    happens only when a running test instantiates it (see `load_fixture`).
+    Write it in `@requires(source=TableSpec("simple_table"), ...)`. It names a table's BASIS
+    state (schema + optional seed): the state a test starts from. Mutations the test relies on
+    (ALTER, INSERT, ...) are the test's own steps against the instantiated table, not part of
+    the spec. The name is LOGICAL (extension-less by convention; a trailing `.sql` is tolerated
+    and stripped). It is a pure value: constructing it does no I/O; resolution against the
+    search path happens only when a running test instantiates it (see `load_table_spec`).
 
-    Seed override: a fixture's `.sql` carries a default seed; `.Seed(None)` yields an
-    empty table (schema only), `.Seed(rows)` replaces the seed, and omitting `.Seed`
-    (the `_UNSET` default) uses the fixture's own seed. This is the early, ref-site form
-    of the def-vs-data split.
+    Seed override: a spec's `.sql` carries a default seed; `.Seed(None)` yields an empty table
+    (schema only), `.Seed(rows)` replaces the seed, and omitting `.Seed` (the `_UNSET` default)
+    uses the spec's own seed. This is the early, ref-site form of the schema-vs-data split.
 
-    Reserved for the next iteration (see docs/FIXTURES.md): a `domain` to select among
-    multiple registered fixture roots (e.g. per-extension), explicit-kind constructors
-    (`Fixture.parquet(...)`, `Fixture.gen("tpch", sf=1)`), and a fuller `.Table`/`.Data`
+    Reserved for the next iteration (see docs/FIXTURES.md): a `domain` to select among multiple
+    registered spec roots (e.g. per-extension), explicit-kind constructors
+    (`TableSpec.parquet(...)`, `TableSpec.gen("tpch", sf=1)`), and a fuller `.Table`/`.Data`
     split. Kept out of the constructor until designed.
     """
 
     name: str
-    seed: object = _UNSET  # _UNSET=use the fixture's seed; None=empty; list=replace
+    seed: object = _UNSET  # _UNSET=use the spec's seed; None=empty; list=replace
 
     def __post_init__(self):
         if not self.name or not isinstance(self.name, str):
-            raise ValueError("Fixture(name): name must be a non-empty string")
+            raise ValueError("TableSpec(name): name must be a non-empty string")
         if self.name.endswith(".sql"):
             object.__setattr__(self, "name", self.name[:-4])
 
     def Seed(self, rows):
         """Return a copy with the seed overridden: `None` => empty table, a list of row
-        tuples => replace the fixture's coupled seed. (Omit to keep the fixture's own.)"""
+        tuples => replace the spec's coupled seed. (Omit to keep the spec's own.)"""
         return replace(self, seed=rows)
 
 
 @dataclass(frozen=True)
-class FixtureDef:
-    """A resolved+parsed fixture DEFINITION: the leading `-- key: value` header + body.
+class LoadedTableSpec:
+    """A `TableSpec` after loading: the parsed `-- key: value` header + the SQL body.
 
     `body` is the ENTIRE file text (header lines are valid SQL comments, so a duckdb
-    instantiator runs it verbatim). `name` is the header `fixture:` or the file stem.
-    Produced by `load_fixture`/`parse_fixture` — never constructed by test authors.
+    instantiator runs it verbatim). `name` is the header `table:`/`fixture:` or the file stem.
+    Produced by `load_table_spec`/`parse_table_spec` — never constructed by test authors.
     """
 
     name: str
@@ -164,14 +171,14 @@ class Table:
     This is the hand-off to the per-backend instantiator: a duckdb instantiator ignores
     it (it just ran the SQL); a Spark/Iceberg instantiator maps `columns` to its own DDL
     and emits `seed_data` (as VALUES, or via a parquet the same duckdb wrote). A table
-    "may or may not contain seed data" — an empty definition yields `seed_data == []`.
+    "may or may not contain seed data" — an empty spec yields `seed_data == []`.
     """
 
     name: str
-    columns: list  # list[Column] — the definition
+    columns: list  # list[Column] — the schema
     seed_data: list  # list[tuple], column order matches `columns` (the optional data)
     keys: list = field(default_factory=list)
-    fixture: FixtureDef = None
+    spec: LoadedTableSpec = None  # the LoadedTableSpec this was instantiated from (None if built directly)
 
     def column_names(self) -> list:
         return [c.name for c in self.columns]
@@ -189,7 +196,7 @@ def _parse_list(raw: str) -> list:
     return [tok.strip() for tok in raw.split(",") if tok.strip()]
 
 
-def parse_fixture(text: str, path: str = None) -> FixtureDef:
+def parse_table_spec(text: str, path: str = None) -> LoadedTableSpec:
     """Parse a definition's leading `-- key: value` header block; body = the whole text.
 
     The header is the run of leading comment/blank lines; parsing stops at the first
@@ -206,16 +213,16 @@ def parse_fixture(text: str, path: str = None) -> FixtureDef:
         if m:
             header[m.group(1)] = m.group(2).strip()
     stem = _stem(path) if path else "fixture"
-    return FixtureDef(name=header.get("fixture") or stem, header=header, body=text, path=path)
+    return LoadedTableSpec(name=header.get("fixture") or stem, header=header, body=text, path=path)
 
 
-def load_fixture(ref, search_paths) -> FixtureDef:
-    """Resolve a `Fixture`/str ref against `search_paths` and parse it (reads the file).
+def load_table_spec(ref, search_paths) -> LoadedTableSpec:
+    """Resolve a `TableSpec`/str ref against `search_paths` and parse it (reads the file).
 
     This is the ONLY file-reading entry point; call it at test runtime, not collection.
     `ref` may carry an explicit `.sql` or not. First match on the path wins.
     """
-    rel = ref.name if isinstance(ref, Fixture) else str(ref)
+    rel = ref.name if isinstance(ref, TableSpec) else str(ref)
     if not rel.endswith(".sql"):
         rel += ".sql"
     tried = []
@@ -224,8 +231,8 @@ def load_fixture(ref, search_paths) -> FixtureDef:
         tried.append(p)
         if os.path.isfile(p):
             with open(p, encoding="utf-8") as f:
-                return parse_fixture(f.read(), p)
-    raise FileNotFoundError(f"fixture {rel!r} not found; looked in: {tried}")
+                return parse_table_spec(f.read(), p)
+    raise FileNotFoundError(f"table spec {rel!r} not found; looked in: {tried}")
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +257,7 @@ def _run_json(duckdb_bin: str, db_path: str, sql: str, *, readonly: bool = False
     args += [db_path, "-c", sql]
     proc = subprocess.run(args, capture_output=True, text=True)
     if proc.returncode != 0:
-        raise FixtureError(f"duckdb failed ({' '.join(args[:-1])} ...):\n{proc.stderr.strip()}")
+        raise TableSpecError(f"duckdb failed ({' '.join(args[:-1])} ...):\n{proc.stderr.strip()}")
     out = proc.stdout.strip()
     return json.loads(out) if out else []
 
@@ -258,12 +265,12 @@ def _run_json(duckdb_bin: str, db_path: str, sql: str, *, readonly: bool = False
 def _exec(duckdb_bin: str, db_path: str, sql: str, *, what: str) -> None:
     proc = subprocess.run([duckdb_bin, db_path, "-c", sql], capture_output=True, text=True)
     if proc.returncode != 0:
-        raise FixtureError(f"{what} failed in duckdb:\n{proc.stderr.strip()}")
+        raise TableSpecError(f"{what} failed in duckdb:\n{proc.stderr.strip()}")
 
 
-def instantiate_db(duckdb_bin: str, definition: FixtureDef, db_path: str) -> None:
+def instantiate_db(duckdb_bin: str, definition: LoadedTableSpec, db_path: str) -> None:
     """Run the definition body into a duckdb database file (creates/appends to it)."""
-    _exec(duckdb_bin, db_path, definition.body, what=f"fixture {definition.name!r} body")
+    _exec(duckdb_bin, db_path, definition.body, what=f"table spec {definition.name!r} body")
 
 
 def _sql_literal(v) -> str:
@@ -292,7 +299,7 @@ def introspect(duckdb_bin: str, db_path: str, *, table: str = None, keys=None) -
         )
         names = [r["table_name"] for r in found]
         if len(names) != 1:
-            raise FixtureError(
+            raise TableSpecError(
                 f"expected exactly one table, found {names or 'none'}; set a `-- table:` header to disambiguate"
             )
         table = names[0]
@@ -303,7 +310,7 @@ def introspect(duckdb_bin: str, db_path: str, *, table: str = None, keys=None) -
     return Table(name=table, columns=columns, seed_data=seed_data, keys=list(keys or []))
 
 
-def canonicalize(duckdb_bin: str, definition: FixtureDef, *, workdir: str = None) -> Table:
+def canonicalize(duckdb_bin: str, definition: LoadedTableSpec, *, workdir: str = None) -> Table:
     """Instantiate a definition into a throwaway duckdb db and read back its canonical form.
 
     The one call a non-duckdb instantiator needs: SQL definition in, `Table` out.
@@ -332,7 +339,7 @@ class DuckDBInstantiator:
 
     provider = "duckdb"
 
-    def instantiate(self, definition: FixtureDef, target: str, *, duckdb_bin: str, seed=_UNSET) -> Table:
+    def instantiate(self, definition: LoadedTableSpec, target: str, *, duckdb_bin: str, seed=_UNSET) -> Table:
         if seed is _UNSET:
             # Default: run the body verbatim (its own CREATE + seed INSERTs).
             instantiate_db(duckdb_bin, definition, target)
@@ -346,7 +353,7 @@ class DuckDBInstantiator:
             if rows:
                 vals = ", ".join("(" + ", ".join(_sql_literal(x) for x in r) + ")" for r in rows)
                 stmts.append(f'INSERT INTO "{base.name}" VALUES {vals};')
-            _exec(duckdb_bin, target, "\n".join(stmts), what=f"fixture {base.name!r} (seed override)")
+            _exec(duckdb_bin, target, "\n".join(stmts), what=f"table spec {base.name!r} (seed override)")
         t = introspect(duckdb_bin, target, table=definition.table(), keys=definition.keys())
         return Table(t.name, t.columns, t.seed_data, t.keys, definition)
 
@@ -365,7 +372,7 @@ def map_columns(table: Table, type_map: dict, *, on_missing: str = "error") -> l
         target = type_map.get(base)
         if target is None:
             if on_missing == "error":
-                raise FixtureError(
+                raise TableSpecError(
                     f"no type mapping for DuckDB type {col.type!r} (column {col.name!r}); "
                     "the provider's instantiator must extend its type map"
                 )

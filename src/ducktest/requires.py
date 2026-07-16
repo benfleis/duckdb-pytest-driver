@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from .fixtures import Fixture
+from .fixtures import TableSpec
 
 # Marker name carrying the stacked requirements.
 MARKER = "requires"
@@ -47,7 +47,7 @@ class Requirement:
 
     Fields:
       source     : where the table comes from. One of:
-                     - a ``Fixture("name")`` ref (SQL definition + seed, instantiated via
+                     - a ``TableSpec("name")`` ref (SQL definition + seed, instantiated via
                        duckdb — see fixtures.py);
                      - a premade source table FQN string, env-templated (``${VAR}`` expanded
                        at provision time, NOT here) — e.g. ``${CATALOG}.source.simple_table``;
@@ -66,7 +66,7 @@ class Requirement:
                    ``prop.property(key)``) and decides what they imply. Empty by default.
       name       : the table's BARE name in the provisioned schema. Defaults to the
                    source's base table name (last dotted segment of ``source``) for a
-                   ``Fixture``/string source; REQUIRED for a backend-defined lazy ref.
+                   ``TableSpec``/string source; REQUIRED for a backend-defined lazy ref.
 
     A dict field would make instances unhashable IF hashed; they aren't (stored as mark
     args, iterated not hashed), so ``frozen=True`` + a mutable ``properties`` is safe.
@@ -84,14 +84,14 @@ class Requirement:
     def resolved_name(self) -> str:
         """Bare table name to use in the provisioned schema (default: source's base).
 
-        A backend-defined lazy-ref source (neither a ``Fixture`` nor a string) has no generic
+        A backend-defined lazy-ref source (neither a ``TableSpec`` nor a string) has no generic
         way to derive a bare name, so it always falls in the ``self.name`` branch above —
         ``requires()`` enforces ``name=`` is given for that case, so this never reaches the
         string-splitting fallback for one.
         """
         if self.name:
             return self.name
-        if isinstance(self.source, Fixture):
+        if isinstance(self.source, TableSpec):
             # A fixture's bare name is its logical name (the CREATE'd table matches it).
             return self.source.name
         # source may still contain ${...}; take the literal last segment. Env
@@ -107,22 +107,22 @@ def requires(source, access="ro", properties=None, name=None):
     dict is passed through opaque — backends validate their own keys. ``${...}`` is NOT
     expanded here (the provisioner's job).
 
-    ``source`` is a ``Fixture(...)`` ref, a table FQN string, or a backend-defined lazy ref
+    ``source`` is a ``TableSpec(...)`` ref, a table FQN string, or a backend-defined lazy ref
     (any other truthy object — e.g. an extension's own ``IcebergDef``; interpreted entirely by
     the provisioner's ``instantiate()``, the same open/backend-interpreted spirit as
     ``properties``). That third case REQUIRES an explicit ``name=`` — ``resolved_name()`` has
     no generic way to derive a bare name from an arbitrary object.
     """
-    if isinstance(source, Fixture):
+    if isinstance(source, TableSpec):
         pass  # a named fixture ref — instantiated by the backend instantiator (fixtures.py)
     elif isinstance(source, str):
         if not source:
-            raise ValueError("@requires: `source` must be a Fixture(...) ref, a non-empty table FQN string, or a backend-defined lazy ref (with `name=`)")
+            raise ValueError("@requires: `source` must be a TableSpec(...) ref, a non-empty table FQN string, or a backend-defined lazy ref (with `name=`)")
     elif not source:
-        raise ValueError("@requires: `source` must be a Fixture(...) ref, a table FQN string, or a backend-defined lazy ref (with `name=`)")
+        raise ValueError("@requires: `source` must be a TableSpec(...) ref, a table FQN string, or a backend-defined lazy ref (with `name=`)")
     elif not name:
         raise ValueError(
-            f"@requires: source={source!r} is neither a Fixture(...) nor a string, so it's a "
+            f"@requires: source={source!r} is neither a TableSpec(...) nor a string, so it's a "
             "backend-defined lazy ref (opaque to the framework) -- `name=` is required for one, "
             "since resolved_name() can't derive a bare name from an arbitrary object."
         )
@@ -189,7 +189,7 @@ def requires_matrix(source, access="ro", properties=None, name=None, marks=()):
     back by `collect_requirements`) plus any user `marks` (for `-m` selection). A static
     `@requires` can't vary per parametrize cell; this can.
 
-        @requires_matrix(source=Fixture("id_name").Seed(None), access="rw",
+        @requires_matrix(source=TableSpec("id_name").Seed(None), access="rw",
                          properties={"storage": ["managed", "external"]},  # list => axis
                          marks=["oss_local"])                              # cell tags
         def test_rw(request, resources): ...

@@ -54,6 +54,16 @@ the driver).
   + the test deps must share one env, and `uv run` already does local-venv resolution, so don't reinvent
   it. A future `ducktest run` (if any) should be a **thin `uv run pytest` shim**, not its own env
   manager. Keep the run path clearly documented in the README.
+  - **TODO — nail down the "how to run" story end to end** _(2026-07-16; `uv run pytest` is now THE
+    driver-dev command in AGENTS.md, but the consumer-facing story is still loose)_. Concrete threads
+    surfaced hitting it live: (1) **`uvx pytest` / `uv tool run pytest` FAILS** — isolated env, no
+    project, every `import ducktest` → `ModuleNotFoundError`; docs must steer people to `uv run` and
+    explicitly warn off `uvx`. (2) **xdist is required to run the suite** (inner `-n 2` subprocess tests),
+    now carried by the driver's `dev` dependency-group so `uv run pytest` works with no extra flag — but a
+    **consumer's** extension repo needs xdist (and pyspark, connectors, …) in ITS own env/group, which the
+    README's `uv run --group test pytest` implies but doesn't spell out. (3) Reconcile README (consumer
+    "getting started") vs AGENTS (driver-dev loop) so they don't drift, and decide the one canonical
+    consumer incantation (`uv run --group <grp> pytest`? a documented `test` group? plain venv?).
 - `${TEST_DIR_BASE}` substitutes empty in a `.test` (env-refresh timing); `__TEST_DIR__`
   (live) works — pick a live token / general var-injection channel. _(open)_
 - **`.test_slow` files are silently ignored** — the collector matches the suffix `.test`
@@ -131,6 +141,21 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
   automated CI build+push, and the personal-vs-org-namespace call (`ghcr.io/benfleis/*` needs a stored
   PAT in org CI; `ghcr.io/duckdb/*` is clean with the free per-run `GITHUB_TOKEN` but needs org buy-in)
   — **developing in parallel**, not deferred indefinitely.
+- **Driver owns the resource-image supply chain — ghcr as the EXCLUSIVE source** _[v0.1 BLOCKER, added
+  2026-07-16]_. Distinct from the UC-server image above: this is the shared **`ducktest.resources.*`**
+  emulator images (azurite, minio, and whatever comes next). Today each module pulls a third-party image
+  at test time — `mcr.microsoft.com/azure-storage/azurite:latest`, `minio/minio:RELEASE.…` — which just
+  bit us: `duckdb/azurite` was an intended org mirror that was never published (`repository does not
+  exist`), and upstream Docker Hub/MCR bring rate limits, tag drift, and can vanish. The driver must:
+  **[a] build + tag** the resource images itself (re-tag/mirror upstream azurite/minio into an
+  org-controlled image; a custom build only if config isn't enough), **[b] push** them to a duckdb-org
+  **ghcr** registry (`ghcr.io/duckdb/ducktest-<name>:<pinned>`; free per-run `GITHUB_TOKEN` in CI, no
+  Docker Hub rate limit, org-scanned, survives upstream deletion), and **[c] use ghcr as the exclusive
+  default source** — each resource module's `IMAGE` constant defaults to the pinned ghcr image, not
+  upstream (env-overridable stays). This is exactly what `duckdb/azurite` *aspired* to be; the aspiration
+  was right, only the build/push/publish was missing. Shares the org-namespace + CI-build decision with
+  the UC-image item above; **gate before landing v0.1** (per Ben, 2026-07-16). Pairs with the live
+  resource-validation tier (which then validates the ghcr images, not upstream).
 
 ## v0-dev sprints (post-commit, near-term)
 
@@ -266,11 +291,134 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
   `pytest` run repopulates on attach (masking it), but a hand-run against the provisioned instance hits
   `ContainerNotFound`. Route the command through the same one-shot `populate` so a provisioned service is
   actually ready to use.
+- **Engine/connection variants + worker-lane affinity** _(designed 2026-07-15; not needed yet, kept for
+  when local-Spark engines land)_. An engine that's expensive to boot and can't be shared across worker
+  processes — embedded PySpark, ~10-20s for the JVM + session — becomes a **keyed resource that pins
+  tests to a worker**. This is **job→worker routing (affinity), NOT `unittest` batching**; the two are
+  distinct axes and this is the routing one. The driving tests are pure-Python (iceberg's spark_local,
+  UC's coming cross-engine read-write tests), so they run in-worker as ordinary pytest items — there is
+  **no spawned-`unittest` batch involved at all**; the only question is which worker (which already-booted
+  Spark) runs a given test.
+
+  Scoping: this need is narrow. It only arises for resources that are all three of **in-process** (not
+  shareable via an endpoint), **expensive to boot**, and **variant-keyed** (mutually-exclusive configs) —
+  which today is embedded Spark, essentially alone. Everything external (the OSS UC container, a SQL
+  warehouse, a Spark Connect server) is shared by endpoint through the store and needs no lane pinning.
+  So build this on the engine/connection abstraction, **not** as a generic affinity key on
+  `@requires`/`service` — resource decls carry no scheduling hint today, and affinity would be the first,
+  so keep it engine-local until a second, non-Spark case appears.
+
+  **Variant key** = `spark_version` + runtime jars/packages + catalog config, hashed to a stable name;
+  visible to the scheduler as the `xdist_group` tag (and, for out-of-process engines, as the store key on
+  the endpoint block). Model on iceberg's `SparkRuntime` extended with the jar/catalog set.
+
+  **Two mechanisms, by how the variants differ:**
+  - *Same pyspark minor, different jars/catalog* → embedded, per-worker affinity. A `SparkContext` is a
+    per-process singleton (jars fixed at launch, one context per JVM), so a worker hosts one variant at a
+    time. Pin same-variant tests to one worker via `xdist_group=spark:<key>` (xdist loadgroup) so it boots
+    the variant once and drains its lane. (iceberg's `_connection_manager` close+reboot-on-key-change is
+    the un-pinned fallback, and it thrashes on interleaving.)
+  - *Different pyspark minor (3.5 vs 4.0 vs 4.1)* → can't share a venv. Either **a separate invocation**
+    in a separate venv (simplest; right for a small off-variant set — the suite splits at the invocation
+    level) or **an out-of-process Spark Connect/Thrift server per minor**, keyed in the store, workers
+    routing by variant. The latter is the only way one invocation spans minors; reserve it for when that's
+    genuinely required. (Iceberg already has a small off-variant set; UC's `unitycatalog-spark_4.1` +
+    `delta-spark_4.1:4.3.0` forces Spark 4.1 while iceberg is on 4.0, so a shared env would need
+    convergence — see the version-collision analysis in session notes.)
+
+  **Scheduling pressure (the real cost).** Variant affinity is a *hard* pin, not a hint: a 10-20s boot
+  dwarfs load imbalance, so a worker should drain its variant lane rather than free-schedule, and a small
+  lane underutilizes its pinned worker. Accept that; boot cost wins. Actionable core when picked up:
+  (1) a variant key on the engine resource; (2) a collection-time step stamping `xdist_group` from that
+  key (the seam that already bridges `# group:` → `xdist_group`); (3) engine-as-session-fixture that
+  boots once per worker keyed by variant; (4) for the cross-minor case, the store-keyed
+  Connect-server-per-variant service. Pushes on the still-open batch-ordering/affinity work and the
+  engines-as-resources thread.
+- **Spark connector — v1 implementation plan** _(decided 2026-07-15; the concrete build of the engine
+  handle the entry above designs — v1 deliberately stays inside its "keep it engine-local" scope)_. A
+  "Spark connector" is that engine handle: a session-scoped, per-worker Spark session that both the
+  provisioner (to instantiate the *basis*) and a test body (to perform *mutations*) use. The critical
+  path to a first working cross-engine test is Phase 0 → 1 → 2; Phase 3 and promotion are later.
+  - **Phase 0 (prereq): version convergence.** Land the Spark 4.1 basis (see § *Iceberg onboarding* >
+    *Spark version basis*). Everything targets Spark 4.1 + Iceberg 1.11.0.
+  - **Phase 1: the handle (iceberg-local).** Formalize the stubbed `iceberg_spark_local` fixture into a
+    real handle: session-scoped, boots ONE embedded `SparkSession` per worker, lazily (only if a
+    test/provisioner requests it), reused across the worker's tests, `spark.stop()` at session end. A
+    plain pytest fixture, NOT a ducktest `service` (embedded Spark is in-process, unshareable by endpoint
+    — see the entry above). Wrap iceberg's `IcebergConnection`/`SparkRuntime` (don't reinvent); expose a
+    thin surface: `.sql(stmt)`, `.rows(stmt)` (collect, for assertions), `.session` (escape hatch), and
+    `.variant_key` (spark_version + jar + catalog, hashed — trivial for the one v1 variant, recorded so
+    Phase 3 affinity can key on it). Replace the current `active_connection()` module-global seam with the
+    handle passed to the provisioner.
+  - **Phase 2: use it for both roles (re-split `schema_evolve`).** Provisioner `instantiate()` uses the
+    handle to create the BASIS only (`col int` + format-v2/MoR props + 5 int rows) — ideally a `TableSpec`
+    + a small Spark/Iceberg instantiator (the *Backend instantiators* item below); pragmatic v1 may keep
+    the basis a trimmed iceberg-native create+insert if that instantiator isn't ready. The TEST body
+    (`.py`) requests the handle and performs the mutations (`ALTER … TYPE BIGINT`; `INSERT` the bigint
+    rows), then `run_paired` → DuckDB `ICEBERG_SCAN` validates the 10 rows. This is the basis-vs-actions
+    split made real, and it yields the cross-engine dance for free (writer = Spark handle, reader = DuckDB
+    `.test`); the reverse (DuckDB writes, Spark reads) adds a DuckDB write handle when a test needs it.
+  - **Phase 3 (deferred): variant affinity + cross-minor.** Exactly the *Engine/connection variants*
+    entry above (`xdist_group=spark:<variant_key>` pinning; store-keyed Spark Connect server per minor).
+    v1 has one variant, so per-worker lazy boot suffices with no affinity machinery. Build only when a
+    second variant actually appears.
+  - **Promotion trigger.** Stays in `ice/test/py/iceberg/` until UC needs the same thing (Spark against
+    the unity catalog = the second consumer), then promote to `ducktest.resources.spark` (pyspark imported
+    lazily, catalog-parameterized — the azurite-resource pattern). It cannot live in the driver *core*
+    (that stays pyspark-free), only in the optional resources lib. Same "local until a second consumer"
+    discipline as `identity.py`→driver and `TableSource`.
 - **Benchmark `solo` run-mode** — a `register_suite(..., solo=True)` (or a `benchmark` convention) that
   forces single-process / stable-timing for benchmark suites; service-backed, no creds. _(from TIERING)_
 - **Shared `resources` library** — ship ready-made `service()`/`credential()` descriptors (minio /
   azurite / docker + s3 / 1Password) in `ducktest.resources` so a backend imports instead of
-  re-writing them. _(from TIERING)_
+  re-writing them. _(from TIERING)_ **azurite + minio shipped;** a resource is only "ready-made" once it
+  boots in CI, so each ships with a live-validation test — see below.
+- **Live resource-validation tier** _(started 2026-07-15)_ — a shipped `resources.*` service that never
+  boots in CI rots (image bump, rclone/env drift). `tests/test_resources_live.py` is the opt-in
+  `docker`-marked tier: parametrized over the `service()` descriptors, it drives each through the full
+  lifecycle (managed `start` → `alive` → `attach` re-probe → real rclone object round-trip → `stop` →
+  container-gone) against a REAL backend. Skipped unless `docker`+`rclone` are on PATH, so the offline
+  suite stays green everywhere; a new resource joins by one `pytest.param`. **Remaining:** (1) wire a
+  docker-capable CI job that runs `--run-docker -m docker` (the gate before relying on these); (2) extend coverage to
+  the `provision-service`/`teardown-service` CLI and the `--existing-service` attach *flag* (via
+  `pytester`), plus `populate`/`to_env` adoption; (3) each new resource adds its own round-trip check.
+  **First real run (2026-07-16, Ben's box) — both failures were infra/diagnosability, not test logic,
+  which is the tier doing its job:** (a) **minio** booted + created the bucket fine, then the rclone probe
+  upload failed `507 XMinioStorageFull` — MinIO's minimum-free-drive check tripped because `/data` was the
+  container overlay on the host's near-full docker storage (no volume mounted). **Fixed 2026-07-16:**
+  `_start` now mounts `/data` as a **tmpfs** (`--tmpfs /data:size=2g`, env `DUCKTEST_MINIO_TMPFS_SIZE`) —
+  RAM-backed, so MinIO sees a clean sized empty drive independent of host disk, and it's ephemeral (right
+  for a test emulator, torn down anyway). **Confirmed passing live (Ben's box, 2026-07-16).**
+  (b) **azurite** `docker run` exited **125** (daemon-level, before the
+  entrypoint) with **no visible reason** because `_docker` raises a bare `CalledProcessError` and discards
+  docker's stderr — likely image `duckdb/azurite:<tag>` not pullable on that box, or ports 10000-2 taken,
+  but unknowable as-is. **Fixed 2026-07-16:** `_docker` in `resources/azurite.py` / `minio.py` now raises
+  with docker's stderr tail on a checked failure (mirrors the rclone `_run`), so a 125 says *why*. **Root
+  cause found + fixed 2026-07-16:** the 125 was `pull access denied for duckdb/azurite, repository does not
+  exist` — that mirror was never published. (az's *landed* `main` runs the azurite **npm** pkg, so no
+  landed in-repo pin to source; an **image-based** azurite lives on the unlanded `benfleis/duckdb-azure`
+  `convert-to-ducktest` branch — az's own ducktest adoption, blocked on landing v0.1 first — which is the
+  natural place the intended azurite image + the ghcr supply chain below should be reconciled.) Repointed
+  azurite at Microsoft's official
+  `mcr.microsoft.com/azure-storage/azurite:latest` (public on MCR, no login). **Still TODO:** pin that to
+  a verified version tag like minio's (needs a `docker pull` on a real box to read the tag). **Both
+  azurite + minio now pass the live tier (Ben's box, 2026-07-16)** — the tier is real and green.
+  **Code review (2026-07-16, high-effort workflow) — 6 of 7 findings fixed:** (1) the opt-in gate was
+  `addopts = -m 'not docker'`, which pytest's single-valued `-m` silently REPLACES on any user `-m` (so
+  `pytest -m 'not slow'` on a docker box would boot real containers) and which deselects the tier under
+  path selection — replaced with a dedicated `--run-docker` flag + `pytest_collection_modifyitems` gate
+  (tests/conftest.py); can't be defeated by `-m`, and shows *skipped w/ reason* instead of a silent
+  deselect. (2)+(3) container leak on partial boot: the live test ran `svc.start` OUTSIDE its try/finally,
+  and both `_start`s raised after `docker run` (minio's `_ensure_bucket`, azurite's readiness wait) before
+  the block was stored, so `_stop_services` never reached them — start moved inside the try; both `_start`s
+  now `docker rm -f` their own half-booted container on failure. (5)+(6) `_docker`/`_wait_alive` were
+  duplicated verbatim across azurite/minio → extracted to `resources/_docker.py` (`docker` + `wait_until`),
+  honoring the module's "mechanism in core, instance is config" contract. (7) `minio_env`/`minio_block`/
+  `minio_alive` had ZERO offline coverage (azurite had a full set) → added the parallel tests to
+  test_existing_services.py (guards every env key mapping + the 200-only health probe). **Not fixed —
+  (4) azurite `:latest` floats:** real but already tracked above (the old `duckdb/azurite:<tag>` "pin"
+  didn't exist, so it guaranteed nothing); pinning needs a tag read from a real `docker pull`, and the
+  ghcr supply chain below is the durable fix. Post-fix: 113 offline pass, docker tier skips cleanly.
 - **Managed-service diagnostics — logs to the run temp dir + keep-on-failure** — a managed service is
   `docker rm -f`'d at sessionfinish **regardless of pass/fail** (`_stop_services`), so a failing run
   loses the container before you can `docker logs` it, and nothing is persisted. Generic fix (every
@@ -299,6 +447,20 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
     `driver`/`uc` which needed actual worktree splits). 4 uncommitted jar deletions in its tree
     (`scripts/data_generators/iceberg-spark-runtime-*.jar`) are intentional — large, not currently
     needed, reconstitute later — not a blocker.
+  - **Spark version basis — 4.1, not 4.0 or 4.2 (decided 2026-07-15).** Move iceberg's basis from Spark
+    4.0 to **Spark 4.1** (Iceberg `1.11.0`, jar `iceberg-spark-runtime-4.1_2.13-1.11.0`). Why: 4.1 is GA
+    (Spark 4.1.0, Dec 2025) with a released Iceberg runtime, AND it converges with UC/delta, which already
+    force Spark 4.1 (`unitycatalog-spark_4.1`, `delta-spark_4.1:4.3.0`) — resolving the version collision
+    the *Engine/connection variants* roadmap entry flags, so one env can span iceberg + UC + delta. **Do
+    NOT jump to Spark 4.2** even though it GA'd 2026-07-14: Apache Iceberg ships no 4.2 runtime yet (1.11.0
+    tops out at 4.1; 4.2 GA'd a day prior and Iceberg's Spark support lags), so `spark_local` can't even
+    boot (`spark.jars` needs the runtime jar), and 4.2 would re-split iceberg off the 4.1 stack. Revisit
+    when Iceberg ships a `4.2` runtime (~1.12.x). **4.0→4.1 tweaks:** `scripts/requirements.txt`
+    `pyspark==4.0.1`→`4.1.0`; add a `"4.1"` entry to `integration_config.py`'s `SPARK_RUNTIMES` (scala
+    2.13, iceberg 1.11.0) + fetch/commit the new jar; Scala 2.13.16→2.13.17 / Python min 3.10 / PyArrow
+    15.0.0 are transparent; grep generator SQL for non-standard double-quote escaping (SPARK-52545
+    standardized it to the SQL spec); regenerate any golden output depending on iceberg 1.10→1.11 metadata
+    specifics. Java unchanged (17/21). Sources: spark.apache.org release notes 4.1.0/4.2.0; iceberg 1.11.0.
   - **Starter test (decided 2026-07-14):** `schema_evolve_int_to_bigint` (def:
     `scripts/data_generators/tests/default/schema_evolve_int_to_bigint/{test.sql,__init__.py}`; read:
     `test/sql/local/schema_evolve_int_to_bigint.test`) — picked deliberately for *serious provisioning

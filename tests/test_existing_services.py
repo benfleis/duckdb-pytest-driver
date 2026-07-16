@@ -2,7 +2,7 @@
 
 Three layers, all offline (no docker):
   1. the pure declaration parser (``_parse_existing_services``): grammar + precedence + key norm;
-  2. Azurite's block/derive contract (``azurite_block`` / ``azurite_alive``);
+  2. the resource block/derive contracts (``azurite_block``/``azurite_env``, ``minio_block``/``minio_env``);
   3. the attach path end-to-end via an isolated pytest run: a declared-existing service ATTACHES
      (never boots) and a declared-but-dead one FAILS LOUD.
 """
@@ -11,6 +11,13 @@ import textwrap
 
 from ducktest.plugin import _norm_service_key, _parse_existing_services
 from ducktest.resources.azurite import ACCOUNT, azurite_alive, azurite_block, azurite_env
+from ducktest.resources.minio import (
+    ACCESS_KEY,
+    DEFAULT_BUCKET,
+    minio_alive,
+    minio_block,
+    minio_env,
+)
 
 
 # --- 1. the pure parser -------------------------------------------------------------------
@@ -111,6 +118,82 @@ def test_azurite_alive_probe(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", refused)
     assert azurite_alive({"endpoint": "http://127.0.0.1:10000"}) is False
+
+
+# --- 2b. MinIO's block/derive contract (minio_block / minio_env / minio_alive) ------------
+
+
+def test_minio_block_defaults():
+    b = minio_block()
+    assert b["access_key"] == ACCESS_KEY
+    assert b["endpoint"] == "http://127.0.0.1:9000"  # scheme'd — rclone + health probe
+    assert b["s3_endpoint"] == "127.0.0.1:9000"  # host:port, no scheme — duckdb ENDPOINT
+    assert b["url_style"] == "path"
+    assert b["use_ssl"] is False
+    assert b["bucket"] == DEFAULT_BUCKET
+
+
+def test_minio_block_endpoint_override_recomputes_s3_endpoint():
+    b = minio_block(endpoint="http://host.docker.internal:9000/")
+    assert b["endpoint"] == "http://host.docker.internal:9000"  # trailing slash stripped
+    assert b["s3_endpoint"] == "host.docker.internal:9000"  # scheme + slash stripped, tracks override
+    assert "127.0.0.1" not in b["s3_endpoint"]
+
+
+def test_minio_block_boot_and_attach_shapes_match():
+    boot = minio_block(endpoint="http://127.0.0.1:9000")
+    attach = minio_block(endpoint="http://127.0.0.1:9000")
+    assert boot == attach
+
+
+def test_minio_env_maps_block_to_s3_client_vars():
+    # Guards every key/value mapping — a mistyped block key or a backwards use_ssl would ship silently
+    # (no caller in-repo, and the live tier drives rclone remotes, not this env dict).
+    b = minio_block()
+    env = minio_env(b)
+    assert env["AWS_ACCESS_KEY_ID"] == b["access_key"]
+    assert env["AWS_SECRET_ACCESS_KEY"] == b["secret_key"]
+    assert env["AWS_REGION"] == b["region"]
+    assert env["AWS_ENDPOINT_URL"] == b["endpoint"]  # scheme'd URL for the AWS SDK
+    assert env["S3_ENDPOINT"] == b["s3_endpoint"]  # host:port for SET s3_endpoint
+    assert env["S3_ACCESS_KEY_ID"] == b["access_key"]
+    assert env["S3_SECRET_ACCESS_KEY"] == b["secret_key"]
+    assert env["S3_REGION"] == b["region"]
+    assert env["S3_URL_STYLE"] == "path"
+    assert env["S3_USE_SSL"] == "0"  # False -> "0", not "False"/backwards
+
+
+def test_minio_alive_probe(monkeypatch):
+    import urllib.error
+
+    class _Resp:  # minio_alive uses `with urlopen(...) as r: return r.status == 200`
+        def __init__(self, status):
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    calls = {}
+
+    def ok(url, timeout=None):
+        calls["url"] = url
+        return _Resp(200)
+
+    monkeypatch.setattr("urllib.request.urlopen", ok)
+    assert minio_alive({"endpoint": "http://127.0.0.1:9000"}) is True
+    assert calls["url"] == "http://127.0.0.1:9000/minio/health/ready"  # authoritative ready endpoint
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=None: _Resp(503))
+    assert minio_alive({"endpoint": "http://127.0.0.1:9000"}) is False  # 503 during startup => not ready
+
+    def refused(url, timeout=None):
+        raise urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", refused)
+    assert minio_alive({"endpoint": "http://127.0.0.1:9000"}) is False
 
 
 # --- 3. the attach path end-to-end (isolated pytest run, no docker) -----------------------

@@ -153,8 +153,12 @@ Beyond suite-level credentials/services, individual tests declare the **tables**
 `@requires(source, access, properties, name)` (stackable) or `@requires_matrix(...)` (fan a body over
 a property axis, one item per cell):
 
-- `source` is a `Fixture("name")` (a portable SQL definition + seed, instantiated via the duckdb CLI)
-  or a premade FQN string.
+- `source` is one of: a `Fixture("name")` (a portable SQL definition + seed, instantiated via the
+  duckdb CLI); a premade FQN string; or a **backend-defined lazy ref** — any other object, opaque to the
+  framework and interpreted entirely by your provisioner's `instantiate()`, the same open/backend-owned
+  spirit as `properties` (e.g. Iceberg's `IcebergDef("default/…")`, a ref into its own generator
+  registry). A lazy-ref source **requires an explicit `name=`** (there's no generic way to derive a bare
+  name from an arbitrary object; `requires()` fails loud without it).
 - `access="rw"` gets an **isolated per-test schema** (no collisions across tests/workers);
   `"ro"` references a shared source directly.
 - `properties` is an **open, backend-interpreted** dict (e.g. `{"storage": "managed"}`) — the driver
@@ -178,6 +182,41 @@ across backends. **Today that vocabulary lives in UC** (`uc/test/py/uc/identity.
 `build_env`), **not** in `ducktest` — an integrator implements it in their own provisioner,
 or reuses UC's `identity.py`. Promoting it into a driver `Provisioner` base is on the roadmap
 (PLAN.md § *Fixtures*).
+
+### Source refs (what `@requires(source=…)` accepts)
+
+`source` is a **lazy reference to where a table comes from**. The three forms above (a `Fixture`, an FQN
+string, a backend-defined object) share one contract, and everything the driver guarantees hangs off it:
+
+- **It is a pure value.** Constructing a source ref does no I/O: no file read, no catalog call, no
+  generation. It just holds a name or handle. Collection evaluates every `@requires` decorator to attach
+  its marker, so a ref that did work at construction would make every collected test pay for it even when
+  deselected or skipped. Resolution happens only when a *running* test provisions the requirement.
+- **The driver never interprets it.** A source is opaque to the framework, the same stance as
+  `properties`. The one thing the driver needs is a bare table name for the provisioned schema; a
+  `Fixture` and an FQN string carry that themselves, so any other kind of source **must pass `name=`**
+  (`requires()` fails loud otherwise).
+- **The provisioner's `instantiate(spec, target, dry_run, bindings)` turns it into a real table.** This is
+  the extension point: your provisioner reads `spec.source`, does whatever that kind of source means (run
+  the SQL, call a generator, reference a premade table), and lands a table at `target`. It **must honor
+  `dry_run`** (plan only, no DDL). The body then addresses that table through `resources.env`.
+
+That contract is all that's shared. The *kinds* of source differ in more than syntax, and the axis that
+separates them is **not** "which query language" (a `Fixture` and Iceberg's `IcebergDef` are both SQL
+files). It is portability and ownership:
+
+| | `Fixture` (built-in) | a backend-native ref (e.g. Iceberg's `IcebergDef`) |
+|---|---|---|
+| owns the definition | the driver's portable fixture library | the extension's own registry |
+| portability | one fixture drives any backend (duckdb canonicalizes; the instantiator maps types + applies `properties`) | backend-locked by nature (its ops are that backend's) |
+| logical vs physical | separated: the fixture says *what*; `properties` + the instantiator decide *how it's stored* | fused: the def *is* the physical recipe |
+| shape | a schema + seed, with an independent `.Seed()` override | often a procedure (create → insert → evolve → …), not a static schema + seed |
+
+So the real split is **a portable, driver-owned fixture vs a backend-native recipe.** `Fixture` is the
+built-in member (below); a backend adds its own ref type when its tables can't be expressed as a portable
+fixture, as Iceberg's `IcebergDef` points at an entry in the extension's Spark generator registry. A
+shared named base (`TableSource` or similar) is deferred until a second backend needs one; for now the
+members stay separately named and this contract is what unifies them.
 
 ### Fixtures — DuckDB as the middleman
 
@@ -221,7 +260,10 @@ unpack to a TEMP_DIR instead of a table) are on the roadmap — see PLAN.md.
 
 - `register_suite(...)` × N in `test/conftest.py` — the only required wiring.
 - `credential(...)` + its 4 callables — for a live-creds suite.
-- `service(...)` + a session fixture calling `provision_service(...)` — for a container/service suite.
+- `service(...)` — for a container/service suite. A `.py`-driven suite pairs it with a session fixture
+  calling `provision_service(...)`; a bare-`.test` suite instead binds it eager via
+  `use_service(SVC, provision="eager", to_env=…, populate=…)` in `register_suite(services=[…])` (no
+  fixture — the controller boots it and adopts its env up front). See § *Services*.
 - a **Provisioner** (`register_provisioner`) that turns `@requires` into tables + `resources.env`.
 - your `.test` bodies and `.py` drivers.
 

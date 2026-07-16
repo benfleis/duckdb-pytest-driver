@@ -544,6 +544,11 @@ def get_broadcast(config, key, default=None):
     return cache[key]
 
 
+# `optionalhook=True`: `pytest_configure_node` is an xdist-provided hookspec. xdist is OPTIONAL (the
+# `[xdist]` extra; a serial `-n0` / no-xdist run is supported), and without it installed the spec doesn't
+# exist — so pluggy would reject this plugin at load with PluginValidationError. Marking it optional lets
+# the plugin load either way; the hook simply never fires on a no-xdist (serial) run, which is correct.
+@pytest.hookimpl(optionalhook=True)
 def pytest_configure_node(node):
     # xdist controller hook: hand each worker the controller's run-id (shared BASE/<run-id>) plus
     # any registered broadcast values (each computed once on the controller, cached).

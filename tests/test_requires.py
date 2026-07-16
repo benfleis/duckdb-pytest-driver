@@ -1,13 +1,13 @@
 """Self-tests for @requires' source-kind validation (requires.py).
 
-`source` accepts a Fixture(...) ref, a table FQN string, or a backend-defined lazy ref (any
+`source` accepts a TableSpec(...) ref, a table FQN string, or a backend-defined lazy ref (any
 other object, opaque to the framework -- e.g. an extension's own IcebergDef). These exercise
 the validation directly (no pytest collection needed).
 """
 
 import pytest
 
-from ducktest import Fixture, Requirement, requires
+from ducktest import TableSpec, Requirement, requires
 
 
 class _LazyRefStub:
@@ -18,10 +18,10 @@ class _LazyRefStub:
 
 
 def test_fixture_source_accepted():
-    mark = requires(source=Fixture("id_name"), access="rw")
+    mark = requires(source=TableSpec("id_name"), access="rw")
     req = mark.args[0]
     assert isinstance(req, Requirement)
-    assert isinstance(req.source, Fixture)
+    assert isinstance(req.source, TableSpec)
 
 
 def test_string_source_accepted():
@@ -32,12 +32,12 @@ def test_string_source_accepted():
 
 
 def test_empty_string_source_rejected():
-    with pytest.raises(ValueError, match="Fixture"):
+    with pytest.raises(ValueError, match="TableSpec"):
         requires(source="", access="ro")
 
 
 def test_none_source_rejected():
-    with pytest.raises(ValueError, match="Fixture"):
+    with pytest.raises(ValueError, match="TableSpec"):
         requires(source=None, access="ro")
 
 

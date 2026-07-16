@@ -35,8 +35,8 @@ from .suites import (  # noqa: F401  (test-suite declaration API + registry; Pha
     Credential,
     Service,
 )
-from .fixtures import (  # noqa: F401  (the table-fixture lane: SQL definition + seed via duckdb)
-    Fixture,
+from .fixtures import (  # noqa: F401  (the table-spec lane: schema + seed instantiated via duckdb)
+    TableSpec,
     register_instantiator,
     get_instantiator,
 )
@@ -47,6 +47,10 @@ from .sqldef import (  # noqa: F401  (generic multi-statement SQL-def core)
     build_insert,
     run_sql_file,
 )
+
+# DEPRECATED alias: `Fixture` was renamed to `TableSpec` (2026-07-15). Kept so existing consumers
+# (UC) keep importing while they migrate; remove once no consumer references `Fixture`.
+Fixture = TableSpec
 
 __all__ = [
     "SqlLogicFile",
@@ -76,7 +80,8 @@ __all__ = [
     "Suite",
     "Credential",
     "Service",
-    "Fixture",
+    "TableSpec",
+    "Fixture",  # deprecated alias of TableSpec (remove once consumers migrate)
     "register_instantiator",
     "get_instantiator",
     "step",

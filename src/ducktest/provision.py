@@ -222,7 +222,7 @@ class Provisioner:
         raise NotImplementedError
 
     def instantiate(self, spec, target, dry_run, bindings):
-        """Seed `target` from `spec`'s source (a `Fixture` or a backend-native def);
+        """Seed `target` from `spec`'s source (a `TableSpec` or a backend-native def);
         append whatever binding record this backend wants to `bindings.tables`. Required."""
         raise NotImplementedError
 

@@ -16,13 +16,13 @@ from ducktest.fixtures import (
     _UNSET,
     Column,
     DuckDBInstantiator,
-    Fixture,
-    FixtureError,
+    TableSpec,
+    TableSpecError,
     Table,
     canonicalize,
-    load_fixture,
+    load_table_spec,
     map_columns,
-    parse_fixture,
+    parse_table_spec,
     resolve_seed,
 )
 
@@ -39,17 +39,17 @@ needs_duckdb = pytest.mark.skipif(_cli() is None, reason="no duckdb CLI (set $DU
 
 def test_fixture_ref_is_name_only_and_io_free():
     # A ref is a pure value: no path, no file read, `.sql` tolerated + stripped.
-    assert Fixture("simple_table").name == "simple_table"
-    assert Fixture("simple_table.sql").name == "simple_table"
+    assert TableSpec("simple_table").name == "simple_table"
+    assert TableSpec("simple_table.sql").name == "simple_table"
     # Referencing a non-existent fixture must NOT touch the filesystem (lazy).
-    assert Fixture("does_not_exist_anywhere").name == "does_not_exist_anywhere"
+    assert TableSpec("does_not_exist_anywhere").name == "does_not_exist_anywhere"
     with pytest.raises(ValueError):
-        Fixture("")
+        TableSpec("")
 
 
 def test_parse_header_and_body():
     text = "-- fixture: t\n-- keys: [id, name]\nCREATE TABLE t (id INT);\n"
-    fx = parse_fixture(text, "some/t.sql")
+    fx = parse_table_spec(text, "some/t.sql")
     assert fx.name == "t"
     assert fx.table() == "t"
     assert fx.keys() == ["id", "name"]
@@ -57,12 +57,12 @@ def test_parse_header_and_body():
 
 
 def test_parse_name_defaults_to_stem():
-    fx = parse_fixture("CREATE TABLE whatever (id INT);\n", "x/whatever.sql")
+    fx = parse_table_spec("CREATE TABLE whatever (id INT);\n", "x/whatever.sql")
     assert fx.name == "whatever"
 
 
 def test_fixture_seed_override_is_pure():
-    f = Fixture("id_name")
+    f = TableSpec("id_name")
     assert f.seed is _UNSET
     assert f.Seed(None).seed is None
     assert f.Seed([(1, "a")]).seed == [(1, "a")]
@@ -84,7 +84,7 @@ def test_map_columns_maps_and_errors():
     )
     spark = {"INTEGER": "INT", "DECIMAL": "DECIMAL", "VARCHAR": "STRING"}
     assert map_columns(t, spark) == [("id", "INT"), ("amt", "DECIMAL(10,2)"), ("nm", "STRING")]
-    with pytest.raises(FixtureError):
+    with pytest.raises(TableSpecError):
         map_columns(t, {"INTEGER": "INT"})  # missing DECIMAL/VARCHAR -> loud
     # passthrough keeps the duckdb spelling instead of failing
     assert map_columns(t, {"INTEGER": "INT"}, on_missing="passthrough")[2] == ("nm", "VARCHAR")
@@ -98,19 +98,19 @@ _IDNAME = "-- fixture: id_name\nCREATE TABLE id_name (id INTEGER, name VARCHAR);
 
 @needs_duckdb
 def test_canonicalize_simple(tmp_path):
-    fx = parse_fixture(_SIMPLE, str(tmp_path / "simple_table.sql"))
+    fx = parse_table_spec(_SIMPLE, str(tmp_path / "simple_table.sql"))
     t = canonicalize(_cli(), fx, workdir=str(tmp_path))
     assert t.name == "simple_table"
     assert t.column_names() == ["id"]
     assert t.columns[0].type == "INTEGER"
     assert t.keys == ["id"]
     assert t.seed_data == [(1,), (2,), (3,)]
-    assert t.fixture is fx
+    assert t.spec is fx
 
 
 @needs_duckdb
 def test_instantiator_resolves_types(tmp_path):
-    fx = parse_fixture(_IDNAME, str(tmp_path / "id_name.sql"))
+    fx = parse_table_spec(_IDNAME, str(tmp_path / "id_name.sql"))
     db = str(tmp_path / "out.duckdb")
     t = DuckDBInstantiator().instantiate(fx, db, duckdb_bin=_cli())
     assert [(c.name, c.type) for c in t.columns] == [("id", "INTEGER"), ("name", "VARCHAR")]
@@ -130,25 +130,25 @@ def test_loading_is_deferred_to_test_run(pytester):
         """
         import pytest
         from ducktest import collect_requirements
-        from ducktest.fixtures import load_fixture
+        from ducktest.fixtures import load_table_spec
 
         @pytest.fixture
         def resources(request):
-            # empty search path -> load_fixture raises, but ONLY when actually called
-            return [load_fixture(r.source, []) for r in collect_requirements(request.node)]
+            # empty search path -> load_table_spec raises, but ONLY when actually called
+            return [load_table_spec(r.source, []) for r in collect_requirements(request.node)]
         """
     )
     pytester.makepyfile(
         """
         import pytest
-        from ducktest import requires, Fixture
+        from ducktest import requires, TableSpec
 
         @pytest.mark.skip(reason="lazy: resources must not load for a skipped test")
-        @requires(source=Fixture("missing"))
+        @requires(source=TableSpec("missing"))
         def test_skipped(resources):
             assert False  # never reached
 
-        @requires(source=Fixture("missing"))
+        @requires(source=TableSpec("missing"))
         def test_runs(resources):
             assert False  # not reached — resources errors first (fixture read at setup)
         """
@@ -162,7 +162,7 @@ def test_loading_is_deferred_to_test_run(pytester):
 
 @needs_duckdb
 def test_instantiator_seed_none_empties(tmp_path):
-    fx = parse_fixture(_SIMPLE, str(tmp_path / "simple_table.sql"))
+    fx = parse_table_spec(_SIMPLE, str(tmp_path / "simple_table.sql"))
     db = str(tmp_path / "empty.duckdb")
     t = DuckDBInstantiator().instantiate(fx, db, duckdb_bin=_cli(), seed=None)
     assert t.column_names() == ["id"]
@@ -171,7 +171,7 @@ def test_instantiator_seed_none_empties(tmp_path):
 
 @needs_duckdb
 def test_instantiator_seed_replaces(tmp_path):
-    fx = parse_fixture(_SIMPLE, str(tmp_path / "simple_table.sql"))
+    fx = parse_table_spec(_SIMPLE, str(tmp_path / "simple_table.sql"))
     db = str(tmp_path / "replaced.duckdb")
     t = DuckDBInstantiator().instantiate(fx, db, duckdb_bin=_cli(), seed=[(9,), (10,)])
     assert t.seed_data == [(9,), (10,)]
@@ -180,7 +180,7 @@ def test_instantiator_seed_replaces(tmp_path):
 @needs_duckdb
 def test_load_fixture_from_disk(tmp_path):
     (tmp_path / "id_name.sql").write_text(_IDNAME)
-    fx = load_fixture(Fixture("id_name"), [tmp_path])  # .sql suffix optional
+    fx = load_table_spec(TableSpec("id_name"), [tmp_path])  # .sql suffix optional
     t = canonicalize(_cli(), fx, workdir=str(tmp_path))
     assert t.name == "id_name"
     assert len(t.seed_data) == 2

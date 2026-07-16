@@ -20,9 +20,9 @@ How `duckdb-pytest-driver` is built and where to extend it. Assumes you've read
 
 ```
 plugin.py     the pytest hooks + the harness (run_paired, find_binary); suites/store wiring
-suites.py      register_suite / credential / service + the frozen descriptors (declaration only)
+suites.py      register_suite / credential / service / use_service + the frozen descriptors (declaration only)
 store.py      the process-shared store: SyncManager server + per-key state machine
-provision.py  register_provisioner / get_provisioner (backend provisioner registry, by test path)
+provision.py  register_provisioner / get_provisioner (registry, by test path) + base Provisioner/Bindings (the generic spec-loop a backend subclasses)
 requires.py   @requires / @requires_matrix + Requirement (per-test table needs)
 fixtures.py   Fixture SQL-definition model + instantiate via the duckdb CLI (the `resources` path)
 sqllogic.py   SqlLogicFile — collect a .test + run it through the unittest binary
@@ -88,9 +88,16 @@ runs same-suite hooks last-registered-first, so the consumer's `register_suite` 
 - **Backstop** — `pytest_runtest_setup`: for a selected item in a credentialed suite, `store.copy` →
   `available()` → `copy_or_provision(late_fetch)` → `pytest.fail(pytrace=False)`. `_late_fetch` validates
   and raises `ProvisionFailed` on bad creds (poisoning the key).
-- **Services** — `provision_service` → `copy_or_provision(key, lambda: svc.start(config))`;
-  `_stop_services` (sessionfinish) stops each service whose block is present in the store (presence ==
-  started), before `mgr.shutdown()`.
+- **Services** — `provision_service` routes by stance: `--existing-service` → `_attach_service` (build
+  block + `alive` probe + `populate`, no store, no teardown); else the store single-flight
+  `copy_or_provision(key, _boot_and_populate)` (`start` **then** `populate`, once — `populate` is
+  disposition-independent, it mutates the shared service). Every provisioning process then adopts
+  `svc.to_env(block)` into `os.environ`. **Eager** services (`provision="eager"`) are triggered up front
+  by `_provision_eager_services` (`_SuiteController.pytest_configure`, per `_suite_reachable` suite,
+  deduped by key) so a bare `.test` — which pulls no fixture — still gets the service booted + its env
+  adopted pre-fork; `on_demand` (default) provisions on first fixture-pull. `per_test`/`never` fail loud.
+  `_stop_services` (sessionfinish) stops each started service once (store-presence == started, deduped by
+  key), before `mgr.shutdown()`.
 - **Selection** — `_suite_reachable(config, suite)` is the single from-args gate (bare+default /
   path-intersect / `-m` via pytest's `Expression`); `_default_scan_deselect` and the banner reuse it, so
   the deselect decision and the eager-fetch decision agree.

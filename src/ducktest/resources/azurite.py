@@ -1,7 +1,7 @@
 """Azurite (Azure Blob Storage emulator) as a ducktest service — the first shared resource.
 
-The standard image with run-line config only: ``duckdb/azurite`` is a pinned mirror of
-``mcr.microsoft.com/azure-storage/azurite`` (identical entrypoint/cmd/ports), so no custom build. The
+Microsoft's official image with run-line config only (``mcr.microsoft.com/azure-storage/azurite``, public
+on MCR, no ``docker login``), so no custom build. The
 account/key are Azure's PUBLIC, fixed, Microsoft-published emulator credentials — **not secrets** — so
 this module hardcodes them and nothing here needs ``op`` / a ``credential()``.
 
@@ -12,14 +12,13 @@ session fixture that returns ``provision_service(config, AZURITE_SERVICE)``.
 """
 
 import os
-import subprocess
-import time
 import urllib.error
 import urllib.request
 
 from ..steps import step
 from ..tools.rclone import Remote
 from ..suites import service
+from ._docker import docker as _docker, wait_until
 
 # EXEMPTION (documented per code review, 2026-07-14) from AGENTS.md's "No secrets in files... use
 # ${ENV_VAR} placeholders" rule: this account/key pair is NOT a secret. It's Azure's fixed, PUBLIC,
@@ -33,8 +32,11 @@ from ..suites import service
 ACCOUNT = "devstoreaccount1"
 KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
 
-# Standard image (pinned duckdb mirror) + fixed host ports. Overridable via env for a moved instance.
-IMAGE = os.environ.get("DUCKTEST_AZURITE_IMAGE", "duckdb/azurite:2026-02-06T13-42-30Z")
+# Microsoft's official public Azurite image (was `duckdb/azurite:<tag>`, a mirror that was never
+# published -> `pull access denied, repository does not exist`). `:latest` is a working default; PIN it
+# to a verified version tag like minio does (`docker pull mcr.microsoft.com/azure-storage/azurite`, take
+# the resolved version) via DUCKTEST_AZURITE_IMAGE for reproducibility. Overridable for a moved instance.
+IMAGE = os.environ.get("DUCKTEST_AZURITE_IMAGE", "mcr.microsoft.com/azure-storage/azurite:latest")
 CONTAINER = os.environ.get("DUCKTEST_AZURITE_CONTAINER", "ducktest-azurite")
 BLOB_PORT = int(os.environ.get("DUCKTEST_AZURITE_BLOB_PORT", "10000"))
 QUEUE_PORT = int(os.environ.get("DUCKTEST_AZURITE_QUEUE_PORT", "10001"))
@@ -107,27 +109,14 @@ def azurite_alive(block):
         return False
 
 
-def _wait_alive(block, timeout_s):
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if azurite_alive(block):
-            return
-        time.sleep(0.3)
-    raise RuntimeError(
-        f"Azurite container {CONTAINER!r} did not become ready on {block.get('endpoint')} "
-        f"after {timeout_s}s (image {IMAGE})."
-    )
-
-
-def _docker(*args, check=True):
-    return subprocess.run(["docker", *args], capture_output=True, text=True, check=check)
-
-
 def _start(config):
     """Managed boot: run the standard Azurite image on the fixed host ports; return its block.
 
     ALWAYS_CREATE (``docker rm -f`` first => fresh) so a container leaked by an interrupted run can't
-    wedge the port. Returns ``azurite_block(...)`` — identical shape to the attach path.
+    wedge the port. If readiness fails after ``docker run``, tear the half-booted container back down
+    before re-raising — ``_start`` raises before the block is stored, so ``_stop_services`` would never
+    reach it (it only stops services whose block is in the store). Returns ``azurite_block(...)`` —
+    identical shape to the attach path.
     """
     with step(f"starting Azurite ({IMAGE})"):
         _docker("rm", "-f", CONTAINER, check=False)  # force-remove any leftover
@@ -157,8 +146,17 @@ def _start(config):
             "0.0.0.0",
             "--skipApiVersionCheck",
         )
-        block = azurite_block()
-        _wait_alive(block, _READY_TIMEOUT_S)
+        try:
+            block = azurite_block()
+            wait_until(
+                lambda: azurite_alive(block),
+                _READY_TIMEOUT_S,
+                lambda: f"Azurite container {CONTAINER!r} did not become ready on "
+                f"{block.get('endpoint')} after {_READY_TIMEOUT_S}s (image {IMAGE}).",
+            )
+        except Exception:
+            _docker("rm", "-f", CONTAINER, check=False)  # don't leak a half-booted container
+            raise
     return block
 
 

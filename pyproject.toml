@@ -22,7 +22,14 @@ classifiers = [
 dependencies = ["pytest>=7.4"]
 
 [project.optional-dependencies]
+# For CONSUMERS who want `-n` parallelism: `pip install duckdb-pytest-driver[xdist]`.
 xdist = ["pytest-xdist"]
+
+# For DEVELOPING the driver: its own self-tests spin up inner `pytest -n 2` subprocesses (the
+# controller/worker store, broadcast, and service tests), so xdist is required to run them. `uv run`
+# includes the `dev` group by default, so plain `uv run pytest` works with no extra flag.
+[dependency-groups]
+dev = ["pytest-xdist"]
 
 [project.urls]
 Homepage = "https://github.com/duckdb/duckdb"
@@ -44,6 +51,10 @@ packages = ["src/ducktest"]
 # examples/ are collected only when targeted explicitly (`pytest examples/...`).
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Plain `pytest` runs the OFFLINE suite only — the docker resource-bring-up tier is opt-in behind the
+# `--run-docker` flag (see tests/conftest.py). NOT via `addopts = -m 'not docker'`: pytest's `-m` is
+# single-valued, so any user `-m` (e.g. `-m 'not slow'`) would REPLACE it and silently let the tier boot
+# real containers, and `pytest <that_file>` would deselect it. The flag can't be defeated that way.
 
 [tool.ruff]
 line-length = 120
