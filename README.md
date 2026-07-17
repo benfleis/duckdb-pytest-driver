@@ -69,8 +69,10 @@ uv tool install pytest --with pytest-xdist --with-editable /path/to/duckdb-pytes
 Then, in a **built** duckdb (or extension) checkout:
 
 ```bash
-ducktest configure           # once: writes pytest.ini (testpaths, -n auto, importlib — a plugin
-                             # can't inject these). Re-run to refresh; it won't clobber hand-edits.
+ducktest configure           # once: writes pytest.ini (testpaths, -n auto, importlib — a plugin can't
+                             # inject these) AND a starter pyproject.toml (the test venv, below). Re-run
+                             # to refresh; it won't clobber a hand-edited pytest.ini, and never rewrites
+                             # pyproject.toml once it exists — that one is yours.
 pytest                       # auto-detects rootdir + test/, resolves build/<variant>/test/unittest,
                              # collects & runs every .test
 ```
@@ -93,6 +95,71 @@ op run --env-file=creds.env -- pytest -m databricks       # or let your secret t
 The `available()` check finds them and skips the fetch. When a run does have to prompt, it happens at
 the start rather than partway through, and a credential that's genuinely missing stops the run with a
 clear message instead of quietly skipping the test.
+
+---
+
+## The Python layout that makes this work
+
+Everything pytest imports — the driver, your `.py` drivers, backend helper packages, generators, and
+their third-party deps — has to resolve from **one** environment and import the **same way regardless of
+how pytest is launched**. Two anchors get you there, both at the repo root.
+
+**One dependency set, at the repo root.** pytest, `pytest-xdist`, the driver, and every test dep go in a
+single manifest at the top of the repo. `ducktest configure` scaffolds it for you — a starter
+`pyproject.toml` with a `[dependency-groups] dev`, `[tool.uv] package = false` (an extension isn't an
+installable package, but you still get `uv run pytest`), and a `[tool.uv.sources]` pointing at your local
+driver checkout until it's published. Fill in your deps and that's the venv. Put deps anywhere else — a
+`scripts/requirements.txt`, a per-suite file — and "which venv, installed from where" becomes a guessing
+game. It's the repo's test venv; it belongs where you `cd` to run it, next to `pytest.ini`. Then, from the
+repo root, `uv run pytest` builds the venv and runs — the same command in the driver and every extension.
+
+**Import roots are declared, not inferred from your shell.** `from mypkg.helpers import …` resolves only
+if `mypkg`'s parent is on `sys.path`, and by default that often happens *only* because you ran
+`python -m pytest` from the repo root, which injects the cwd. Run bare `pytest`, or from another
+directory, and the import breaks — a fragility that hides until someone launches it differently. ducktest
+removes the guesswork: the **`duckdb_pythonpath`** ini option lists repo-relative dirs it prepends to
+`sys.path` at startup, the same way every launch and every cwd. Its default already covers the usual
+homes — `test/py scripts scripts/data_generator`, each added only if it exists — so you set it *only* to
+change it, never to make the common case work.
+
+**Where test-support Python lives is then a genuine choice, and both are fine:**
+
+- `test/py/<pkg>/` — the default home for driver-side helpers (provisioners, service/credential code).
+  Imports as `<pkg>` (e.g. `from uc.oss import …`, with `uc` at `test/py/uc`).
+- `scripts/<pkg>/` — the right call when the code is *also* useful to run standalone (a data generator a
+  dev invokes by hand). It's test infra either way; keeping it here just preserves that ergonomics.
+
+The one rule: **your import style must match the root you put on the path.** With `scripts/` on the path,
+`import data_generators` works but `import scripts.data_generators` does *not* — the latter needs the repo
+root (`.`) on the path instead. Pick one and set it once:
+
+```ini
+# pytest.ini — only when you need to change the default import roots
+duckdb_pythonpath = test/py .        # → `from scripts.data_generators import …`  (repo root on path)
+# or keep the default (scripts on the path) and import as `from data_generators import …`
+```
+
+A workable shape:
+
+```
+repo/
+  pyproject.toml | requirements.txt    the one test env, at the root
+  pytest.ini                           ducktest configure writes it; rootdir = here
+  scripts/
+    data_generators/                   fixture generators (also dev-runnable standalone)
+    *.sh, mock servers                 test infra that isn't .py
+  test/
+    conftest.py                        suites (register_suite)
+    py/<backend>/                      provisioners, service/credential code
+    <suite dirs>/                      the .test / .py bodies
+```
+
+With both anchors in place the command is identical everywhere — the driver and every extension — a plain
+`uv run pytest` (or `pytest` in an activated venv) from the repo root, resolving the same no matter how
+it's launched. That invariance is the whole point: nothing about running the suite depends on remembering
+how you're supposed to run it.
+
+---
 
 ## Everyday use
 
@@ -251,9 +318,9 @@ resulting env into the body:
 
 ```python
 # test/rest/roundtrip.py           (driver — collected; runs the same-stem .test)
-from ducktest import Fixture, requires, run_paired
+from ducktest import TableSpec, requires, run_paired
 
-@requires(source=Fixture("id_name").Seed(None), access="rw")   # a fresh isolated table
+@requires(source=TableSpec("id_name").Seed(None), access="rw")   # a fresh isolated table
 def test_roundtrip(request, iceberg_rest, resources):
     run_paired(request, env={**resources.env, "REST_URI": iceberg_rest.uri})
     # ... optional plain-Python assertions here too (the .py can assert, not just drive)
@@ -276,9 +343,9 @@ provisioner by subclassing `ducktest.provision.Provisioner` and filling in a few
 statement, how to name and build a table, what env to hand back. The loop over the specs and the
 shared-vs-isolated bookkeeping come from the base class.
 
-The `source` in a `@requires` doesn't have to be a `Fixture`. It can be a table name, or a reference
+The `source` in a `@requires` doesn't have to be a `TableSpec`. It can be a table name, or a reference
 type of your own that the provisioner knows how to instantiate. The Iceberg suite uses an `IcebergDef`
-that points at an entry in the extension's generator registry, for example. `Fixture` and a
+that points at an entry in the extension's generator registry, for example. `TableSpec` and a
 backend-native ref like that share one contract (a lazy value the provisioner resolves at run time), but
 differ in what they own and how portable they are; ARCHITECTURE.md § *Source refs* spells out the
 contract and when to add your own.

@@ -153,7 +153,7 @@ Beyond suite-level credentials/services, individual tests declare the **tables**
 `@requires(source, access, properties, name)` (stackable) or `@requires_matrix(...)` (fan a body over
 a property axis, one item per cell):
 
-- `source` is one of: a `Fixture("name")` (a portable SQL definition + seed, instantiated via the
+- `source` is one of: a `TableSpec("name")` (a portable SQL definition + seed, instantiated via the
   duckdb CLI); a premade FQN string; or a **backend-defined lazy ref** — any other object, opaque to the
   framework and interpreted entirely by your provisioner's `instantiate()`, the same open/backend-owned
   spirit as `properties` (e.g. Iceberg's `IcebergDef("default/…")`, a ref into its own generator
@@ -185,7 +185,7 @@ or reuses UC's `identity.py`. Promoting it into a driver `Provisioner` base is o
 
 ### Source refs (what `@requires(source=…)` accepts)
 
-`source` is a **lazy reference to where a table comes from**. The three forms above (a `Fixture`, an FQN
+`source` is a **lazy reference to where a table comes from**. The three forms above (a `TableSpec`, an FQN
 string, a backend-defined object) share one contract, and everything the driver guarantees hangs off it:
 
 - **It is a pure value.** Constructing a source ref does no I/O: no file read, no catalog call, no
@@ -194,7 +194,7 @@ string, a backend-defined object) share one contract, and everything the driver 
   deselected or skipped. Resolution happens only when a *running* test provisions the requirement.
 - **The driver never interprets it.** A source is opaque to the framework, the same stance as
   `properties`. The one thing the driver needs is a bare table name for the provisioned schema; a
-  `Fixture` and an FQN string carry that themselves, so any other kind of source **must pass `name=`**
+  `TableSpec` and an FQN string carry that themselves, so any other kind of source **must pass `name=`**
   (`requires()` fails loud otherwise).
 - **The provisioner's `instantiate(spec, target, dry_run, bindings)` turns it into a real table.** This is
   the extension point: your provisioner reads `spec.source`, does whatever that kind of source means (run
@@ -202,17 +202,17 @@ string, a backend-defined object) share one contract, and everything the driver 
   `dry_run`** (plan only, no DDL). The body then addresses that table through `resources.env`.
 
 That contract is all that's shared. The *kinds* of source differ in more than syntax, and the axis that
-separates them is **not** "which query language" (a `Fixture` and Iceberg's `IcebergDef` are both SQL
+separates them is **not** "which query language" (a `TableSpec` and Iceberg's `IcebergDef` are both SQL
 files). It is portability and ownership:
 
-| | `Fixture` (built-in) | a backend-native ref (e.g. Iceberg's `IcebergDef`) |
+| | `TableSpec` (built-in) | a backend-native ref (e.g. Iceberg's `IcebergDef`) |
 |---|---|---|
 | owns the definition | the driver's portable fixture library | the extension's own registry |
 | portability | one fixture drives any backend (duckdb canonicalizes; the instantiator maps types + applies `properties`) | backend-locked by nature (its ops are that backend's) |
 | logical vs physical | separated: the fixture says *what*; `properties` + the instantiator decide *how it's stored* | fused: the def *is* the physical recipe |
 | shape | a schema + seed, with an independent `.Seed()` override | often a procedure (create → insert → evolve → …), not a static schema + seed |
 
-So the real split is **a portable, driver-owned fixture vs a backend-native recipe.** `Fixture` is the
+So the real split is **a portable, driver-owned fixture vs a backend-native recipe.** `TableSpec` is the
 built-in member (below); a backend adds its own ref type when its tables can't be expressed as a portable
 fixture, as Iceberg's `IcebergDef` points at an entry in the extension's Spark generator registry. A
 shared named base (`TableSource` or similar) is deferred until a second backend needs one; for now the
@@ -220,7 +220,7 @@ members stay separately named and this contract is what unifies them.
 
 ### Fixtures — DuckDB as the middleman
 
-A `Fixture("name")` `source` is a **lazy named ref**, not a path: a pure value that does no I/O. The
+A `TableSpec("name")` `source` is a **lazy named ref**, not a path: a pure value that does no I/O. The
 framework resolves the name against a search path only when a *running* test instantiates it —
 collecting or skipping reads nothing. The fixture itself is a tiny SQL file — schema + seed, and
 **nothing about physical storage**:
@@ -253,7 +253,7 @@ scoped by test location like `register_provisioner`) implementing one method
 `instantiate(definition, target, *, duckdb_bin) -> Table`. `DuckDBInstantiator` (the default) just runs
 the body into a per-test db file; a backend instantiator canonicalizes, maps types (fail-loud on
 unmapped), applies its `properties`, and seeds the rows. Future fixture kinds (a shared fixture
-**library** via `domain=`, `Fixture.parquet`/`.gen`, `Clone(...)`, and archive/directory fixtures that
+**library** via `domain=`, `TableSpec.parquet`/`.gen`, `Clone(...)`, and archive/directory fixtures that
 unpack to a TEMP_DIR instead of a table) are on the roadmap — see PLAN.md.
 
 ## Your integration surface, in one list

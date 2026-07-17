@@ -24,7 +24,7 @@ suites.py      register_suite / credential / service / use_service + the frozen 
 store.py      the process-shared store: SyncManager server + per-key state machine
 provision.py  register_provisioner / get_provisioner (registry, by test path) + base Provisioner/Bindings (the generic spec-loop a backend subclasses)
 requires.py   @requires / @requires_matrix + Requirement (per-test table needs)
-fixtures.py   Fixture SQL-definition model + instantiate via the duckdb CLI (the `resources` path)
+fixtures.py   TableSpec SQL-definition model + instantiate via the duckdb CLI (the `resources` path)
 sqllogic.py   SqlLogicFile — collect a .test + run it through the unittest binary
 sqldef.py     generic multi-statement SQL helpers   steps.py  step() narration   mnemonic.py  tokens
 ```

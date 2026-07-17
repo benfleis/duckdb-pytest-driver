@@ -14,8 +14,10 @@ declarative `@requires` provisioning, managed temp dirs, and batching/parallelis
 - **Distribution:** `duckdb-pytest-driver` · **import + CLI:** `ducktest` (dist name ≠ import name, à la pillow/PIL).
 - **Auto-registered** pytest plugin via a `pytest11` entry point — no `pytest_plugins`, no `sys.path`
   hacks, no symlinks.
-- **`ducktest configure`** writes the base `pytest.ini` a plugin can't inject; after it, bare
-  `pytest` in a built checkout just works.
+- **`ducktest configure`** writes the base `pytest.ini` a plugin can't inject (owned: exact-or-fail,
+  never clobbered) plus a starter `pyproject.toml` for the test venv (scaffolded: written once, then
+  yours — configure won't touch it again). After it, bare `pytest` / `uv run pytest` in a built checkout
+  just work.
 - Canonical docs: **`README.md`** (use + integrate, worked example), **`docs/ARCHITECTURE.md`** (the
   model — suites, resources, store, provisioning), **`docs/INTERNALS.md`** (hooks/ordering/extending),
   **`docs/PLAN.md`** (roadmap/TODOs). Read the relevant one before changing behavior it describes.

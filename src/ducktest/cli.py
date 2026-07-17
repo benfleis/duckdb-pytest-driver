@@ -1,14 +1,17 @@
 """`ducktest` — a thin front-end over pytest for the duckdb test lane.
 
 Subcommands:
-  configure           Write the base pytest config into a repo so bare `pytest` just works.
+  configure           Write the base pytest config (+ a starter pyproject.toml) so `pytest` /
+                      `uv run pytest` just work.
   provision-service   Start declared service(s) out-of-session and leave them running.
   teardown-service    Stop declared service(s) started out-of-session.
 
 The plugin (auto-registered via the pytest11 entry point) supplies every default it can at
 runtime — working dir, test root, `.test` collection, `--build`. The few settings a plugin
-*cannot* inject (addopts/xdist, testpaths, --import-mode, python_files) live in the config
-this command writes; after `ducktest configure`, plain `pytest` works with no other setup.
+*cannot* inject (addopts/xdist, testpaths, --import-mode, python_files) live in the pytest.ini
+this command writes; after `ducktest configure`, plain `pytest` works with no other setup. It
+also drops a starter `pyproject.toml` (the test venv, for `uv run pytest`) beside it — written
+once, then yours to edit; unlike pytest.ini, configure won't touch it again.
 
 `provision-service` / `teardown-service` are THIN SHIMS over pytest: they shell
 `python -m pytest --provision-service <keys>` in THIS interpreter's env (so pytest + the plugin +
@@ -37,8 +40,46 @@ testpaths = test
 python_files =
 """
 
-# name -> content. A dict so more base files can be added without reworking the flow.
-_BASE_FILES = {"pytest.ini": _PYTEST_INI}
+# A starter `pyproject.toml`, written ONCE (see _SCAFFOLD_FILES): it declares the test *environment* so
+# `uv run pytest` resolves everything pytest imports from one venv, and lives beside pytest.ini (which
+# holds the pytest *config*). Unlike pytest.ini this is yours to grow — configure never rewrites it.
+_PYPROJECT = """\
+# pyproject.toml — a starter written ONCE by `ducktest configure`; after this it's YOURS (configure will
+# never overwrite it). It declares this extension's TEST environment so `uv run pytest`, run from this
+# dir, resolves everything pytest imports from a single venv. The pytest *config* lives next door in
+# pytest.ini (also written by configure); deps live here.
+#
+# This repo is an EXTENSION, not a Python package, so `[tool.uv] package = false` stops uv from trying to
+# build/install it — you still get `uv run pytest`. Your own test-support Python (generators, provisioners)
+# imports via the driver's `duckdb_pythonpath`, not from here (see the driver README, "Python layout").
+
+[project]
+name = "CHANGEME-tests"           # any name; this project is never published
+version = "0"
+requires-python = ">=3.9"
+
+[dependency-groups]
+# Everything pytest imports, in ONE place — uv installs this `dev` group by default under `uv run`.
+dev = [
+    "duckdb-pytest-driver[xdist]",   # the driver; its [xdist] extra brings pytest + pytest-xdist
+    # your extension's own test deps, e.g.:
+    # "databricks-sdk",
+    # "pyspark==4.0.1",
+]
+
+[tool.uv]
+package = false
+
+# The driver isn't published yet — resolve it from your local checkout (adjust if it isn't a sibling):
+[tool.uv.sources]
+duckdb-pytest-driver = { path = "../driver", editable = true }
+"""
+
+# ducktest OWNS these: it keeps them byte-exact and refuses to clobber a hand-edit (stops with a diff).
+_OWNED_FILES = {"pytest.ini": _PYTEST_INI}
+# ducktest SCAFFOLDS these: written only when absent, then left alone forever — yours to fill in. Kept
+# separate from owned files precisely because you WILL edit them (real deps), so a diff must not block.
+_SCAFFOLD_FILES = {"pyproject.toml": _PYPROJECT}
 
 
 def _configure(args):
@@ -47,7 +88,8 @@ def _configure(args):
         sys.stderr.write("✗ not a directory: %s\n" % target_dir)
         return 2
     rc = 0
-    for name, want in _BASE_FILES.items():
+    # Owned files: byte-exact or bust. A hand-edited copy stops configure with a diff (never clobbered).
+    for name, want in _OWNED_FILES.items():
         path = os.path.join(target_dir, name)
         if os.path.exists(path):
             with open(path, "r") as f:
@@ -70,6 +112,16 @@ def _configure(args):
         with open(path, "w") as f:
             f.write(want)
         print("✓ wrote %s" % path)
+    # Scaffold files: a starting point you then own. Written only if absent — an existing one is left
+    # untouched (your real deps are safe), reported, and never a failure.
+    for name, want in _SCAFFOLD_FILES.items():
+        path = os.path.join(target_dir, name)
+        if os.path.exists(path):
+            print("✓ %s exists — leaving it as-is (yours to edit)" % path)
+            continue
+        with open(path, "w") as f:
+            f.write(want)
+        print("✓ wrote %s (starter — add your test deps, then `uv run pytest`)" % path)
     return rc
 
 
@@ -83,7 +135,7 @@ def _service_cmd(args, flag):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="ducktest", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
-    p_cfg = sub.add_parser("configure", help="write the base pytest config so bare `pytest` works")
+    p_cfg = sub.add_parser("configure", help="write pytest.ini + a starter pyproject.toml so pytest / uv run pytest work")
     p_cfg.add_argument("dir", nargs="?", default=".", help="target repo dir (default: cwd)")
     p_cfg.set_defaults(func=_configure)
 
