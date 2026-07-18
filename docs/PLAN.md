@@ -181,9 +181,11 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
   images with `DUCKTEST_IMAGE_SOURCE=ghcr`). (3) automate in CI — GH-hosted runners
   (decided 2026-07-18): ✓ TEST side DONE — `.github/workflows/test.yml` runs the offline suite + the
   `--run-docker` tier booting from the public ghcr images (no auth), gated by a new `ducktest pull-images`
-  warm/fail-fast step. PENDING: `publish-images.yml` (login + the two publish commands; needs a `GHCR_PAT`
-  secret while ns=`ghcr.io/benfleis` — the free `GITHUB_TOKEN` can't write a personal namespace; a native
-  amd+arm matrix ONLY for `build` images, mirrors need one runner). (4) later, migrate
+  warm/fail-fast step. ✓ `publish-images.yml` DONE — manual
+  `workflow_dispatch`, logs in with the `GHCR_PAT` secret (owner benfleis; the free `GITHUB_TOKEN` can't
+  write a personal namespace) and runs the two publish commands on one runner (all mirrors). No auto-
+  triggers yet (manual publish only, by choice); amd+arm matrix deferred until a `build` image exists.
+  So [c] CI automation is complete; only item (4) namespace migration remains. (4) later, migrate
   `DUCKTEST_IMAGE_NS` -> `ghcr.io/duckdb` (needs the org package path cleared — checks parked with Ben).
   Azure adoption consumes the azurite image; uc/ice consume minio — why this is centralized here.
 
