@@ -89,7 +89,12 @@ def object_prefix(container, name, *, access, token=None):
 
 
 def _run(args, config=None):
-    cmd = ["rclone", *(["--config", config] if config else []), *args]
+    # Bound every call. Without these, an unreachable/mis-endpointed remote spins on rclone's defaults
+    # (--contimeout 1m x --low-level-retries 10 x --retries 3 = minutes PER verb) — a seed round-trip
+    # then hangs the docker tier instead of failing fast. A local emulator connects in ms, so tight
+    # bounds cost nothing on success and turn a multi-minute hang into a seconds-fast, informative error.
+    bounds = ["--contimeout=10s", "--timeout=30s", "--retries=1", "--low-level-retries=2"]
+    cmd = ["rclone", *bounds, *(["--config", config] if config else []), *args]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()
