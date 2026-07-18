@@ -5,6 +5,7 @@ Subcommands:
                       `uv run pytest` just work.
   provision-service   Start declared service(s) out-of-session and leave them running.
   teardown-service    Stop declared service(s) started out-of-session.
+  publish-images      Publish the resource images (mirror or build) into the ghcr namespace.
 
 The plugin (auto-registered via the pytest11 entry point) supplies every default it can at
 runtime — working dir, test root, `.test` collection, `--build`. The few settings a plugin
@@ -132,12 +133,99 @@ def _service_cmd(args, flag):
     return subprocess.call(cmd)
 
 
+def _publish_images(args):
+    """Publish the `resources.*` images into the ghcr namespace using ONLY core docker (no buildx).
+
+    Two phases, both gated by `--push` (default = print the plan, run nothing):
+      - default phase: publish this machine's per-arch slices as `…:<pin>-<arch>` tags. A `mirror` image
+        copies every platform from one machine (`docker pull --platform` fetches any arch — we never RUN
+        it, so no QEMU); a `build` image publishes only the host arch (native `docker build`), so run it
+        once on an amd box and once on an arm box.
+      - `--finalize`: stitch the per-arch tags into the multi-arch `…:<pin>` manifest (`docker manifest`).
+
+    `docker login ghcr.io -u <user>` (token with `write:packages`) first. The pull side is automatic — a
+    resource `docker run`s the ghcr ref once `DUCKTEST_IMAGE_SOURCE=ghcr`.
+    """
+    # Import the resource modules so their register_image() calls populate the registry (single source).
+    from .resources import azurite, minio  # noqa: F401
+    from .resources._images import IMAGE_NS, arch_of, ghcr_ref, host_arch, registry
+
+    ns = (args.namespace or IMAGE_NS).rstrip("/")
+    imgs = registry()
+    if not imgs:
+        sys.stderr.write("✗ no resource images registered\n")
+        return 1
+
+    def run(cmd, ignore=False):
+        print("    $ " + " ".join(cmd))
+        if not args.push:
+            return 0
+        proc = subprocess.run(cmd)
+        return 0 if ignore else proc.returncode
+
+    rc = 0
+    if args.finalize:
+        print("finalize -> multi-arch manifests in %s   (%s)" % (ns, "PUSH" if args.push else "dry run"))
+        for name, e in imgs:
+            target = ghcr_ref(name, e["pin"], ns=ns)
+            archtags = ["%s-%s" % (target, arch_of(p)) for p in e["platforms"]]
+            print("  %s  <-  %s" % (target, ", ".join(archtags)))
+            run(["docker", "manifest", "rm", target], ignore=True)  # clear any stale local list
+            if run(["docker", "manifest", "create", target, *archtags]) or run(["docker", "manifest", "push", target]):
+                sys.stderr.write("✗ finalize failed for %s (are all per-arch slices pushed?)\n" % name)
+                rc = 1
+    else:
+        arch = host_arch()
+        print("publish per-arch slices to %s   (host arch %s; %s)" % (ns, arch, "PUSH" if args.push else "dry run"))
+        for name, e in imgs:
+            target = ghcr_ref(name, e["pin"], ns=ns)
+            if e["kind"] == "mirror":
+                for p in e["platforms"]:  # one machine covers every arch: pull doesn't execute the image
+                    at = "%s-%s" % (target, arch_of(p))
+                    print("  mirror %s [%s] -> %s" % (e["source"], p, at))
+                    if (run(["docker", "pull", "--platform", p, e["source"]])
+                            or run(["docker", "tag", e["source"], at])
+                            or run(["docker", "push", at])):
+                        sys.stderr.write("✗ mirror failed for %s [%s] (is `docker login ghcr.io` done?)\n" % (name, p))
+                        rc = 1
+            else:  # build: native host arch only (no QEMU) — run on each arch's machine
+                p = "linux/%s" % arch
+                if p not in e["platforms"]:
+                    print("  build %s: host arch %s not in %s — nothing to do on this machine" % (name, p, e["platforms"]))
+                    continue
+                at = "%s-%s" % (target, arch)
+                print("  build %s [%s] -> %s" % (e["source"], p, at))
+                if run(["docker", "build", "-t", at, e["source"]]) or run(["docker", "push", at]):
+                    sys.stderr.write("✗ build failed for %s [%s]\n" % (name, p))
+                    rc = 1
+        if not args.push:
+            print("\nlog in (each machine):  docker login ghcr.io -u <user>   (token needs write:packages)")
+            print("push per arch:           ducktest publish-images --push        (mirrors: any one box; builds: amd + arm)")
+            print("then stitch, once:       ducktest publish-images --finalize --push")
+    return rc
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="ducktest", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_cfg = sub.add_parser("configure", help="write pytest.ini + a starter pyproject.toml so pytest / uv run pytest work")
     p_cfg.add_argument("dir", nargs="?", default=".", help="target repo dir (default: cwd)")
     p_cfg.set_defaults(func=_configure)
+
+    p_pub = sub.add_parser("publish-images", help="publish the resource images into ghcr (core docker, no buildx)")
+    p_pub.add_argument("--push", action="store_true", help="actually run docker (default: print the plan only)")
+    p_pub.add_argument(
+        "--finalize",
+        action="store_true",
+        help="stitch the per-arch tags into the multi-arch manifest (run after --push on every arch)",
+    )
+    p_pub.add_argument(
+        "--namespace",
+        default=None,
+        metavar="NS",
+        help="ghcr namespace (default: $DUCKTEST_IMAGE_NS or ghcr.io/benfleis)",
+    )
+    p_pub.set_defaults(func=_publish_images)
 
     # KNOWN LIMITATION (found in code review, 2026-07-14, not fixed): argparse can't disambiguate a
     # dash-leading pytest_args token from the optional `keys` positional when `keys` is omitted --

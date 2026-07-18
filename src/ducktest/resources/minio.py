@@ -25,6 +25,7 @@ from ..steps import step
 from ..tools.rclone import Remote, mkdir, write_conf
 from ..suites import service
 from ._docker import docker as _docker, wait_until
+from ._images import ghcr_ref, register_image, served_image
 
 # LOCAL dev credentials + fixed host ports, all env-overridable. Defaults match ice-fixture/ducklake.
 # (See the module docstring on why hardcoding the default creds is config, not a secret.)
@@ -33,12 +34,19 @@ SECRET_KEY = os.environ.get("DUCKTEST_MINIO_SECRET_KEY", "password")
 REGION = os.environ.get("DUCKTEST_MINIO_REGION", "us-east-1")
 DEFAULT_BUCKET = os.environ.get("DUCKTEST_MINIO_BUCKET", "ducktest")
 
-# Pinned to the exact tag duckdb's own httpfs S3 tests use (d/httpfs/scripts/minio_s3.yml) — verified,
-# reproducible, and the `-cpuv1` baseline build avoids AVX "illegal instruction" crashes on older
-# CPUs/VMs. It's upstream Docker Hub `minio/minio`, just pinned (not a floating `:latest`, and not a
-# duckdb-org mirror like azurite's `duckdb/azurite` — mirror it later if you want org control). Override
-# via DUCKTEST_MINIO_IMAGE. (ice/ducklake compose use unpinned `minio/minio`; prefer this pin.)
-IMAGE = os.environ.get("DUCKTEST_MINIO_IMAGE", "minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1")
+# Supply chain (docs/PLAN.md, ducktest.resources._images): we MIRROR upstream MinIO into an org-controlled
+# ghcr tag and serve from there. UPSTREAM is the plain, MULTI-ARCH RELEASE (linux/amd64 + arm64) — same
+# version duckdb's httpfs S3 tests pin (d/httpfs/scripts/minio_s3.yml), minus their amd64-only `-cpuv1`
+# suffix, so the mirror serves both arches. The ghcr PIN reuses the upstream RELEASE for clean provenance.
+# (An AVX-less amd64 host that SIGILLs on the default build can override DUCKTEST_MINIO_UPSTREAM to the
+# `-cpuv1` variant — but that one is amd64-only.)
+UPSTREAM_IMAGE = os.environ.get("DUCKTEST_MINIO_UPSTREAM", "minio/minio:RELEASE.2025-09-07T16-13-09Z")
+PIN = os.environ.get("DUCKTEST_MINIO_PIN", "RELEASE.2025-09-07T16-13-09Z")  # ghcr tag = upstream RELEASE
+GHCR_IMAGE = ghcr_ref("minio", PIN)  # ghcr.io/<ns>/ducktest-minio:<pin> — ns via DUCKTEST_IMAGE_NS
+register_image("minio", "mirror", UPSTREAM_IMAGE, PIN)
+# What MinIO RUNS: follows DUCKTEST_IMAGE_SOURCE (upstream until the mirror is published, then ghcr — the
+# PLAN [c] flip). Per-instance override via DUCKTEST_MINIO_IMAGE.
+IMAGE = os.environ.get("DUCKTEST_MINIO_IMAGE", served_image("minio", UPSTREAM_IMAGE, PIN))
 CONTAINER = os.environ.get("DUCKTEST_MINIO_CONTAINER", "ducktest-minio")
 S3_PORT = int(os.environ.get("DUCKTEST_MINIO_S3_PORT", "9000"))
 CONSOLE_PORT = int(os.environ.get("DUCKTEST_MINIO_CONSOLE_PORT", "9001"))

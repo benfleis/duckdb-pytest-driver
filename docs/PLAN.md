@@ -156,6 +156,32 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
   was right, only the build/push/publish was missing. Shares the org-namespace + CI-build decision with
   the UC-image item above; **gate before landing v0.1** (per Ben, 2026-07-16). Pairs with the live
   resource-validation tier (which then validates the ghcr images, not upstream).
+  **Mechanism BUILT 2026-07-17, reworked buildx-free 2026-07-18 (namespace-agnostic, `ghcr.io/benfleis`
+  interim):** `ducktest.resources._images` centralizes it; each image declares `kind` ("mirror"|"build"),
+  `source`, `pin`, `platforms` via `register_image(...)` (azurite/minio are `mirror`). `ducktest
+  publish-images` uses ONLY core docker — **no buildx** (buildx isn't reliably present; it was in fact
+  missing on Ben's box). Two phases, both gated by `--push`:
+    - per-arch push: a `mirror` copies EVERY platform from one machine (`docker pull --platform` fetches
+      any arch — we never RUN it, so no QEMU — then `tag`/`push` a `…:<pin>-<arch>` slice); a `build` does
+      native host-arch only (`docker build`), so run it once per arch (amd box + arm box).
+    - `--finalize`: stitch the per-arch slices into the multi-arch `…:<pin>` via `docker manifest
+      create`/`push`.
+  This satisfies "must work by hand on an amd OR an arm box, no QEMU" (per Ben, native per-arch) and the
+  "complexity absorbed by the tool, not scattered through CI/scripts" goal — CI becomes `login` + the two
+  commands. **[a]+[b] done as tooling**, `kind="build"` first-class for future driver-owned build images.
+  Two env knobs, nothing hard-coded: `DUCKTEST_IMAGE_NS` (namespace; default `ghcr.io/benfleis` — Ben owns
+  it, no org buy-in/SSO to wait on) and `DUCKTEST_IMAGE_SOURCE` (`upstream` default -> resources still run
+  third-party so the live tier stays green; `ghcr` -> serve the published image). 12 offline tests; ghcr
+  auth + push verified by hand (a buildx-free smoke `pull`/`tag`/`push` to `ghcr.io/benfleis` succeeded).
+  **Remaining for [c] "ghcr exclusive":** ✓(1) DONE 2026-07-18 — published `--push` + `--finalize --push`
+  to `ghcr.io/benfleis`, packages **public** (anon-verified multi-arch amd64+arm64: azurite `:2026-07-17`,
+  minio `:RELEASE.2025-09-07T16-13-09Z`). ✓(2) DONE — `DUCKTEST_IMAGE_SOURCE` default flipped to `ghcr` in
+  `_images.py`; offline suite green (129), one stale assertion updated. ✓ live boot-from-ghcr PROVEN
+  2026-07-18 — `pytest --run-docker -m docker` passes on z300 (azurite+minio boot from the public ghcr
+  images with `DUCKTEST_IMAGE_SOURCE=ghcr`). (3) automate in CI (login + the two commands; a native
+  amd+arm matrix ONLY for `build` images — mirrors need one runner) — PENDING. (4) later, migrate
+  `DUCKTEST_IMAGE_NS` -> `ghcr.io/duckdb` (needs the org package path cleared — checks parked with Ben).
+  Azure adoption consumes the azurite image; uc/ice consume minio — why this is centralized here.
 
 ## v0-dev sprints (post-commit, near-term)
 
@@ -270,6 +296,52 @@ This object-store instantiator is the piece that plugs into the base `Provisione
 - **`.cpp` lane** — `--cpp` + `unittest -l` as a second gather source, deduped against the FS
   scan. Deferrable.
 - **Cutover** — per-extension; `.test` files stay until each extension is stable on pytest.
+- **Provisioner teardown must reclaim PHYSICAL resources, not just catalog metadata** _(cross-cutting;
+  found 2026-07-17 designing iceberg rw)_. Dropping a catalog object (a `DROP TABLE` / `DROP SCHEMA
+  CASCADE`) usually leaves the underlying **data files** behind, so every `rw` provision leaks storage
+  that grows the warehouse/bucket each run. This is a **lakehouse-wide gap — delta, ice, uc all hit it**,
+  each with its own purge verb/quirk:
+  - **iceberg** (spark_local): `DROP TABLE` leaves parquet + metadata on the warehouse dir; needs
+    `DROP TABLE … PURGE` (then `DROP NAMESPACE`), or rm the token'd warehouse subdir. (Wired in
+    `ice/test/py/iceberg/provisioner.py teardown()` as the first instance of getting this right.)
+  - **uc/databricks**: `DROP SCHEMA … CASCADE` drops managed tables + their storage, but **external**
+    tables (explicit LOCATION) leave their S3 objects; the databricks provisioner's cell-schema teardown
+    needs to account for external-table storage, and OSS/`uctl` similarly.
+  - **delta**: `DROP TABLE` leaves the `_delta_log/` + parquet; needs the equivalent purge or a dir rm.
+  The base `Provisioner.teardown()` today just drops `bindings.isolated` namespaces via `drop_sql`
+  (`DROP SCHEMA … CASCADE`) — enough for pure-catalog backends, not for file-backed ones. Options: a
+  base hook for "purge storage for these tables/namespaces" that each backend fills, and/or an
+  offline `duck-test clean --older-than` sweep (pairs with the date-stamped provision token) for what a
+  crashed run or an engine-torn-down-first teardown leaves behind. Until then, file-backed backends
+  override `teardown()` per-backend (as iceberg now does) and the leak is bounded by the sweep. Ties to
+  the `teardown_stale(older_than)` item in *Fixtures* below.
+- **`TEMP_DIR` is the home for `rw` artifact storage — and core needs a `TEMP_DIR` vs `LOCAL_TEMP_DIR`
+  split** _(design intent, 2026-07-17; the cleaner half of the reclaim item above)_.
+  - **Root rw storage in `TEMP_DIR`.** An `rw` provision's *physical* storage (an iceberg warehouse dir,
+    a delta table dir, a uc external-table LOCATION, an object-store prefix) should live UNDER the test's
+    `TEMP_DIR` — already per-test/per-run token'd — not in a bespoke path. Then isolation and cleanup are
+    a *lifecycle property* for free: `--external-test-dir-destroy on-success/always` reclaims the files,
+    so the leak item above reduces to "the CATALOG object still needs its `DROP` (metadata); the FILES
+    ride `TEMP_DIR`'s destroy policy" instead of a per-backend purge. Local backends (iceberg spark_local,
+    delta): warehouse/table root under `TEMP_DIR`. Remote/object backends (azurite/minio/azure): the
+    "`TEMP_DIR`" is a token'd bucket prefix, and pytest — which already holds the creds — `rclone`-purges
+    it post-test (the object-store instantiator + a token'd prefix are what make this work). This was the
+    original intent: define `TEMP_DIR` in a writeable, token'd space up front, then blow it all away.
+  - **Image-config flexibility (the one real constraint).** A containerized backend (azurite / minio / uc
+    server) must let its storage path be pointed at that `TEMP_DIR` space — a bind mount of the
+    container's data dir to the host `TEMP_DIR` (azurite's `-l /data`, minio's data dir), or a
+    configurable prefix. Not hard, but design the service images for it NOW so the storage-root model
+    isn't blocked later.
+  - **`TEMP_DIR` vs `LOCAL_TEMP_DIR` (a duckdb-CORE change — see *C++ queued*).** When `TEMP_DIR` is
+    non-local (a remote/mounted path backing azurite/minio/…), core must ALSO allocate a `LOCAL_TEMP_DIR`
+    on the local FS, with the SAME token/cleanup policies; when `TEMP_DIR` is local, the two coincide.
+    Why: RW DuckDB **database** operations need real local-filesystem guarantees (file locking, mmap,
+    atomic rename, fsync) that object/network storage doesn't provide — many db tests simply cannot run
+    RW on non-local disk, and faking it drops exactly the durability/locking guarantees they assume. So a
+    test keeps its under-test artifacts on remote `TEMP_DIR` while DuckDB's own scratch (and any local db)
+    uses `LOCAL_TEMP_DIR`. The env-var contract (core-owned, duckdb `test/README.md`) grows
+    `LOCAL_TEMP_DIR`; the driver/provisioner sets `TEMP_DIR` (possibly remote) and core derives the local
+    sibling. Already prototyped by hand; formalize + land in core.
 - **Seed reuse** — standardize the OSS seed on the convention table `id_name (id INT, name
 STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provisioning stays
   one shape. (The checkpoint port reuses `id_name`.)
@@ -523,6 +595,13 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
 
 ## C++ queued (the opt-in runner changes)
 
+- **`LOCAL_TEMP_DIR` alongside `TEMP_DIR`** _[core, prototyped by hand]_ — when `TEMP_DIR` is non-local
+  (remote/mounted backing storage), core allocates a local-FS `LOCAL_TEMP_DIR` with the same
+  token/cleanup policies; when `TEMP_DIR` is local, they coincide. RW DuckDB **database** operations need
+  local-FS guarantees (locking, mmap, atomic rename, fsync) object/network storage can't give, so a test
+  can hold its under-test artifacts on remote `TEMP_DIR` while duckdb's own scratch uses `LOCAL_TEMP_DIR`.
+  Env-var contract addition (duckdb `test/README.md`). Full rationale in the *Roadmap* item "`TEMP_DIR`
+  is the home for `rw` artifact storage".
 - **per-test OUTCOME emit (`--emit-on-test`, its own flag)** — successor to the skip markers /
   the abandoned per-file statement histogram. Emit ONE line per Catch test-case (= per `.test`
   for sqllogic, + each C++ `TEST_CASE`): `[TEST_RESULT] <name> :: pass|fail|skip|partial[ :: <reason>]`.

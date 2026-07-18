@@ -19,6 +19,7 @@ from ..steps import step
 from ..tools.rclone import Remote
 from ..suites import service
 from ._docker import docker as _docker, wait_until
+from ._images import ghcr_ref, register_image, served_image
 
 # EXEMPTION (documented per code review, 2026-07-14) from AGENTS.md's "No secrets in files... use
 # ${ENV_VAR} placeholders" rule: this account/key pair is NOT a secret. It's Azure's fixed, PUBLIC,
@@ -32,11 +33,18 @@ from ._docker import docker as _docker, wait_until
 ACCOUNT = "devstoreaccount1"
 KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
 
-# Microsoft's official public Azurite image (was `duckdb/azurite:<tag>`, a mirror that was never
-# published -> `pull access denied, repository does not exist`). `:latest` is a working default; PIN it
-# to a verified version tag like minio does (`docker pull mcr.microsoft.com/azure-storage/azurite`, take
-# the resolved version) via DUCKTEST_AZURITE_IMAGE for reproducibility. Overridable for a moved instance.
-IMAGE = os.environ.get("DUCKTEST_AZURITE_IMAGE", "mcr.microsoft.com/azure-storage/azurite:latest")
+# Supply chain (docs/PLAN.md, ducktest.resources._images): we MIRROR Microsoft's official public Azurite
+# (was `duckdb/azurite:<tag>`, an org mirror that was never published -> `pull access denied`) into an
+# org-controlled ghcr tag, and serve from there — so a test never rides MCR uptime/tag drift.
+# `ducktest publish-images` freezes whatever UPSTREAM_IMAGE resolves to now into the pinned ghcr tag, so
+# even upstream `:latest` yields a stable served image.
+UPSTREAM_IMAGE = os.environ.get("DUCKTEST_AZURITE_UPSTREAM", "mcr.microsoft.com/azure-storage/azurite:latest")
+PIN = os.environ.get("DUCKTEST_AZURITE_PIN", "2026-07-17")  # ghcr tag; bump when you re-mirror a newer upstream
+GHCR_IMAGE = ghcr_ref("azurite", PIN)  # ghcr.io/<ns>/ducktest-azurite:<pin> — ns via DUCKTEST_IMAGE_NS
+register_image("azurite", "mirror", UPSTREAM_IMAGE, PIN)
+# What Azurite RUNS: follows DUCKTEST_IMAGE_SOURCE (upstream until the mirror is published, then ghcr —
+# the PLAN [c] flip). Per-instance override via DUCKTEST_AZURITE_IMAGE (e.g. a moved endpoint).
+IMAGE = os.environ.get("DUCKTEST_AZURITE_IMAGE", served_image("azurite", UPSTREAM_IMAGE, PIN))
 CONTAINER = os.environ.get("DUCKTEST_AZURITE_CONTAINER", "ducktest-azurite")
 BLOB_PORT = int(os.environ.get("DUCKTEST_AZURITE_BLOB_PORT", "10000"))
 QUEUE_PORT = int(os.environ.get("DUCKTEST_AZURITE_QUEUE_PORT", "10001"))
