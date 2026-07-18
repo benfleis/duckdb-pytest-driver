@@ -4,9 +4,7 @@ Standalone (not part of the sqllogic collector) so it can be reused and tested o
 its own. Produces short, eyeball-able names like `brave-otter` for a run dir, so a
 failure directory is easy to spot and recall from memory instead of a raw uuid.
 
-The pure-python tests below are *not* auto-collected (the plugin sets
-`python_files =` to keep pytest out of stray scripts); run them explicitly:
-    pytest test/pytest/mnemonic.py
+The tests for this module live in `tests/test_mnemonic.py`.
 """
 
 import random
@@ -87,30 +85,3 @@ def run_id(now=None, words=2, digits=2):
     """
     now = now or datetime.now(timezone.utc)
     return f"{now.strftime('%Y-%m-%dT%H-%M-%SZ')}--{mnemonic(words, digits)}"
-
-
-# --- pure-python tests (run explicitly; not auto-collected) ------------------
-
-
-def test_mnemonic_shape():
-    name = mnemonic()
-    assert name.count("-") == 2
-    a, n, d = name.split("-")
-    assert a in _ADJECTIVES and n in _NOUNS
-    assert 0 <= int(d) <= 99
-
-
-def test_mnemonic_word_count():
-    assert mnemonic(words=3).count("-") == 3
-
-
-def test_run_id_sortable_and_memorable():
-    rid = run_id(now=datetime(2026, 6, 23, 23, 44, 22))
-    stamp, sep, mnem = rid.partition("--")
-    assert sep == "--"
-    assert stamp == "2026-06-23T23-44-22Z"  # ISO basic-style, UTC; no colons (Windows-safe)
-    assert ":" not in rid
-    assert "-" in mnem
-    adj, noun, digits = mnem.split("-")
-    assert adj in _ADJECTIVES and noun in _NOUNS
-    assert len(digits) == 2 and int(digits) >= 0

@@ -1,130 +1,126 @@
-"""Generic provisioner protocol + registry (extension-AGNOSTIC).
+"""Provisioning: the per-test Provisioner protocol + the single service provisioning entry.
 
-The framework knows `@requires` (driver/requires.py) but not how to satisfy it on
-a given backend. A backend supplies a *Provisioner*: three callables the `--repl`
-flow dispatches through. This keeps the framework portable — it never imports a
-backend; the backend registers itself.
+Two things live here:
 
-PROTOCOL — a Provisioner is any object exposing (duck-typed; a backend need not subclass
-the `Provisioner` base below, though it's the easiest way to get this protocol right):
+1. **`provision_service(ctx, svc)`** — the ONE routing point for suite-level services (lifted out of
+   the shipped `plugin.py`). Attach-or-boot: if the service key is in `--existing-service`, ATTACH
+   (build the block, probe `alive`, populate idempotently) and never enter the store or tear it down;
+   else MANAGED (single-flight boot via the store). Either way `to_env(block)` is merged into the
+   caller's environment. A test cannot tell which stance ran — identical block shape (the block/derive
+   builder contract in the resource modules guarantees that). Because the collect-first controller
+   calls this UP FRONT for every service the plan needs, there is no eager/on_demand disposition fork:
+   provisioning has one entry and one timing.
 
-    provision(specs, token, *, dry_run) -> bindings
-        specs : list[Requirement] from @requires on the selected test.
-        token : SQL-safe per-invocation id (the cell-schema suffix).
-        dry_run : if True, resolve + return the plan WITHOUT executing DDL.
-        returns an opaque `bindings` object the backend's make_init_sql understands.
-
-    make_init_sql(bindings, *, redact=False) -> str
-        Concrete duckdb init SQL. Secrets baked for the real launch; redact=True
-        (used by --provision-dry-run, which prints it) masks them for display.
-
-    teardown(bindings=None) -> None
-        Release/destroy what provision() created. `bindings.token` carries what a
-        separate `token` arg used to (dropped as redundant).
-
-BASE CLASS — `Provisioner` below implements the generic access-policy spec-loop (rw ->
-isolated namespace + instantiate + track-for-teardown; ro -> shared target, instantiate
-once per session) + a default `teardown()`; a backend subclasses it and implements the
-hooks (`execute`, `rw_target`, `ro_target`, `instantiate`, `make_init_sql`, required;
-`env_for`/`drop_sql`/`new_bindings`/`dry_run_summary` have workable defaults). See
-`uc.databricks.engine.DatabricksProvisioner` for a real implementation.
-
-REGISTRATION SEAM (the architecture decision):
-    A backend registers from the conftest that scopes it (e.g.
-    test/sql/databricks/conftest.py) via:
-
-        from ducktest import register_provisioner
-        def pytest_configure(config):
-            register_provisioner(config, MyProvisioner())
-
-    Registering from a subtree conftest means the provisioner is present only when
-    that subtree's tests are collected — resolution is by TEST LOCATION, not a
-    hardcoded backend. Stored on `config` (the same idiom as
-    `config.sqllogic_working_dir`); last registration wins, which is the natural
-    behavior since only the relevant subtree's conftest runs for a given selection.
+2. **`Provisioner` base + registry** — the generic per-`@requires` access-policy loop (rw -> isolated
+   namespace instantiated + tracked for teardown; ro -> shared target instantiated once per session).
+   A backend subclasses and fills the hooks. **Redesign change vs the shipped base:** `provision()`
+   returns the *framework* `Bindings` (context.Bindings: token/isolated/env/summary + an opaque
+   `backend` payload) — the backend's catalog/default_schema/tables no longer masquerade as "generic"
+   fields the base never reads; they live in `.backend`. The registry is the one typed
+   `context.Registry` (scope REQUIRED, resolved nearest-ancestor — no `path=None` back-compat branch).
 """
+
+from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import Any, Optional
 
-_ATTR = "_driver_provisioners"  # list[(scope_dir|None, provisioner)]
+from .context import Bindings, SessionContext, get_context
 
 
-def register_provisioner(config, provisioner, scope=None):
-    """Register a backend provisioner, scoped to a directory (call from a conftest).
+# --- registry (thin adapters over the one typed Registry) -------------------------------------
 
-    `scope` is the registering conftest's dir (pass `os.path.dirname(__file__)` or
-    `pathlib.Path(__file__).parent`). Resolution is by TEST LOCATION:
-    `get_provisioner(config, path)` returns the provisioner whose scope is the nearest
-    ancestor of `path`. This is what makes a MIXED selection correct -- tests from >1
-    backend subtree in one run (e.g. oss_local + databricks) each resolve to THEIR
-    backend. A single global last-wins registration would hand one backend's tests the
-    other's provisioner. `scope=None` registers a global fallback (matches any test no
-    scoped provisioner claims). See module docstring for the protocol.
+
+def register_provisioner(config, provisioner, scope) -> None:
+    """Register a backend provisioner scoped to the registering conftest's directory (call from a
+    conftest `pytest_configure`; pass `scope=os.path.dirname(__file__)`). Resolution is by TEST
+    LOCATION (nearest-ancestor) so a mixed multi-backend selection resolves each test to ITS backend.
+
+    `scope` is required — the shipped `scope=None` global-fallback / `path=None` most-recent-wins
+    branches are gone (a legacy accommodation; the location is always knowable)."""
+    if scope is None:
+        raise ValueError("register_provisioner: scope is required (the registering conftest's dir)")
+    get_context(config).registry.register_provisioner(os.path.abspath(str(scope)), provisioner)
+
+
+def get_provisioner(config, path) -> Optional[Any]:
+    """The provisioner whose scope is the nearest ancestor of `path`, else None. `path` required."""
+    return get_context(config).registry.provisioner_for(str(path))
+
+
+# --- the single service provisioning entry ----------------------------------------------------
+
+
+def _norm_key(key: str) -> str:
+    return key.strip().lower().replace("-", "_")
+
+
+def provision_service(ctx: SessionContext, svc, config=None) -> dict:
+    """Attach-or-boot `svc`, publish its env, return the block. The one entry (spec §3.6).
+
+    Idempotent + single-flight: two workers racing the same managed service boot it once (the store
+    serializes); an attach just re-probes. Never booted twice, never a leaked half-boot in the store.
     """
-    regs = getattr(config, _ATTR, None)
-    if regs is None:
-        regs = []
-        setattr(config, _ATTR, regs)
-    regs.append((os.path.abspath(str(scope)) if scope is not None else None, provisioner))
+    existing = ctx.existing_services
+    if _norm_key(svc.key) in existing:
+        block = _attach(svc, existing[_norm_key(svc.key)], config)
+    else:
+        block = _managed(ctx, svc, config)
+    _adopt_env(svc, block)
+    return block
 
 
-def get_provisioner(config, path=None):
-    """Return the provisioner for `path` (nearest-ancestor scope), else the global
-    (scope=None) one, else None. With no `path`, returns the most-recently registered
-    (back-compat for callers that don't have an item)."""
-    regs = getattr(config, _ATTR, None)
-    if not regs:
-        return None
-    if path is None:
-        return regs[-1][1]
-    p = os.path.abspath(str(path))
-    best, best_len, fallback = None, -1, None
-    for scope, prov in regs:
-        if scope is None:
-            fallback = prov
-        elif (p == scope or p.startswith(scope + os.sep)) and len(scope) > best_len:
-            best, best_len = prov, len(scope)
-    return best if best is not None else fallback
+def _attach(svc, overrides, config) -> dict:
+    """Build the block for an already-running instance, prove it's reachable, populate (idempotent).
+    NEVER enters the store and is NEVER torn down — so controller teardown (which stops only
+    store-present services) naturally leaves a host-owned service alone (the split-brain fix)."""
+    import pytest
+
+    block = svc.attach(overrides or {}, config)
+    if not svc.alive(block):
+        pytest.fail(
+            f"--existing-service {svc.key}: nothing reachable at {block.get('endpoint')!r} "
+            f"(you pointed {svc.key} at an instance that isn't up).",
+            pytrace=False,
+        )
+    if svc.populate:
+        svc.populate(block)  # must be idempotent — re-run on every attach
+    return block
 
 
-# ---------------------------------------------------------------------------
-# Base Provisioner + Bindings — the generic core every backend re-implemented
-# ---------------------------------------------------------------------------
-#
-# UC (OSS + Databricks) each hand-rolled the same shape: a per-spec access-policy loop
-# (rw -> isolated namespace + instantiate + track-for-teardown; ro -> shared target,
-# instantiate ONCE per session), a dry-run plan, and a teardown that drops what rw
-# created. This slides that generic core down here; a backend subclasses `Provisioner`
-# and implements the hooks below. See `uc.databricks.engine.DatabricksProvisioner` for
-# a real implementation, and driver/docs/ARCHITECTURE.md § *Provisioning* / PLAN.md § *Base
-# Provisioner* for the design this came from (including naming decided in UC's
-# WIP-identity-design.md: `make_init_sql` not `make_init`; `teardown(bindings)` — no
-# separate `token` arg, it's already `bindings.token`).
+def _managed(ctx: SessionContext, svc, config) -> dict:
+    """Single-flight boot through the store: the first worker to need it boots + populates; the rest
+    read the published block. A boot failure poisons the key (every waiter fails fast — no retry storm
+    of container boots). Teardown is the controller's job at session end (store-present == we started)."""
+
+    def boot_and_populate():
+        block = svc.start(config)
+        if svc.populate:
+            svc.populate(block)  # folded into the single-flight boot so it happens exactly once
+        return block
+
+    return ctx.store.copy_or_provision(svc.key, boot_and_populate)
+
+
+def _adopt_env(svc, block) -> None:
+    if svc.to_env:
+        os.environ.update({k: str(v) for k, v in svc.to_env(block).items()})
+
+
+# --- the per-@requires Provisioner base -------------------------------------------------------
 
 
 @dataclass
-class Bindings:
-    """Generic result of `Provisioner.provision()` — what teardown/env assembly need.
-
-    token          : the provision token (isolation-namespace suffix).
-    catalog        : the backend's catalog/root, if it has one — None for a backend with
-                     no catalog concept (e.g. a bare-path source; not every backend is
-                     catalog-shaped, don't assume it).
-    default_schema : the schema/namespace a run path ATTACHes/USEs by default, if
-                     applicable (None if N/A).
-    tables         : per-requirement binding records — shape is backend-defined
-                     (e.g. a `TableBinding`/`TableRef`); the base never reads or writes
-                     this list, only a backend's `instantiate()`/hooks do.
-    isolated       : namespaces created for `rw` specs (via `ensure_isolated`), torn down
-                     by the base `teardown()`.
-    env            : the env dict a run path adopts (`${VAR}` substitution in the body).
-    plan           : human-readable dry-run plan lines.
-    """
+class _State:
+    """The rich WORKING object a backend's hooks populate during `provision()`. Its data becomes the
+    opaque `Bindings.backend` payload at the return boundary — so the FRAMEWORK never sees
+    catalog/default_schema/tables (it reads only token/isolated/env/summary), but the backend keeps
+    the ergonomic rich structure its `instantiate`/`rw_target`/`make_init_sql` need."""
 
     token: str
-    catalog: str = None
-    default_schema: str = None
+    catalog: Optional[str] = None
+    default_schema: Optional[str] = None
     tables: list = field(default_factory=list)
     isolated: list = field(default_factory=list)
     env: dict = field(default_factory=dict)
@@ -132,120 +128,109 @@ class Bindings:
 
 
 class Provisioner:
-    """Base Provisioner: the generic access-policy spec-loop + RO once-guard + teardown.
-
-    `provision()`/`teardown()` are provided; a backend overrides the hooks below (only
-    `execute`, `rw_target`, `ro_target`, `instantiate`, and `make_init_sql` are required —
-    the rest have workable defaults). None of this assumes a service already booted via a
-    fixture pull — a backend's hooks may resolve their connection however they need to
-    (a session fixture, a suite-level env-adopted service, whatever), the base doesn't care.
-    """
+    """Base Provisioner: the generic access-policy spec-loop + RO once-guard + teardown. A backend
+    overrides the hooks (`execute`, `rw_target`, `ro_target`, `instantiate`, `make_init_sql` required;
+    the rest have defaults). `provision()` returns the framework `Bindings`; backend-shaped data is in
+    `Bindings.backend` (a `_State`, or a backend subclass of it via `new_state`)."""
 
     def __init__(self):
-        # RO targets instantiated once per session (per worker under xdist); guards
-        # re-instantiation on a later spec that references the same shared target.
-        self._shared_ro = set()
+        self._shared_ro = set()  # RO targets instantiated once per session (per worker under xdist)
 
     def provision(self, specs, token, *, dry_run=False, params=None) -> Bindings:
-        """Provision `specs` under `token`. `dry_run=True` builds the plan/bindings but
-        executes no DDL (each hook is expected to honor `dry_run` the same way)."""
         self.before_provision(specs, token, dry_run)
-        bindings = self.new_bindings(token, params=params)
+        state = self.new_state(token, params=params)
         for spec in specs:
             if spec.access == "rw":
-                target = self.rw_target(spec, token, bindings, dry_run)
-                self.instantiate(spec, target, dry_run, bindings)
+                target = self.rw_target(spec, token, state, dry_run)
+                self.instantiate(spec, target, dry_run, state)
             else:
-                target = self.ro_target(spec, bindings)
+                target = self.ro_target(spec, state)
                 if target in self._shared_ro:
-                    bindings.plan.append(f"[ro] {target} already provisioned this session")
+                    state.plan.append(f"[ro] {target} already provisioned this session")
                 else:
-                    self.instantiate(spec, target, dry_run, bindings)
+                    self.instantiate(spec, target, dry_run, state)
                     if not dry_run:
                         self._shared_ro.add(target)
-        self.finalize_bindings(bindings)
-        bindings.env = self.env_for(bindings)
+        self.finalize_state(state)
+        state.env = self.env_for(state)
         if dry_run:
             print("provision plan (NO DDL executed):")
-            for line in bindings.plan:
+            for line in state.plan:
                 print(f"  {line}")
-            self.dry_run_summary(bindings)
-        return bindings
+            self.dry_run_summary(state)
+        return self._freeze(state)
 
-    def teardown(self, bindings=None) -> None:
-        """Drop each namespace `rw_target`/`ensure_isolated` tracked in `bindings.isolated`."""
+    def _freeze(self, state: _State) -> Bindings:
+        """The Bindings SPLIT realized at one boundary: framework fields promoted, rich state opaque."""
+        return Bindings(
+            token=state.token,
+            isolated=tuple(state.isolated),
+            env=dict(state.env),
+            summary="\n".join(state.plan),
+            backend=state,
+        )
+
+    def teardown(self, bindings: Optional[Bindings] = None) -> None:
+        """Drop each namespace tracked in `bindings.isolated` (the ONLY teardown input the base reads).
+
+        Redesign note: a backend that also stages physical storage (parquet/delta files under a `rw`
+        prefix) overrides `reclaim_physical(bindings)` — the shipped base dropped catalog metadata
+        only, so every `rw` provision leaked files. The base calls it after the namespace drop."""
         isolated = list(bindings.isolated) if bindings else []
-        if not isolated:
-            tok = bindings.token if bindings else "?"
-            print(f"teardown: nothing to drop for token={tok}")
-            return
         for ns in isolated:
             self.execute(self.drop_sql(ns))
+        if bindings is not None:
+            self.reclaim_physical(bindings)
 
-    def ensure_isolated(self, namespace, bindings, dry_run, *, create_sql=None):
-        """Idempotently track + create one `rw` namespace — call from `rw_target()`.
-
-        No-ops if `namespace` is already tracked (a second `rw` spec in the same cell).
-        `create_sql` overrides the default `CREATE SCHEMA IF NOT EXISTS` DDL.
-        """
-        if namespace in bindings.isolated:
+    def ensure_isolated(self, namespace, state, dry_run, *, create_sql=None):
+        if namespace in state.isolated:
             return
-        bindings.isolated.append(namespace)
+        state.isolated.append(namespace)
         sql = create_sql if create_sql is not None else f"CREATE SCHEMA IF NOT EXISTS {namespace}"
-        bindings.plan.append(f"{sql};")
+        state.plan.append(f"{sql};")
         if not dry_run:
             self.execute(sql)
 
-    # -- hooks a backend implements --
+    # -- hooks a backend implements (state is the rich _State / a subclass) --
 
     def before_provision(self, specs, token, dry_run):
-        """Optional upfront validation/env-setup before any spec is provisioned (e.g. a
-        `--repl`-with-no-`@requires` guard, a credential-availability check). Default: no-op."""
+        """Optional up-front validation before any spec is provisioned. Default: no-op."""
 
-    def new_bindings(self, token, *, params=None) -> Bindings:
-        """Construct the (possibly backend-populated) `Bindings` for this provision() call.
-        Default: bare `Bindings(token=token)`; override to pre-set `catalog`/`default_schema`
-        from env/config, or to return a `Bindings` subclass with extra fields."""
-        return Bindings(token=token)
+    def new_state(self, token, *, params=None) -> _State:
+        """Construct the working state. Default bare `_State(token)`; override to preset
+        catalog/default_schema or return a `_State` subclass with extra backend fields."""
+        return _State(token=token)
 
     def execute(self, sql):
-        """Run one DDL/DML statement. Required."""
         raise NotImplementedError
 
-    def rw_target(self, spec, token, bindings, dry_run):
-        """The isolated target for an `rw` spec (call `ensure_isolated(ns, bindings, dry_run)`
-        for its namespace, if any). Required."""
+    def rw_target(self, spec, token, state, dry_run):
         raise NotImplementedError
 
-    def ro_target(self, spec, bindings):
-        """The shared target for an `ro` spec. Required."""
+    def ro_target(self, spec, state):
         raise NotImplementedError
 
-    def instantiate(self, spec, target, dry_run, bindings):
-        """Seed `target` from `spec`'s source (a `TableSpec` or a backend-native def);
-        append whatever binding record this backend wants to `bindings.tables`. Required."""
+    def instantiate(self, spec, target, dry_run, state):
         raise NotImplementedError
 
-    def finalize_bindings(self, bindings):
-        """Called once after the spec loop, before `env_for` — e.g. reconciling
-        `bindings.default_schema` from per-spec bookkeeping a backend tracked itself
-        during `rw_target`/`ro_target` (the base doesn't track that; it's backend-shaped).
-        Default: no-op."""
+    def finalize_state(self, state):
+        """Called once after the spec loop, before `env_for`. Default: no-op."""
 
-    def env_for(self, bindings) -> dict:
-        """The env dict for `bindings.env`. Default: empty (no env injected)."""
+    def env_for(self, state) -> dict:
         return {}
 
     def drop_sql(self, namespace) -> str:
-        """DDL to tear down one isolated namespace. Default: `DROP SCHEMA ... CASCADE`."""
         return f"DROP SCHEMA IF EXISTS {namespace} CASCADE"
 
-    def dry_run_summary(self, bindings):
-        """Optional extra dry-run print after the plan (e.g. cell schemas, DEFAULT_SCHEMA).
-        Default: no-op."""
+    def reclaim_physical(self, bindings) -> None:
+        """Reclaim physical storage a `rw` provision staged (files/objects), not just catalog metadata.
+        Default: no-op (a catalog-only backend has nothing to reclaim). Object-store backends override
+        — the seam that fixes the shipped base's `rw` storage leak."""
+
+    def dry_run_summary(self, state):
+        """Optional extra dry-run print after the plan. Default: no-op."""
 
     def make_init_sql(self, bindings, *, redact: bool = False) -> str:
-        """Concrete duckdb init SQL for `duckdb -unsigned -init` (the `--repl` launch).
-        `redact=True` (used by `--provision-dry-run`, which prints this without launching)
-        must not require a built binary and must mask secrets. Required."""
+        """Concrete duckdb init SQL for the `--repl` launch. `redact=True` masks secrets for display.
+        Receives the framework `Bindings`; read backend data via `bindings.backend`. Required."""
         raise NotImplementedError

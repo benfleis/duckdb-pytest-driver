@@ -3,8 +3,10 @@
 Subcommands:
   configure           Write the base pytest config (+ a starter pyproject.toml) so `pytest` /
                       `uv run pytest` just work.
-  provision-service   Start declared service(s) out-of-session and leave them running.
-  teardown-service    Stop declared service(s) started out-of-session.
+  provision-service   Start declared service(s) out-of-session and leave them running
+                      (target with --keys K1,K2 or --all; pytest args go after a literal `--`).
+  teardown-service    Stop declared service(s) started out-of-session
+                      (target with --keys K1,K2 or --all; pytest args go after a literal `--`).
   publish-images      Publish the resource images (mirror or build) into the ghcr namespace.
   pull-images         Pre-pull the resources' served images (warm the cache / fail fast).
 
@@ -16,8 +18,9 @@ also drops a starter `pyproject.toml` (the test venv, for `uv run pytest`) besid
 once, then yours to edit; unlike pytest.ini, configure won't touch it again.
 
 `provision-service` / `teardown-service` are THIN SHIMS over pytest: they shell
-`python -m pytest --provision-service <keys>` in THIS interpreter's env (so pytest + the plugin +
-the test deps are the same env the shim runs in — the install model). The real work is the pytest
+`python -m pytest --provision-service[=<keys>]` in THIS interpreter's env (so pytest + the plugin +
+the test deps are the same env the shim runs in — the install model). Target with `--keys K1,K2` or
+`--all`; anything after a literal `--` forwards to pytest verbatim. The real work is the pytest
 invocation-mode; see docs/SERVICES.md.
 """
 
@@ -128,9 +131,14 @@ def _configure(args):
 
 
 def _service_cmd(args, flag):
-    """Shim: shell `python -m pytest <flag>[=keys] <passthrough>` in this interpreter's env."""
-    opt = flag if not args.keys else f"{flag}={args.keys}"
-    cmd = [sys.executable, "-m", "pytest", opt, *args.pytest_args]
+    """Shim: shell `python -m pytest <flag>[=keys] <passthrough>` in this interpreter's env.
+
+    keys and pytest passthrough are split explicitly (--keys/--all vs. everything after `--`, see main)
+    so a dash-leading pytest flag can never mis-bind to the service filter — the old REMAINDER footgun.
+    """
+    # --all -> bare flag (the plugin treats "no keys" as all); --keys k1,k2 -> flag=k1,k2.
+    opt = flag if args.all else "%s=%s" % (flag, args.keys)
+    cmd = [sys.executable, "-m", "pytest", opt, *args.passthrough]
     return subprocess.call(cmd)
 
 
@@ -239,6 +247,17 @@ def _pull_images(args):
 
 
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    # Split keys/flags from pytest passthrough at the FIRST literal `--`: everything after it is
+    # forwarded to pytest verbatim. Doing this ourselves (instead of argparse.REMAINDER) is what keeps
+    # a dash-leading pytest flag from ever mis-binding to the service filter — the old footgun.
+    if "--" in argv:
+        idx = argv.index("--")
+        head, passthrough = argv[:idx], argv[idx + 1:]
+    else:
+        head, passthrough = argv, []
+
     parser = argparse.ArgumentParser(prog="ducktest", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_cfg = sub.add_parser("configure", help="write pytest.ini + a starter pyproject.toml so pytest / uv run pytest work")
@@ -264,28 +283,20 @@ def main(argv=None):
     p_pull.add_argument("--dry-run", action="store_true", help="print the docker pull plan, run nothing")
     p_pull.set_defaults(func=_pull_images)
 
-    # KNOWN LIMITATION (found in code review, 2026-07-14, not fixed): argparse can't disambiguate a
-    # dash-leading pytest_args token from the optional `keys` positional when `keys` is omitted --
-    # `ducktest teardown-service -p no:cacheprovider` errors "unrecognized arguments" instead of
-    # targeting all services + forwarding -p. A `--` separator does NOT help either: argparse still
-    # greedily binds the first REMAINDER-adjacent token to `keys` (`teardown-service -- -p no:x` parses
-    # `-p` into `keys`, silently mistargeting the service filter instead of erroring). Workaround: pass
-    # `keys` explicitly (`teardown-service '*' -p no:cacheprovider`) whenever forwarding a pytest flag.
+    # keys/passthrough are split explicitly (--keys/--all here; pytest args after a literal `--`, handled
+    # above) so a dash-leading pytest flag is never ambiguous with the service filter.
     for name, flag, helptext in (
         ("provision-service", "--provision-service", "start declared service(s) and leave them running"),
         ("teardown-service", "--teardown-service", "stop declared service(s)"),
     ):
         p = sub.add_parser(name, help=helptext)
-        p.add_argument("keys", nargs="?", default=None, help="comma-list of service keys (default: all)")
-        p.add_argument(
-            "pytest_args",
-            nargs=argparse.REMAINDER,
-            help="extra args forwarded to pytest (pass `keys` explicitly, e.g. '*', when using this -- "
-            "a dash-leading arg can't be forwarded if `keys` is omitted, see the comment above)",
-        )
+        g = p.add_mutually_exclusive_group(required=True)
+        g.add_argument("--keys", metavar="K1,K2,...", default=None, help="comma-separated service keys to target")
+        g.add_argument("--all", action="store_true", help="target every declared service")
         p.set_defaults(func=lambda a, _flag=flag: _service_cmd(a, _flag))
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(head)
+    args.passthrough = passthrough  # everything after the first `--`, forwarded to pytest verbatim
     return args.func(args)
 
 
