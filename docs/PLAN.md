@@ -178,8 +178,12 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
   minio `:RELEASE.2025-09-07T16-13-09Z`). ✓(2) DONE — `DUCKTEST_IMAGE_SOURCE` default flipped to `ghcr` in
   `_images.py`; offline suite green (129), one stale assertion updated. ✓ live boot-from-ghcr PROVEN
   2026-07-18 — `pytest --run-docker -m docker` passes on z300 (azurite+minio boot from the public ghcr
-  images with `DUCKTEST_IMAGE_SOURCE=ghcr`). (3) automate in CI (login + the two commands; a native
-  amd+arm matrix ONLY for `build` images — mirrors need one runner) — PENDING. (4) later, migrate
+  images with `DUCKTEST_IMAGE_SOURCE=ghcr`). (3) automate in CI — GH-hosted runners
+  (decided 2026-07-18): ✓ TEST side DONE — `.github/workflows/test.yml` runs the offline suite + the
+  `--run-docker` tier booting from the public ghcr images (no auth), gated by a new `ducktest pull-images`
+  warm/fail-fast step. PENDING: `publish-images.yml` (login + the two publish commands; needs a `GHCR_PAT`
+  secret while ns=`ghcr.io/benfleis` — the free `GITHUB_TOKEN` can't write a personal namespace; a native
+  amd+arm matrix ONLY for `build` images, mirrors need one runner). (4) later, migrate
   `DUCKTEST_IMAGE_NS` -> `ghcr.io/duckdb` (needs the org package path cleared — checks parked with Ben).
   Azure adoption consumes the azurite image; uc/ice consume minio — why this is centralized here.
 

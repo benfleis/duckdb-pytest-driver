@@ -6,6 +6,7 @@ Subcommands:
   provision-service   Start declared service(s) out-of-session and leave them running.
   teardown-service    Stop declared service(s) started out-of-session.
   publish-images      Publish the resource images (mirror or build) into the ghcr namespace.
+  pull-images         Pre-pull the resources' served images (warm the cache / fail fast).
 
 The plugin (auto-registered via the pytest11 entry point) supplies every default it can at
 runtime — working dir, test root, `.test` collection, `--build`. The few settings a plugin
@@ -205,6 +206,38 @@ def _publish_images(args):
     return rc
 
 
+def _pull_images(args):
+    """Pre-pull the images the resources will RUN — warm the cache, fail fast if one is unpullable.
+
+    Pulls each registered resource's SERVED ref: the public ghcr image when ``DUCKTEST_IMAGE_SOURCE=ghcr``
+    (the default), else the upstream. CI runs this before the docker tier so a missing/broken image fails
+    in an obvious step instead of mid-test; a dev runs the same line to warm a cold cache. Host-arch only
+    (plain ``docker pull``), which is exactly the slice the tier boots on this machine.
+    """
+    from .resources import azurite, minio  # noqa: F401 — import populates the registry
+    from .resources._images import IMAGE_SOURCE, registry, served_image
+
+    imgs = registry()
+    if not imgs:
+        sys.stderr.write("✗ no resource images registered\n")
+        return 1
+    print("pull served images (source=%s; %s)" % (IMAGE_SOURCE, "dry run" if args.dry_run else "PULL"))
+    rc = 0
+    for name, e in imgs:
+        if e["kind"] == "build" and IMAGE_SOURCE != "ghcr":
+            # a build image under source=upstream has no ref to pull — its `source` is a Dockerfile dir.
+            print("  skip %s (build kind, source=upstream — built locally, nothing to pull)" % name)
+            continue
+        ref = served_image(name, e["source"], e["pin"])
+        print("  $ docker pull %s" % ref)
+        if args.dry_run:
+            continue
+        if subprocess.run(["docker", "pull", ref]).returncode:
+            sys.stderr.write("✗ pull failed for %s (%s)\n" % (name, ref))
+            rc = 1
+    return rc
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="ducktest", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -226,6 +259,10 @@ def main(argv=None):
         help="ghcr namespace (default: $DUCKTEST_IMAGE_NS or ghcr.io/benfleis)",
     )
     p_pub.set_defaults(func=_publish_images)
+
+    p_pull = sub.add_parser("pull-images", help="pre-pull the resources' served images (warm cache / fail fast before the docker tier)")
+    p_pull.add_argument("--dry-run", action="store_true", help="print the docker pull plan, run nothing")
+    p_pull.set_defaults(func=_pull_images)
 
     # KNOWN LIMITATION (found in code review, 2026-07-14, not fixed): argparse can't disambiguate a
     # dash-leading pytest_args token from the optional `keys` positional when `keys` is omitted --

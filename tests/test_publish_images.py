@@ -8,12 +8,16 @@ import types
 
 import pytest
 
-from ducktest.cli import _publish_images
+from ducktest.cli import _publish_images, _pull_images
 from ducktest.resources import _images
 
 
 def _args(push=False, finalize=False, namespace=None):
     return types.SimpleNamespace(push=push, finalize=finalize, namespace=namespace)
+
+
+def _pull_args(dry_run=False):
+    return types.SimpleNamespace(dry_run=dry_run)
 
 
 # --- ref / arch / knob math ---------------------------------------------------------------
@@ -138,3 +142,42 @@ def test_namespace_agnostic(ns, capsys):
     out = capsys.readouterr().out
     assert ("%s/ducktest-minio:" % ns) in out
     assert "ghcr.io/benfleis" == ns or "ghcr.io/benfleis" not in out
+
+
+# --- pull: warm the served images ---------------------------------------------------------
+
+
+def test_pull_dry_run_prints_served_refs_no_docker(capsys, monkeypatch):
+    called = []
+    monkeypatch.setattr(_images, "IMAGE_SOURCE", "ghcr")
+    monkeypatch.setattr("ducktest.cli.subprocess.run", lambda *a, **k: called.append(a))
+    rc = _pull_images(_pull_args(dry_run=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert not called  # dry run runs no docker
+    assert "docker pull ghcr.io/benfleis/ducktest-minio:RELEASE.2025-09-07T16-13-09Z" in out
+    assert "docker pull ghcr.io/benfleis/ducktest-azurite:2026-07-17" in out
+
+
+def test_pull_runs_docker_pull_per_served_image(monkeypatch):
+    cmds = []
+    monkeypatch.setattr(_images, "IMAGE_SOURCE", "ghcr")
+    monkeypatch.setattr(
+        "ducktest.cli.subprocess.run",
+        lambda a, **k: cmds.append(a) or types.SimpleNamespace(returncode=0),
+    )
+    rc = _pull_images(_pull_args(dry_run=False))
+    assert rc == 0
+    pulls = [c for c in cmds if c[:2] == ["docker", "pull"]]
+    assert len(pulls) == len(dict(_images.registry()))  # exactly one pull per registered image
+    assert all(c[2].startswith("ghcr.io/benfleis/ducktest-") for c in pulls)  # the ghcr served ref
+
+
+def test_pull_follows_source_knob_to_upstream(capsys, monkeypatch):
+    # source=upstream -> a mirror pulls the third-party ref, not the ghcr one (same knob served_image uses).
+    monkeypatch.setattr(_images, "IMAGE_SOURCE", "upstream")
+    monkeypatch.setattr("ducktest.cli.subprocess.run", lambda *a, **k: None)
+    _pull_images(_pull_args(dry_run=True))
+    out = capsys.readouterr().out
+    assert "docker pull minio/minio:" in out
+    assert "ghcr.io/benfleis" not in out
