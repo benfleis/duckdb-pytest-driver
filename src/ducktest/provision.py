@@ -26,7 +26,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .context import Bindings, SessionContext, get_context
+from .context import Bindings, get_context
 
 
 # --- registry (thin adapters over the one typed Registry) -------------------------------------
@@ -52,60 +52,20 @@ def get_provisioner(config, path) -> Optional[Any]:
 # --- the single service provisioning entry ----------------------------------------------------
 
 
-def _norm_key(key: str) -> str:
-    return key.strip().lower().replace("-", "_")
-
-
-def provision_service(ctx: SessionContext, svc, config=None) -> dict:
+def provision_service(config, svc) -> dict:
     """Attach-or-boot `svc`, publish its env, return the block. The one entry (spec §3.6).
+
+    Config-first (the descriptors' `start`/`fetch`/`attach` callables all take a pytest config, and
+    the store + `--existing-service` resolution hang off the session context on the config). The
+    concrete routing (attach vs single-flight managed boot, `to_env` adoption) lives with the store
+    lifecycle in :mod:`ducktest.plugin`; this is the stable public entry that delegates to it.
 
     Idempotent + single-flight: two workers racing the same managed service boot it once (the store
     serializes); an attach just re-probes. Never booted twice, never a leaked half-boot in the store.
     """
-    existing = ctx.existing_services
-    if _norm_key(svc.key) in existing:
-        block = _attach(svc, existing[_norm_key(svc.key)], config)
-    else:
-        block = _managed(ctx, svc, config)
-    _adopt_env(svc, block)
-    return block
+    from .plugin import provision_service as _impl
 
-
-def _attach(svc, overrides, config) -> dict:
-    """Build the block for an already-running instance, prove it's reachable, populate (idempotent).
-    NEVER enters the store and is NEVER torn down — so controller teardown (which stops only
-    store-present services) naturally leaves a host-owned service alone (the split-brain fix)."""
-    import pytest
-
-    block = svc.attach(overrides or {}, config)
-    if not svc.alive(block):
-        pytest.fail(
-            f"--existing-service {svc.key}: nothing reachable at {block.get('endpoint')!r} "
-            f"(you pointed {svc.key} at an instance that isn't up).",
-            pytrace=False,
-        )
-    if svc.populate:
-        svc.populate(block)  # must be idempotent — re-run on every attach
-    return block
-
-
-def _managed(ctx: SessionContext, svc, config) -> dict:
-    """Single-flight boot through the store: the first worker to need it boots + populates; the rest
-    read the published block. A boot failure poisons the key (every waiter fails fast — no retry storm
-    of container boots). Teardown is the controller's job at session end (store-present == we started)."""
-
-    def boot_and_populate():
-        block = svc.start(config)
-        if svc.populate:
-            svc.populate(block)  # folded into the single-flight boot so it happens exactly once
-        return block
-
-    return ctx.store.copy_or_provision(svc.key, boot_and_populate)
-
-
-def _adopt_env(svc, block) -> None:
-    if svc.to_env:
-        os.environ.update({k: str(v) for k, v in svc.to_env(block).items()})
+    return _impl(config, svc)
 
 
 # --- the per-@requires Provisioner base -------------------------------------------------------

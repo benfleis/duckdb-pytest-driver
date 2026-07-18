@@ -1,16 +1,23 @@
-"""Generic pytest plugin / harness for duckdb test suites (the "driver" framework).
+"""Generic pytest plugin / harness for duckdb test suites (the "driver" framework) — SLIMMED.
 
-This is the pytest plugin, auto-registered via the ``pytest11`` entry point (see
-pyproject.toml) — no ``pytest_plugins`` line and no ``sys.path`` hacks required. It owns
-option registration, binary resolution, `.test` collection (the root-conftest logic folded
-in here), the working-dir / test-root resolution, the per-run external-dir lifecycle, the
-member/role/driver model + `run_paired`/`resources`, the `--repl` provisioning flow, and the
-collection/run/report hooks. The SQLLogic `.test` *lane* (collecting and running `.test`
-files through the binary) lives in `sqllogic`, which this module imports.
+This is the pytest plugin, auto-registered via the ``pytest11`` entry point (see pyproject.toml). It
+owns the hooks and the mechanisms the redesign KEEPS (option registration, binary resolution, `.test`
+collection, working-dir/test-root resolution, per-run temp-dir lifecycle, the member/role/driver model
++ `run_paired`/`resources`, `--repl`, the store lifecycle, suite auto-marking + default-scan deselect,
+the service provisioning entry, the report/terminal hooks). The collect-first *decision* — scan → plan
+→ execute — lives in :mod:`ducktest.controller`; this module supplies the functions it delegates to.
 
-Import-name-agnostic on purpose (dual-mode): the same code works pip-installed as
-``ducktest`` OR vendored back into ``duckdb/test/py/``. Layout, model, and
-consumer setup: see the repo README + docs/.
+Redesign deltas vs the shipped plugin (docs/SPEC.md, docs/ANALYSIS.md):
+  * one typed :class:`~ducktest.context.SessionContext` on the pytest stash replaces the
+    ``config._duckdb_*`` string-attribute sprawl;
+  * the from-args predictor (`_suite_reachable`/`_markexpr_matches`) and the reactive
+    `pytest_runtest_setup` credential backstop are GONE — the collect-first plan resolves `-k`
+    directly, so up-front provisioning derives from the real selection;
+  * the eager/on_demand service disposition is GONE — a service is provisioned up front from the plan
+    (single entry :func:`provision_service`), and workers adopt its env from the store.
+
+Import-name-agnostic on purpose (dual-mode): the same code works pip-installed as ``ducktest`` OR
+vendored back into ``duckdb/test/py/``.
 """
 
 import contextlib
@@ -24,13 +31,14 @@ import tempfile
 import pytest
 
 from . import store
+from .collect import assign_batches, has_driver, is_driver  # noqa: F401 (re-exported: role model)
+from .context import SessionContext, get_context, set_context
 from .fixtures import duckdb_cli_for
 from .mnemonic import run_id as _make_run_id
 from .steps import step
 from .suites import get_suites
 from .sqllogic import (
     SqlLogicFile,
-    SqlLogicItem,
     _invoke,
     _parse_result,
     _raise_for_result,
@@ -44,16 +52,8 @@ from .sqllogic import (
 
 
 def pytest_addoption(parser):
-    """Register all driver options + ini settings (auto-called by pytest).
-
-    Folds in what the old consumer root-conftest used to do by hand: it called
-    `register_options(parser)` from its own `pytest_addoption`. Now the plugin owns it, so a
-    base `.test` consumer needs no conftest. `register_options` stays public (dual-mode /
-    back-compat) but consumers no longer call it themselves.
-    """
+    """Register all driver options + ini settings (auto-called by pytest)."""
     register_options(parser)
-    # Auto-detected defaults, overridable via ini or CLI. `sqllogic_working_dir` keeps its
-    # attribute name for compatibility (run_paired + the CLI flow read it off `config`).
     parser.addini(
         "duckdb_working_dir",
         "Repo root the driver resolves build/<variant>/test/unittest and relative test "
@@ -75,9 +75,7 @@ def pytest_addoption(parser):
     )
     parser.addini(
         "duckdb_pythonpath",
-        "Repo-relative dirs prepended to sys.path so test-local helper packages import "
-        "(e.g. a backend conftest's `from uc.oss import ...`, where `uc` lives at test/py/uc). "
-        "Mirrors the old root-conftest sys.path inserts; each added only if it exists. "
+        "Repo-relative dirs prepended to sys.path so test-local helper packages import. "
         "Default: test/py scripts scripts/data_generator.",
         type="args",
         default=["test/py", "scripts", "scripts/data_generator"],
@@ -101,50 +99,49 @@ def register_options(parser):
         "--build",
         default="auto",
         choices=["auto", "debug", "release", "reldebug", "relassert", "latest"],
-        help="Which build's test tools to use (default: auto). The tools are a "
-        "PRECONDITION for testing; both come from ONE build: debug/release/reldebug/"
-        "relassert resolve to build/{type}/{test/unittest, duckdb} under the repo root. "
-        "auto = the single built variant among (debug, release, reldebug, relassert), "
-        "erroring if none or more than one. latest = the most-recently-built. Overridden "
-        "by $BUILD_DIR and the per-tool --unittest-bin / --duckdb-bin.",
+        help="Which build's test tools to use (default: auto). auto = the single built variant among "
+        "(debug, release, reldebug, relassert), erroring if none or more than one. latest = the "
+        "most-recently-built. Overridden by $BUILD_DIR and --unittest-bin / --duckdb-bin.",
     )
     parser.addoption(
         "--unittest-binary",
         "--unittest-bin",
         default=None,
         metavar="PATH",
-        help="Explicit path to the unittest (Catch2-compatible) test binary. "
-        "Overrides --build and $BUILD_DIR. Use this when the binary "
-        "lives outside the standard CMake build tree.",
+        help="Explicit path to the unittest (Catch2-compatible) test binary. Overrides --build and $BUILD_DIR.",
     )
     parser.addoption(
         "--duckdb-bin",
         "--duckdb-binary",
         default=None,
         metavar="PATH",
-        help="Explicit path to the duckdb CLI (used to instantiate table fixtures via "
-        "the middleman, and by --repl). Overrides --build and $BUILD_DIR. Default: the "
-        "`duckdb` next to the resolved unittest binary (build/<variant>/duckdb).",
+        help="Explicit path to the duckdb CLI. Overrides --build and $BUILD_DIR. Default: the `duckdb` "
+        "next to the resolved unittest binary (build/<variant>/duckdb).",
     )
     parser.addoption(
         "--batch-size",
         default=10,
         type=int,
         metavar="N",
-        help="Tests per unittest invocation (default: 10). Reduces subprocess "
-        "overhead; use with -n for parallel batches.",
+        help="Tests per unittest invocation (default: 10). Reduces subprocess overhead; use with -n.",
+    )
+    parser.addoption(
+        "--collect-source",
+        default="verify",
+        choices=["verify", "authoritative"],
+        help="How the FS gather and the binary's registered set (`unittest -l`) reconcile. verify "
+        "(default): hard-error on divergence (a `.test_slow`/registered test the FS never collected — "
+        "no silent false-green). authoritative: collect the union, the binary's set is truth.",
     )
     parser.addoption(
         "--existing-service",
         action="append",
         default=[],
         metavar="KEY[=URL|=JSON]",
-        help="Attach to an ALREADY-RUNNING service instead of booting it (no boot, no store, "
-        "no teardown — the run doesn't own its lifecycle). Repeatable; each value is a comma/"
-        "semicolon list of entries. Entry forms: KEY (all defaults), KEY=URL (endpoint override), "
-        "KEY={json} (full override map). Also read from env DUCKTEST_EXISTING_SERVICE_<KEY> "
-        "(=1 | =URL | =JSON) and DUCKTEST_EXISTING_SERVICES (list). Precedence: CLI > per-service "
-        "env > list env. See docs/SERVICES.md.",
+        help="Attach to an ALREADY-RUNNING service instead of booting it (no boot, no store, no "
+        "teardown). Repeatable; each value is a comma/semicolon list. Entry forms: KEY (all defaults), "
+        "KEY=URL (endpoint override), KEY={json} (full override map). Also read from env "
+        "DUCKTEST_EXISTING_SERVICE_<KEY> and DUCKTEST_EXISTING_SERVICES. See docs/SERVICES.md.",
     )
     parser.addoption(
         "--provision-service",
@@ -153,9 +150,7 @@ def register_options(parser):
         default=None,
         metavar="KEY[,KEY]",
         help="OUT-OF-SESSION: start the named declared service(s) (all if no value) and LEAVE them "
-        "running, then exit WITHOUT collecting or running tests. Idempotent — skips one already up. "
-        "Pair with --existing-service in later runs; stop with --teardown-service. `ducktest "
-        "provision-service <key>` is the shim for this. See docs/SERVICES.md.",
+        "running, then exit WITHOUT collecting or running tests. Idempotent. See docs/SERVICES.md.",
     )
     parser.addoption(
         "--teardown-service",
@@ -170,89 +165,64 @@ def register_options(parser):
         action="append",
         default=[],
         metavar="ARGS",
-        help="Extra argument(s) appended verbatim to EVERY unittest binary invocation "
-        "(both the bare-.test collector lane and run_paired). Repeatable; each value is "
-        "shlex-split, so --unittest-args='--test-config x.json' adds two tokens. Generic "
-        "passthrough for binary flags the driver does not model directly (e.g. "
-        "--test-config, --skip-error-messages). A consuming repo sets a default via its "
-        "own (non-symlinked) conftest, since pytest.ini is shared SoT.",
+        help="Extra argument(s) appended verbatim to EVERY unittest binary invocation. Repeatable; "
+        "each value is shlex-split. Generic passthrough for binary flags the driver does not model.",
     )
     parser.addoption(
         "--temp-dir-base",
         default=None,
         metavar="BASE",
-        help="Caller-owned base dir for this run's temp dirs. Tests run under "
-        "BASE/<run-id>/<test> (run-id = timestamp--mnemonic, one per pytest run, shared "
-        "across xdist workers; <test> = the binary's per-test subdir). pytest owns "
-        "BASE/<run-id>: the binary is invoked with explicit --temp-dir-base BASE/<run-id> "
-        "--run-id <run-id> --temp-dir-run-id off --temp-dir-destroy never, so RUN_ID matches "
-        "pytest's and it places per-test subdirs but never deletes them. Disposition of "
-        "BASE/<run-id> is controlled by "
-        "--temp-dir-destroy. BASE may be local or remote (e.g. s3://).",
+        help="Caller-owned base dir for this run's temp dirs. Tests run under BASE/<run-id>/<test>; "
+        "pytest owns BASE/<run-id> and its cleanup (see --temp-dir-destroy).",
     )
     parser.addoption(
         "--temp-dir-destroy",
         default="on-success",
         choices=["never", "on-success", "always"],
         metavar="{never,on-success,always}",
-        help="Destroy disposition for the per-run dir (BASE/<run-id>), applied pytest-side "
-        "at sessionfinish: never (keep) | on-success (default — remove only when the run "
-        "has no failures) | always (remove regardless). The binary is always passed "
-        "--temp-dir-destroy never for BASE/<run-id> (pytest owns that level); this governs "
-        "the pytest-side cleanup.",
+        help="Destroy disposition for the per-run dir (BASE/<run-id>), applied pytest-side at "
+        "sessionfinish: never | on-success (default) | always.",
     )
     # --- @requires-driven provisioning / interactive shell ------------------
     parser.addoption(
         "--repl",
         action="store_true",
         default=False,
-        help="For the SINGLE selected test, read its @requires, provision its "
-        "fixtures via the extension provisioner, and drop into an interactive shell "
-        "attached to them. The shell follows the test's body (repl-kind = body-kind): "
-        "a SQL body -> duckdb CLI (current); a pure-.py body -> python shell (planned). "
-        "Tears down on exit (unless --provision-keep). Requires exactly one selected "
-        "test carrying @requires.",
+        help="For the SINGLE selected test, read its @requires, provision its fixtures, and drop into "
+        "an interactive shell attached to them. Tears down on exit (unless --provision-keep).",
     )
     parser.addoption(
         "--provision-keep",
         action="store_true",
         default=False,
-        help="With --repl: do NOT tear down provisioned fixtures on exit; print the "
-        "teardown command instead so they can be reused / cleaned up later.",
+        help="With --repl: do NOT tear down provisioned fixtures on exit; print the teardown command instead.",
     )
     parser.addoption(
         "--provision-dry-run",
         action="store_true",
         default=False,
-        help="With --repl: print the resolved @requires specs, the provision plan "
-        "(cell schema + per-table commands) and the would-be duckdb init SQL, then "
-        "stop. Performs NO DDL, does NOT launch the CLI, does NOT tear down. "
-        "Dominates --provision-keep.",
+        help="With --repl: print the resolved @requires specs, the provision plan and the would-be "
+        "duckdb init SQL, then stop. Performs NO DDL, does NOT launch the CLI, does NOT tear down.",
     )
     parser.addoption(
         "--steps",
         action="store_true",
         default=False,
-        help="Surface driver step() messages live (provisioning, clones, teardown, "
-        "service startup, with timings). Focus alias: turns on live-log at INFO and "
-        "raises the `driver` logger to INFO (root stays WARNING, so third-party INFO "
-        "chatter stays quiet). Plain -v does NOT show these (pytest captures terminal "
-        "writes during a test). Forces single-process (-n0), since live-log is off on "
-        "xdist workers. --repl / --provision-keep auto-enable this (an interactive session "
-        "narrates its provision/teardown); pass --no-steps to opt back out.",
+        help="Surface driver step() messages live (provisioning, clones, teardown, with timings). "
+        "Forces single-process (-n0). --repl / --provision-keep auto-enable this; pass --no-steps to opt out.",
     )
     parser.addoption(
         "--no-steps",
         action="store_true",
         default=False,
-        help="Suppress the step() narration that --repl / --provision-keep auto-enable — a "
-        "quiet interactive session. No effect on its own (and --steps still wins if both "
-        "are passed).",
+        help="Suppress the step() narration that --repl / --provision-keep auto-enable.",
     )
 
 
-# Concrete CMake build variants scanned by `--build auto` / `--build latest`. Each
-# resolves to build/<variant>/test/unittest under the repo root.
+# ---------------------------------------------------------------------------
+# Binary resolution
+# ---------------------------------------------------------------------------
+
 BUILD_VARIANTS = ("debug", "release", "reldebug", "relassert")
 
 
@@ -261,7 +231,6 @@ def _variant_binary(working_dir, variant):
 
 
 def _built_variants(working_dir):
-    """(variant, path, mtime) for each BUILD_VARIANTS whose unittest binary exists."""
     out = []
     for v in BUILD_VARIANTS:
         p = _variant_binary(working_dir, v)
@@ -275,13 +244,7 @@ def _variants_listing():
 
 
 def find_binary(config, working_dir):
-    """Return the unittest binary path.
-
-    Resolution priority: --unittest-binary > $BUILD_DIR > --build. For an explicit
-    build variant the path is returned even if it doesn't exist (callers check
-    os.path.exists for a friendly message); --build auto/latest inspect the built
-    variants and raise pytest.UsageError when they can't pick exactly one.
-    """
+    """Return the unittest binary path (--unittest-binary > $BUILD_DIR > --build)."""
     explicit = config.getoption("--unittest-binary", default=None)
     if explicit:
         return os.path.abspath(explicit)
@@ -315,18 +278,11 @@ def find_binary(config, working_dir):
             )
         return max(found, key=lambda t: t[2])[1]
 
-    # explicit variant (debug/release/reldebug/relassert)
     return _variant_binary(working_dir, build)
 
 
 def find_duckdb(config, working_dir):
-    """Return the duckdb CLI path — the fixture-instantiation / --repl tool.
-
-    Symmetric to find_binary but for the `duckdb` leaf, so both tools resolve from one
-    build: --duckdb-bin > $BUILD_DIR ($BUILD_DIR/duckdb) > the `duckdb` next to the
-    resolved unittest binary (build/<variant>/duckdb). Presence is a PRECONDITION: raises
-    pytest.UsageError, naming the two ways to satisfy it, when the CLI isn't there.
-    """
+    """Return the duckdb CLI path (--duckdb-bin > $BUILD_DIR > the `duckdb` next to the unittest binary)."""
     explicit = config.getoption("--duckdb-bin", default=None)
     if explicit:
         path = os.path.abspath(explicit)
@@ -335,27 +291,48 @@ def find_duckdb(config, working_dir):
         path = os.path.join(build_dir, "duckdb") if build_dir else duckdb_cli_for(find_binary(config, working_dir))
     if not os.path.isfile(path):
         raise pytest.UsageError(
-            f"duckdb CLI not found at {path}. The test tools are a precondition: build "
-            "build/<variant>/duckdb (selected by --build / $BUILD_DIR, alongside the "
-            "unittest binary), or pass --duckdb-bin PATH."
+            f"duckdb CLI not found at {path}. Build build/<variant>/duckdb (selected by --build / "
+            "$BUILD_DIR), or pass --duckdb-bin PATH."
         )
     return path
 
 
-def pytest_report_header(config):
-    """Session-header lines: the mandatory suite banner (always) + a verbose (`-v`) tool trace.
+def binary_names_if_any(config):
+    """The binary's registered set (`unittest -l`) for the collect-first reconcile, or empty when there
+    is no resolvable/present binary (a pure-Python or no-binary run needn't fail for lack of one)."""
+    from .collect import list_binary_tests
 
-    The suite banner (default-scan deselection) is the north-star "loud" signal — shown whenever a
-    suite is deselected, NOT -v-gated. The tool trace (which build was picked — e.g.
-    build/relassert/{test/unittest, duckdb}) stays -v-gated. Both are controller-side (report_header
-    runs on the controller) and best-effort: a tool that can't be resolved yet is simply omitted.
-    """
+    working_dir = _working_dir(config)
+    try:
+        binary = find_binary(config, working_dir)
+    except pytest.UsageError:
+        return frozenset()
+    if not os.path.isfile(binary):
+        return frozenset()
+    try:
+        return list_binary_tests(binary, working_dir=working_dir)
+    except RuntimeError:
+        return frozenset()  # too-old binary: not a false-green source, so don't abort
+
+
+def reconcile_or_die(config, plan):
+    """verify mode: refuse a false-green run where the binary knows tests the FS didn't collect."""
+    if not plan.binary_names:
+        return  # no `.test` lane / no binary — nothing to reconcile
+    from .collect import reconcile
+
+    mode = get_context(config).options.get("collect_source", "verify")
+    reconcile(plan.fs_names, plan.binary_names, mode=mode).check()
+
+
+def pytest_report_header(config):
+    """Session-header lines: the mandatory suite banner (always) + a verbose (`-v`) tool trace."""
     lines = []
     banner = _suite_banner(config)
     if banner:
         lines.append(banner)
     if int(config.getoption("verbose", default=0) or 0) >= 1:
-        working_dir = getattr(config, "sqllogic_working_dir", None) or os.getcwd()
+        working_dir = _maybe_working_dir(config) or os.getcwd()
         for label, resolve in (("unittest", find_binary), ("duckdb", find_duckdb)):
             try:
                 lines.append(f"duckdb-pytest-driver {label}: {resolve(config, working_dir)}")
@@ -366,11 +343,6 @@ def pytest_report_header(config):
 
 # ---------------------------------------------------------------------------
 # Working dir / test root resolution + collection
-#
-# Folded in from the old consumer root-conftest, which hardcoded these to its own
-# directory. Now they auto-detect (rootdir / <rootdir>/test) and are overridable via
-# ini (`duckdb_working_dir`, `duckdb_test_root`, `duckdb_ignore_dirs`) or CLI, so a base
-# `.test` consumer needs zero conftest. `config.sqllogic_working_dir` keeps its name.
 # ---------------------------------------------------------------------------
 
 
@@ -381,17 +353,20 @@ def _resolve_working_dir(config):
     ini = config.getini("duckdb_working_dir")
     if ini:
         return os.path.abspath(ini)
-    # pytest's auto-detected rootdir — the repo root in the common `cd <checkout>; pytest` case.
     return str(config.rootpath)
 
 
 def _working_dir(config):
-    """The resolved working dir, cached on config as `sqllogic_working_dir`."""
+    """The resolved working dir, cached on config as `sqllogic_working_dir` (read by run_paired/--repl)."""
     wd = getattr(config, "sqllogic_working_dir", None)
     if wd is None:
         wd = _resolve_working_dir(config)
         config.sqllogic_working_dir = wd
     return wd
+
+
+def _maybe_working_dir(config):
+    return getattr(config, "sqllogic_working_dir", None)
 
 
 def _test_root(config):
@@ -405,11 +380,7 @@ def _test_root(config):
 
 
 def _ensure_pythonpath(config):
-    """Prepend the configured test-local import roots (`duckdb_pythonpath`) to sys.path.
-
-    Restores the old root-conftest's sys.path inserts so a backend conftest's
-    `from uc.oss import ...` resolves. Idempotent; each dir added only if it exists.
-    """
+    """Prepend the configured test-local import roots (`duckdb_pythonpath`) to sys.path (idempotent)."""
     working_dir = _working_dir(config)
     for rel in config.getini("duckdb_pythonpath"):
         p = os.path.join(working_dir, rel)
@@ -417,29 +388,25 @@ def _ensure_pythonpath(config):
             sys.path.insert(0, p)
 
 
+_CONTROLLER_PLUGIN_NAME = "ducktest_controller"
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_load_initial_conftests(early_config, parser, args):
-    # Prepend the test-local import roots BEFORE any initial conftest is imported. An explicit
-    # path arg (`pytest test/sql/databricks/foo.py`) makes that dir's conftest an *initial*
-    # conftest, loaded here — before pytest_configure — so its `import uc` needs the path set
-    # now. hookwrapper: our pre-yield runs before pytest actually loads those conftests. (Bare
-    # invocation loads them during collection, after configure — pytest_configure covers that.)
+    # Prepend the test-local import roots BEFORE any initial conftest is imported.
     _ensure_pythonpath(early_config)
-    # Register the trylast suite controller now (pre-configure) so its pytest_configure runs AFTER
-    # the consumer `test/conftest.py` has registered its suites — a plugin registered here joins the
-    # normal ordering, whereas one registered mid-configure would replay too early. Idempotent.
-    if not early_config.pluginmanager.hasplugin(_SUITE_PLUGIN_NAME):
-        early_config.pluginmanager.register(_SuiteController(), _SUITE_PLUGIN_NAME)
+    # Register the collect-first Controller ONLY on the controller (not xdist workers): a worker
+    # collects normally and consumes the plan/store the controller published. Gate on workerinput.
+    if getattr(early_config, "workerinput", None) is None:
+        from .controller import Controller
+
+        if not early_config.pluginmanager.hasplugin(_CONTROLLER_PLUGIN_NAME):
+            early_config.pluginmanager.register(Controller(), _CONTROLLER_PLUGIN_NAME)
     yield
 
 
 def pytest_ignore_collect(collection_path, config):
-    """Skip the configured top-level dirs under working_dir (was `collect_ignore`).
-
-    A plugin can't set the `collect_ignore` module var, so the ignore list moves to this
-    hook. Matches exact `<working_dir>/<name>` entries (default: duckdb/, build/) — the same
-    semantics the root-conftest's `collect_ignore = ["duckdb","build"]` had.
-    """
+    """Skip the configured top-level dirs under working_dir (default: duckdb/, build/)."""
     working_dir = _working_dir(config)
     target = str(collection_path)
     for name in config.getini("duckdb_ignore_dirs"):
@@ -449,47 +416,31 @@ def pytest_ignore_collect(collection_path, config):
 
 
 def pytest_collect_file(parent, file_path):
-    """Collect `.test` bodies and same-stem `.py` drivers under the test root (was in conftest).
-
-    - a driver `.py` (has a same-stem `.test`) → a normal pytest Module, so its fixtures wrap
-      the body with Python initialize/finalize;
-    - a `.test` WITH a same-stem `.py` driver → suppressed (runs only via that driver);
-    - a driverless `.test` → a SqlLogicFile that runs it through the binary.
-    Everything outside the test root is ignored so pytest stays out of scripts/, tools/, etc.
-    """
+    """Collect `.test` bodies and same-stem `.py` drivers under the test root (role/member model)."""
     config = parent.config
     working_dir = _working_dir(config)
     test_root = _test_root(config)
     if not str(file_path).startswith(test_root + os.sep):
         return None
     if file_path.suffix == ".py":
-        if is_driver(file_path):
+        if is_driver(str(file_path)):
             return pytest.Module.from_parent(parent, path=file_path)
         return None
-    # `.sql` bodies + `.test_slow`/`.test_coverage` are PLANNED body types (see docs/PLAN.md,
-    # the scan-reconcile sprint) — only `.test` is collected today; extend this gate then.
     if file_path.suffix != ".test":
         return None
-    if has_driver(file_path):
-        return None
+    if has_driver(str(file_path)):
+        return None  # runs only via its same-stem driver
     binary = find_binary(config, working_dir)
     return SqlLogicFile.from_parent(parent, path=file_path, binary=binary, working_dir=working_dir)
 
 
 # ---------------------------------------------------------------------------
-# Per-run temp dir: pytest owns BASE/<run-id> + cleanup
-#
-# When --temp-dir-base BASE is given, tests run under BASE/<run-id>/<test>:
-#   <run-id> = timestamp--mnemonic, ONE per pytest run, computed on the controller
-#              and shared to xdist workers so every worker writes under the same
-#              BASE/<run-id>; <test> = the binary's per-test subdir.
-# pytest owns BASE/<run-id>: the binary is invoked with --temp-dir-run-id off +
-# --temp-dir-destroy never, and pytest removes BASE/<run-id> here on a clean run.
+# Per-run temp dir + run-id
 # ---------------------------------------------------------------------------
 
 
 def _run_id(config):
-    """Return this run's id, cached on config; shared across xdist workers."""
+    """This run's id, cached on config; shared across xdist workers (broadcast via workerinput)."""
     cached = getattr(config, "_sqllogic_run_id", None)
     if cached is not None:
         return cached
@@ -500,25 +451,21 @@ def _run_id(config):
 
 
 def _run_dir(config):
-    """BASE/<run-id> for this run, or None if --temp-dir-base was not given."""
     base = config.getoption("--temp-dir-base", default=None)
     return os.path.join(base, _run_id(config)) if base else None
 
 
-# --- generic controller -> worker broadcast ----------------------------------------------
-# A backend registers a factory that computes an invocation-level value ONCE on the controller;
-# the driver broadcasts it to every xdist worker via workerinput (the same channel the run-id
-# uses). This is the CREDENTIALS-class primitive: fetched once, up-front, never per-worker (unlike
-# services, which are first-worker-wins). Register from a controller-side pytest_configure in an
-# INITIAL conftest, so it runs before workers are set up.
-_BROADCAST_FACTORIES = "_duckdb_broadcast_factories"  # controller: {key: factory(config) -> picklable}
-_BROADCAST_CACHE = "_duckdb_broadcast_cache"  # controller: {key: computed value}
+# ---------------------------------------------------------------------------
+# Controller -> worker broadcast (credentials-class primitive; config-attribute based so a plain
+# stand-in Config works — see test_broadcast)
+# ---------------------------------------------------------------------------
+_BROADCAST_FACTORIES = "_duckdb_broadcast_factories"
+_BROADCAST_CACHE = "_duckdb_broadcast_cache"
 
 
 def register_broadcast(config, key, factory):
-    """Register `factory(config) -> picklable` to compute `key` ONCE on the controller and
-    broadcast it to all xdist workers under `key`. Retrieve with get_broadcast(config, key).
-    No-op on a worker (the value arrives via workerinput)."""
+    """Register `factory(config) -> picklable` to compute `key` ONCE on the controller and broadcast it
+    to all xdist workers. No-op on a worker (the value arrives via workerinput)."""
     if getattr(config, "workerinput", None) is not None:
         return
     reg = getattr(config, _BROADCAST_FACTORIES, None)
@@ -529,8 +476,7 @@ def register_broadcast(config, key, factory):
 
 
 def get_broadcast(config, key, default=None):
-    """Value for `key`: on a worker, the controller's broadcast (workerinput); on the controller,
-    computed once via the registered factory (cached). `default` if no factory / not broadcast."""
+    """Value for `key`: on a worker, the controller's broadcast; on the controller, computed once (cached)."""
     wi = getattr(config, "workerinput", None)
     if wi is not None and key in wi:
         return wi[key]
@@ -544,333 +490,97 @@ def get_broadcast(config, key, default=None):
     return cache[key]
 
 
-# `optionalhook=True`: `pytest_configure_node` is an xdist-provided hookspec. xdist is OPTIONAL (the
-# `[xdist]` extra; a serial `-n0` / no-xdist run is supported), and without it installed the spec doesn't
-# exist — so pluggy would reject this plugin at load with PluginValidationError. Marking it optional lets
-# the plugin load either way; the hook simply never fires on a no-xdist (serial) run, which is correct.
 @pytest.hookimpl(optionalhook=True)
 def pytest_configure_node(node):
-    # xdist controller hook: hand each worker the controller's run-id (shared BASE/<run-id>) plus
-    # any registered broadcast values (each computed once on the controller, cached).
+    # xdist controller hook: hand each worker the run-id + any registered broadcast values.
     node.workerinput["sqllogic_run_id"] = _run_id(node.config)
     for key in getattr(node.config, _BROADCAST_FACTORIES, None) or {}:
         node.workerinput[key] = get_broadcast(node.config, key)
 
 
-# --- shared-state store lifecycle + suite controller --------------------------------------
-# The store (multiprocessing.managers; see store.py) is the uniform controller<->worker carrier
-# for suite resources: credentials (eager, published pre-fork) and services (lazy, first-need). The
-# controller starts it in a TRYLAST pytest_configure — after consumer conftests have registered
-# their suites — but ONLY when a suite declares a credential or service. Vanilla stays vanilla: with
-# nothing declared, no manager starts, no env var appears, and nothing about a bare run changes.
-# The address+authkey go into os.environ pre-fork so workers inherit them and connect lazily.
-_SUITE_PLUGIN_NAME = "ducktest_suites"
-_STORE_MGR = "_duckdb_store_mgr"  # controller: the SyncManager (owns the server process)
-_STORE = "_duckdb_store"  # controller/worker: the cached store proxy
-_STARTED_SERVICES = "_duckdb_started_services"  # controller: keys of services it started (teardown)
+# ---------------------------------------------------------------------------
+# The store lifecycle (on the SessionContext, not config._duckdb_* strings)
+# ---------------------------------------------------------------------------
+
+
+class _StoreHandle:
+    """The controller's live store: the SyncManager (owns the server process), a cached proxy, and the
+    address/authkey published to the env pre-fork so workers connect. Held on `ctx.store`."""
+
+    __slots__ = ("mgr", "proxy", "address", "authkey")
+
+    def __init__(self, mgr, proxy, address, authkey):
+        self.mgr = mgr
+        self.proxy = proxy
+        self.address = address
+        self.authkey = authkey
 
 
 def _any_suite_has_resources(config):
-    """True iff some registered suite declares a credential or a service (the store's raison
-    d'être). The vanilla guard: false => no store, no env, no behavior change."""
+    """True iff some registered suite declares a credential or a service (the store's raison d'être)."""
     return any(t.credentials or t.services for t in get_suites(config))
 
 
 def get_store(config):
-    """The shared-state store proxy for this run, or None if no store was started.
+    """The shared-state store PROXY for this run, or None if no store was started.
 
-    Controller: returns the proxy stashed when the store was started (in pytest_configure); None
-    if nothing was declared (vanilla). Worker: lazily connects once via the address the controller
-    published to the env, caching the proxy (and its manager) on ``config``; None if no store this
-    run. Use with the store access verbs (``store.copy`` / ``store.copy_or_provision``).
+    Controller: the proxy stashed on the context when the store started (None if vanilla). Worker:
+    lazily connects once via the address the controller published to the env, caching on the context.
+    Use with the store access verbs (`store.copy` / `store.copy_or_provision`).
     """
-    cached = getattr(config, _STORE, None)
-    if cached is not None:
-        return cached
+    ctx = get_context(config)
+    if ctx.store is not None:
+        return ctx.store.proxy
     if getattr(config, "workerinput", None) is None:
-        return None  # controller: a proxy is stashed at start-time; its absence => no store started
+        return None  # controller: a handle is stashed at start-time; its absence => no store started
     loc = store.from_env()
     if loc is None:
         return None  # no store address published this run (vanilla)
     mgr = store.connect(*loc)
-    setattr(config, _STORE_MGR, mgr)  # keep the manager alive alongside the proxy
     proxy = mgr.store()
-    setattr(config, _STORE, proxy)
+    ctx.store = _StoreHandle(mgr, proxy, *loc)
     return proxy
 
 
-def _no_explicit_selection(config):
-    """True iff the invocation gave no path arg, no ``-k``, and no ``-m`` (a bare run).
-
-    The single predicate behind both the eager-cred gate (``_suite_reachable``'s bare branch) and
-    the Phase-1 default-scan deselection — so "bare" means the same thing to creds and to selection.
-    """
-    opt = config.option
-    return not (
-        list(getattr(opt, "file_or_dir", None) or [])
-        or (getattr(opt, "keyword", None) or "")
-        or (getattr(opt, "markexpr", None) or "")
-    )
-
-
-def _suite_reachable(config, suite):
-    """PREDICTIVE (from args, pre-collection) gate for whether ``suite`` is plausibly in play.
-
-    Deliberately smaller than full collection-time selection — enough to decide up-front (pre-fork)
-    credential fetching and service gating without collecting, AND (Phase 1) which suites a bare run
-    default-scans out. Reachable if:
-      (a) NO selection was given (no path args, no -k, no -m) and the suite is a default suite; or
-      (b) a path arg intersects the suite's path (ancestor-or-descendant either way); or
-      (c) a -m expression matches the suite's marker.
-    ``-k`` is NOT predictable here (needs collected item names) -> never fetches on -k alone; the
-    generic pytest_runtest_setup backstop covers a -k-selected credentialed test.
-    """
-    opt = config.option
-    file_or_dir = list(getattr(opt, "file_or_dir", None) or [])
-    markexpr = getattr(opt, "markexpr", None) or ""
-
-    # (a) bare invocation -> the default suites are reachable (exact).
-    if _no_explicit_selection(config):
-        return bool(suite.default)
-
-    # (b) path intersection: a path arg is an ancestor-or-descendant of the suite's dir.
-    if suite.path and file_or_dir:
-        tpath = os.path.normpath(suite.path)
-        for arg in file_or_dir:
-            apath = os.path.normpath(arg.split("::", 1)[0])
-            if apath == tpath or _is_subpath(apath, tpath) or _is_subpath(tpath, apath):
-                return True
-
-    # (c) -m marker expression matches the suite's marker.
-    if markexpr and suite.marker and _markexpr_matches(markexpr, suite.marker):
-        return True
-
-    return False
-
-
-def _is_subpath(child, parent):
-    """True if ``child`` is at or under ``parent`` (both already normpath'd, relative-friendly)."""
-    if child == parent:
-        return True
-    return child.startswith(parent + os.sep)
-
-
-def _markexpr_matches(markexpr, marker):
-    """Whether a ``-m`` expression could select an item carrying ``marker``.
-
-    Predictive: models an item that carries just ``marker`` and asks pytest's own Expression engine
-    whether the ``-m`` expr selects it (so ``not databricks`` correctly reports the databricks suite
-    as unreachable). This is the deliberate *mirror* of the real collection-time selection: Phase 1
-    auto-applies each suite's marker to its members, so pytest's builtin ``-m`` deselection is the
-    authority at collection, and this predictive check uses the same ``Expression`` engine — the two
-    agree by construction (same args -> same suites, so creds are fetched for exactly the suites that
-    run). Falls back to a coarse substring check only if the internal API shifts.
-    """
-    try:
-        from _pytest.mark.expression import Expression
-
-        expr = Expression.compile(markexpr)
-        return bool(expr.evaluate(lambda name, /, **kw: name == marker))
-    except Exception:
-        return marker in markexpr  # coarse fallback (see TODO above)
-
-
-class _SuiteController:
-    """Controller-side, trylast: start the store + eager-fetch credentials, pre-fork.
-
-    Registered in pytest_load_initial_conftests so this pytest_configure fires AFTER consumer
-    ``test/conftest.py`` hooks have registered their suites (pluggy runs trylast last). A separate
-    plugin object is used because the module-level pytest_configure is tryfirst (it must set
-    numprocesses before xdist reads it) — the two orderings genuinely differ.
-    """
-
-    @pytest.hookimpl(trylast=True)
-    def pytest_configure(self, config):
-        # Worker: the controller already started + provisioned; workers connect lazily via env.
-        if getattr(config, "workerinput", None) is not None:
-            return
-        # P2: out-of-session provision/teardown commands run here (after suites are registered) and
-        # EXIT before any collection/tests — so they work in an unbuilt checkout (no binary needed).
-        if (
-            config.getoption("--provision-service", default=None) is not None
-            or config.getoption("--teardown-service", default=None) is not None
-        ):
-            _run_service_command(config)  # does the op + pytest.exit(); never returns
-            return
-        if not _any_suite_has_resources(config):
-            return  # vanilla: nothing declared -> no store, no env, no behavior change
-        mgr, address, authkey = store.start_server()
-        setattr(config, _STORE_MGR, mgr)
-        setattr(config, _STORE, mgr.store())
-        # pre-fork: workers inherit this env at spawn and connect via from_env()
-        os.environ.update(store.to_env(address, authkey))
-        # Narrate the eager credential/service provisioning under --steps: it runs HERE, at configure
-        # time, before pytest's live-log handler exists — so without this its step()s (starting Azurite,
-        # populating, …) are invisible even with --steps (docs/SERVICES.md).
-        with _narrate_driver_log(config):
-            _fetch_credentials(config)
-            _provision_eager_services(config)
-
-    @pytest.hookimpl(hookwrapper=True)
-    def pytest_collection_modifyitems(self, config, items):
-        # Phase-1 selection, in a HOOKWRAPPER's pre-yield so it runs BEFORE every plain
-        # implementation of this hook — crucially pytest's builtin -m/-k deselection (a plain impl)
-        # and the module-level dedup/batch pass. That ordering is the whole trick: the auto-markers
-        # must exist before `-m <suite>` filtering reads them (verified by test_suite_selection). This
-        # controller is registered in pytest_load_initial_conftests, so the method fires wherever
-        # collection happens — xdist workers and the controller at -n0. Vanilla (no suites declared)
-        # is a pure passthrough: nothing marked, nothing deselected.
-        suites = get_suites(config)
-        if suites:
-            # Register each suite's marker so the auto-applied mark doesn't warn (PytestUnknownMark)
-            # and shows in `pytest --markers`. Done here (the collecting process, workers under xdist)
-            # because suites aren't known at the tryfirst module pytest_configure.
-            for suite in suites:
-                if suite.marker:
-                    config.addinivalue_line("markers", f"{suite.marker}: ducktest suite {suite.name!r}")
-            _apply_suite_markers(config, items, suites)
-            _default_scan_deselect(config, items, suites)
-        yield
-
-
-def _fetch_credentials(config):
-    """Controller, pre-fork: eager-fetch each reachable suite's credentials into the store.
-
-    For every credential on a reachable suite: run ``fetch(config)`` NOW (so an op/biometric prompt
-    lands at invocation, never mid-run); if ``validate`` rejects it, raise ``pytest.UsageError`` to
-    stop the session red; else publish the block to the store and, when ``adopt == "env"``, merge it
-    into os.environ so workers (and the test subprocess + SDK + ${VAR} substitution) inherit it.
-    """
-    handle = get_store(config)
-    for suite in get_suites(config):
-        if not suite.credentials or not _suite_reachable(config, suite):
-            continue
-        for cred in suite.credentials:
-            value = cred.fetch(config)
-            if cred.validate is not None and not cred.validate(value):
-                raise pytest.UsageError(cred.error() if cred.error else f"{cred.key}: unavailable")
-            store.put(handle, cred.key, value)
-            if cred.adopt == "env":
-                os.environ.update(value)  # pre-fork: inherited by workers + the test subprocess
-
-
-def _provision_eager_services(config):
-    """Controller, pre-fork: provision each reachable suite's ``provision="eager"`` service — the service
-    analog of the eager credential path (:func:`_fetch_credentials`).
-
-    Why up front, on the controller: a bare ``.test`` body has no ``.py`` driver and pulls no fixture, so
-    the lazy (fixture-driven) path never provisions the service for it — nothing boots it or sets its env.
-    Provisioning here, pre-fork, means the controller's ``os.environ`` (with ``to_env``) is inherited by
-    every worker + the ``unittest`` subprocess, and the service is already up. Also unblocks ``--repl`` on
-    a service-backed suite. Reachable = the same predictive gate credentials use, so an unrelated run
-    (e.g. a databricks-only selection) does NOT eagerly boot azurite.
-
-    :func:`provision_service` does everything (boot + ``populate`` once + adopt ``to_env``), so this just
-    triggers it on the controller for eager services — an ``on_demand`` service instead gets all three
-    when its fixture is pulled worker-side. Going through ``provision_service`` also single-flights the
-    boot via the store, reuses the ``--existing-service`` attach path, and inherits ``depends_on`` ordering
-    for free once that lands.
-    """
-    seen = set()  # dedup by key: a service shared across suites (use_service) is ONE physical resource
-    for suite in get_suites(config):
-        if not _suite_reachable(config, suite):
-            continue
-        for svc in suite.services:
-            if svc.provision == "eager" and svc.key not in seen:
-                seen.add(svc.key)
-                provision_service(config, svc)  # boot + populate + adopt to_env, on the controller pre-fork
-
-
-def _narrating(config):
-    """Whether ``step()`` narration should be surfaced live — mirrors the module ``pytest_configure``
-    logic: ``--steps``, or a ``--repl`` / ``--provision-keep`` session unless ``--no-steps``."""
-    steps = config.getoption("--steps", default=False)
-    repl_like = config.getoption("--repl", default=False) or config.getoption("--provision-keep", default=False)
-    return bool(steps or (repl_like and not config.getoption("--no-steps", default=False)))
-
-
-@contextlib.contextmanager
-def _narrate_driver_log(config):
-    """Surface the ``driver`` logger's INFO ``step()`` output live during CONFIGURE-TIME provisioning
-    (eager credentials + services). That work runs before pytest's live-log handler is attached, so
-    ``--steps`` otherwise shows nothing for the eager boot/populate. Attach a temporary stderr handler
-    with capture suspended for the duration, then detach — so test-phase ``step()``s still go through
-    live-log (no double output). No-op unless narrating.
-    """
-    if not _narrating(config):
-        yield
-        return
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    driver_log = logging.getLogger("driver")
-    driver_log.addHandler(handler)
-    capman = config.pluginmanager.getplugin("capturemanager")
-    try:
-        if capman is not None:
-            with capman.global_and_fixture_disabled():
-                yield
-        else:
-            yield
-    finally:
-        driver_log.removeHandler(handler)
+def _ensure_store_started(config):
+    """Controller, at trylast configure (pre-fork): start the store + publish its address to the env,
+    but ONLY when a suite declares a credential or service. Vanilla stays vanilla (no store, no env)."""
+    ctx = get_context(config)
+    if ctx.store is not None:
+        return ctx.store
+    if not _any_suite_has_resources(config):
+        return None
+    mgr, address, authkey = store.start_server()
+    ctx.store = _StoreHandle(mgr, mgr.store(), address, authkey)
+    os.environ.update(store.to_env(address, authkey))  # pre-fork: workers inherit + connect lazily
+    return ctx.store
 
 
 def _teardown_store(config):
-    """Controller, at sessionfinish: stop started services, then shut the store manager down.
-
-    Services are stopped BEFORE the manager dies (their started-state lives in the store). No-op
-    when no store was started (vanilla). Shutting the manager down terminates its server process
-    and frees the socket. Idempotent.
-    """
-    mgr = getattr(config, _STORE_MGR, None)
-    if mgr is None:
+    """Controller, at sessionfinish: stop started services, then shut the store manager down (idempotent)."""
+    ctx = get_context(config)
+    if ctx.store is None:
         return
     _stop_services(config)
     try:
-        mgr.shutdown()
+        ctx.store.mgr.shutdown()
     except Exception:
         pass  # already down / never fully started — teardown must not raise at session end
-    setattr(config, _STORE_MGR, None)
+    ctx.store = None
 
 
-# --- class-2 services: lazy first-need provisioning via the store ------------------------
-# A service (docker container, etc.) is provisioned the first time a test needs it: the service's
-# session fixture calls provision_service(), which single-flights svc.start() through the store's
-# per-key lock (first worker wins; the rest block then read the published block). Torn down once by
-# the controller at sessionfinish (a block in the store == the service was started).
-
-
-def _service_block(svc, extra):
-    """Normalize ``svc.start``'s return into a stored dict block.
-
-    ``start`` may return None (pure side effect) or a dict (a context block: url, version, …). The
-    stored block always carries ``{key, started}`` so the controller can detect it ran + tear down.
-    """
-    block = {"key": svc.key, "started": True}
-    if isinstance(extra, dict):
-        block.update(extra)
-    return block
-
-
-# --- existing (external) services: attach instead of boot ---------------------------------
-# A service declared "existing" is ALREADY RUNNING and NOT owned by this run: --existing-service KEY
-# (or =URL / ={json}), or env DUCKTEST_EXISTING_SERVICE_<KEY> / DUCKTEST_EXISTING_SERVICES. provision_service
-# then builds the block via svc.attach(overrides) + probes svc.alive, skipping the store boot/teardown
-# entirely (an attached service is never entered into the store, so the controller never stops it).
-# See docs/SERVICES.md.
-_EXISTING = "_duckdb_existing_services"  # cached {norm_key: overrides_dict} on config
+# ---------------------------------------------------------------------------
+# Existing (external) services: attach instead of boot
+# ---------------------------------------------------------------------------
 _TRUTHY = {"", "1", "true", "yes", "on"}
 
 
 def _norm_service_key(key):
-    """Canonical service-key form so a dashed key resolves from an env-var name too
-    (``oss-uc-server`` == ``OSS_UC_SERVER`` == ``oss_uc_server``)."""
+    """Canonical service-key form (``oss-uc-server`` == ``OSS_UC_SERVER`` == ``oss_uc_server``)."""
     return key.replace("-", "_").lower()
 
 
 def _existing_entry_value(val):
-    """Map an entry's raw value to an overrides dict: '' / truthy -> {} (all defaults),
-    '{...}' -> parsed json (full override), else -> {"endpoint": val}."""
     import json
 
     v = (val or "").strip()
@@ -884,18 +594,11 @@ def _existing_entry_value(val):
 def _parse_existing_services(cli_values, environ):
     """Resolve existing-service declarations to ``{norm_key: overrides}`` (pure, unit-testable).
 
-    Precedence low->high (later wins per key): DUCKTEST_EXISTING_SERVICES (list env) < per-service env
-    DUCKTEST_EXISTING_SERVICE_<KEY> < --existing-service (CLI). Entry grammar everywhere: KEY (all
-    defaults) | KEY=URL (endpoint override) | KEY={json} (full override). Each CLI value / the list env
-    may itself be a comma/semicolon list.
+    Precedence low->high: DUCKTEST_EXISTING_SERVICES (list env) < per-service env
+    DUCKTEST_EXISTING_SERVICE_<KEY> < --existing-service (CLI). Entry grammar: KEY | KEY=URL | KEY={json}.
     """
 
     def _split(s):
-        # comma/semicolon separated, but NOT inside a {json} value (which carries its own commas/braces)
-        # -- including braces/separators inside a JSON STRING literal, which must not affect brace depth
-        # or trigger a split (e.g. --existing-service foo={"note": "a}b"} would otherwise be cut mid-JSON
-        # on that literal '}'). Track quote state (with backslash-escape awareness) so a quoted string's
-        # contents are opaque to the depth/separator logic below.
         out, buf, depth, in_str, escape = [], [], 0, False, False
         for ch in s or "":
             if in_str:
@@ -936,10 +639,10 @@ def _parse_existing_services(cli_values, environ):
     result = {}
     for entry in _split(environ.get("DUCKTEST_EXISTING_SERVICES", "")):  # lowest: list env
         _add(result, entry)
-    prefix = "DUCKTEST_EXISTING_SERVICE_"  # per-service env (DUCKTEST_EXISTING_SERVICES lacks the '_', excluded)
+    prefix = "DUCKTEST_EXISTING_SERVICE_"  # per-service env (DUCKTEST_EXISTING_SERVICES lacks the '_')
     for name, val in environ.items():
-        if name.startswith(prefix) and name[len(prefix) :]:
-            result[_norm_service_key(name[len(prefix) :])] = _existing_entry_value(val)
+        if name.startswith(prefix) and name[len(prefix):]:
+            result[_norm_service_key(name[len(prefix):])] = _existing_entry_value(val)
     for value in cli_values or []:  # highest: CLI (each value may itself be a list)
         for entry in _split(value):
             _add(result, entry)
@@ -947,23 +650,15 @@ def _parse_existing_services(cli_values, environ):
 
 
 def _existing_services(config):
-    """Cached ``{norm_key: overrides}`` for this run (CLI + env). Correct on controller AND workers:
-    options are serialized to workers and env is inherited at spawn, so a direct read suffices."""
-    cached = getattr(config, _EXISTING, None)
-    if cached is not None:
-        return cached
-    resolved = _parse_existing_services(config.getoption("--existing-service", default=[]) or [], os.environ)
-    setattr(config, _EXISTING, resolved)
-    return resolved
+    """Cached ``{norm_key: overrides}`` for this run (from ctx.options; parsed once at configure)."""
+    return get_context(config).existing_services
 
 
 def _attach_service(config, svc, overrides):
     """Build an EXISTING service's block from ``overrides`` + probe it — no boot, no store, no teardown.
 
-    The block is ``svc.attach(overrides, config)`` (or the raw overrides if the service declares no
-    ``attach`` builder). If the service has an ``alive`` probe and it reports dead, FAIL LOUD — the
-    paradigm shift applied to attach: a selected test whose declared service isn't reachable fails
-    clearly, rather than dying opaquely deep in a query.
+    If the service declares an ``alive`` probe and it reports dead, FAIL LOUD — a selected test whose
+    declared service isn't reachable fails clearly rather than dying opaquely deep in a query.
     """
     block = svc.attach(dict(overrides), config) if svc.attach is not None else dict(overrides)
     if svc.alive is not None and not svc.alive(block):
@@ -973,21 +668,171 @@ def _attach_service(config, svc, overrides):
             f"there. Start it, or drop --existing-service {svc.key} to let this run boot it.",
             pytrace=False,
         )
-    # started=False: WE didn't start it; attached=True marks the stance. Functional fields (endpoint,
-    # connection_string, …) are identical to the boot block — the whole point (docs/SERVICES.md).
     block = _service_block(svc, {**block, "attached": True, "started": False})
     _run_populate(config, svc, block)  # idempotent — an externally-owned instance may already be seeded
     return block
 
 
-def _service_targets(config, spec):
-    """The (suite, service) pairs a provision/teardown command targets: all if ``spec`` is ``*``/empty,
-    else the ones whose (normalized) key is in the comma/semicolon list ``spec``.
+# ---------------------------------------------------------------------------
+# Service provisioning (single entry, no disposition)
+# ---------------------------------------------------------------------------
 
-    Deduplicated by service ``key``: the same ``Service`` (e.g. one shared across several suites'
-    declarations, the intended reuse pattern — see ``ducktest.resources``) is ONE physical resource and
-    must be provisioned/torn down exactly once, not once per suite that happens to declare it.
+
+def _service_block(svc, extra):
+    """Normalize ``svc.start``'s return into a stored dict block carrying ``{key, started}``."""
+    block = {"key": svc.key, "started": True}
+    if isinstance(extra, dict):
+        block.update(extra)
+    return block
+
+
+def _run_populate(config, svc, block):
+    """Run ``svc.populate`` (structure+data) if declared. Idempotent by contract."""
+    if svc.populate is not None:
+        with step(f"populating service {svc.key}"):
+            svc.populate(block, config)
+
+
+def _boot_and_populate(config, svc):
+    """The store single-flight factory: ``start`` then ``populate``, both exactly once (first-worker-wins)."""
+    block = _service_block(svc, svc.start(config))
+    _run_populate(config, svc, block)
+    return block
+
+
+def provision_service(config, svc):
+    """Provision a class-2 service — the ONE routing point (docs/SPEC.md §3.6). Attach-or-boot:
+
+    - **existing** (``--existing-service <key>`` / env): attach (build block + probe ``alive`` +
+      populate); no boot, no store, no teardown.
+    - **managed** (default): single-flight boot via the store — the first caller runs ``start`` +
+      ``populate`` under the per-key lock and publishes the block; concurrent callers read it.
+
+    Adopts ``to_env`` into THIS process's ``os.environ`` (how a test — even a bare ``.test`` — gets a
+    service's connection env). Returns the block; a test cannot tell which stance ran (identical shape).
+    Idempotent: called both up front (from the collect-first plan) and on a fixture pull.
     """
+    existing = _existing_services(config)
+    if _norm_service_key(svc.key) in existing:
+        block = _attach_service(config, svc, existing[_norm_service_key(svc.key)])
+    else:
+        handle = get_store(config)
+        if handle is None:
+            block = _boot_and_populate(config, svc)  # no store (nothing declared): local boot
+        else:
+            block = store.copy_or_provision(handle, svc.key, lambda: _boot_and_populate(config, svc))
+    if svc.to_env is not None:
+        os.environ.update({k: str(v) for k, v in svc.to_env(block).items()})
+    return block
+
+
+def _stop_services(config):
+    """Controller, at sessionfinish (pre store-shutdown): stop each service that was started.
+
+    A block exists in the store under a service's key iff some worker provisioned it, so store-presence
+    == started; stop each once here (dedup by key — a shared service is ONE physical resource).
+    """
+    handle = get_store(config)
+    if handle is None:
+        return
+    seen = set()
+    for suite in get_suites(config):
+        for svc in suite.services:
+            if svc.stop is None or svc.key in seen:
+                continue
+            seen.add(svc.key)
+            try:
+                store.copy(handle, svc.key)  # present => was provisioned this run
+            except store.ResourceMissing:
+                continue
+            try:
+                svc.stop(config)
+            except Exception:
+                pass  # teardown must not raise at session end
+
+
+# ---------------------------------------------------------------------------
+# Up-front provisioning from the collect-first plan (replaces the predictor + backstop)
+# ---------------------------------------------------------------------------
+
+
+def _fetch_or_read_credential(config, cred):
+    """Fetch (or read from the store) a credential, validate it, and adopt it into the env.
+
+    Single-flighted through the store so a `-k`-selected run prompts at most once (the poison pill on
+    the store makes an invalid fetch fail every waiter). ``available()`` short-circuits when the creds
+    are already usable in the env (no fetch/op). An invalid credential aborts the session (UsageError).
+    """
+    if cred.available is not None and cred.available():
+        return  # already usable in the env (non-interactive) — no fetch needed
+    handle = get_store(config)
+    if handle is not None:
+        block = store.copy_or_provision(handle, cred.key, lambda: cred.fetch(config))
+    else:
+        block = cred.fetch(config)
+    if cred.validate is not None and not cred.validate(block):
+        raise pytest.UsageError(cred.error() if cred.error else f"{cred.key}: required credential unavailable")
+    if cred.adopt == "env":
+        os.environ.update({k: str(v) for k, v in block.items()})
+
+
+def provision_reachable(config, reachable_suite_names):
+    """Provision everything the reachable suites need: fetch their credentials, provision their
+    services, adopt env. Dedup by key (a shared service/credential is ONE resource). The single
+    up-front execute path; workers run it too (from their own selection), coordinated by the store.
+    """
+    suites = {t.name: t for t in get_suites(config)}
+    seen_creds, seen_svcs = set(), set()
+    for name in sorted(reachable_suite_names):
+        suite = suites.get(name)
+        if suite is None:
+            continue
+        for cred in suite.credentials:
+            if cred.key in seen_creds:
+                continue
+            seen_creds.add(cred.key)
+            _fetch_or_read_credential(config, cred)
+        for svc in suite.services:
+            if svc.key in seen_svcs:
+                continue
+            seen_svcs.add(svc.key)
+            try:
+                provision_service(config, svc)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException:
+                # Up-front service provisioning is best-effort pre-warm: a failure (e.g. a dead
+                # --existing-service, which raises pytest.fail's BaseException-derived Failed) is
+                # re-surfaced authoritatively when a fixture pulls it or a test uses its env — as a
+                # per-test setup error — not a whole-collection abort here.
+                pass
+
+
+def _reachable_suites(config, items):
+    """Suites reachable for THIS process's selection: a default suite on a bare run, or any suite an
+    actually-selected item belongs to (by auto-marker or path). This is collect-first, so `-k` is
+    resolved by real membership — no from-args predictor."""
+    bare = _no_explicit_selection(config)
+    names = set()
+    for suite in get_suites(config):
+        if bare and suite.default:
+            names.add(suite.name)
+            continue
+        for item in items:
+            if _item_in_suite(config, item, suite):
+                names.add(suite.name)
+                break
+    return names
+
+
+# ---------------------------------------------------------------------------
+# Out-of-session service lifecycle commands (--provision-service / --teardown-service)
+# ---------------------------------------------------------------------------
+
+
+def _service_targets(config, spec):
+    """The (suite, service) pairs a provision/teardown command targets (all if ``*``/empty; else the
+    ones whose normalized key is in the comma/semicolon list). Deduplicated by service ``key``."""
     import re
 
     seen, services = set(), []
@@ -1003,13 +848,12 @@ def _service_targets(config, spec):
     return [(t, s) for (t, s) in services if _norm_service_key(s.key) in keys]
 
 
-def _run_service_command(config):
-    """P2 out-of-session lifecycle: provision or tear down declared services, then ``pytest.exit``.
+def run_service_command(config):
+    """Out-of-session lifecycle: provision or tear down declared services, then ``pytest.exit``.
 
-    Runs on the controller (trylast pytest_configure), BEFORE collection — so it needs no unittest
-    binary. **provision** starts each target directly (NOT via the store), so the normal sessionfinish
-    teardown leaves it running; idempotent via the ``alive`` probe. **teardown** stops each target.
-    Prints the endpoint + the exact ``--existing-service`` line to attach with next.
+    Runs on the controller (trylast configure), BEFORE collection — so it needs no unittest binary.
+    **provision** starts each target directly (NOT via the store), so sessionfinish leaves it running;
+    idempotent via the ``alive`` probe. **teardown** stops each target.
     """
     teardown = config.getoption("--teardown-service", default=None)
     prov = config.getoption("--provision-service", default=None)
@@ -1043,103 +887,29 @@ def _run_service_command(config):
     pytest.exit(f"ducktest: provisioned {len(targets)} service(s); left running", returncode=0)
 
 
-def _run_populate(config, svc, block):
-    """Run ``svc.populate`` (structure+data) if declared. Idempotent by contract, so it's safe both on the
-    single-flight boot factory (runs once) AND on the attach path (may re-run against a seeded instance)."""
-    if svc.populate is not None:
-        with step(f"populating service {svc.key}"):
-            svc.populate(block, config)
+# ---------------------------------------------------------------------------
+# Suite membership + Phase-1 selection: auto-marker + default-scan deselection
+# ---------------------------------------------------------------------------
 
 
-def _boot_and_populate(config, svc):
-    """The store single-flight factory: ``start`` then ``populate``, both exactly once (first-worker-wins),
-    for ANY disposition. ``populate`` mutates the shared SERVICE (external state), so — unlike ``to_env``
-    (per-process env, hence eager-only) — it is disposition-independent (docs/SERVICES.md)."""
-    block = _service_block(svc, svc.start(config))
-    _run_populate(config, svc, block)
-    return block
+def _no_explicit_selection(config):
+    """True iff the invocation gave no path arg, no ``-k``, and no ``-m`` (a bare run)."""
+    opt = config.option
+    return not (
+        list(getattr(opt, "file_or_dir", None) or [])
+        or (getattr(opt, "keyword", None) or "")
+        or (getattr(opt, "markexpr", None) or "")
+    )
 
 
-def provision_service(config, svc):
-    """Provision a class-2 service — call from its session fixture. Routes by lifecycle stance:
-
-    - **existing** (``--existing-service <key>`` / env): attach to the already-running service via
-      ``_attach_service`` (build block + probe ``alive``); no boot, no store, no teardown.
-    - **managed** (default): lazy, first-need boot via the store. The first worker runs
-      ``svc.start(config)`` under the store's per-key lock and publishes the block; concurrent callers
-      block then read it (single-flight). The controller stops it once at session end.
-
-    Returns the service's context block (a dict). A test cannot tell which stance ran — the block shape
-    is identical (docs/SERVICES.md).
-
-    No reachability gate on the managed path: a service is DEMAND-driven — pulling its fixture is the
-    signal it's needed, true even under ``-k`` (where args can't predict the suite). An unselected suite
-    simply never pulls the fixture. (Contrast credentials, fetched up front, whose ``-k`` case falls to
-    the runtest backstop.)
-    """
-    existing = _existing_services(config)
-    if _norm_service_key(svc.key) in existing:
-        block = _attach_service(config, svc, existing[_norm_service_key(svc.key)])
-    else:
-        # Disposition gate: `eager`/`on_demand` boot here; `per_test`/`never` are named but not wired, so
-        # they FAIL LOUD rather than silently booting on-demand (never silent-wrong). `never` == "you bring
-        # it" — already delivered by the --existing-service attach path checked just above.
-        if svc.provision == "never":
-            pytest.fail(
-                f"service {svc.key!r} is provision='never' but was pulled with no `--existing-service "
-                f"{svc.key}=…` to attach to. Start it and attach, or change its disposition.",
-                pytrace=False,
-            )
-        if svc.provision == "per_test":
-            raise NotImplementedError(f"service {svc.key!r}: provision='per_test' is reserved, not yet wired.")
-        # TODO(multiservice): before booting, resolve svc.depends_on — provision_service each dep first
-        # (topological, cycle-checked). Reverse of this order drives _stop_services teardown. See docs/PLAN.md.
-        handle = get_store(config)
-        if handle is None:
-            # Defensive: no store (nothing declared) — start+populate locally, no cross-worker coordination.
-            block = _boot_and_populate(config, svc)
-        else:
-            block = store.copy_or_provision(handle, svc.key, lambda: _boot_and_populate(config, svc))
-    # Adopt to_env into THIS process's os.environ. Every provisioning process does it — the controller on
-    # the eager path (pre-fork, so a bare .test subprocess inherits it) OR a worker on the on_demand
-    # fixture-pull (its run_paired subprocess inherits, since _invoke merges os.environ). The store shares
-    # the block, so to_env is derivable in any process. (A bare .test still needs eager: nothing triggers
-    # worker-side adoption for it — docs/SERVICES.md.)
-    if svc.to_env is not None:
-        os.environ.update(svc.to_env(block))
-    return block
-
-
-def _stop_services(config):
-    """Controller, at sessionfinish (pre store-shutdown): stop each service that was started.
-
-    A block exists in the store under a service's key iff some worker provisioned it, so
-    store-presence == started; stop each once here (the controller runs sessionfinish once).
-    # TODO: leak-reclaim (reclaim_stale) — recovering a service leaked by a crashed/killed run —
-    #       is a follow-up (UC's OSS reclaim pattern); v0 relies on this controller-stop.
-    """
-    handle = getattr(config, _STORE, None)
-    if handle is None:
-        return
-    seen = set()  # dedup by key: a service shared across suites (use_service) is ONE physical resource
-    for suite in get_suites(config):
-        for svc in suite.services:
-            if svc.stop is None or svc.key in seen:
-                continue
-            seen.add(svc.key)
-            try:
-                store.copy(handle, svc.key)  # present => was provisioned this run
-            except store.ResourceMissing:
-                continue
-            try:
-                svc.stop(config)
-            except Exception:
-                pass  # teardown must not raise at session end
+def _is_subpath(child, parent):
+    if child == parent:
+        return True
+    return child.startswith(parent + os.sep)
 
 
 def _item_in_suite_path(config, item, suite):
-    """Whether ``item``'s file is at/under the suite's repo-relative ``path`` (the path branch of
-    membership; also what the auto-marker keys on). False when the suite declares no ``path``."""
+    """Whether ``item``'s file is at/under the suite's repo-relative ``path``."""
     if not suite.path:
         return False
     tabs = os.path.normpath(os.path.join(_working_dir(config), suite.path))
@@ -1148,25 +918,10 @@ def _item_in_suite_path(config, item, suite):
 
 
 def _item_in_suite(config, item, suite):
-    """Whether ``item`` belongs to ``suite`` — by the suite's marker or by path membership.
-
-    Marker: an auto-applied suite marker (see ``_apply_suite_markers``) or a hand-authored one. Path:
-    the item's file is at/under the suite's repo-relative ``path`` (resolved against the working dir).
-    """
+    """Whether ``item`` belongs to ``suite`` — by the suite's marker or by path membership."""
     if suite.marker and item.get_closest_marker(suite.marker) is not None:
         return True
     return _item_in_suite_path(config, item, suite)
-
-
-# --- Phase 1 selection: auto-marker + default-scan deselection ----------------------------
-# The driver turns path-based suite membership into marker-based selection. At collection it stamps
-# each suite's marker on every path-member (so `-m cloud` / `-m 'not cloud'` select or exclude them,
-# including `.test`/SQLLogic bodies that carry no Python @pytest.mark), THEN — on a bare run only —
-# deselects the non-default suites (the "explicit default scan"). Both run in _SuiteController's
-# collection_modifyitems hookwrapper pre-yield, so the marks exist BEFORE pytest's builtin -m/-k
-# deselection reads them. The deselect decision reuses `_suite_reachable` (the same from-args gate
-# that decides eager credential fetching): a suite deselected on a bare run == a suite whose creds
-# were not fetched — one source of truth.
 
 
 def _apply_suite_markers(config, items, suites):
@@ -1174,7 +929,6 @@ def _apply_suite_markers(config, items, suites):
 
     Makes `-m <suite>` work for path-declared members — including SQLLogic bodies that can't carry a
     Python `@pytest.mark`. Runs pre-yield so the marks exist before pytest's own mark deselection.
-    Idempotent: an item that already carries the marker (hand-authored, or a prior pass) is skipped.
     """
     for suite in suites:
         if not suite.marker:
@@ -1184,25 +938,32 @@ def _apply_suite_markers(config, items, suites):
                 item.add_marker(suite.marker)
 
 
-def _default_scan_deselect(config, items, suites):
-    """On a bare run, deselect items in a non-default (unreachable) suite — the explicit scan.
+def apply_suite_markers(ctx, session):
+    """Public entry the controller calls: stamp suite auto-markers onto the session's items.
 
-    Only fires when no explicit selection was given; any `-m`/`-k`/path is respected verbatim
-    (pytest's own filtering handles it, and the auto-markers above make `-m <suite>` work). An item
-    that also belongs to a reachable (default) suite stays. Removal is the pytest-standard
-    `pytest_deselected` + in-place slice. The reachable/unreachable split is `_suite_reachable`, the
-    same gate that decides eager credential fetching (one source of truth).
+    (Called before the controller's `perform_collect`, where `session.items` is still empty, AND — the
+    load-bearing pass — from the collection hookwrapper below, pre-yield, once items exist. Idempotent.)
+    """
+    config = session.config
+    _apply_suite_markers(config, list(session.items), get_suites(config))
+
+
+def _default_scan_deselect(config, items, suites):
+    """On a bare run, deselect items in a non-default suite — the explicit default scan.
+
+    Only fires when no explicit selection was given; any `-m`/`-k`/path is respected verbatim. An item
+    that also belongs to a default suite stays. Removal is the pytest-standard `pytest_deselected`.
     """
     if not _no_explicit_selection(config):
         return
-    unreachable = [t for t in suites if not _suite_reachable(config, t)]
-    if not unreachable:
+    non_default = [t for t in suites if not t.default]
+    if not non_default:
         return
-    reachable = [t for t in suites if _suite_reachable(config, t)]
+    default_suites = [t for t in suites if t.default]
     removed, kept = [], []
     for item in items:
-        in_out = any(_item_in_suite(config, item, t) for t in unreachable)
-        in_keep = any(_item_in_suite(config, item, t) for t in reachable)
+        in_out = any(_item_in_suite(config, item, t) for t in non_default)
+        in_keep = any(_item_in_suite(config, item, t) for t in default_suites)
         (removed if in_out and not in_keep else kept).append(item)
     if removed:
         config.hook.pytest_deselected(items=removed)
@@ -1210,24 +971,14 @@ def _default_scan_deselect(config, items, suites):
 
 
 def _deselected_suite_names(config):
-    """Names of the suites the default scan deselects on THIS invocation (from args alone).
-
-    Empty unless a bare run has ≥1 non-default (unreachable) suite registered — exactly when
-    `_default_scan_deselect` removes that suite's items. Derived from args only, so the controller
-    can announce it pre-collection (the banner) without xdist aggregation.
-    """
+    """Names of the non-default suites a bare run deselects (from args alone; for the banner)."""
     if not _no_explicit_selection(config):
         return []
-    return [t.name for t in get_suites(config) if not _suite_reachable(config, t)]
+    return [t.name for t in get_suites(config) if not t.default]
 
 
 def _suite_banner(config):
-    """The mandatory 'default set selected; deselected: …' banner line, or None when none applies.
-
-    North-star (docs/ARCHITECTURE.md): any change to a bare `pytest` must be loud. Whenever the default
-    scan deselects ≥1 suite, announce it — always, NOT -v-gated. Returns None for a vanilla run or
-    any explicit selection, so those headers are untouched.
-    """
+    """The mandatory 'default set selected; deselected: …' banner line, or None when none applies."""
     names = _deselected_suite_names(config)
     if not names:
         return None
@@ -1236,79 +987,100 @@ def _suite_banner(config):
     return f"duck-test suites: default set selected; deselected: {listed} (pass a path or -m {hint} to include)"
 
 
-# A late (backstop) credential fetch — the winner runs the interactive prompt; other workers block
-# on the store's PENDING state. This bounds how long a WAITER polls for that winner (a human at a
-# biometric prompt), NOT the winner's own prompt (op owns that). Generous by intent; 2 min.
-_LATE_FETCH_TIMEOUT_S = int(os.environ.get("DUCKDB_PYTEST_LATE_FETCH_TIMEOUT_S", "120"))
+# ---------------------------------------------------------------------------
+# step() narration
+# ---------------------------------------------------------------------------
 
 
-def _late_fetch(cred, config):
-    """Backstop factory: fetch + validate a credential; raise (poison the key) if it doesn't validate.
-
-    Runs as the single-flight owner inside `copy_or_provision`, so exactly one worker performs the
-    (possibly op-prompting) fetch; the rest read the published block or the poison pill.
-    """
-    value = cred.fetch(config)
-    if cred.validate is not None and not cred.validate(value):
-        raise store.ProvisionFailed(cred.error() if cred.error else f"{cred.key}: unavailable")
-    return value
+def _narrating(config):
+    """Whether ``step()`` narration should be surfaced live: ``--steps``, or a ``--repl`` /
+    ``--provision-keep`` session unless ``--no-steps`` (``--steps`` always wins)."""
+    steps = config.getoption("--steps", default=False)
+    repl_like = config.getoption("--repl", default=False) or config.getoption("--provision-keep", default=False)
+    return bool(steps or (repl_like and not config.getoption("--no-steps", default=False)))
 
 
-def pytest_runtest_setup(item):
-    """Backstop: a selected test in a credentialed suite whose credential can't be obtained FAILS.
-
-    The paradigm-shift behavior (docs/ARCHITECTURE.md): a *selected* test that can't be provisioned fails
-    loud — never a silent skip. Catches the ``-k``-selected-live case the predictive up-front fetch
-    can't foresee (``-k`` isn't decidable pre-collection). Runs in whichever process executes the item
-    (the worker under xdist). Resolution order per credential:
-
-      1. valid in the store (the up-front path) — pass;
-      2. ``available()`` in the env — pass (NON-INTERACTIVE, no ``op``, e.g. preset env / the ``-k`` case);
-      3. ``late_fetch`` (default on) — a LATE ``fetch``, single-flighted across workers via the store
-         so at most ONE interactive prompt happens (others block on PENDING, then read the block or the
-         poison pill); on success the block is adopted into env when ``adopt == "env"``;
-      4. else fail loud.
-    """
-    config = item.config
-    suites = [t for t in get_suites(config) if t.credentials and _item_in_suite(config, item, t)]
-    if not suites:
+@contextlib.contextmanager
+def _narrate_driver_log(config):
+    """Surface the ``driver`` logger's INFO ``step()`` output live during configure-time provisioning."""
+    if not _narrating(config):
+        yield
         return
-    handle = get_store(config)
-    for suite in suites:
-        for cred in suite.credentials:
-            value = None
-            if handle is not None:
-                try:
-                    value = store.copy(handle, cred.key)
-                except store.ResourceMissing:
-                    value = None
-            if value is not None and (cred.validate is None or cred.validate(value)):
-                continue  # 1. up-front path published valid creds to the store
-            if cred.available is not None and cred.available():
-                continue  # 2. already usable in the env (non-interactive), no fetch/op needed
-            if cred.late_fetch and handle is not None:  # 3. single-flight late fetch (one op prompt)
-                try:
-                    value = store.copy_or_provision(
-                        handle,
-                        cred.key,
-                        lambda c=cred: _late_fetch(c, config),
-                        timeout=_LATE_FETCH_TIMEOUT_S,
-                    )
-                except (store.ProvisionFailed, store.ProvisionTimeout):
-                    value = None
-                if value is not None:
-                    if cred.adopt == "env":
-                        os.environ.update(value)
-                    continue
-            pytest.fail(  # 4. no store, no env, no (successful) late fetch
-                cred.error() if cred.error else f"{cred.key}: required credential unavailable",
-                pytrace=False,
-            )
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    driver_log = logging.getLogger("driver")
+    driver_log.addHandler(handler)
+    capman = config.pluginmanager.getplugin("capturemanager")
+    try:
+        if capman is not None:
+            with capman.global_and_fixture_disabled():
+                yield
+        else:
+            yield
+    finally:
+        driver_log.removeHandler(handler)
+
+
+# ---------------------------------------------------------------------------
+# pytest_configure: build the SessionContext + session-scope setup
+# ---------------------------------------------------------------------------
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    # Resolve + cache the working dir + the test-local import roots up front.
+    _working_dir(config)
+    _ensure_pythonpath(config)
+
+    # Build the ONE typed SessionContext (replaces the config._duckdb_* string-attribute sprawl) and
+    # stash it on pytest's typed stash. Binary resolution stays lazy (resolved on first `.test` need),
+    # so a no-binary offline / pure-Python run doesn't fail at configure.
+    ctx = SessionContext(
+        working_dir=_working_dir(config),
+        run_id=_run_id(config),
+        options={
+            "existing_services": _parse_existing_services(
+                config.getoption("--existing-service", default=[]) or [], os.environ
+            ),
+            "collect_source": config.getoption("--collect-source", default="verify"),
+        },
+    )
+    set_context(config, ctx)
+
+    # Register the @requires marker so it doesn't warn under --strict-markers.
+    config.addinivalue_line(
+        "markers",
+        "requires(source, access, properties, name): declare an external resource need; drives "
+        "provisioning under --repl (see ducktest/requires.py).",
+    )
+
+    # Redirect an explicitly-named `.test` arg to its same-stem driver `.py` (the body is suppressed).
+    rewritten = []
+    for arg in config.args:
+        if arg.endswith(".test") and os.path.exists(arg):
+            driver = arg[: -len(".test")] + ".py"
+            if os.path.exists(driver):
+                rewritten.append(driver)
+                continue
+        rewritten.append(arg)
+    config.args[:] = rewritten
+
+    # --repl and --steps must run single-process; force it before pytest-xdist reads numprocesses.
+    if config.getoption("--repl", default=False) or config.getoption("--steps", default=False):
+        if getattr(config.option, "numprocesses", None):
+            config.option.numprocesses = 0
+        if getattr(config.option, "dist", "no") not in (None, "no"):
+            config.option.dist = "no"
+
+    # Emit driver step() records at INFO so they're captured into a failing test's report.
+    logging.getLogger("driver").setLevel(logging.INFO)
+    if _narrating(config):
+        if config.getoption("--log-cli-level", default=None) is None:
+            config.option.log_cli_level = "INFO"
 
 
 def pytest_sessionfinish(session, exitstatus):
-    # Controller-only: drop the per-run external dir on a clean run (no failures),
-    # unless asked to keep it. Always kept on failure/interruption for debugging.
+    # Controller-only: stop store-present services + shut the store down, then apply the temp-dir policy.
     config = session.config
     if getattr(config, "workerinput", None) is not None:
         return  # this is a worker
@@ -1319,30 +1091,12 @@ def pytest_sessionfinish(session, exitstatus):
     if destroy == "on-success" and int(exitstatus) != 0:
         return  # keep on failure/interruption for debugging
     run_dir = _run_dir(config)
-    if run_dir and os.path.isdir(run_dir):  # isdir() also skips remote (s3://) bases
+    if run_dir and os.path.isdir(run_dir):
         shutil.rmtree(run_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
 # Members, roles, and drivers
-#
-# A *test* is the set of same-stem *members* under test/** (e.g. foo.test +
-# foo.py). Each member plays one or more *roles*:
-#   - body   : holds test logic that is run — a `.test` (`.sql` is PLANNED, not yet a
-#              collected body type), or a `.py` that carries its own assertions (the
-#              py-exclusive case).
-#   - driver : orchestrates execution (initialize/finalize) around a body — a `.py`.
-# Roles are not file types: a `.py` can be a driver, a body, or BOTH (drive a
-# same-stem body AND carry its own assertions). A `.test` is always a body (`.sql` planned).
-#
-# This module handles the *driver* case: a `.py` with a same-stem `.test` body.
-# The `.py` is collected and drives that body through the binary via run_paired();
-# the standalone body is suppressed (see conftest) so it runs only via its driver.
-#
-# CURRENT LIMITATION: the driving `.py` is the reported unit, not the body —
-# flipping so the body is reported (driver only contributes hooks) is the pending
-# rework. The py-as-body-only case (a `.py` with no same-stem body) is the
-# deferred py-exclusive lane — not collected today (python_files is off).
 # ---------------------------------------------------------------------------
 
 
@@ -1350,30 +1104,12 @@ def _stem_path(path, suffix):
     return os.path.splitext(str(path))[0] + suffix
 
 
-def has_driver(body_path) -> bool:
-    """True if this body (`.test`/`.sql`) has a same-stem `.py` driver."""
-    return os.path.exists(_stem_path(body_path, ".py"))
-
-
-def is_driver(py_path) -> bool:
-    """True if this `.py` is a driver — it has a same-stem body (`.test`) to drive.
-
-    A `.py` with no same-stem body is itself a body (the py-exclusive case), not a
-    driver; that lane is not handled here yet.
-    """
-    return os.path.exists(_stem_path(py_path, ".test"))
-
-
 def run_paired(request, *, temp_dir_base=None, env=None):
     """Drive the calling driver `.py`'s same-stem body (`.test`) through the binary.
 
-    Call from the driver's test function once initialization has run. Raises
-    SqlLogicFailure on failure and pytest.skip on a skipped test, so the driver
-    reflects the real SQL result. Pass temp_dir_base to root the binary's temp dir at a
-    caller-owned base (BASE/<run-id>) that initialization already staged into; the binary
-    then gets explicit --temp-dir-base/--temp-dir-run-id off/--temp-dir-destroy never.
-    Pass env (e.g. a provisioning fixture's bindings.env) to inject vars the body
-    substitutes via ${...} (merged over os.environ).
+    Call from the driver's test function once initialization has run. Raises SqlLogicFailure on failure
+    and pytest.skip on a skipped test. Pass ``env`` (e.g. a provisioning fixture's ``bindings.env``) to
+    inject vars the body substitutes via ``${...}`` (merged over os.environ).
     """
     working_dir = request.config.sqllogic_working_dir
     binary = find_binary(request.config, working_dir)
@@ -1403,29 +1139,17 @@ class _EmptyBindings:
 
 @pytest.fixture
 def matrix_cell(request):
-    """The current `@requires_matrix` cell (its concrete properties dict); `None` when the
-    test is not a matrix test.
-
-    `@requires_matrix` emits `parametrize("matrix_cell", …, indirect=True)`, so the cell
-    value routes THROUGH this fixture (the body has no `matrix_cell` argument). `resources`
-    depends on it purely to pull it into every matrix test's fixture closure — indirect
-    parametrize requires the fixture to be reachable from the item.
-    """
+    """The current `@requires_matrix` cell (its concrete properties dict); `None` for a non-matrix test."""
     return getattr(request, "param", None)
 
 
 @pytest.fixture
-def resources(request, matrix_cell):  # matrix_cell: closure hook for indirect @requires_matrix (unused here)
+def resources(request, matrix_cell):  # matrix_cell: closure hook for indirect @requires_matrix
     """Provision a test's @requires fixtures, yield the bindings, tear down after.
 
-    The generic run-path counterpart of --repl (same provisioner): a driver does
-
-        def test_x(request, resources):
-            run_paired(request, env=resources.env)
-
-    and the body's ${UC_TEST_CATALOG}/${UC_TEST_SCHEMA} substitute to the provisioned
-    values. Per-test token, so cell schemas don't collide across tests/workers.
-    No-ops (empty env) for tests without @requires.
+    The generic run-path counterpart of --repl (same provisioner). CONSUMES already-provisioned suite
+    resources; it does not provision suite-level services itself (those came from the collect-first
+    plan). No-ops (empty env) for tests without @requires.
     """
     from .provision import get_provisioner
     from .requires import collect_requirements
@@ -1438,7 +1162,7 @@ def resources(request, matrix_cell):  # matrix_cell: closure hook for indirect @
     if provisioner is None:
         raise pytest.UsageError(
             f"{request.node.nodeid}: @requires present but no provisioner registered "
-            "(the backend conftest must call driver.register_provisioner)."
+            "(the backend conftest must call ducktest.register_provisioner)."
         )
     token = _provision_token(request.config, request.node)
     bindings = provisioner.provision(specs, token, params=_item_params(request.node))
@@ -1449,83 +1173,7 @@ def resources(request, matrix_cell):  # matrix_cell: closure hook for indirect @
 
 
 # ---------------------------------------------------------------------------
-# Marker registration
-# ---------------------------------------------------------------------------
-
-
-@pytest.hookimpl(tryfirst=True)
-def pytest_configure(config):
-    # Resolve + cache the working dir (rootdir / ini / CLI) up front. run_paired() and the
-    # --repl flow read `config.sqllogic_working_dir`; the collection hooks derive test_root
-    # from it. Folded in from the old consumer root-conftest (which hardcoded it).
-    # Resolve + cache the working dir (run_paired / --repl read config.sqllogic_working_dir), then
-    # (re)assert the test-local import roots as a backstop for the bare-invocation path — explicit
-    # path args were handled earlier in pytest_load_initial_conftests. Idempotent.
-    _working_dir(config)
-    _ensure_pythonpath(config)
-
-    # Register the @requires marker so it doesn't warn under --strict-markers and
-    # shows up in `pytest --markers`.
-    config.addinivalue_line(
-        "markers",
-        "requires(source, access, properties, name): declare an external "
-        "resource need; drives provisioning under --repl (see driver/requires.py).",
-    )
-
-    # Selecting a paired body (`foo.test`) by name collects nothing — it's suppressed
-    # in favor of its same-stem driver (`foo.py`). Redirect an explicitly-named
-    # `.test` arg to its driver so naming EITHER member runs the one test. Broad/dir
-    # runs are unaffected (the suppression still prevents double-collection there).
-    rewritten = []
-    for arg in config.args:
-        if arg.endswith(".test") and os.path.exists(arg):
-            driver = arg[: -len(".test")] + ".py"
-            if os.path.exists(driver):
-                rewritten.append(driver)
-                continue
-        rewritten.append(arg)
-    config.args[:] = rewritten
-
-    # Both --repl and --steps must run single-process; force it here so neither silently
-    # no-ops when addopts defaults to `-n auto` (the common case). --repl: under xdist the
-    # controller never holds the collected items (workers do), so the flow sees 0 items
-    # ("no tests ran"). --steps: live-log (its only channel) is disabled on xdist workers,
-    # so steps would never print. tryfirst so this lands before pytest-xdist reads
-    # numprocesses.
-    if config.getoption("--repl", default=False) or config.getoption("--steps", default=False):
-        if getattr(config.option, "numprocesses", None):
-            config.option.numprocesses = 0
-        if getattr(config.option, "dist", "no") not in (None, "no"):
-            config.option.dist = "no"
-
-    # Always emit driver step() records at INFO so they're CAPTURED and appear in the
-    # "Captured log" section of a failing test's report — including under xdist, where
-    # the report (with its captured logs) is pickled back to the controller even though
-    # live worker output can't be (see pytest-xdist "known limitations": that's about
-    # -s real-time streaming, not captured-on-report sections). Passing tests print
-    # nothing (captured sections show only on failure), so this is free diagnostics with
-    # no added noise; root stays at WARNING, so third-party INFO is still suppressed.
-    logging.getLogger("driver").setLevel(logging.INFO)
-
-    # Surface those step() logs LIVE (not just on failure) when narrating: --steps asks for it
-    # explicitly, and --repl / --provision-keep auto-enable it (an interactive session should
-    # narrate its own provision/teardown) unless --no-steps opts out. Setting --log-cli-level
-    # turns on pytest's live-log — the only channel that cooperates with output capture, and it
-    # also reaches the collection hook --repl runs from; it's dead on xdist workers, so this path
-    # forces -n0 (above). Don't override an explicit --log-cli-level the user already passed.
-    if _narrating(config):  # same predicate the configure-time eager-provisioning narration uses
-        if config.getoption("--log-cli-level", default=None) is None:
-            config.option.log_cli_level = "INFO"
-
-
-# ---------------------------------------------------------------------------
-# --repl: @requires-driven provision → interactive duckdb → teardown
-#
-# Runs at end of collection (before the run loop). It picks the SINGLE selected
-# test, reads its @requires, and hands the specs to the extension provisioner.
-# Then it ALWAYS pytest.exit()s — --repl never runs the normal SQL body (that
-# run path, run_paired with injected env, is the deferred follow-on). Precedence:
-# --provision-dry-run dominates --provision-keep.
+# --repl: @requires-driven provision -> interactive duckdb -> teardown
 # ---------------------------------------------------------------------------
 
 
@@ -1533,20 +1181,12 @@ def pytest_collection_finish(session):
     config = session.config
     if not config.getoption("--repl", default=False):
         return
-    # xdist workers also reach here; only the controller should drive the CLI.
     if getattr(config, "workerinput", None) is not None:
-        return
+        return  # xdist workers also reach here; only the controller drives the CLI
     _cli_provision_flow(session, config)
 
 
 def _item_params(item):
-    """A parametrized item's params dict ({} if not parametrized).
-
-    Lets --repl / the resources fixture convey a test's parametrization (e.g. a `schema`
-    param) to the provisioner, so a single REPL context can match the SELECTED param
-    (`--repl -k 'test[external]'` lands in external, not the default). The provisioner
-    decides which param keys it understands; the framework just forwards them.
-    """
     cs = getattr(item, "callspec", None)
     return dict(cs.params) if cs is not None else {}
 
@@ -1561,22 +1201,18 @@ def _cli_provision_flow(session, config):
     items = list(session.items)
     if len(items) != 1:
         raise pytest.UsageError(
-            f"--repl requires exactly ONE selected test, but {len(items)} were "
-            "collected. Narrow the selection (pass a single driver .py / use -k)."
+            f"--repl requires exactly ONE selected test, but {len(items)} were collected. "
+            "Narrow the selection (pass a single driver .py / use -k)."
         )
     item = items[0]
     specs = collect_requirements(item)
     provisioner = get_provisioner(config, item.path)
 
-    # @requires is NOT needed just to get a prompt. With no provisioner we still launch
-    # a bare duckdb REPL for ANY test (you LOAD/ATTACH by hand). The only hard error is a
-    # test that DECLARES @requires when nothing is registered to satisfy them.
     if provisioner is None:
         if specs:
             raise pytest.UsageError(
-                f"--repl: {item.nodeid!r} declares @requires but no provisioner is "
-                "registered to satisfy them (the backend conftest must call "
-                "driver.register_provisioner(...)). Remove @requires for a bare REPL."
+                f"--repl: {item.nodeid!r} declares @requires but no provisioner is registered to "
+                "satisfy them (the backend conftest must call ducktest.register_provisioner(...))."
             )
         print()
         print("=" * 70)
@@ -1584,10 +1220,7 @@ def _cli_provision_flow(session, config):
         print("no @requires + no provisioner -> launching a bare duckdb REPL")
         print("=" * 70)
         if dry_run:
-            pytest.exit(
-                "--repl --provision-dry-run: nothing to provision; would launch a bare REPL",
-                returncode=0,
-            )
+            pytest.exit("--repl --provision-dry-run: nothing to provision; would launch a bare REPL", returncode=0)
         _launch_cli(config, "")
         pytest.exit("--repl session complete", returncode=0)
         return
@@ -1608,8 +1241,6 @@ def _cli_provision_flow(session, config):
     print("=" * 70)
 
     if dry_run:
-        # Plan only — NO DDL, NO launch, NO teardown. The provisioner prints its
-        # plan (cell schema + per-table commands); we then print the init SQL.
         bindings = provisioner.provision(specs, token, dry_run=True, params=_item_params(item))
         print()
         print("----- would-be duckdb init SQL (secrets redacted) -----")
@@ -1636,18 +1267,12 @@ def _cli_provision_flow(session, config):
 
 
 def _provision_token(config, node=None):
-    """SQL-safe per-invocation id for cell-schema names.
-
-    Run-id is `timestamp--mnemonic`; the token is `<YYYYMMDD>_<mnemonic>` (SQL-safe, dashes →
-    underscores). The date prefix makes a cell-schema name carry its birth date, so stragglers
-    are age-sweepable (teardown_stale). When `node` is given, a short nodeid hash is appended so
-    each test gets a UNIQUE token — parallel-safe (no two tests share a cell schema) and stable
-    across workers (run-id is broadcast; nodeid differs per test).
-    """
+    """SQL-safe per-invocation id for cell-schema names: ``<YYYYMMDD>_<mnemonic>`` (+ a short nodeid
+    hash when ``node`` is given, so each test gets a unique, xdist-stable token)."""
     rid = _run_id(config)
     ts, _, mnem = rid.partition("--")
     mnem = mnem.replace("-", "_")
-    date = ts.split("T", 1)[0].replace("-", "")  # YYYYMMDD, sortable/parseable for age sweeps
+    date = ts.split("T", 1)[0].replace("-", "")
     token = f"{date}_{mnem}"
     if node is None:
         return token
@@ -1657,15 +1282,9 @@ def _provision_token(config, node=None):
 
 
 def _launch_cli(config, init_sql):
-    """Write init_sql to a temp file and exec an interactive `duckdb -unsigned -init`.
-
-    The duckdb binary lives next to the unittest binary's build dir; we derive it
-    from the same build resolution. -unsigned is required to LOAD locally-built
-    extensions (cannot be SET from inside the init file once the DB is running).
-    """
+    """Write init_sql to a temp file and exec an interactive `duckdb -unsigned -init`."""
     working_dir = getattr(config, "sqllogic_working_dir", os.getcwd())
     binary = find_binary(config, working_dir)
-    # binary is <build>/test/unittest → duckdb CLI is <build>/duckdb
     build_dir = os.path.dirname(os.path.dirname(binary))
     duckdb_bin = os.path.join(build_dir, "duckdb")
     if not os.path.isfile(duckdb_bin):
@@ -1673,12 +1292,6 @@ def _launch_cli(config, init_sql):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", prefix="cli_init.", delete=False) as f:
         f.write(init_sql)
         init_path = f.name
-    # Give duckdb a real interactive terminal. Two parts, both needed:
-    #  1) suspend pytest's capture (so it isn't holding the std fds), and
-    #  2) wire the subprocess to the CONTROLLING terminal explicitly via /dev/tty.
-    # Capture-suspension alone left duckdb with a non-tty stdin → it ran the init,
-    # hit EOF and exited with no prompt. /dev/tty is the real fd regardless of how
-    # this process's 0/1/2 were redirected.
     capman = config.pluginmanager.getplugin("capturemanager")
     cmd = [duckdb_bin, "-unsigned", "-init", init_path]
 
@@ -1686,7 +1299,6 @@ def _launch_cli(config, init_sql):
         try:
             tty = open("/dev/tty", "r+b", buffering=0)
         except OSError:
-            # No controlling terminal (e.g. CI) — nothing to be interactive against.
             subprocess.run(cmd, cwd=working_dir)
             return
         try:
@@ -1706,14 +1318,28 @@ def _launch_cli(config, init_sql):
 
 
 # ---------------------------------------------------------------------------
-# Post-collection hook: assign batch IDs and xdist_group markers
+# Collection modifyitems: auto-marker + default-scan deselect (pre-yield), then dedup + batch +
+# worker-side up-front provisioning (post-yield).
 # ---------------------------------------------------------------------------
 
 
+@pytest.hookimpl(hookwrapper=True)
 def pytest_collection_modifyitems(session, config, items):
-    # Dedupe by nodeid: a driver .py named explicitly on the CLI is collected
-    # both natively and by our hook, and (later) a .test reachable via both the
-    # filesystem scan and `unittest -l` overlaps. Keep the first of each.
+    suites = get_suites(config)
+    if suites:
+        # Register each suite's marker so the auto-applied mark doesn't warn and shows in --markers.
+        for suite in suites:
+            if suite.marker:
+                config.addinivalue_line("markers", f"{suite.marker}: ducktest suite {suite.name!r}")
+        # PRE-yield: stamp auto-markers + default-scan deselect BEFORE pytest's builtin -m/-k deselection
+        # (a plain impl) reads them — the whole trick for `-m cloud` selecting a marker-less body.
+        _apply_suite_markers(config, items, suites)
+        _default_scan_deselect(config, items, suites)
+
+    yield
+
+    # POST-yield: after selection is final. Dedupe by nodeid (a driver .py named explicitly is collected
+    # both natively and by our hook; a .test reachable via FS + `unittest -l` overlaps).
     seen = set()
     deduped = []
     for it in items:
@@ -1724,35 +1350,14 @@ def pytest_collection_modifyitems(session, config, items):
     items[:] = deduped
 
     batch_size = config.getoption("--batch-size", default=10)
-    if batch_size <= 1:
-        return
+    if batch_size > 1:
+        assign_batches(items, batch_size=batch_size)
 
-    batch_id = 0
-    i = 0
-    while i < len(items):
-        item = items[i]
-        if not isinstance(item, SqlLogicItem):
-            i += 1
-            continue
-
-        batch: list[SqlLogicItem] = []
-        while (
-            i < len(items)
-            and isinstance(items[i], SqlLogicItem)
-            and items[i]._binary == item._binary
-            and items[i]._working_dir == item._working_dir
-            and len(batch) < batch_size
-        ):
-            batch.append(items[i])
-            i += 1
-
-        test_names = [b._test_name for b in batch]
-        for b in batch:
-            b._batch_id = batch_id
-            b._batch_test_names = test_names
-            b.add_marker(pytest.mark.xdist_group(f"sqllogic_batch_{batch_id}"))
-
-        batch_id += 1
+    # Workers adopt the plan's env FROM THE STORE (SPEC §3.7): provision what their real selection needs
+    # (creds + services), single-flighted so the controller's up-front boot/fetch isn't duplicated. The
+    # controller itself provisions from the collect-first Plan (see controller.py), so gate on worker.
+    if getattr(config, "workerinput", None) is not None and suites:
+        provision_reachable(config, _reachable_suites(config, items))
 
 
 # ---------------------------------------------------------------------------
@@ -1761,11 +1366,7 @@ def pytest_collection_modifyitems(session, config, items):
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Consolidate per-test skip reasons into one counted digest for the run.
-
-    pytest's -rs lists every skipped test individually; for a big suite this groups
-    them by reason (exact match) so a missing env var / extension is obvious at a glance.
-    """
+    """Consolidate per-test skip reasons into one counted digest for the run."""
     from collections import Counter
 
     skipped = terminalreporter.stats.get("skipped", [])
@@ -1777,7 +1378,6 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         reason = longrepr[2] if isinstance(longrepr, tuple) else str(longrepr)
         counts[reason.removeprefix("Skipped: ")] += 1
 
-    # yellow to match pytest's own skip coloring (markup is honored per --color)
     terminalreporter.write_sep("-", f"skipped: {len(skipped)} by reason", yellow=True, bold=True)
     for reason, n in counts.most_common():
         terminalreporter.write_line(f"  {n:>4}  {reason}", yellow=True)

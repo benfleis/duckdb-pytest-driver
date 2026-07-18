@@ -1,14 +1,17 @@
-"""Self-tests for eager + late credential delivery via the store (Step 2 + late-fetch).
+"""Self-tests for up-front credential delivery via the store (collect-first).
 
 Offline: the credential ``fetch`` is a FAKE (never real op) that appends its pid to a log so the outer
 test can count fetches. One env-driven conftest serves every scenario:
   FETCH_LOG   append pid on fetch
   CRED_VALID  "0" -> validate() fails
   DBX_PRESENT "1" -> available() true (creds "already in env")
-  LATE_FETCH  "0" -> credential(late_fetch=False)
 Isolated inner pytest runs (subprocess, via pytester) exercise the real controller/worker split.
 
-Backstop resolution order (per credential): store (up-front) -> available() env -> late fetch -> fail.
+The reactive `pytest_runtest_setup` backstop is DELETED. Because collect-first resolves the real
+selection (`-k` included), each reachable suite's credentials are fetched ONCE, up front, on the
+controller (single-flighted through the store; ``available()`` short-circuits when creds are already
+in the env; an invalid credential aborts the session). The `-k` case the old backstop existed for is
+now just part of the plan.
 """
 
 import textwrap
@@ -119,28 +122,26 @@ def test_backstop_late_fetch_rescues_under_k(pytester, monkeypatch):
     assert log.read_text().count("\n") == 1  # single-flight late fetch happened
 
 
-def test_backstop_poisons_on_invalid_late_fetch(pytester, monkeypatch):
-    # late fetch runs but validate fails -> ProvisionFailed poison -> the test errors loud.
+def test_invalid_credential_under_k_aborts_the_session(pytester, monkeypatch):
+    # MIGRATED (was test_backstop_poisons_on_invalid_late_fetch): the reactive per-test backstop is
+    # gone. Collect-first resolves the `-k` selection up front, so an invalid credential a selected
+    # test needs is fetched + validated PRE-FORK on the controller and aborts the whole session red
+    # (a UsageError), exactly like the bare-run case — never a lazy per-test poison at runtime.
     log = pytester.path / "fetch.log"
     monkeypatch.setenv("FETCH_LOG", str(log))
     monkeypatch.setenv("CRED_VALID", "0")
     _write(pytester, "conftest.py", _CRED_CONFTEST)
     _write(pytester, "test/dbx/test_live.py", "def test_live(): pass")
     result = pytester.runpytest_subprocess("-k", "live", "-p", "no:cacheprovider")
-    result.assert_outcomes(errors=1)
-    assert log.exists()  # the late fetch WAS attempted (then poisoned)
+    assert result.ret != 0  # session aborted up front (UsageError), not a per-test error
+    assert log.exists()  # the up-front fetch WAS attempted (then rejected by validate)
+    result.stderr.fnmatch_lines(["*DBX creds unavailable*"])
 
 
-def test_backstop_fails_fast_when_late_fetch_disabled(pytester, monkeypatch):
-    # late_fetch=False + not in env + unreachable -> fail loud, never fetch (strict CI).
-    log = pytester.path / "fetch.log"
-    monkeypatch.setenv("FETCH_LOG", str(log))
-    monkeypatch.setenv("LATE_FETCH", "0")
-    _write(pytester, "conftest.py", _CRED_CONFTEST)
-    _write(pytester, "test/dbx/test_live.py", "def test_live(): pass")
-    result = pytester.runpytest_subprocess("-k", "live", "-p", "no:cacheprovider")
-    result.assert_outcomes(errors=1)
-    assert not log.exists()  # no fetch attempted
+# REMOVED (was test_backstop_fails_fast_when_late_fetch_disabled): the `late_fetch=False` knob only
+# governed the DELETED reactive runtest backstop's "never prompt mid-run" stance. With collect-first,
+# a selected credentialed test is resolved up front and its credential is fetched pre-fork regardless
+# — there is no "late" fetch to disable — so the test's premise no longer has an analog.
 
 
 def test_vanilla_credential_free_run_unaffected(pytester, monkeypatch):

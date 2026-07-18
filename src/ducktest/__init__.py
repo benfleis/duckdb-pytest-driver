@@ -11,6 +11,7 @@ Public API re-exported here so conftests (and drivers) can
 """
 
 from .sqllogic import SqlLogicFile  # noqa: F401  (the .test lane)
+from .context import get_context  # noqa: F401  (the session context: SessionContext + typed Registry)
 from .plugin import (  # noqa: F401  (the harness / plugin)
     register_options,
     find_binary,
@@ -22,6 +23,11 @@ from .plugin import (  # noqa: F401  (the harness / plugin)
     get_broadcast,
     get_store,
     provision_service,
+)
+from .store import (  # noqa: F401  (the process-shared store: facade acknowledged in the public API)
+    ResourceMissing,
+    ProvisionFailed,
+    ProvisionTimeout,
 )
 from .requires import requires, requires_matrix, Requirement, collect_requirements  # noqa: F401
 from .provision import register_provisioner, get_provisioner, Provisioner, Bindings  # noqa: F401
@@ -48,12 +54,9 @@ from .sqldef import (  # noqa: F401  (generic multi-statement SQL-def core)
     run_sql_file,
 )
 
-# DEPRECATED alias: `Fixture` was renamed to `TableSpec` (2026-07-15). Kept so existing consumers
-# (UC) keep importing while they migrate; remove once no consumer references `Fixture`.
-Fixture = TableSpec
-
 __all__ = [
     "SqlLogicFile",
+    "get_context",
     "register_options",
     "find_binary",
     "find_duckdb",
@@ -64,6 +67,9 @@ __all__ = [
     "get_broadcast",
     "get_store",
     "provision_service",
+    "ResourceMissing",
+    "ProvisionFailed",
+    "ProvisionTimeout",
     "requires",
     "requires_matrix",
     "Requirement",
@@ -81,7 +87,6 @@ __all__ = [
     "Credential",
     "Service",
     "TableSpec",
-    "Fixture",  # deprecated alias of TableSpec (remove once consumers migrate)
     "register_instantiator",
     "get_instantiator",
     "step",
