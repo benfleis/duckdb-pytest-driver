@@ -182,7 +182,16 @@ def register_options(parser):
         choices=["never", "on-success", "always"],
         metavar="{never,on-success,always}",
         help="Destroy disposition for the per-run dir (BASE/<run-id>), applied pytest-side at "
-        "sessionfinish: never | on-success (default) | always.",
+        "sessionfinish: never | on-success (default) | always. Also gates the REMOTE per-run reap "
+        "(SPEC §11.4) so remote matches local semantics.",
+    )
+    parser.addoption(
+        "--temp-reap-age-days",
+        default=7,
+        type=int,
+        metavar="N",
+        help="Age-sweep backstop (SPEC §11.4): purge REMOTE run prefixes older than N days (default 7). "
+        "Best-effort, controller-only, and only when the registered reaper supports listing run prefixes.",
     )
     # --- @requires-driven provisioning / interactive shell ------------------
     parser.addoption(
@@ -1173,12 +1182,38 @@ def pytest_configure(config):
             config.option.log_cli_level = "INFO"
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Standard rep_setup/rep_call stash: the per-test remote reaper reads it for its keep-on-failure
+    gate (SPEC §11.4). Item-local, so it works on the xdist worker that ran the test — no queue."""
+    from .reaper import stash_report
+
+    outcome = yield
+    stash_report(item, outcome.get_result())
+
+
+def pytest_runtest_teardown(item, nextitem):
+    """Per-test REMOTE reap (primary, SPEC §11.4): purge ${TEMP_DIR}/${token} if the test passed. Runs
+    on the worker (it knows its own outcome). No-op when TEMP_DIR is local / no reaper / the test failed
+    (keep-on-failure). Order-independent w.r.t. fixture teardown — a remote reap is a prefix delete."""
+    from .reaper import reap_test
+
+    reap_test(item.config, item)
+
+
 def pytest_sessionfinish(session, exitstatus):
     # Controller-only: stop store-present services + shut the store down, then apply the temp-dir policy.
     config = session.config
     if getattr(config, "workerinput", None) is not None:
         return  # this is a worker
     _teardown_store(config)
+    # REMOTE reaping (SPEC §11.4), controller-only: the per-run safety net (gated by --temp-dir-destroy)
+    # then the best-effort age-sweep. No-ops when TEMP_DIR is local / no reaper is registered. The LOCAL
+    # rmtree below is unchanged (unittest owns local; this stays for the interim local cleanup).
+    from .reaper import age_sweep, reap_run
+
+    reap_run(config, session)
+    age_sweep(config)
     destroy = config.getoption("--temp-dir-destroy", default="on-success")
     if destroy == "never":
         return

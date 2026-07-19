@@ -29,6 +29,7 @@ from .store import (  # noqa: F401  (the process-shared store: facade acknowledg
     ProvisionFailed,
     ProvisionTimeout,
 )
+from .reaper import register_temp_reaper, get_temp_reaper  # noqa: F401  (REMOTE storage reaper, SPEC §11.4)
 from .requires import requires, requires_matrix, Requirement, collect_requirements  # noqa: F401
 from .provision import register_provisioner, get_provisioner, Provisioner, Bindings, State  # noqa: F401
 from .suites import (  # noqa: F401  (test-suite declaration API + registry; Phase 0: inert)
@@ -67,6 +68,8 @@ __all__ = [
     "get_broadcast",
     "get_store",
     "provision_service",
+    "register_temp_reaper",
+    "get_temp_reaper",
     "ResourceMissing",
     "ProvisionFailed",
     "ProvisionTimeout",

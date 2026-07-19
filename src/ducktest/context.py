@@ -188,6 +188,7 @@ class SessionContext:
     duckdb_cli: Optional[str] = None  # resolved duckdb CLI (for provisioner init-SQL / --repl)
     store: Any = None  # store handle; started only if a reachable suite declares a resource
     plan: Optional[Plan] = None  # set by the controller's SCAN phase
+    temp_reaper: Any = None  # REMOTE-storage reaper (purge/list) a backend registers; None => no-op
 
     # convenience passthroughs so callers read `ctx.suite(...)` not `ctx.registry.suites[...]`
     def suite(self, name: str) -> Any:
