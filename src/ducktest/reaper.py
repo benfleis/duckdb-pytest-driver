@@ -6,22 +6,24 @@ driver is the process that holds the object-store credentials (the rclone `Remot
 **path-addressed** (a prefix purge), so it is order-independent — which is exactly why SPEC §11.4
 deletes `reclaim_physical` + the LIFO teardown ordering.
 
-Three nested levels, each keep-on-failure at its level, each a no-op when `TEMP_DIR` is local (local is
-unittest's job) OR when no reaper is registered (the framework is backend-agnostic — it owns *when* and
+The REMOTE TEMP run-root is ``$BASE/$RUN_ID`` (what the binary composes as TEMP_DIR from the driver's
+``--temp-dir-base`` / ``--run-id``); reaping is scoped to TEMP only — **DATA is never reaped**. Three
+nested levels, each keep-on-failure at its level, each a no-op when ``$BASE`` is local (local is the
+binary's job) OR when no reaper is registered (the framework is backend-agnostic — it owns *when* and
 the keep-on-failure gating; a registered reaper owns *how*, the actual object-store purge/list):
 
-  1. **per-test** (primary): after each test that PASSED, purge ``${TEMP_DIR}/${token}``. Keep-on-failure
-     skips the reap if the test's setup OR call failed (its remnants are preserved for debugging). The
-     outcome is read from reports the ``pytest_runtest_makereport`` hookwrapper stashes on the item; it
-     runs on the worker (which knows its own outcome — no manager queue).
-  2. **per-run** (safety net, controller/session end): purge ``${TEMP_DIR}/${run-mnemonic}``, gated by
+  1. **per-test** (primary): after each test that PASSED, purge ``$BASE/$RUN_ID/${token}``.
+     Keep-on-failure skips the reap if the test's setup OR call failed (its remnants are preserved for
+     debugging). The outcome is read from reports the ``pytest_runtest_makereport`` hookwrapper stashes
+     on the item; it runs on the worker (which knows its own outcome — no manager queue).
+  2. **per-run** (safety net, controller/session end): purge the run-root ``$BASE/$RUN_ID``, gated by
      the existing ``--temp-dir-destroy`` disposition (never | on-success = only if nothing failed |
      always). Passers already reaped themselves per-test, so on a failed run this retains exactly the
      failed tests' remnants.
   3. **age-sweep** (backstop, best-effort): if the reaper exposes ``list_run_prefixes(base)``, enumerate
-     the base prefix, parse each run-id's date (mnemonic run-ids are date-prefixed — see mnemonic.py),
-     and purge those older than ``--temp-reap-age-days`` (default 7). Never fails the run on a sweep
-     error; logs what it swept.
+     ``$BASE``, parse each run-id's date (mnemonic run-ids are date-prefixed — see mnemonic.py), and
+     purge those older than ``--temp-reap-age-days`` (default 7). Never fails the run on a sweep error;
+     logs what it swept.
 
 The registered reaper is a small object exposing ``purge(prefix)`` and optionally
 ``list_run_prefixes(base) -> [(prefix, mnemonic_or_runid)]`` — a suite/backend builds it from its own
@@ -89,24 +91,29 @@ def _test_passed(item) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# The remote gate: TEMP_DIR must be remote (local is unittest's job)
+# The remote gate: $BASE must be remote (local is the binary's job). Scoped to
+# TEMP only — the run-root is $BASE/$RUN_ID; DATA is never reaped.
 # ---------------------------------------------------------------------------
 
 
-def _remote_temp_dir(config):
-    """This run's ``TEMP_DIR`` if it is REMOTE, else None (a no-op signal — local is unittest's)."""
+def _remote_base(config):
+    """This run's ``$BASE`` if it is REMOTE, else None (a no-op signal — local is the binary's).
+    Computed from the driver's originated roots (SPEC §11.4); TEMP only, never DATA."""
     from .plugin import _is_remote_root, _temp_roots
 
-    temp_dir = _temp_roots(config)["TEMP_DIR"]
-    return temp_dir if _is_remote_root(temp_dir) else None
+    base = _temp_roots(config)["base"]
+    return base if _is_remote_root(base) else None
 
 
-def _run_mnemonic(config):
-    """The run-scoped path token ``<YYYYMMDD>_<mnemonic>`` — the per-run prefix; date-prefixed so the
-    age-sweep can parse it. Per-test tokens share this prefix (they append a nodeid hash)."""
-    from .plugin import _provision_token
+def _remote_run_root(config):
+    """This run's REMOTE TEMP run-root ``$BASE/$RUN_ID`` (what the binary composes as TEMP_DIR), or
+    None when ``$BASE`` is local. The run-level reap target; per-test reaps append a subpath."""
+    base = _remote_base(config)
+    if base is None:
+        return None
+    from .plugin import _temp_roots
 
-    return _provision_token(config)
+    return f"{base}/{_temp_roots(config)['run_id']}"
 
 
 # ---------------------------------------------------------------------------
@@ -115,20 +122,21 @@ def _run_mnemonic(config):
 
 
 def reap_test(config, item) -> None:
-    """After a test: if TEMP_DIR is remote + a reaper is registered + the test PASSED, purge
-    ``${TEMP_DIR}/${token}``. No-op otherwise (local / no reaper / setup-or-call failed). Best-effort:
-    a purge error is logged, never raised (a reap must not turn a passed test red)."""
+    """After a test: if $BASE is remote + a reaper is registered + the test PASSED, purge the test's
+    subpath under the run-root ``$BASE/$RUN_ID/${token}``. No-op otherwise (local / no reaper /
+    setup-or-call failed). Best-effort: a purge error is logged, never raised (a reap must not turn a
+    passed test red)."""
     reaper = get_temp_reaper(config)
     if reaper is None:
         return
-    temp_dir = _remote_temp_dir(config)
-    if temp_dir is None:
+    run_root = _remote_run_root(config)
+    if run_root is None:
         return
     if not _test_passed(item):
         return  # keep-on-failure: preserve the failed test's artifacts
     from .plugin import _provision_token
 
-    prefix = f"{temp_dir}/{_provision_token(config, item)}"
+    prefix = f"{run_root}/{_provision_token(config, item)}"
     try:
         reaper.purge(prefix)
     except Exception as exc:  # noqa: BLE001 — reaping must not fail the (passed) test
@@ -141,22 +149,23 @@ def reap_test(config, item) -> None:
 
 
 def reap_run(config, session) -> None:
-    """At session end (controller): purge ``${TEMP_DIR}/${run-mnemonic}`` per the ``--temp-dir-destroy``
-    disposition (reused so remote matches local semantics): never = skip; on-success = only when nothing
-    failed; always = unconditional. Passers already reaped per-test, so on a failed on-success run this
-    retains exactly the failed tests' remnants. Best-effort: logged, never raised."""
+    """At session end (controller): purge the REMOTE run-root ``$BASE/$RUN_ID`` per the
+    ``--temp-dir-destroy`` disposition (reused so remote matches local semantics): never = skip;
+    on-success = only when nothing failed; always = unconditional. Passers already reaped per-test, so
+    on a failed on-success run this retains exactly the failed tests' remnants. Best-effort: logged,
+    never raised."""
     reaper = get_temp_reaper(config)
     if reaper is None:
         return
-    temp_dir = _remote_temp_dir(config)
-    if temp_dir is None:
+    run_root = _remote_run_root(config)
+    if run_root is None:
         return
     destroy = config.getoption("--temp-dir-destroy", default="on-success")
     if destroy == "never":
         return
     if destroy == "on-success" and int(session.testsfailed) != 0:
         return  # keep the failed run's remnants
-    prefix = f"{temp_dir}/{_run_mnemonic(config)}"
+    prefix = run_root
     try:
         reaper.purge(prefix)
     except Exception as exc:  # noqa: BLE001 — session-end reap must not raise
@@ -190,15 +199,15 @@ def age_sweep(config) -> None:
     reaper = get_temp_reaper(config)
     if reaper is None or not hasattr(reaper, "list_run_prefixes"):
         return
-    temp_dir = _remote_temp_dir(config)
-    if temp_dir is None:
+    base = _remote_base(config)
+    if base is None:
         return
     days = int(config.getoption("--temp-reap-age-days", default=7))
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     try:
-        prefixes = list(reaper.list_run_prefixes(temp_dir))
+        prefixes = list(reaper.list_run_prefixes(base))
     except Exception as exc:  # noqa: BLE001 — a listing failure never fails the run
-        log.warning("remote reap: age-sweep listing of %s failed: %s", temp_dir, exc)
+        log.warning("remote reap: age-sweep listing of %s failed: %s", base, exc)
         return
     swept = []
     for prefix, runid in prefixes:

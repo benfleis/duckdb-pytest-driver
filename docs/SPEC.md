@@ -396,51 +396,68 @@ coordination primitive that can't actually coordinate them.
    *outer* script wants a clean per-mode invocation; internally, test/reassert share the binary and
    run/repl is a CLI subprocess.
 
-## 11. Temp/Data storage contract (TEMP_DIR / LOCAL_TEMP_DIR — two axes)
+## 11. Temp/Data storage contract (TEMP = managed run-root; DATA = read-only input)
 
-Prototyped in duckdb core's `test/helpers/test_config.cpp` (benfleis `vfs-integration-tests-p3`); this
-section pins the **driver ↔ unittest division**. Extends the locked env-var contract (§0), and resolves
-open decision (does LOCAL_TEMP_DIR come back — yes).
+This section **DEFERS to the in-main duckdb model as authority** — the driver *follows* it, it does not
+re-specify it. The model lives in `test/helpers/test_config.cpp` (`UpdateEnvironment`,
+`TestDirectoryPath`) + `test/helpers/test_helpers.cpp` (`PrepareTempDir`, `DestroyTempDir`). This
+section pins only the **driver ↔ binary division**; when in doubt, the C++ is truth.
 
-### 11.1 Two axes, each with a local mirror
-- **DATA** (`DATA_DIR` / `LOCAL_DATA_DIR`) — the read-side SoT: input fixtures/data.
-- **TEMP** (`TEMP_DIR` / `LOCAL_TEMP_DIR`) — the write-side scratch: provisioned tables, external table
-  `LOCATION`s, db files.
-Either `X` may point at object storage; the paired `LOCAL_X` is a **guaranteed-local** sibling for
-anything needing POSIX semantics (duckdb spill/WAL, the attached RW `.db`, atomic rename, mmap).
+### 11.1 The two are NOT symmetric — TEMP is managed, DATA is a plain input
+- **TEMP** (`TEMP_DIR` / `LOCAL_TEMP_DIR`) — the binary's **managed run-root**: write-side scratch
+  (provisioned tables, external `LOCATION`s, db files). `TestDirectoryPath()` composes it as
+  `$BASE/$RUN_ID` (`$BASE` ← `--temp-dir-base`, default `duckdb_unittest_tempdir`; `$RUN_ID` ←
+  `--run-id`), the per-test runner appends `/$TEST_ID`, `PrepareTempDir` **creates** it, and
+  `DestroyTempDir(success)` **reaps** it on success. `LOCAL_TEMP_DIR = IsRemoteFile(TEMP_DIR) ? <local>
+  : TEMP_DIR` (create/reap skipped for a remote root — env-var only).
+- **DATA** (`DATA_DIR` / `LOCAL_DATA_DIR`) — **read-only sourcing**: input fixtures/data. `--data-dir`
+  override (else `working_dir/data`), with `LOCAL_DATA_DIR = IsRemoteFile(DATA_DIR) ? working_dir/data :
+  DATA_DIR`. **No `$BASE`, no `$RUN_ID`, no per-test, no create/reap, no reaper** — a plain input path.
+  (The only write to a remote DATA root is out-of-band fixture *provisioning*, never test execution.)
 
-### 11.2 Resolution rule — canonical in unittest, applied once
-`LOCAL_X = IsRemoteFile(X) ? <local-allocated> : X`; an explicit `LOCAL_X` wins. Owned by unittest
-(`MakeVariables`). When the driver passes all four explicitly, unittest's `if-unset` branches no-op —
-**one resolver of record**, never re-implemented per-invocation in the driver.
+**Litmus: if it's reaped, it's TEMP; DATA is never reaped.**
 
-### 11.3 Origination — the driver, once per run, mnemonic/token-tagged
-The driver composes and originates **all four** roots, run-scoped, tagged with the **run mnemonic**
-(+ per-test **token** for isolation), and passes them to **every** unittest invocation. NOT PID — PID
-would give each batch/worker subprocess its own local dir (fragmented, uncorrelated, unreapable as a
-unit); the mnemonic is what makes the run's local+remote dirs **one shared set** across xdist workers.
-Passthrough is `--temp-dir` **exact** (never `--temp-dir-base`, which re-appends a suffix). Net:
-**one run → one `TEMP_DIR` + one `LOCAL_TEMP_DIR`** (+ DATA pair), identical across all invocations.
+### 11.2 Resolution rule — canonical in the BINARY
+`LOCAL_X = IsRemoteFile(X) ? <local> : X`. Owned by the binary (`UpdateEnvironment`). The driver never
+re-implements this and never sets `LOCAL_*` — the binary is the **one resolver of record**.
 
-### 11.4 Lifecycle — split by LOCAL vs REMOTE (whoever holds the filesystem)
-| root | create | reap | owner |
+### 11.3 Origination — the driver hands the binary $BASE + $RUN_ID, the binary composes the rest
+The driver originates only **`$BASE`** + **`$RUN_ID`** (the run mnemonic, via `_run_id` — broadcast to
+every xdist worker so the whole run shares ONE identity) and an optional read-only **DATA** dir, and
+passes on **every** unittest invocation:
+
+- `--temp-dir-base $BASE` + `--run-id $RUN_ID` — the **binary** then composes `TEMP_DIR=$BASE/$RUN_ID`,
+  appends `/$TEST_ID` per test, derives `LOCAL_TEMP_DIR`, and owns local create/reap.
+- `--data-dir $DIR` **only when the driver has an override**; else the binary defaults to
+  `working_dir/data`. DATA is a plain read-only path — never composed with the run-id, never reaped.
+- `--temp-dir-destroy {never|on-success|always}` passed **through** so the binary's LOCAL reap matches
+  the driver's disposition.
+
+Explicitly **NOT**: the driver does not compose four full paths, does not pass `--temp-dir` *exact*, and
+does not set a `TEMP_DIR` / `LOCAL_TEMP_DIR` env var (the binary composes/derives them and would
+overwrite a driver-set `TEMP_DIR` anyway). The mnemonic (NOT PID) is what makes the run's dirs **one
+shared, reapable set** across workers — PID would fragment per subprocess.
+
+### 11.4 Lifecycle — split by LOCAL vs REMOTE (whoever holds the filesystem), TEMP only
+| TEMP root | create | reap | owner |
 |---|---|---|---|
-| **LOCAL** (temp+data) | nested dirs | on **success** (keep-on-failure) | **unittest** — the local-FS process |
-| **REMOTE** (temp+data) | — (env-var passthrough only) | — | **driver** — it holds the rclone `Remote` |
+| **LOCAL** `$BASE/$RUN_ID` | binary (`PrepareTempDir`) | on **success** (keep-on-failure) | **binary** — the local-FS process |
+| **REMOTE** `$BASE/$RUN_ID` | — (env-var passthrough only) | prefix delete | **driver** — it holds the rclone `Remote` |
 
-- **unittest** owns local create + reap-on-success (the existing `RemoveDirectory` path — verify intact).
-  It never `mkdir`/`rm`s remote storage; for a remote root it only sets the env var.
-- **driver** owns remote staging (provisioner/rclone writes external `LOCATION`s under `TEMP_DIR`) and
-  remote reaping — **path-addressed, nested**: per-test `${TEMP_DIR}/${token}/` (primary, keep the
-  *failed* test's) ⊂ run `${TEMP_DIR}/` (session safety, only if **all** passed) ⊂ base (age-sweep,
-  unconditional). Outcomes ride pytest's report stream (item-local makereport for the test gate;
-  controller `testsfailed` for the session gate) — no manager queue needed.
+- **binary** owns local create + reap-on-success (`PrepareTempDir` / `DestroyTempDir`). It never
+  `mkdir`/`rm`s remote storage; for a remote base it only sets env. The driver does **not** also rmtree
+  the local run dir — no double-management.
+- **driver** owns remote staging and remote reaping, **scoped to TEMP only** (`$BASE/$RUN_ID[/subpath]`)
+  — **never DATA**. Path-addressed, nested: per-test `$BASE/$RUN_ID/${token}` (primary, keep the
+  *failed* test's) ⊂ run-root `$BASE/$RUN_ID` (session safety, only if **all** passed) ⊂ `$BASE`
+  (age-sweep, unconditional). Outcomes ride pytest's report stream (item-local makereport for the test
+  gate; controller `testsfailed` for the session gate) — no manager queue needed.
 
 This **deletes `reclaim_physical` and the LIFO ordering**: a remote reap is a prefix delete, so it's
 order-independent — the "reclaim before drop" concern evaporates. `on_cleanup` (per-`.test` SQL at test
 end) stays as a body-level affordance.
 
 ### 11.5 Core track (NOT the driver's job)
-duckdb honoring `LOCAL_TEMP_DIR` for its own temp/spill/db is a coordinated **core** change (the
-`vfs-integration-tests-p3` branch prototypes it; landing as its own upstream PR). The driver introduces
-origination + passthrough + the remote reaper; it never re-derives `LOCAL_*` and never reaps local.
+The binary honoring these paths for its own temp/spill/db is a **core** concern (`test_config.cpp` /
+`test_helpers.cpp`). The driver introduces only origination ($BASE + $RUN_ID + optional --data-dir) +
+passthrough + the remote TEMP reaper; it never re-derives `LOCAL_*`, never reaps local, never reaps DATA.

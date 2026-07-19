@@ -24,7 +24,6 @@ import contextlib
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -173,17 +172,25 @@ def register_options(parser):
         "--temp-dir-base",
         default=None,
         metavar="BASE",
-        help="Caller-owned base dir for this run's temp dirs. Tests run under BASE/<run-id>/<test>; "
-        "pytest owns BASE/<run-id> and its cleanup (see --temp-dir-destroy).",
+        help="This run's $BASE, passed to the binary as --temp-dir-base (may be local OR remote, e.g. "
+        "s3://…). The binary composes TEMP_DIR=$BASE/<run-id>/<test> and owns local create/reap; the "
+        "driver reaps only REMOTE $BASE/<run-id> (see --temp-dir-destroy, SPEC §11.4).",
+    )
+    parser.addoption(
+        "--data-dir",
+        default=None,
+        metavar="DIR",
+        help="Read-only root for test input data, passed to the binary as --data-dir (DATA_DIR). A plain "
+        "input path — never composed with the run-id, never reaped. Default: the binary's working_dir/data.",
     )
     parser.addoption(
         "--temp-dir-destroy",
         default="on-success",
         choices=["never", "on-success", "always"],
         metavar="{never,on-success,always}",
-        help="Destroy disposition for the per-run dir (BASE/<run-id>), applied pytest-side at "
-        "sessionfinish: never | on-success (default) | always. Also gates the REMOTE per-run reap "
-        "(SPEC §11.4) so remote matches local semantics.",
+        help="Destroy disposition for the per-run dir (BASE/<run-id>): never | on-success (default) | "
+        "always. Passed THROUGH to the binary (which owns the LOCAL reap) and also gates the driver's "
+        "REMOTE per-run reap (SPEC §11.4) so remote matches local semantics.",
     )
     parser.addoption(
         "--temp-reap-age-days",
@@ -468,19 +475,15 @@ def _run_id(config):
     return run_id
 
 
-def _run_dir(config):
-    base = config.getoption("--temp-dir-base", default=None)
-    return os.path.join(base, _run_id(config)) if base else None
-
-
 # ---------------------------------------------------------------------------
-# TEMP/DATA storage roots (SPEC §11.3): the driver ORIGINATES all four roots
-# ONCE per run, tags them with the run mnemonic, and passes them to EVERY
-# unittest invocation. Because all four env vars are set (and --temp-dir is
-# passed EXACT), the binary's `if-unset` resolver no-ops — one resolver of
-# record. The whole run therefore shares ONE set: one TEMP_DIR + one
-# LOCAL_TEMP_DIR (+ the DATA pair), identical across all batch/worker subprocs.
-# NOT pid-tagged: pid would give each subprocess its own uncorrelated dir.
+# TEMP/DATA storage inputs (SPEC §11.3): the driver FOLLOWS the in-main temp-dir
+# model (duckdb test/helpers/test_config.cpp). It originates ONLY $BASE + $RUN_ID
+# (the run mnemonic, broadcast to every xdist worker so the whole run shares ONE
+# identity) plus an optional read-only DATA dir, and passes --temp-dir-base /
+# --run-id to EVERY unittest invocation. The BINARY composes TEMP_DIR=$BASE/$RUN_ID,
+# derives LOCAL_*, and owns local create/reap — the driver never composes the four
+# full paths, never derives LOCAL_*, never sets a TEMP_DIR env var. NOT pid-tagged:
+# the mnemonic is what makes the run's dirs one shared, reapable set across workers.
 # ---------------------------------------------------------------------------
 
 # A root is REMOTE when it carries a URI scheme other than file:// (s3://, abfss://,
@@ -495,48 +498,37 @@ def _is_remote_root(value):
     return bool(m) and m.group(1).lower() != "file"
 
 
-def _local_base(config):
-    """The driver's guaranteed-local base for originated dirs: `--temp-dir-base` if given, else a
-    stable per-user scratch under the system temp dir."""
+def _base(config):
+    """This run's $BASE — the root the binary composes $BASE/$RUN_ID under. The explicit
+    `--temp-dir-base` (may be local OR remote, e.g. s3://…), else a stable per-user local scratch."""
     base = config.getoption("--temp-dir-base", default=None)
     return base if base else os.path.join(tempfile.gettempdir(), "ducktest")
 
 
 def _temp_roots(config):
-    """Originate the four run-scoped storage roots (SPEC §11.3), cached on config.
+    """Originate the run's storage inputs the driver hands the binary (SPEC §11.3), cached on config.
 
-    Composed ONCE per run, tagged with the run mnemonic (via `_run_id`, which is broadcast to every
-    xdist worker → all subprocesses share ONE set). Returns the four env vars the unittest resolver
-    reads: `TEMP_DIR`, `LOCAL_TEMP_DIR`, `DATA_DIR`, `LOCAL_DATA_DIR`.
+    FOLLOWS the in-main temp-dir model: the driver originates only `$BASE` + `$RUN_ID` (the run
+    mnemonic, via `_run_id` — broadcast to every xdist worker so the whole run shares ONE identity)
+    plus an optional read-only DATA dir. The BINARY composes TEMP_DIR=$BASE/$RUN_ID, derives
+    LOCAL_TEMP_DIR, and owns local create/reap; the driver never composes the four full paths, never
+    derives LOCAL_*, never sets a TEMP_DIR env var.
 
-    Per axis (TEMP write-side scratch / DATA read-side inputs):
-      * the root `X` is the user's explicit env value if set, else the driver default
-        `<local base>/<mnemonic>/<axis>` (local, mnemonic'd);
-      * the local sibling `LOCAL_X = X` when X is local, else `<local base>/<mnemonic>/<axis>`
-        — a guaranteed-local dir for POSIX semantics (spill/WAL/db). This origination decision is
-        applied ONCE here, never re-derived per invocation. An explicit `LOCAL_X` wins.
+    Returns the driver's bookkeeping dict:
+      * `base` / `run_id`  → --temp-dir-base / --run-id; also the REMOTE reaper's run-root $BASE/$RUN_ID;
+      * `data_dir`         → --data-dir when set, else None (the binary defaults to working_dir/data) —
+                             a plain read-only path, never composed with the run-id, never reaped;
+      * `destroy`          → the --temp-dir-destroy disposition, passed through so the binary's local
+                             reap matches the driver's REMOTE reap.
     """
     cached = getattr(config, "_sqllogic_temp_roots", None)
     if cached is not None:
         return cached
-    run_local = os.path.join(_local_base(config), _run_id(config))
-    env = os.environ
-
-    def axis(root_key, local_key, subdir):
-        local_default = os.path.join(run_local, subdir)
-        root = env.get(root_key) or local_default  # explicit user value wins; else local, mnemonic'd
-        local = env.get(local_key)  # explicit LOCAL_X wins
-        if local is None:
-            local = root if not _is_remote_root(root) else local_default
-        return root, local
-
-    temp_dir, local_temp_dir = axis("TEMP_DIR", "LOCAL_TEMP_DIR", "temp")
-    data_dir, local_data_dir = axis("DATA_DIR", "LOCAL_DATA_DIR", "data")
     roots = {
-        "TEMP_DIR": temp_dir,
-        "LOCAL_TEMP_DIR": local_temp_dir,
-        "DATA_DIR": data_dir,
-        "LOCAL_DATA_DIR": local_data_dir,
+        "base": _base(config),
+        "run_id": _run_id(config),
+        "data_dir": config.getoption("--data-dir", default=None),
+        "destroy": config.getoption("--temp-dir-destroy", default="on-success"),
     }
     config._sqllogic_temp_roots = roots
     return roots
@@ -1208,20 +1200,13 @@ def pytest_sessionfinish(session, exitstatus):
         return  # this is a worker
     _teardown_store(config)
     # REMOTE reaping (SPEC §11.4), controller-only: the per-run safety net (gated by --temp-dir-destroy)
-    # then the best-effort age-sweep. No-ops when TEMP_DIR is local / no reaper is registered. The LOCAL
-    # rmtree below is unchanged (unittest owns local; this stays for the interim local cleanup).
+    # then the best-effort age-sweep. No-ops when $BASE is local / no reaper is registered. There is NO
+    # driver-side LOCAL rmtree here: the binary owns LOCAL create/reap-on-success (it received
+    # --temp-dir-destroy), so the driver must not double-manage the run dir it reaps.
     from .reaper import age_sweep, reap_run
 
     reap_run(config, session)
     age_sweep(config)
-    destroy = config.getoption("--temp-dir-destroy", default="on-success")
-    if destroy == "never":
-        return
-    if destroy == "on-success" and int(exitstatus) != 0:
-        return  # keep on failure/interruption for debugging
-    run_dir = _run_dir(config)
-    if run_dir and os.path.isdir(run_dir):
-        shutil.rmtree(run_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

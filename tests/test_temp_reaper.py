@@ -1,12 +1,15 @@
 """Self-tests for the nested REMOTE storage reaper (SPEC §11.4) — offline, mock reaper.
 
-The driver reaps REMOTE ``TEMP_DIR`` at three nested levels (per-test / per-run / age-sweep), each
-keep-on-failure at its level, each a no-op when ``TEMP_DIR`` is local (unittest owns local) or when no
-reaper is registered. These exercise the framework's *when* + keep-on-failure gating against a FAKE
-reaper that only records its ``purge``/``list_run_prefixes`` calls — no rclone / object store needed.
+The driver reaps the REMOTE TEMP run-root ``$BASE/$RUN_ID`` at three nested levels (per-test / per-run /
+age-sweep), each keep-on-failure at its level, each a no-op when ``$BASE`` is local (the binary owns
+local) or when no reaper is registered. Remoteness comes from ``--temp-dir-base`` (the driver's $BASE),
+NOT a driver-set ``TEMP_DIR`` env var, and reaping is scoped to TEMP only — DATA is never reaped. These
+exercise the framework's *when* + keep-on-failure gating against a FAKE reaper that only records its
+``purge``/``list_run_prefixes`` calls — no rclone / object store needed.
 
-What still needs a REAL rclone/object-store to validate: that the recorded prefixes actually map to
-and delete the right remote objects (the reaper's *how*). That's the backend's job, not the framework's.
+What still needs a REAL rclone/object-store to validate: that the recorded prefixes actually map to and
+delete the right remote objects (the reaper's *how*) — and that the per-test token subpath lines up with
+the binary's ``$TEST_ID`` leaf for a remote base. That's the backend's job, not the framework's.
 """
 
 import textwrap
@@ -27,8 +30,13 @@ from ducktest.reaper import (
 )
 
 RUN_ID = "2026-07-18T00-00-00Z--brave-fox-42"
-REMOTE = "s3://bucket/scratch"
+REMOTE = "s3://bucket/scratch"  # a remote --temp-dir-base
 _ROOT_VARS = ("TEMP_DIR", "LOCAL_TEMP_DIR", "DATA_DIR", "LOCAL_DATA_DIR")
+
+
+def _run_root():
+    """The REMOTE TEMP run-root the binary composes as TEMP_DIR: $BASE/$RUN_ID."""
+    return f"{REMOTE}/{RUN_ID}"
 
 
 # -----------------------------------------------------------------------------
@@ -83,13 +91,15 @@ class Session:
 
 class Cfg:
     """Minimal pytest.Config stand-in: a typed stash (for the SessionContext), a fixed run-id, and the
-    options the reaper reads."""
+    options the reaper + `_temp_roots` read. ``temp_dir_base`` is the $BASE (remote → the reaper fires;
+    local → it no-ops)."""
 
     def __init__(self, destroy="on-success", age_days=7, temp_dir_base="/tmp/base"):
         self.stash = pytest.Stash()
         self._sqllogic_run_id = RUN_ID
         self._opts = {
             "--temp-dir-base": temp_dir_base,
+            "--data-dir": None,
             "--temp-dir-destroy": destroy,
             "--temp-reap-age-days": age_days,
         }
@@ -138,20 +148,18 @@ def test_register_temp_reaper_stores_on_context(clean_env):
 #
 
 
-def test_per_test_pass_purges_token_prefix(clean_env):
-    clean_env.setenv("TEMP_DIR", REMOTE)
+def test_per_test_pass_purges_token_subpath(clean_env):
     reaper = FakeReaper()
-    cfg = _config(reaper)
+    cfg = _config(reaper, temp_dir_base=REMOTE)
     item = Item("test/x.py::test_a", cfg)
     _passed(item)
     reap_test(cfg, item)
-    assert reaper.purged == [f"{REMOTE}/{_provision_token(cfg, item)}"]
+    assert reaper.purged == [f"{_run_root()}/{_provision_token(cfg, item)}"]
 
 
 def test_per_test_setup_failure_keeps_artifacts(clean_env):
-    clean_env.setenv("TEMP_DIR", REMOTE)
     reaper = FakeReaper()
-    cfg = _config(reaper)
+    cfg = _config(reaper, temp_dir_base=REMOTE)
     item = Item("test/x.py::test_a", cfg)
     stash_report(item, Rep("setup", "failed"))  # setup failed → keep-on-failure
     reap_test(cfg, item)
@@ -159,9 +167,8 @@ def test_per_test_setup_failure_keeps_artifacts(clean_env):
 
 
 def test_per_test_call_failure_keeps_artifacts(clean_env):
-    clean_env.setenv("TEMP_DIR", REMOTE)
     reaper = FakeReaper()
-    cfg = _config(reaper)
+    cfg = _config(reaper, temp_dir_base=REMOTE)
     item = Item("test/x.py::test_a", cfg)
     stash_report(item, Rep("setup", "passed"))
     stash_report(item, Rep("call", "failed"))  # call failed → keep-on-failure
@@ -169,10 +176,10 @@ def test_per_test_call_failure_keeps_artifacts(clean_env):
     assert reaper.purged == []
 
 
-def test_per_test_local_temp_dir_is_noop(clean_env):
-    # No TEMP_DIR env => the originated root is a local dir => local is unittest's job, driver no-ops.
+def test_per_test_local_base_is_noop(clean_env):
+    # A local $BASE => local is the binary's job, driver no-ops.
     reaper = FakeReaper()
-    cfg = _config(reaper)
+    cfg = _config(reaper, temp_dir_base="/tmp/base")
     item = Item("test/x.py::test_a", cfg)
     _passed(item)
     reap_test(cfg, item)
@@ -180,8 +187,7 @@ def test_per_test_local_temp_dir_is_noop(clean_env):
 
 
 def test_per_test_no_reaper_is_noop(clean_env):
-    clean_env.setenv("TEMP_DIR", REMOTE)
-    cfg = _config(reaper=None)  # remote, passed, but nothing registered
+    cfg = _config(reaper=None, temp_dir_base=REMOTE)  # remote, passed, but nothing registered
     item = Item("test/x.py::test_a", cfg)
     _passed(item)
     reap_test(cfg, item)  # must not raise
@@ -189,9 +195,8 @@ def test_per_test_no_reaper_is_noop(clean_env):
 
 def test_makereport_stash_drives_the_gate(clean_env):
     # The gate reads exactly the reports stash_report (the makereport hookwrapper) writes to item.stash.
-    clean_env.setenv("TEMP_DIR", REMOTE)
     reaper = FakeReaper()
-    cfg = _config(reaper)
+    cfg = _config(reaper, temp_dir_base=REMOTE)
     item = Item("test/x.py::test_a", cfg)
     # Nothing stashed yet → not a pass → no purge.
     reap_test(cfg, item)
@@ -202,59 +207,51 @@ def test_makereport_stash_drives_the_gate(clean_env):
     assert item.stash[REP_SETUP_KEY].outcome == "passed"
     assert item.stash[REP_CALL_KEY].outcome == "passed"
     reap_test(cfg, item)
-    assert reaper.purged == [f"{REMOTE}/{_provision_token(cfg, item)}"]
+    assert reaper.purged == [f"{_run_root()}/{_provision_token(cfg, item)}"]
 
 
 # -----------------------------------------------------------------------------
-# 2. Per-run reap (safety net) — --temp-dir-destroy disposition
+# 2. Per-run reap (safety net) — --temp-dir-destroy disposition, run-root = $BASE/$RUN_ID
 #
 
 
-def _run_prefix(cfg):
-    return f"{REMOTE}/{_provision_token(cfg)}"  # run-mnemonic (no node)
-
-
 def test_per_run_on_success_all_passed_purges(clean_env):
-    clean_env.setenv("TEMP_DIR", REMOTE)
     reaper = FakeReaper()
-    cfg = _config(reaper, destroy="on-success")
+    cfg = _config(reaper, destroy="on-success", temp_dir_base=REMOTE)
     reap_run(cfg, Session(testsfailed=0))
-    assert reaper.purged == [_run_prefix(cfg)]
+    assert reaper.purged == [_run_root()]
 
 
 def test_per_run_on_success_with_failure_keeps(clean_env):
-    clean_env.setenv("TEMP_DIR", REMOTE)
     reaper = FakeReaper()
-    cfg = _config(reaper, destroy="on-success")
+    cfg = _config(reaper, destroy="on-success", temp_dir_base=REMOTE)
     reap_run(cfg, Session(testsfailed=1))  # a failed test → retain the run's remnants
     assert reaper.purged == []
 
 
 def test_per_run_always_purges_regardless(clean_env):
-    clean_env.setenv("TEMP_DIR", REMOTE)
     reaper = FakeReaper()
-    cfg = _config(reaper, destroy="always")
+    cfg = _config(reaper, destroy="always", temp_dir_base=REMOTE)
     reap_run(cfg, Session(testsfailed=3))
-    assert reaper.purged == [_run_prefix(cfg)]
+    assert reaper.purged == [_run_root()]
 
 
 def test_per_run_never_skips(clean_env):
-    clean_env.setenv("TEMP_DIR", REMOTE)
     reaper = FakeReaper()
-    cfg = _config(reaper, destroy="never")
+    cfg = _config(reaper, destroy="never", temp_dir_base=REMOTE)
     reap_run(cfg, Session(testsfailed=0))
     assert reaper.purged == []
 
 
-def test_per_run_local_temp_dir_is_noop(clean_env):
+def test_per_run_local_base_is_noop(clean_env):
     reaper = FakeReaper()
-    cfg = _config(reaper, destroy="always")
+    cfg = _config(reaper, destroy="always", temp_dir_base="/tmp/base")
     reap_run(cfg, Session(testsfailed=0))
     assert reaper.purged == []
 
 
 # -----------------------------------------------------------------------------
-# 3. Age-sweep (backstop, best-effort)
+# 3. Age-sweep (backstop, best-effort) — lists under $BASE
 #
 
 
@@ -264,20 +261,18 @@ def _runid(days_ago):
 
 
 def test_age_sweep_purges_only_stale_prefixes(clean_env):
-    clean_env.setenv("TEMP_DIR", REMOTE)
     old, fresh = _runid(10), _runid(1)
     listing = [
         (f"{REMOTE}/{old}", old),
         (f"{REMOTE}/{fresh}", fresh),
     ]
     reaper = FakeSweepReaper(listing)
-    cfg = _config(reaper, age_days=7)
+    cfg = _config(reaper, age_days=7, temp_dir_base=REMOTE)
     age_sweep(cfg)
     assert reaper.purged == [f"{REMOTE}/{old}"]  # only the >7d prefix; the fresh one is kept
 
 
 def test_age_sweep_tolerates_bad_prefix_and_purge_error(clean_env):
-    clean_env.setenv("TEMP_DIR", REMOTE)
     old = _runid(30)
     listing = [
         (f"{REMOTE}/{old}", old),  # stale → purged
@@ -285,23 +280,22 @@ def test_age_sweep_tolerates_bad_prefix_and_purge_error(clean_env):
         (f"{REMOTE}/{_runid(40)}explode", _runid(40)),  # stale but purge raises → doesn't abort sweep
     ]
     reaper = FakeSweepReaper(listing)
-    cfg = _config(reaper, age_days=7)
+    cfg = _config(reaper, age_days=7, temp_dir_base=REMOTE)
     age_sweep(cfg)  # must not raise
     assert reaper.purged == [f"{REMOTE}/{old}"]  # the good stale one still got swept
 
 
 def test_age_sweep_noop_without_list_support(clean_env):
     # A reaper without list_run_prefixes → the age-sweep is silently skipped (per-test/per-run still work).
-    clean_env.setenv("TEMP_DIR", REMOTE)
     reaper = FakeReaper()
-    cfg = _config(reaper)
+    cfg = _config(reaper, temp_dir_base=REMOTE)
     age_sweep(cfg)
     assert reaper.purged == []
 
 
-def test_age_sweep_local_temp_dir_is_noop(clean_env):
+def test_age_sweep_local_base_is_noop(clean_env):
     reaper = FakeSweepReaper([(f"{REMOTE}/{_runid(99)}", _runid(99))])
-    cfg = _config(reaper)
+    cfg = _config(reaper, temp_dir_base="/tmp/base")
     age_sweep(cfg)
     assert reaper.purged == []
 
@@ -313,10 +307,10 @@ def test_age_sweep_local_temp_dir_is_noop(clean_env):
 
 def test_per_test_reap_wired_through_real_pytest(pytester, monkeypatch):
     """Prove the wiring (makereport stash → pytest_runtest_teardown → reap_test) under a real run: a
-    conftest registers a reaper that logs purge calls; one test passes, one fails. Only the passer's
-    prefix is purged; the failed run means the per-run net does not fire (on-success)."""
+    conftest registers a reaper that logs purge calls; one test passes, one fails. Remoteness comes from
+    a remote --temp-dir-base. Only the passer's prefix is purged; the failed run means the per-run net
+    does not fire (on-success)."""
     reap_log = pytester.path / "reap.log"
-    monkeypatch.setenv("TEMP_DIR", REMOTE)
     monkeypatch.setenv("REAP_LOG", str(reap_log))
     pytester.makeconftest(
         textwrap.dedent(
@@ -343,8 +337,10 @@ def test_per_test_reap_wired_through_real_pytest(pytester, monkeypatch):
             assert False
         """
     )
-    result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider")
+    result = pytester.runpytest_subprocess(
+        "-n", "0", "-p", "no:cacheprovider", "--temp-dir-base", REMOTE
+    )
     result.assert_outcomes(passed=1, failed=1)
     lines = [ln for ln in reap_log.read_text().splitlines() if ln.strip()]
     assert len(lines) == 1  # only the PASSED test reaped; the failed one kept (keep-on-failure)
-    assert lines[0].startswith(REMOTE + "/")  # the passer's ${TEMP_DIR}/${token}
+    assert lines[0].startswith(REMOTE + "/")  # the passer's $BASE/$RUN_ID/${token}

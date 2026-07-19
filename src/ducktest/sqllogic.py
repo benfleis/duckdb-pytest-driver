@@ -197,13 +197,18 @@ def _invoke(
     args = ["--emit-test-events", *(extra_args or []), *args]
     run_env = dict(os.environ)
     if temp_roots:
-        # Origination + passthrough (SPEC §11.3): the driver has ALREADY composed the run's four
-        # roots (TEMP_DIR/LOCAL_TEMP_DIR/DATA_DIR/LOCAL_DATA_DIR, mnemonic-tagged, one shared set for
-        # the whole run). Set all four as env vars so the binary's `if-unset` resolver no-ops — one
-        # resolver of record — and pass the local scratch as --temp-dir EXACT. NOT --temp-dir-base,
-        # which re-appends a per-test suffix and would fragment the run's shared local dir.
-        run_env.update(temp_roots)
-        args = ["--temp-dir", str(temp_roots["LOCAL_TEMP_DIR"]), *args]
+        # FOLLOW the in-main temp-dir model (SPEC §11.3): the driver originates $BASE + $RUN_ID and the
+        # BINARY composes TEMP_DIR=$BASE/$RUN_ID, derives LOCAL_*, and owns local create/reap. So pass
+        # --temp-dir-base / --run-id (NOT --temp-dir EXACT) and set NO TEMP_DIR/LOCAL_TEMP_DIR env var
+        # (the binary composes/overwrites it anyway). --temp-dir-destroy is passed THROUGH so the
+        # binary's local reap matches the driver's disposition. DATA is a plain read-only path:
+        # --data-dir only when the driver has an override, else the binary defaults to working_dir/data.
+        temp_args = ["--temp-dir-base", str(temp_roots["base"]), "--run-id", str(temp_roots["run_id"])]
+        if temp_roots.get("destroy"):
+            temp_args += ["--temp-dir-destroy", str(temp_roots["destroy"])]
+        if temp_roots.get("data_dir"):
+            temp_args += ["--data-dir", str(temp_roots["data_dir"])]
+        args = [*temp_args, *args]
     # env (e.g. provisioned UC_TEST_CATALOG/SCHEMA) is merged over the ambient env so
     # the body's ${...} substitution resolves to the provisioned values.
     if env:
