@@ -399,19 +399,19 @@ coordination primitive that can't actually coordinate them.
 ## 11. TEMP / DATA storage — dir structure + lifecycle (authoritative)
 
 **This section is the authority for the driver's TEMP/DATA behavior.** The binary's composition,
-`LOCAL_*` resolution, and local create/reap chain live in `test/helpers/test_config.cpp`
+`LOCAL_*` resolution, and local create/sweep chain live in `test/helpers/test_config.cpp`
 (`UpdateEnvironment`, `TestDirectoryPath`, `ResolveRunIdRoot`) + `test_helpers.cpp` (`PrepareTempDir`,
 `DestroyTempDir`, `DestroyTestTempDir`, `ReclaimLevels`) — cite the C++, do not re-derive it. What
 follows pins the **driver ↔ binary division** exactly.
 
 ### 11.1 Two axes, NOT symmetric
-- **TEMP** — write scratch. Managed, per-batch, reaped. Structure + lifecycle below.
+- **TEMP** — write scratch. Managed, per-batch, swept. Structure + lifecycle below.
 - **DATA** — read-only input (fixtures). A plain path: `--data-dir` (default `working_dir/data`),
   `LOCAL_DATA_DIR = IsRemoteFile(DATA_DIR) ? working_dir/data : DATA_DIR`. **No base, no id, no per-test,
-  no create/reap, no reaper.** The only write to a remote DATA root is out-of-band fixture
+  no create/sweep, no sweeper.** The only write to a remote DATA root is out-of-band fixture
   *provisioning*, never test execution.
 
-**Litmus: if it's reaped, it's TEMP; DATA is never reaped.**
+**Litmus: if it's swept, it's TEMP; DATA is never swept.**
 
 ### 11.2 TEMP directory structure
 ```
@@ -422,20 +422,20 @@ follows pins the **driver ↔ binary division** exactly.
             └─ <test-id>/  one test (the binary's TEST_ID, derived from the test name)
 ```
 
-### 11.3 Who creates / reaps each level, and how it reaches the binary
-`created by` / `reaped by` = the **process** (driver vs binary); the middle column is the **pass-down**
+### 11.3 Who creates / sweeps each level, and how it reaches the binary
+`created by` / `swept by` = the **process** (driver vs binary); the middle column is the **pass-down**
 mechanism (the ambiguity that bit us — it is `--temp-dir-base`, one composed string, not `--temp-dir`).
 
-| Level | Created by | How it reaches the binary | Reaped by |
+| Level | Created by | How it reaches the binary | Swept by |
 |---|---|---|---|
 | `<root>/` | pre-exists (neither) | inside `--temp-dir-base` | **never** (`ReclaimLevels` empty-check halts here) |
 | `<session-id>/` | binary *(local, as an ancestor)* · test-on-write *(remote)* | inside `--temp-dir-base` | binary iff empty *(local; the last batch out)* · **driver** session-net, all-success *(remote)* |
 | `<batch-id>/` (run-root) | binary `PrepareTempDir` *(local)* · test-on-write *(remote)* | **`--temp-dir-base = <root>/<session-id>/<batch-id>`** + `--temp-dir-run-id off` | binary `DestroyTempDir` *(local; recursive; `--temp-dir-destroy`×success)* · *(remote: none — subsumed by the `<session-id>` session net; no per-batch driver hook)* |
 | `<test-id>/` | binary runner (per test) | **not passed** — the binary derives it from the test name | binary `DestroyTestTempDir` *(local; per-test success)* · **driver** session sweep, kept iff failed *(remote)* |
 
-**One policy, two executors.** The rule is uniform: **reap every *successful* `test-id/`; a `batch-id/`
+**One policy, two executors.** The rule is uniform: **sweep every *successful* `test-id/`; a `batch-id/`
 or `session-id/` dir then falls away iff it's empty (== no failed child).** **Local** — the binary applies
-it *as it goes* (per-test reap + `ReclaimLevels` empty-prune); no driver, no rclone. **Remote** — the
+it *as it goes* (per-test sweep + `ReclaimLevels` empty-prune); no driver, no rclone. **Remote** — the
 driver applies it *once at session completion* with a single rclone sweep (§11.5). Same end-state; local
 just gets the free incremental optimization, remote doesn't.
 
@@ -445,16 +445,16 @@ just gets the free incremental optimization, remote doesn't.
   composes/derives them and would overwrite a driver-set `TEMP_DIR`).
 - **`--temp-dir-run-id off`** — run-id is redundant: the base already carries the per-batch identity, so
   no `/$RUN_ID` level is appended (`ResolveRunIdRoot` returns `$BASE`).
-- **`--temp-dir-destroy {never|on-success|always}`** — gates the binary's **local** reap only.
+- **`--temp-dir-destroy {never|on-success|always}`** — gates the binary's **local** sweep only.
 - **`--data-dir <dir>`** — only when overriding the read-only DATA axis; no lifecycle.
 
 ### 11.5 Execution — local (binary, as-it-goes) vs remote (driver, one sweep)
-- **Local = entirely the binary, incrementally.** `DestroyTestTempDir` reaps each passing `<test-id>/`;
-  `DestroyTempDir` reaps a passing `<batch-id>/` run-root; `ReclaimLevels` prunes empty this-run-created
+- **Local = entirely the binary, incrementally.** `DestroyTestTempDir` sweeps each passing `<test-id>/`;
+  `DestroyTempDir` sweeps a passing `<batch-id>/` run-root; `ReclaimLevels` prunes empty this-run-created
   ancestors, **stopping at any non-empty (== has-a-failed-child) level** — so `<session-id>/` is reclaimed
   only by whichever batch leaves it empty. The driver never rmtrees a local level, never needs rclone.
 - **Remote = entirely the driver, once at session completion** (the binary's remote clamp skips create
-  AND reap; TEMP only, **never DATA**). The driver has the failed set from the report stream (controller
+  AND sweep; TEMP only, **never DATA**). The driver has the failed set from the report stream (controller
   `sessionfinish`), writes those dirs as a keep-list, and runs one sweep:
   ```
   rclone delete <root>/<session-id>/ --exclude-from <keeplist>   # keeplist lines: <batch>/<test>/**
@@ -465,9 +465,9 @@ just gets the free incremental optimization, remote doesn't.
   contents; `--exclude-if-present <marker>` is the marker-file alternative, unneeded since we have the
   list.)
 - **Keep-list granularity — current compromise vs intended (both recorded).** The keep-list is only ever
-  as fine as the driver can name *authoritatively* (§11.6 under-reap). **Current:** batch granularity —
+  as fine as the driver can name *authoritatively* (§11.6 under-sweep). **Current:** batch granularity —
   the controller reliably maps a failed node-id → its `<batch-id>`, so it keeps `<session-id>/<batch-id>/
-  **`; it does NOT reconstruct the binary's per-test `TEST_ID` leaf (reconstruct-it-wrong = over-reap =
+  **`; it does NOT reconstruct the binary's per-test `TEST_ID` leaf (reconstruct-it-wrong = over-sweep =
   forbidden). **Intended (per-test-leaf, wire later):** emit the test's temp dir (or `TEST_ID`) on a
   **failure/error** `[TEST_EVENT]` — the driver already parses that stream, so it gets the authoritative
   per-test path **in-band**: no `.failed-dirs` file, no new binary↔driver channel. That is the place to
@@ -476,27 +476,27 @@ just gets the free incremental optimization, remote doesn't.
   **age-sweep** (`<root>/<old-session-id>` by date, unconditional) is the backstop so nothing leaks forever.
 
 ### 11.6 Invariants (the guardrails)
-- **Under-reap bias.** Over-reap is the only dangerous direction (deleting a failed test's artifacts — so
-  the keep-list must be authoritative/broad, never reconstructed-and-wrong); under-reap is benign — the
+- **Under-sweep bias.** Over-sweep is the only dangerous direction (deleting a failed test's artifacts — so
+  the keep-list must be authoritative/broad, never reconstructed-and-wrong); under-sweep is benign — the
   age-sweep mops it up. **When uncertain, keep.** (The binary's `ReclaimLevels` empty-check *is* this rule
   locally; the remote keep-list is its analog.)
 - **Concurrency safety.** Distinct `<batch-id>` per invocation + the empty-ancestor stop-check ⇒
   concurrent batches never stomp the shared `<session-id>/`. (The earlier shared-run-root hazard is gone.)
 - **One resolver of record.** The binary derives `LOCAL_*`; the driver never re-derives per-invocation
   and never sets `LOCAL_*`.
-- **Remote clamp.** For a remote base the binary creates/reaps NOTHING — the test writes, the driver reaps.
+- **Remote clamp.** For a remote base the binary creates/sweeps NOTHING — the test writes, the driver sweeps.
 - **Keep-on-failure by construction.** Only *failed* `test-id/` dirs are kept; their non-empty ancestors
   survive with them (empty ancestors prune). No coarse "keep the whole session on any failure" — you keep
   exactly what failed. The age-sweep is the eventual backstop, so kept-forever never happens.
 
-This **deletes `reclaim_physical` and the old LIFO ordering** — a remote reap is a prefix delete, so it
+This **deletes `reclaim_physical` and the old LIFO ordering** — a remote sweep is a prefix delete, so it
 is order-independent. `on_cleanup` (per-`.test` SQL at test end) stays as a body-level affordance.
 
 ### 11.7 Core track (NOT the driver's job)
 The binary honoring `LOCAL_TEMP_DIR` for its own spill/db is the **core** PR (`local-temp-dir` branch).
 The driver introduces only: compose `<root>/<session-id>/<batch-id>` → `--temp-dir-base` (+
-`--temp-dir-run-id off`, `--temp-dir-destroy`, optional `--data-dir`) → the remote TEMP reaper. It never
-re-derives `LOCAL_*`, never reaps local, never touches DATA.
+`--temp-dir-run-id off`, `--temp-dir-destroy`, optional `--data-dir`) → the remote TEMP sweeper. It never
+re-derives `LOCAL_*`, never sweeps local, never touches DATA.
 
 **Follow-up (core; deferred — bundled with the `TEMP_DIR`/`TEST_DIR` cleanup pass):** because the driver
 now *always* passes `--temp-dir-run-id off` and bakes `<session-id>/<batch-id>` into `--temp-dir-base`,
@@ -504,12 +504,12 @@ the binary's **run-id flag machinery is dead** — `--run-id`, `--temp-dir-run-i
 `RUN_ID`/`ResolveRunIdRoot` no longer serve any caller and can be removed.
 
 ### 11.8 Test-kind neutrality — the pure-Python lane (intent, wire later)
-The policy in §11.3–§11.6 is **executor-agnostic**. Which process runs the *local* create/reap depends on
+The policy in §11.3–§11.6 is **executor-agnostic**. Which process runs the *local* create/sweep depends on
 the test kind:
-- **`.test` (SQLLogic) lane** — the **unittest binary** is the local executor (it creates/reaps the local
+- **`.test` (SQLLogic) lane** — the **unittest binary** is the local executor (it creates/sweeps the local
   `session-id/batch-id/test-id` tree; §11.5 local bullet).
 - **pure-`.py` lane** — there is no binary, so **Python (the driver) is the local executor**, applying the
-  *same* policy (reap each passing `test-id/`, prune empty ancestors, as-it-goes). Python "takes care of
+  *same* policy (sweep each passing `test-id/`, prune empty ancestors, as-it-goes). Python "takes care of
   it all" here.
 
 **Remote is always the driver** (the one rclone sweep, §11.5) regardless of lane. So the policy is uniform

@@ -102,7 +102,7 @@ class Controller:
         sees every test's outcome without a worker-side stash. pytest passes no config → use `self._config`."""
         if self._config is None:
             return
-        from .reaper import record_failure
+        from .sweeper import record_failure
 
         record_failure(self._config, report)
 

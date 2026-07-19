@@ -1,14 +1,14 @@
-"""REMOTE TEMP storage reaper — one session-end sweep (SPEC §11.5).
+"""REMOTE TEMP storage sweeper — one session-end sweep (SPEC §11.5).
 
 The lifecycle contract splits by *who holds the filesystem*: **local is entirely the binary's job**
-— it creates/reaps the local `<session-id>/<batch-id>/<test-id>` tree as it goes (per-test reap +
+— it creates/sweeps the local `<session-id>/<batch-id>/<test-id>` tree as it goes (per-test sweep +
 `ReclaimLevels` empty-prune); the driver does NOTHING local. **Remote** is entirely the driver's job,
 applied **once at session completion** — because the driver is the process that holds the object-store
-credentials (the rclone `Remote`), and the binary's remote clamp skips create AND reap. A remote reap
+credentials (the rclone `Remote`), and the binary's remote clamp skips create AND sweep. A remote sweep
 is a **prefix delete** (path-addressed, order-independent), which is why SPEC §11.5 deletes the old
 per-test / per-run / `reclaim_physical` machinery.
 
-Reaping is scoped to TEMP only — **DATA is never reaped**. The REMOTE TEMP session prefix is
+Sweeping is scoped to TEMP only — **DATA is never swept**. The REMOTE TEMP session prefix is
 `<root>/<session-id>/`. At `sessionfinish` (controller-only) the driver builds a **keep-list** of the
 batches that contain a FAILED test and runs one sweep:
 
@@ -18,21 +18,21 @@ batches that contain a FAILED test and runs one sweep:
 Everything not under a kept batch is deleted; empty `<batch-id>/`/`<session-id>/` ancestors vacuum
 away; failed batches survive. Two backstops: an interrupted run that never reaches `sessionfinish`
 does no sweep, and the **age-sweep** purges whole `<root>/<old-session-id>` prefixes older than
-`--temp-reap-age-days`.
+`--temp-sweep-age-days`.
 
-**Keep-list granularity (SPEC §11.6, under-reap bias).** Over-reap — deleting a failed test's
+**Keep-list granularity (SPEC §11.6, under-sweep bias).** Over-sweep — deleting a failed test's
 artifacts — is the one forbidden outcome, so the keep-list must be authoritative/broad, never
 reconstructed-and-wrong. We keep at the finest granularity the controller knows *reliably*: a failed
 test's **batch** (the controller has the failed node-ids from the report stream and the node-id→batch-id
 map), keeping `<batch-id>/**` for any batch with a failure. We do NOT reconstruct the binary's per-test
 `TEST_ID` leaf (uncertain). If even the batch map isn't cleanly available, we fall back to keeping the
 whole `<session-id>/` on any failure (coarsest safe). TODO(follow-up): per-test-leaf keep needs the
-binary's `TEST_ID` (or a `.failed-dirs` file it writes) to be under-reap-safe.
+binary's `TEST_ID` (or a `.failed-dirs` file it writes) to be under-sweep-safe.
 
-The registered reaper is a small object exposing ``sweep(prefix, keep_patterns)`` (delete-with-exclude
+The registered sweeper is a small object exposing ``sweep(prefix, keep_patterns)`` (delete-with-exclude
 + rmdirs) and optionally ``list_run_prefixes(base) -> [(prefix, session_id)]`` (for the age-sweep) — a
 suite/backend builds it from its own storage creds (e.g. an rclone ``Remote`` + the rclone verbs). No
-azure/s3 specifics live here: the framework owns *when* + the keep-list; the reaper owns the *how*.
+azure/s3 specifics live here: the framework owns *when* + the keep-list; the sweeper owns the *how*.
 """
 
 from __future__ import annotations
@@ -51,24 +51,24 @@ log = logging.getLogger("driver")
 # ---------------------------------------------------------------------------
 
 
-def register_temp_reaper(config, reaper) -> None:
-    """Register the object that reaps this run's REMOTE TEMP storage. It must expose
+def register_temp_sweeper(config, sweeper) -> None:
+    """Register the object that sweeps this run's REMOTE TEMP storage. It must expose
     ``sweep(prefix, keep_patterns)`` — delete everything under ``prefix`` except paths matching a
     keep pattern, then rmdirs the emptied ancestors (e.g. ``rclone delete <prefix> --exclude-from
     <keep_patterns>`` + ``rclone rmdirs <prefix>``) — and optionally ``list_run_prefixes(base)`` for
     the age-sweep. Call from a backend/suite conftest's ``pytest_configure``, building it from that
     backend's storage creds. With none registered, every level below is a no-op."""
-    get_context(config).temp_reaper = reaper
+    get_context(config).temp_sweeper = sweeper
 
 
-def get_temp_reaper(config):
-    """The registered reaper for this process, or None (→ the reaper is a no-op)."""
-    return getattr(get_context(config), "temp_reaper", None)
+def get_temp_sweeper(config):
+    """The registered sweeper for this process, or None (→ the sweeper is a no-op)."""
+    return getattr(get_context(config), "temp_sweeper", None)
 
 
 # ---------------------------------------------------------------------------
 # The remote gate: <root> must be remote (local is the binary's job). Scoped to
-# TEMP only — the session prefix is <root>/<session-id>/; DATA is never reaped.
+# TEMP only — the session prefix is <root>/<session-id>/; DATA is never swept.
 # ---------------------------------------------------------------------------
 
 
@@ -115,12 +115,12 @@ def record_failure(config, report) -> None:
 def _keep_patterns(config) -> list[str]:
     """Build the sweep's keep-list from the failed node-ids + the controller's node-id→batch-id map.
 
-    - No failures → ``[]`` (keep nothing → everything under the session prefix is reaped).
+    - No failures → ``[]`` (keep nothing → everything under the session prefix is swept).
     - A failure whose batch is known → keep ``<batch-id>/**`` for each such batch (finest reliable
       granularity — SPEC §11.6).
     - The batch map missing, or a failed node NOT in it (e.g. a driver ``.py`` that isn't a batched
-      `SqlLogicItem`) → keep the WHOLE session (``["**"]``): the coarsest safe, under-reap choice —
-      never over-reap a failed test's artifacts.
+      `SqlLogicItem`) → keep the WHOLE session (``["**"]``): the coarsest safe, under-sweep choice —
+      never over-sweep a failed test's artifacts.
     """
     ctx = get_context(config)
     failed = ctx.failed_nodeids
@@ -134,7 +134,7 @@ def _keep_patterns(config) -> list[str]:
     for nodeid in failed:
         bid = node_batch.get(nodeid)
         if bid is None:
-            return ["**"]  # a failed node we can't map to a batch → keep everything (never over-reap)
+            return ["**"]  # a failed node we can't map to a batch → keep everything (never over-sweep)
         batches.add(bid)
     return sorted(f"{b}/**" for b in batches)
 
@@ -145,21 +145,21 @@ def _keep_patterns(config) -> list[str]:
 
 
 def sweep_session(config) -> None:
-    """At session end (controller): if a reaper is registered and ``<root>`` is remote, sweep the
+    """At session end (controller): if a sweeper is registered and ``<root>`` is remote, sweep the
     session prefix ``<root>/<session-id>/`` once, sparing the batches of failed tests (the keep-list).
-    No-op when ``<root>`` is local (the binary owns local) or no reaper is registered. Best-effort: a
-    sweep error is logged, never raised (a session-end reap must not turn the run red)."""
-    reaper = get_temp_reaper(config)
-    if reaper is None:
+    No-op when ``<root>`` is local (the binary owns local) or no sweeper is registered. Best-effort: a
+    sweep error is logged, never raised (a session-end sweep must not turn the run red)."""
+    sweeper = get_temp_sweeper(config)
+    if sweeper is None:
         return
     prefix = _session_prefix(config)
     if prefix is None:
         return  # local <root>: local is the binary's job, driver does nothing
     keeps = _keep_patterns(config)
     try:
-        reaper.sweep(prefix, keeps)
+        sweeper.sweep(prefix, keeps)
     except Exception as exc:  # noqa: BLE001 — session-end sweep must not raise
-        log.warning("remote reap: session sweep of %s failed: %s", prefix, exc)
+        log.warning("remote sweep: session sweep of %s failed: %s", prefix, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -182,22 +182,22 @@ def _parse_run_date(session_id):
 
 
 def age_sweep(config) -> None:
-    """Best-effort backstop (SPEC §11.5): if the reaper supports ``list_run_prefixes(root)``, purge each
-    ``<root>/<old-session-id>`` prefix whose date is older than ``--temp-reap-age-days`` (default 7) via
+    """Best-effort backstop (SPEC §11.5): if the sweeper supports ``list_run_prefixes(root)``, purge each
+    ``<root>/<old-session-id>`` prefix whose date is older than ``--temp-sweep-age-days`` (default 7) via
     ``sweep(prefix, [])`` (empty keep-list = full purge). One bad/unparseable prefix is skipped, not
     fatal; a listing or sweep error is logged and the run is never failed. Runs once, controller-only."""
-    reaper = get_temp_reaper(config)
-    if reaper is None or not hasattr(reaper, "list_run_prefixes"):
+    sweeper = get_temp_sweeper(config)
+    if sweeper is None or not hasattr(sweeper, "list_run_prefixes"):
         return
     root = _remote_root(config)
     if root is None:
         return
-    days = int(config.getoption("--temp-reap-age-days", default=7))
+    days = int(config.getoption("--temp-sweep-age-days", default=7))
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     try:
-        prefixes = list(reaper.list_run_prefixes(root))
+        prefixes = list(sweeper.list_run_prefixes(root))
     except Exception as exc:  # noqa: BLE001 — a listing failure never fails the run
-        log.warning("remote reap: age-sweep listing of %s failed: %s", root, exc)
+        log.warning("remote sweep: age-sweep listing of %s failed: %s", root, exc)
         return
     swept = []
     for prefix, session_id in prefixes:
@@ -205,9 +205,9 @@ def age_sweep(config) -> None:
         if dt is None or dt >= cutoff:
             continue  # unparseable (skip, don't abort) or fresh (keep)
         try:
-            reaper.sweep(prefix, [])  # empty keep-list = full purge + rmdirs of the stale session
+            sweeper.sweep(prefix, [])  # empty keep-list = full purge + rmdirs of the stale session
             swept.append(prefix)
         except Exception as exc:  # noqa: BLE001 — one sweep failure doesn't abort the age-sweep
-            log.warning("remote reap: age-sweep of %s failed: %s", prefix, exc)
+            log.warning("remote sweep: age-sweep of %s failed: %s", prefix, exc)
     if swept:
-        log.info("remote reap: age-sweep purged %d session prefix(es) older than %d day(s)", len(swept), days)
+        log.info("remote sweep: age-sweep purged %d session prefix(es) older than %d day(s)", len(swept), days)

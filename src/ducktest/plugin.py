@@ -175,7 +175,7 @@ def register_options(parser):
         metavar="ROOT",
         help="This run's `<root>` (may be local OR remote, e.g. s3://…). `_invoke` composes the per-"
         "invocation --temp-dir-base = <root>/<session-id>/<batch-id> from it; the binary appends the "
-        "<test-id> leaf and owns LOCAL create/reap. The driver reaps only a REMOTE <root>, once at "
+        "<test-id> leaf and owns LOCAL create/sweep. The driver sweeps only a REMOTE <root>, once at "
         "session end (SPEC §11.5). Default: the binary's own `duckdb_unittest_tempdir`.",
     )
     parser.addoption(
@@ -183,7 +183,7 @@ def register_options(parser):
         default=None,
         metavar="DIR",
         help="Read-only root for test input data, passed to the binary as --data-dir (DATA_DIR). A plain "
-        "input path — never composed with session-id/batch-id, never reaped. Default: the binary's "
+        "input path — never composed with session-id/batch-id, never swept. Default: the binary's "
         "working_dir/data.",
     )
     parser.addoption(
@@ -192,16 +192,16 @@ def register_options(parser):
         choices=["never", "on-success", "always"],
         metavar="{never,on-success,always}",
         help="Destroy disposition for the LOCAL per-batch run-root: never | on-success (default) | always. "
-        "Passed THROUGH to the binary, which owns the LOCAL reap (SPEC §11.5). The REMOTE sweep is "
+        "Passed THROUGH to the binary, which owns the LOCAL sweep (SPEC §11.5). The REMOTE sweep is "
         "keep-on-failure by construction (the driver keeps a failed test's batch), not gated by this.",
     )
     parser.addoption(
-        "--temp-reap-age-days",
+        "--temp-sweep-age-days",
         default=7,
         type=int,
         metavar="N",
         help="Age-sweep backstop (SPEC §11.5): purge REMOTE `<root>/<old-session-id>` prefixes older than N "
-        "days (default 7). Best-effort, controller-only, and only when the registered reaper supports "
+        "days (default 7). Best-effort, controller-only, and only when the registered sweeper supports "
         "listing run prefixes.",
     )
     # --- @requires-driven provisioning / interactive shell ------------------
@@ -485,9 +485,9 @@ def _run_id(config):
 # worker so the whole run shares ONE identity) plus an optional read-only DATA dir.
 # It does NOT compose any full path here: `_invoke` composes the ONE per-invocation
 # --temp-dir-base = <root>/<session-id>/<batch-id> (SPEC §11.4). The BINARY appends
-# the <test-id> leaf, derives LOCAL_*, and owns local create/reap — the driver never
+# the <test-id> leaf, derives LOCAL_*, and owns local create/sweep — the driver never
 # composes LOCAL_*, never sets a TEMP_DIR env var. The mnemonic session-id is what
-# makes the run's dirs one shared, reapable set across workers (not pid-tagged).
+# makes the run's dirs one shared, sweepable set across workers (not pid-tagged).
 # ---------------------------------------------------------------------------
 
 # A root is REMOTE when it carries a URI scheme other than file:// (s3://, abfss://,
@@ -520,11 +520,11 @@ def _temp_roots(config):
     `<root>/<session-id>/<batch-id>`, and the BINARY appends the `<test-id>` leaf + derives LOCAL_*.
 
     Returns the driver's bookkeeping dict:
-      * `root`       → the outer base; also the REMOTE reaper's `<root>` (it sweeps `<root>/<session-id>/`);
+      * `root`       → the outer base; also the REMOTE sweeper's `<root>` (it sweeps `<root>/<session-id>/`);
       * `session_id` → the run mnemonic, the `<session-id>` level (date-sortable; the age-sweep sorts on it);
       * `data_dir`   → --data-dir when set, else None (the binary defaults to working_dir/data) — a plain
-                       read-only path, never composed with the session-id/batch-id, never reaped;
-      * `destroy`    → the --temp-dir-destroy disposition, passed through to gate the binary's LOCAL reap.
+                       read-only path, never composed with the session-id/batch-id, never swept;
+      * `destroy`    → the --temp-dir-destroy disposition, passed through to gate the binary's LOCAL sweep.
     """
     cached = getattr(config, "_sqllogic_temp_roots", None)
     if cached is not None:
@@ -1185,12 +1185,12 @@ def pytest_sessionfinish(session, exitstatus):
     if getattr(config, "workerinput", None) is not None:
         return  # this is a worker
     _teardown_store(config)
-    # REMOTE reaping (SPEC §11.5), controller-only + once: the driver does NOTHING local (the binary owns
-    # LOCAL create/reap, as-it-goes — it received --temp-dir-base/--temp-dir-run-id/--temp-dir-destroy).
+    # REMOTE sweeping (SPEC §11.5), controller-only + once: the driver does NOTHING local (the binary owns
+    # LOCAL create/sweep, as-it-goes — it received --temp-dir-base/--temp-dir-run-id/--temp-dir-destroy).
     # Here it applies the one session-end remote sweep (keep-on-failure by keep-list) then the best-effort
-    # age-sweep backstop. Both no-op when <root> is local / no reaper is registered. A run that never
+    # age-sweep backstop. Both no-op when <root> is local / no sweeper is registered. A run that never
     # reaches sessionfinish does no sweep — the age-sweep is the eventual backstop (SPEC §11.5).
-    from .reaper import age_sweep, sweep_session
+    from .sweeper import age_sweep, sweep_session
 
     sweep_session(config)
     age_sweep(config)

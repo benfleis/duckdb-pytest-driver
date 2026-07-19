@@ -269,8 +269,8 @@ def _invoke(
         # (<root>/<session-id>/<batch-id>) — NOT --temp-dir EXACT, and NOT a TEMP_DIR/LOCAL_*/DATA_DIR
         # env var (the binary composes/derives + would overwrite those). --temp-dir-run-id off so the
         # binary appends no extra run-id level (ResolveRunIdRoot returns the base verbatim). The binary
-        # then adds only the <test-id> leaf, derives LOCAL_*, and owns local create/reap. --temp-dir-
-        # destroy is passed THROUGH to gate the binary's LOCAL reap. DATA is a plain read-only path:
+        # then adds only the <test-id> leaf, derives LOCAL_*, and owns local create/sweep. --temp-dir-
+        # destroy is passed THROUGH to gate the binary's LOCAL sweep. DATA is a plain read-only path:
         # --data-dir only when the driver has an override, else the binary defaults to working_dir/data.
         base = _compose_base(temp_roots["root"], temp_roots["session_id"], batch_id)
         temp_args = ["--temp-dir-base", base, "--temp-dir-run-id", "off"]

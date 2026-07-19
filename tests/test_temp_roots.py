@@ -4,7 +4,7 @@ The driver originates ONLY the run's ``root`` + ``session_id`` (the run mnemonic
 read-only DATA dir; it composes NO full path in `_temp_roots`. Per invocation, `_invoke` composes the
 ONE ``--temp-dir-base = <root>/<session-id>/<batch-id>`` and passes ``--temp-dir-run-id off`` so the
 binary appends no run-id level; the binary then adds the ``<test-id>`` leaf, derives ``LOCAL_*``, and
-owns local create/reap. These exercise the pure origination (`_temp_roots`) offline and prove the
+owns local create/sweep. These exercise the pure origination (`_temp_roots`) offline and prove the
 corrected flags reach the subprocess — and that the OLD wrong passthrough (``--temp-dir`` exact +
 ``--run-id`` + a ``TEMP_DIR`` env var) does NOT — against a stub binary that echoes its argv/env.
 """

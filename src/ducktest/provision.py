@@ -134,7 +134,7 @@ class Provisioner:
     def teardown(self, bindings: Optional[Bindings] = None) -> None:
         """Drop the isolated `rw` namespaces this provision created — catalog metadata only.
 
-        Physical-storage reclaim moved OUT of teardown (SPEC §11.4): a remote root is reaped by the
+        Physical-storage reclaim moved OUT of teardown (SPEC §11.4): a remote root is swept by the
         driver's path-addressed prefix delete of `${TEMP_DIR}/${token}/`, which is order-independent
         — so the old `reclaim_physical`-before-`drop_sql` LIFO ordering (and the `reclaim_physical`
         hook itself) is gone. Teardown now only drops namespaces. (`bindings.isolated` is the only
