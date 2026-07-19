@@ -132,18 +132,13 @@ class Provisioner:
         )
 
     def teardown(self, bindings: Optional[Bindings] = None) -> None:
-        """Reclaim physical storage FIRST, THEN drop the namespaces — the stack/LIFO order.
+        """Drop the isolated `rw` namespaces this provision created — catalog metadata only.
 
-        A `rw` provision builds: create namespace -> create+seed tables (+ for external-storage
-        backends, write data files at a LOCATION). Unwinding must be LIFO: reclaim the files, THEN
-        drop the namespace. `reclaim_physical` runs BEFORE `drop_sql` because a file reclaim (iceberg
-        `DROP TABLE ... PURGE`, or deleting objects at an external LOCATION) needs the catalog to
-        still REFERENCE the tables — once the namespace is dropped they can't be enumerated and the
-        files orphan. For catalog-MANAGED backends `reclaim_physical` is a no-op and `DROP ... CASCADE`
-        reclaims their storage, so this order is correct for both. (`bindings.isolated` is the only
+        Physical-storage reclaim moved OUT of teardown (SPEC §11.4): a remote root is reaped by the
+        driver's path-addressed prefix delete of `${TEMP_DIR}/${token}/`, which is order-independent
+        — so the old `reclaim_physical`-before-`drop_sql` LIFO ordering (and the `reclaim_physical`
+        hook itself) is gone. Teardown now only drops namespaces. (`bindings.isolated` is the only
         framework field the base reads.)"""
-        if bindings is not None:
-            self.reclaim_physical(bindings)  # files first, while the catalog still references them
         isolated = list(bindings.isolated) if bindings else []
         for ns in isolated:
             self.execute(self.drop_sql(ns))
@@ -187,11 +182,6 @@ class Provisioner:
 
     def drop_sql(self, namespace) -> str:
         return f"DROP SCHEMA IF EXISTS {namespace} CASCADE"
-
-    def reclaim_physical(self, bindings) -> None:
-        """Reclaim physical storage a `rw` provision staged (files/objects), not just catalog metadata.
-        Default: no-op (a catalog-only backend has nothing to reclaim). Object-store backends override
-        — the seam that fixes the shipped base's `rw` storage leak."""
 
     def dry_run_summary(self, state):
         """Optional extra dry-run print after the plan. Default: no-op."""

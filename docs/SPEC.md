@@ -395,3 +395,52 @@ coordination primitive that can't actually coordinate them.
    pytest (that reinvents the predictor we deleted). A fresh `execv` of pytest is warranted only if an
    *outer* script wants a clean per-mode invocation; internally, test/reassert share the binary and
    run/repl is a CLI subprocess.
+
+## 11. Temp/Data storage contract (TEMP_DIR / LOCAL_TEMP_DIR — two axes)
+
+Prototyped in duckdb core's `test/helpers/test_config.cpp` (benfleis `vfs-integration-tests-p3`); this
+section pins the **driver ↔ unittest division**. Extends the locked env-var contract (§0), and resolves
+open decision (does LOCAL_TEMP_DIR come back — yes).
+
+### 11.1 Two axes, each with a local mirror
+- **DATA** (`DATA_DIR` / `LOCAL_DATA_DIR`) — the read-side SoT: input fixtures/data.
+- **TEMP** (`TEMP_DIR` / `LOCAL_TEMP_DIR`) — the write-side scratch: provisioned tables, external table
+  `LOCATION`s, db files.
+Either `X` may point at object storage; the paired `LOCAL_X` is a **guaranteed-local** sibling for
+anything needing POSIX semantics (duckdb spill/WAL, the attached RW `.db`, atomic rename, mmap).
+
+### 11.2 Resolution rule — canonical in unittest, applied once
+`LOCAL_X = IsRemoteFile(X) ? <local-allocated> : X`; an explicit `LOCAL_X` wins. Owned by unittest
+(`MakeVariables`). When the driver passes all four explicitly, unittest's `if-unset` branches no-op —
+**one resolver of record**, never re-implemented per-invocation in the driver.
+
+### 11.3 Origination — the driver, once per run, mnemonic/token-tagged
+The driver composes and originates **all four** roots, run-scoped, tagged with the **run mnemonic**
+(+ per-test **token** for isolation), and passes them to **every** unittest invocation. NOT PID — PID
+would give each batch/worker subprocess its own local dir (fragmented, uncorrelated, unreapable as a
+unit); the mnemonic is what makes the run's local+remote dirs **one shared set** across xdist workers.
+Passthrough is `--temp-dir` **exact** (never `--temp-dir-base`, which re-appends a suffix). Net:
+**one run → one `TEMP_DIR` + one `LOCAL_TEMP_DIR`** (+ DATA pair), identical across all invocations.
+
+### 11.4 Lifecycle — split by LOCAL vs REMOTE (whoever holds the filesystem)
+| root | create | reap | owner |
+|---|---|---|---|
+| **LOCAL** (temp+data) | nested dirs | on **success** (keep-on-failure) | **unittest** — the local-FS process |
+| **REMOTE** (temp+data) | — (env-var passthrough only) | — | **driver** — it holds the rclone `Remote` |
+
+- **unittest** owns local create + reap-on-success (the existing `RemoveDirectory` path — verify intact).
+  It never `mkdir`/`rm`s remote storage; for a remote root it only sets the env var.
+- **driver** owns remote staging (provisioner/rclone writes external `LOCATION`s under `TEMP_DIR`) and
+  remote reaping — **path-addressed, nested**: per-test `${TEMP_DIR}/${token}/` (primary, keep the
+  *failed* test's) ⊂ run `${TEMP_DIR}/` (session safety, only if **all** passed) ⊂ base (age-sweep,
+  unconditional). Outcomes ride pytest's report stream (item-local makereport for the test gate;
+  controller `testsfailed` for the session gate) — no manager queue needed.
+
+This **deletes `reclaim_physical` and the LIFO ordering**: a remote reap is a prefix delete, so it's
+order-independent — the "reclaim before drop" concern evaporates. `on_cleanup` (per-`.test` SQL at test
+end) stays as a body-level affordance.
+
+### 11.5 Core track (NOT the driver's job)
+duckdb honoring `LOCAL_TEMP_DIR` for its own temp/spill/db is a coordinated **core** change (the
+`vfs-integration-tests-p3` branch prototypes it; landing as its own upstream PR). The driver introduces
+origination + passthrough + the remote reaper; it never re-derives `LOCAL_*` and never reaps local.

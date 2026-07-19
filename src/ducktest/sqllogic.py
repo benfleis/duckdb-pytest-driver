@@ -44,7 +44,7 @@ class SqlLogicFile(pytest.File):
         return obj
 
     def collect(self):
-        from .plugin import _run_dir  # lazy: plugin imports this lane (avoid import cycle)
+        from .plugin import _temp_roots  # lazy: plugin imports this lane (avoid import cycle)
 
         test_name = os.path.relpath(str(self.path), self._working_dir)
         yield SqlLogicItem.from_parent(
@@ -53,7 +53,7 @@ class SqlLogicFile(pytest.File):
             test_name=test_name,
             binary=self._binary,
             working_dir=self._working_dir,
-            temp_dir_base=_run_dir(self.config),
+            temp_roots=_temp_roots(self.config),
         )
 
 
@@ -64,12 +64,12 @@ class SqlLogicFile(pytest.File):
 
 class SqlLogicItem(pytest.Item):
     @classmethod
-    def from_parent(cls, parent, *, test_name, binary, working_dir, temp_dir_base=None, **kwargs):
+    def from_parent(cls, parent, *, test_name, binary, working_dir, temp_roots=None, **kwargs):
         obj = super().from_parent(parent, **kwargs)
         obj._test_name = test_name
         obj._binary = binary
         obj._working_dir = working_dir
-        obj._temp_dir_base = temp_dir_base
+        obj._temp_roots = temp_roots
         obj._batch_id = None
         obj._batch_test_names = None
         return obj
@@ -87,7 +87,7 @@ class SqlLogicItem(pytest.Item):
             self._binary,
             [self._test_name],
             self._working_dir,
-            self._temp_dir_base,
+            self._temp_roots,
             extra_args=resolve_unittest_args(self.config),
         )
         _raise_for_result(_parse_result(result), test_file=str(self.path))
@@ -101,7 +101,7 @@ class SqlLogicItem(pytest.Item):
                     self._batch_test_names,
                     self._binary,
                     self._working_dir,
-                    self._temp_dir_base,
+                    self._temp_roots,
                     extra_args=resolve_unittest_args(self.config),
                 )
         r = _batch_cache[self._batch_id].get(self._test_name, {"status": "internal_error"})
@@ -124,7 +124,7 @@ class SqlLogicItem(pytest.Item):
 
 
 def _execute_batch(
-    test_names: list, binary: str, working_dir: str, temp_dir_base: str = None, extra_args: list = None
+    test_names: list, binary: str, working_dir: str, temp_roots: dict = None, extra_args: list = None
 ) -> dict:
     """Run a batch.  On failure, re-run individually for per-test attribution."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -143,7 +143,7 @@ def _execute_batch(
                 str(len(test_names)),
             ],
             working_dir,
-            temp_dir_base,
+            temp_roots,
             extra_args=extra_args,
         )
     finally:
@@ -157,15 +157,15 @@ def _execute_batch(
     for name in test_names:
         st = _classify(events, name, result)
         if st["status"] in ("fail", "internal_error"):
-            st = _invoke_single(name, binary, working_dir, temp_dir_base, extra_args=extra_args)
+            st = _invoke_single(name, binary, working_dir, temp_roots, extra_args=extra_args)
         statuses[name] = st
     return statuses
 
 
 def _invoke_single(
-    test_name: str, binary: str, working_dir: str, temp_dir_base: str = None, extra_args: list = None
+    test_name: str, binary: str, working_dir: str, temp_roots: dict = None, extra_args: list = None
 ) -> dict:
-    result = _invoke(binary, [test_name], working_dir, temp_dir_base, extra_args=extra_args)
+    result = _invoke(binary, [test_name], working_dir, temp_roots, extra_args=extra_args)
     return _parse_result(result)
 
 
@@ -189,32 +189,25 @@ def resolve_unittest_args(config) -> list:
 
 
 def _invoke(
-    binary: str, args: list, working_dir: str, temp_dir_base: str = None, env: dict = None, extra_args: list = None
+    binary: str, args: list, working_dir: str, temp_roots: dict = None, env: dict = None, extra_args: list = None
 ) -> dict:
     # Opt into the binary's per-test event stream on every invocation (single + batch). Requires the
     # C++ --emit-test-events flag to be built into the binary, else Catch2 errors on the unknown arg.
     # extra_args (the --unittest-args passthrough) follow, before the test name / -f selectors.
     args = ["--emit-test-events", *(extra_args or []), *args]
-    if temp_dir_base:
-        # Caller-owned per-run base (BASE/<run-id>); pytest owns its lifecycle. RUN_ID is passed
-        # explicitly (== the run-id in the base) so the binary's RUN_ID env matches pytest's, but
-        # it's NOT added as a path level (--temp-dir-run-id off — the base already carries it). The
-        # binary places a per-test subdir and never destroys it; pytest removes the run dir at
-        # sessionfinish.
-        args = [
-            "--temp-dir-base",
-            str(temp_dir_base),
-            "--run-id",
-            os.path.basename(str(temp_dir_base)),
-            "--temp-dir-run-id",
-            "off",
-            "--temp-dir-destroy",
-            "never",
-            *args,
-        ]
+    run_env = dict(os.environ)
+    if temp_roots:
+        # Origination + passthrough (SPEC §11.3): the driver has ALREADY composed the run's four
+        # roots (TEMP_DIR/LOCAL_TEMP_DIR/DATA_DIR/LOCAL_DATA_DIR, mnemonic-tagged, one shared set for
+        # the whole run). Set all four as env vars so the binary's `if-unset` resolver no-ops — one
+        # resolver of record — and pass the local scratch as --temp-dir EXACT. NOT --temp-dir-base,
+        # which re-appends a per-test suffix and would fragment the run's shared local dir.
+        run_env.update(temp_roots)
+        args = ["--temp-dir", str(temp_roots["LOCAL_TEMP_DIR"]), *args]
     # env (e.g. provisioned UC_TEST_CATALOG/SCHEMA) is merged over the ambient env so
-    # the body's ${...} substitution resolves to the provisioned values; None inherits.
-    run_env = {**os.environ, **env} if env else None
+    # the body's ${...} substitution resolves to the provisioned values.
+    if env:
+        run_env.update(env)
     try:
         proc = subprocess.run(
             [binary] + args,

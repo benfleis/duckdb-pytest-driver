@@ -23,6 +23,7 @@ vendored back into ``duckdb/test/py/``.
 import contextlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -461,6 +462,75 @@ def _run_id(config):
 def _run_dir(config):
     base = config.getoption("--temp-dir-base", default=None)
     return os.path.join(base, _run_id(config)) if base else None
+
+
+# ---------------------------------------------------------------------------
+# TEMP/DATA storage roots (SPEC §11.3): the driver ORIGINATES all four roots
+# ONCE per run, tags them with the run mnemonic, and passes them to EVERY
+# unittest invocation. Because all four env vars are set (and --temp-dir is
+# passed EXACT), the binary's `if-unset` resolver no-ops — one resolver of
+# record. The whole run therefore shares ONE set: one TEMP_DIR + one
+# LOCAL_TEMP_DIR (+ the DATA pair), identical across all batch/worker subprocs.
+# NOT pid-tagged: pid would give each subprocess its own uncorrelated dir.
+# ---------------------------------------------------------------------------
+
+# A root is REMOTE when it carries a URI scheme other than file:// (s3://, abfss://,
+# gs://, az://, …). A bare path or a file:// URI is LOCAL.
+_URI_SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*)://")
+
+
+def _is_remote_root(value):
+    if not value:
+        return False
+    m = _URI_SCHEME.match(value)
+    return bool(m) and m.group(1).lower() != "file"
+
+
+def _local_base(config):
+    """The driver's guaranteed-local base for originated dirs: `--temp-dir-base` if given, else a
+    stable per-user scratch under the system temp dir."""
+    base = config.getoption("--temp-dir-base", default=None)
+    return base if base else os.path.join(tempfile.gettempdir(), "ducktest")
+
+
+def _temp_roots(config):
+    """Originate the four run-scoped storage roots (SPEC §11.3), cached on config.
+
+    Composed ONCE per run, tagged with the run mnemonic (via `_run_id`, which is broadcast to every
+    xdist worker → all subprocesses share ONE set). Returns the four env vars the unittest resolver
+    reads: `TEMP_DIR`, `LOCAL_TEMP_DIR`, `DATA_DIR`, `LOCAL_DATA_DIR`.
+
+    Per axis (TEMP write-side scratch / DATA read-side inputs):
+      * the root `X` is the user's explicit env value if set, else the driver default
+        `<local base>/<mnemonic>/<axis>` (local, mnemonic'd);
+      * the local sibling `LOCAL_X = X` when X is local, else `<local base>/<mnemonic>/<axis>`
+        — a guaranteed-local dir for POSIX semantics (spill/WAL/db). This origination decision is
+        applied ONCE here, never re-derived per invocation. An explicit `LOCAL_X` wins.
+    """
+    cached = getattr(config, "_sqllogic_temp_roots", None)
+    if cached is not None:
+        return cached
+    run_local = os.path.join(_local_base(config), _run_id(config))
+    env = os.environ
+
+    def axis(root_key, local_key, subdir):
+        local_default = os.path.join(run_local, subdir)
+        root = env.get(root_key) or local_default  # explicit user value wins; else local, mnemonic'd
+        local = env.get(local_key)  # explicit LOCAL_X wins
+        if local is None:
+            local = root if not _is_remote_root(root) else local_default
+        return root, local
+
+    temp_dir, local_temp_dir = axis("TEMP_DIR", "LOCAL_TEMP_DIR", "temp")
+    data_dir, local_data_dir = axis("DATA_DIR", "LOCAL_DATA_DIR", "data")
+    roots = {
+        "TEMP_DIR": temp_dir,
+        "LOCAL_TEMP_DIR": local_temp_dir,
+        "DATA_DIR": data_dir,
+        "LOCAL_DATA_DIR": local_data_dir,
+    }
+    config._sqllogic_temp_roots = roots
+    return roots
 
 
 # ---------------------------------------------------------------------------
@@ -1128,12 +1198,15 @@ def _stem_path(path, suffix):
     return os.path.splitext(str(path))[0] + suffix
 
 
-def run_paired(request, *, temp_dir_base=None, env=None):
+def run_paired(request, *, env=None):
     """Drive the calling driver `.py`'s same-stem body (`.test`) through the binary.
 
     Call from the driver's test function once initialization has run. Raises SqlLogicFailure on failure
     and pytest.skip on a skipped test. Pass ``env`` (e.g. a provisioning fixture's ``bindings.env``) to
     inject vars the body substitutes via ``${...}`` (merged over os.environ).
+
+    The run's originated TEMP/DATA roots (SPEC §11.3) are attached automatically — this invocation
+    shares the same set as every batched `.test`, never re-derived here.
     """
     working_dir = request.config.sqllogic_working_dir
     binary = find_binary(request.config, working_dir)
@@ -1146,7 +1219,7 @@ def run_paired(request, *, temp_dir_base=None, env=None):
                     binary,
                     [test_name],
                     working_dir,
-                    temp_dir_base=temp_dir_base,
+                    _temp_roots(request.config),
                     env=env,
                     extra_args=resolve_unittest_args(request.config),
                 )
