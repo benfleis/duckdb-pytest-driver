@@ -93,3 +93,24 @@ def test_session_context_convenience_lookups():
     assert ctx.suite("cloud").name == "cloud"
     assert ctx.suite("missing") is None
     assert ctx.existing_services == {}  # empty by default
+
+
+# --- --emit-plan: the plan-as-artifact serialization ------------------------------------------
+
+
+def test_plan_as_dict_is_json_able_sorted_and_surfaces_divergence():
+    import json
+
+    plan = Plan(
+        selected_nodeids=frozenset({"b.py::t", "a.py::t"}),
+        reachable_suites=frozenset({"cloud"}),
+        needed_services=frozenset({"minio"}),
+        needed_credentials=frozenset({"onepw"}),
+        fs_names=frozenset({"a.test"}),
+        binary_names=frozenset({"a.test", "slow/big.test_slow"}),
+    )
+    d = plan.as_dict()
+    assert d["selected_nodeids"] == ["a.py::t", "b.py::t"]  # sorted, deterministic
+    assert d["needed_services"] == ["minio"] and d["needed_credentials"] == ["onepw"]
+    assert d["collection"]["divergence"] == ["slow/big.test_slow"]  # the false-green name is visible
+    json.dumps(d)  # round-trips cleanly

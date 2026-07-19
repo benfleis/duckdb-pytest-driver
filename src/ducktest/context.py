@@ -123,6 +123,22 @@ class Plan:
         `verify` mode hard-errors if this is non-empty; `authoritative` mode collects the union."""
         return self.fs_names ^ self.binary_names
 
+    def as_dict(self) -> dict:
+        """JSON-able view of the scan/plan for `--emit-plan` (frozensets -> sorted lists). This is the
+        plan-as-artifact hand-off (SPEC §10.5): what collect-first resolved, for inspection now and
+        for an alternate executor to consume later."""
+        return {
+            "selected_nodeids": sorted(self.selected_nodeids),
+            "reachable_suites": sorted(self.reachable_suites),
+            "needed_credentials": sorted(self.needed_credentials),
+            "needed_services": sorted(self.needed_services),
+            "collection": {
+                "fs_names": sorted(self.fs_names),
+                "binary_names": sorted(self.binary_names),
+                "divergence": sorted(self.collection_divergence),
+            },
+        }
+
 
 # --- Bindings: framework-owned fields separated from backend payload ---------------------------
 

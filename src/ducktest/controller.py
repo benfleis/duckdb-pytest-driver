@@ -80,6 +80,7 @@ class Controller:
         plan = self._build_plan(config, items)
         ctx.plan = plan
 
+        plugin.emit_plan(config, plan)  # --emit-plan: dump the scan/plan JSON BEFORE reconcile can abort
         plugin.reconcile_or_die(config, plan)  # verify mode: hard-error on false-green divergence
         plugin.provision_reachable(config, plan.reachable_suites)  # fetch creds + boot services, up front
 

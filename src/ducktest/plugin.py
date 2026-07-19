@@ -217,6 +217,14 @@ def register_options(parser):
         default=False,
         help="Suppress the step() narration that --repl / --provision-keep auto-enable.",
     )
+    parser.addoption(
+        "--emit-plan",
+        metavar="PATH",
+        default=None,
+        help="Emit the collect-first scan/plan as JSON to PATH (or stdout if PATH is '-'): the "
+        "selected node-ids, reachable suites, needed credentials/services, and the FS-vs-binary "
+        "collection divergence. Inspection/debugging; also the plan-as-artifact hand-off (SPEC §10.5).",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -774,6 +782,22 @@ def _fetch_or_read_credential(config, cred):
         raise pytest.UsageError(cred.error() if cred.error else f"{cred.key}: required credential unavailable")
     if cred.adopt == "env":
         os.environ.update({k: str(v) for k, v in block.items()})
+
+
+def emit_plan(config, plan):
+    """Write `plan` as JSON to `--emit-plan`'s PATH (stdout if '-'); no-op if the flag is unset. Runs
+    on the controller only (where the Plan is built), so exactly one artifact is emitted per run."""
+    dest = config.getoption("--emit-plan", default=None)
+    if not dest:
+        return
+    import json
+
+    payload = json.dumps(plan.as_dict(), indent=2, sort_keys=True)
+    if dest == "-":
+        print("\n" + payload)
+    else:
+        with open(dest, "w") as f:
+            f.write(payload + "\n")
 
 
 def provision_reachable(config, reachable_suite_names):
