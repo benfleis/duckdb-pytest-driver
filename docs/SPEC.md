@@ -396,68 +396,122 @@ coordination primitive that can't actually coordinate them.
    *outer* script wants a clean per-mode invocation; internally, test/reassert share the binary and
    run/repl is a CLI subprocess.
 
-## 11. Temp/Data storage contract (TEMP = managed run-root; DATA = read-only input)
+## 11. TEMP / DATA storage — dir structure + lifecycle (authoritative)
 
-This section **DEFERS to the in-main duckdb model as authority** — the driver *follows* it, it does not
-re-specify it. The model lives in `test/helpers/test_config.cpp` (`UpdateEnvironment`,
-`TestDirectoryPath`) + `test/helpers/test_helpers.cpp` (`PrepareTempDir`, `DestroyTempDir`). This
-section pins only the **driver ↔ binary division**; when in doubt, the C++ is truth.
+**This section is the authority for the driver's TEMP/DATA behavior.** The binary's composition,
+`LOCAL_*` resolution, and local create/reap chain live in `test/helpers/test_config.cpp`
+(`UpdateEnvironment`, `TestDirectoryPath`, `ResolveRunIdRoot`) + `test_helpers.cpp` (`PrepareTempDir`,
+`DestroyTempDir`, `DestroyTestTempDir`, `ReclaimLevels`) — cite the C++, do not re-derive it. What
+follows pins the **driver ↔ binary division** exactly.
 
-### 11.1 The two are NOT symmetric — TEMP is managed, DATA is a plain input
-- **TEMP** (`TEMP_DIR` / `LOCAL_TEMP_DIR`) — the binary's **managed run-root**: write-side scratch
-  (provisioned tables, external `LOCATION`s, db files). `TestDirectoryPath()` composes it as
-  `$BASE/$RUN_ID` (`$BASE` ← `--temp-dir-base`, default `duckdb_unittest_tempdir`; `$RUN_ID` ←
-  `--run-id`), the per-test runner appends `/$TEST_ID`, `PrepareTempDir` **creates** it, and
-  `DestroyTempDir(success)` **reaps** it on success. `LOCAL_TEMP_DIR = IsRemoteFile(TEMP_DIR) ? <local>
-  : TEMP_DIR` (create/reap skipped for a remote root — env-var only).
-- **DATA** (`DATA_DIR` / `LOCAL_DATA_DIR`) — **read-only sourcing**: input fixtures/data. `--data-dir`
-  override (else `working_dir/data`), with `LOCAL_DATA_DIR = IsRemoteFile(DATA_DIR) ? working_dir/data :
-  DATA_DIR`. **No `$BASE`, no `$RUN_ID`, no per-test, no create/reap, no reaper** — a plain input path.
-  (The only write to a remote DATA root is out-of-band fixture *provisioning*, never test execution.)
+### 11.1 Two axes, NOT symmetric
+- **TEMP** — write scratch. Managed, per-batch, reaped. Structure + lifecycle below.
+- **DATA** — read-only input (fixtures). A plain path: `--data-dir` (default `working_dir/data`),
+  `LOCAL_DATA_DIR = IsRemoteFile(DATA_DIR) ? working_dir/data : DATA_DIR`. **No base, no id, no per-test,
+  no create/reap, no reaper.** The only write to a remote DATA root is out-of-band fixture
+  *provisioning*, never test execution.
 
 **Litmus: if it's reaped, it's TEMP; DATA is never reaped.**
 
-### 11.2 Resolution rule — canonical in the BINARY
-`LOCAL_X = IsRemoteFile(X) ? <local> : X`. Owned by the binary (`UpdateEnvironment`). The driver never
-re-implements this and never sets `LOCAL_*` — the binary is the **one resolver of record**.
+### 11.2 TEMP directory structure
+```
+<root>/            outer base (default duckdb_unittest_tempdir, or a caller-set root)
+  └─ <session-id>/    one pytest-driver session  (rendered as a date-sortable mnemonic — only the
+       │           age-sweep cares that it sorts by date; structurally it's just an id)
+       └─ <batch-id>/   one unittest invocation (a batch)
+            └─ <test-id>/  one test (the binary's TEST_ID, derived from the test name)
+```
 
-### 11.3 Origination — the driver hands the binary $BASE + $RUN_ID, the binary composes the rest
-The driver originates only **`$BASE`** + **`$RUN_ID`** (the run mnemonic, via `_run_id` — broadcast to
-every xdist worker so the whole run shares ONE identity) and an optional read-only **DATA** dir, and
-passes on **every** unittest invocation:
+### 11.3 Who creates / reaps each level, and how it reaches the binary
+`created by` / `reaped by` = the **process** (driver vs binary); the middle column is the **pass-down**
+mechanism (the ambiguity that bit us — it is `--temp-dir-base`, one composed string, not `--temp-dir`).
 
-- `--temp-dir-base $BASE` + `--run-id $RUN_ID` — the **binary** then composes `TEMP_DIR=$BASE/$RUN_ID`,
-  appends `/$TEST_ID` per test, derives `LOCAL_TEMP_DIR`, and owns local create/reap.
-- `--data-dir $DIR` **only when the driver has an override**; else the binary defaults to
-  `working_dir/data`. DATA is a plain read-only path — never composed with the run-id, never reaped.
-- `--temp-dir-destroy {never|on-success|always}` passed **through** so the binary's LOCAL reap matches
-  the driver's disposition.
-
-Explicitly **NOT**: the driver does not compose four full paths, does not pass `--temp-dir` *exact*, and
-does not set a `TEMP_DIR` / `LOCAL_TEMP_DIR` env var (the binary composes/derives them and would
-overwrite a driver-set `TEMP_DIR` anyway). The mnemonic (NOT PID) is what makes the run's dirs **one
-shared, reapable set** across workers — PID would fragment per subprocess.
-
-### 11.4 Lifecycle — split by LOCAL vs REMOTE (whoever holds the filesystem), TEMP only
-| TEMP root | create | reap | owner |
+| Level | Created by | How it reaches the binary | Reaped by |
 |---|---|---|---|
-| **LOCAL** `$BASE/$RUN_ID` | binary (`PrepareTempDir`) | on **success** (keep-on-failure) | **binary** — the local-FS process |
-| **REMOTE** `$BASE/$RUN_ID` | — (env-var passthrough only) | prefix delete | **driver** — it holds the rclone `Remote` |
+| `<root>/` | pre-exists (neither) | inside `--temp-dir-base` | **never** (`ReclaimLevels` empty-check halts here) |
+| `<session-id>/` | binary *(local, as an ancestor)* · test-on-write *(remote)* | inside `--temp-dir-base` | binary iff empty *(local; the last batch out)* · **driver** session-net, all-success *(remote)* |
+| `<batch-id>/` (run-root) | binary `PrepareTempDir` *(local)* · test-on-write *(remote)* | **`--temp-dir-base = <root>/<session-id>/<batch-id>`** + `--temp-dir-run-id off` | binary `DestroyTempDir` *(local; recursive; `--temp-dir-destroy`×success)* · *(remote: none — subsumed by the `<session-id>` session net; no per-batch driver hook)* |
+| `<test-id>/` | binary runner (per test) | **not passed** — the binary derives it from the test name | binary `DestroyTestTempDir` *(local; per-test success)* · **driver** session sweep, kept iff failed *(remote)* |
 
-- **binary** owns local create + reap-on-success (`PrepareTempDir` / `DestroyTempDir`). It never
-  `mkdir`/`rm`s remote storage; for a remote base it only sets env. The driver does **not** also rmtree
-  the local run dir — no double-management.
-- **driver** owns remote staging and remote reaping, **scoped to TEMP only** (`$BASE/$RUN_ID[/subpath]`)
-  — **never DATA**. Path-addressed, nested: per-test `$BASE/$RUN_ID/${token}` (primary, keep the
-  *failed* test's) ⊂ run-root `$BASE/$RUN_ID` (session safety, only if **all** passed) ⊂ `$BASE`
-  (age-sweep, unconditional). Outcomes ride pytest's report stream (item-local makereport for the test
-  gate; controller `testsfailed` for the session gate) — no manager queue needed.
+**One policy, two executors.** The rule is uniform: **reap every *successful* `test-id/`; a `batch-id/`
+or `session-id/` dir then falls away iff it's empty (== no failed child).** **Local** — the binary applies
+it *as it goes* (per-test reap + `ReclaimLevels` empty-prune); no driver, no rclone. **Remote** — the
+driver applies it *once at session completion* with a single rclone sweep (§11.5). Same end-state; local
+just gets the free incremental optimization, remote doesn't.
 
-This **deletes `reclaim_physical` and the LIFO ordering**: a remote reap is a prefix delete, so it's
-order-independent — the "reclaim before drop" concern evaporates. `on_cleanup` (per-`.test` SQL at test
-end) stays as a body-level affordance.
+### 11.4 Governing flags (per invocation; not dir levels)
+- **`--temp-dir-base = <root>/<session-id>/<batch-id>`** — the full per-batch run-root; the ONE composed
+  string. NOT `--temp-dir` exact; NOT a `TEMP_DIR`/`LOCAL_*`/`DATA_DIR` env var (the binary
+  composes/derives them and would overwrite a driver-set `TEMP_DIR`).
+- **`--temp-dir-run-id off`** — run-id is redundant: the base already carries the per-batch identity, so
+  no `/$RUN_ID` level is appended (`ResolveRunIdRoot` returns `$BASE`).
+- **`--temp-dir-destroy {never|on-success|always}`** — gates the binary's **local** reap only.
+- **`--data-dir <dir>`** — only when overriding the read-only DATA axis; no lifecycle.
 
-### 11.5 Core track (NOT the driver's job)
-The binary honoring these paths for its own temp/spill/db is a **core** concern (`test_config.cpp` /
-`test_helpers.cpp`). The driver introduces only origination ($BASE + $RUN_ID + optional --data-dir) +
-passthrough + the remote TEMP reaper; it never re-derives `LOCAL_*`, never reaps local, never reaps DATA.
+### 11.5 Execution — local (binary, as-it-goes) vs remote (driver, one sweep)
+- **Local = entirely the binary, incrementally.** `DestroyTestTempDir` reaps each passing `<test-id>/`;
+  `DestroyTempDir` reaps a passing `<batch-id>/` run-root; `ReclaimLevels` prunes empty this-run-created
+  ancestors, **stopping at any non-empty (== has-a-failed-child) level** — so `<session-id>/` is reclaimed
+  only by whichever batch leaves it empty. The driver never rmtrees a local level, never needs rclone.
+- **Remote = entirely the driver, once at session completion** (the binary's remote clamp skips create
+  AND reap; TEMP only, **never DATA**). The driver has the failed set from the report stream (controller
+  `sessionfinish`), writes those dirs as a keep-list, and runs one sweep:
+  ```
+  rclone delete <root>/<session-id>/ --exclude-from <keeplist>   # keeplist lines: <batch>/<test>/**
+  rclone rmdirs <root>/<session-id>/                             # vacuum the now-empty passers
+  ```
+  Everything not under a failed dir is deleted; empty `batch-id/`/`session-id/` ancestors vacuum away; the
+  failed dirs (and their non-empty ancestors) survive. (The trailing `**` is required to spare a dir's
+  contents; `--exclude-if-present <marker>` is the marker-file alternative, unneeded since we have the
+  list.)
+- **Keep-list granularity — current compromise vs intended (both recorded).** The keep-list is only ever
+  as fine as the driver can name *authoritatively* (§11.6 under-reap). **Current:** batch granularity —
+  the controller reliably maps a failed node-id → its `<batch-id>`, so it keeps `<session-id>/<batch-id>/
+  **`; it does NOT reconstruct the binary's per-test `TEST_ID` leaf (reconstruct-it-wrong = over-reap =
+  forbidden). **Intended (per-test-leaf, wire later):** emit the test's temp dir (or `TEST_ID`) on a
+  **failure/error** `[TEST_EVENT]` — the driver already parses that stream, so it gets the authoritative
+  per-test path **in-band**: no `.failed-dirs` file, no new binary↔driver channel. That is the place to
+  fix it, not unittest touching files.
+- **Interruption / testing error** — a run that never reaches `sessionfinish` does no remote sweep; the
+  **age-sweep** (`<root>/<old-session-id>` by date, unconditional) is the backstop so nothing leaks forever.
+
+### 11.6 Invariants (the guardrails)
+- **Under-reap bias.** Over-reap is the only dangerous direction (deleting a failed test's artifacts — so
+  the keep-list must be authoritative/broad, never reconstructed-and-wrong); under-reap is benign — the
+  age-sweep mops it up. **When uncertain, keep.** (The binary's `ReclaimLevels` empty-check *is* this rule
+  locally; the remote keep-list is its analog.)
+- **Concurrency safety.** Distinct `<batch-id>` per invocation + the empty-ancestor stop-check ⇒
+  concurrent batches never stomp the shared `<session-id>/`. (The earlier shared-run-root hazard is gone.)
+- **One resolver of record.** The binary derives `LOCAL_*`; the driver never re-derives per-invocation
+  and never sets `LOCAL_*`.
+- **Remote clamp.** For a remote base the binary creates/reaps NOTHING — the test writes, the driver reaps.
+- **Keep-on-failure by construction.** Only *failed* `test-id/` dirs are kept; their non-empty ancestors
+  survive with them (empty ancestors prune). No coarse "keep the whole session on any failure" — you keep
+  exactly what failed. The age-sweep is the eventual backstop, so kept-forever never happens.
+
+This **deletes `reclaim_physical` and the old LIFO ordering** — a remote reap is a prefix delete, so it
+is order-independent. `on_cleanup` (per-`.test` SQL at test end) stays as a body-level affordance.
+
+### 11.7 Core track (NOT the driver's job)
+The binary honoring `LOCAL_TEMP_DIR` for its own spill/db is the **core** PR (`local-temp-dir` branch).
+The driver introduces only: compose `<root>/<session-id>/<batch-id>` → `--temp-dir-base` (+
+`--temp-dir-run-id off`, `--temp-dir-destroy`, optional `--data-dir`) → the remote TEMP reaper. It never
+re-derives `LOCAL_*`, never reaps local, never touches DATA.
+
+**Follow-up (core; deferred — bundled with the `TEMP_DIR`/`TEST_DIR` cleanup pass):** because the driver
+now *always* passes `--temp-dir-run-id off` and bakes `<session-id>/<batch-id>` into `--temp-dir-base`,
+the binary's **run-id flag machinery is dead** — `--run-id`, `--temp-dir-run-id`, and
+`RUN_ID`/`ResolveRunIdRoot` no longer serve any caller and can be removed.
+
+### 11.8 Test-kind neutrality — the pure-Python lane (intent, wire later)
+The policy in §11.3–§11.6 is **executor-agnostic**. Which process runs the *local* create/reap depends on
+the test kind:
+- **`.test` (SQLLogic) lane** — the **unittest binary** is the local executor (it creates/reaps the local
+  `session-id/batch-id/test-id` tree; §11.5 local bullet).
+- **pure-`.py` lane** — there is no binary, so **Python (the driver) is the local executor**, applying the
+  *same* policy (reap each passing `test-id/`, prune empty ancestors, as-it-goes). Python "takes care of
+  it all" here.
+
+**Remote is always the driver** (the one rclone sweep, §11.5) regardless of lane. So the policy is uniform
+across test kinds; only the *local* executor swaps (binary ↔ Python). The `.py`-lane local execution is
+**not wired yet** — recorded here as intent so the model stays whole and the wiring has a home.

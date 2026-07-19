@@ -42,6 +42,7 @@ from .sqllogic import (
     _invoke,
     _parse_result,
     _raise_for_result,
+    _test_batch_id,
     resolve_unittest_args,
 )
 
@@ -171,34 +172,37 @@ def register_options(parser):
     parser.addoption(
         "--temp-dir-base",
         default=None,
-        metavar="BASE",
-        help="This run's $BASE, passed to the binary as --temp-dir-base (may be local OR remote, e.g. "
-        "s3://…). The binary composes TEMP_DIR=$BASE/<run-id>/<test> and owns local create/reap; the "
-        "driver reaps only REMOTE $BASE/<run-id> (see --temp-dir-destroy, SPEC §11.4).",
+        metavar="ROOT",
+        help="This run's `<root>` (may be local OR remote, e.g. s3://…). `_invoke` composes the per-"
+        "invocation --temp-dir-base = <root>/<session-id>/<batch-id> from it; the binary appends the "
+        "<test-id> leaf and owns LOCAL create/reap. The driver reaps only a REMOTE <root>, once at "
+        "session end (SPEC §11.5). Default: the binary's own `duckdb_unittest_tempdir`.",
     )
     parser.addoption(
         "--data-dir",
         default=None,
         metavar="DIR",
         help="Read-only root for test input data, passed to the binary as --data-dir (DATA_DIR). A plain "
-        "input path — never composed with the run-id, never reaped. Default: the binary's working_dir/data.",
+        "input path — never composed with session-id/batch-id, never reaped. Default: the binary's "
+        "working_dir/data.",
     )
     parser.addoption(
         "--temp-dir-destroy",
         default="on-success",
         choices=["never", "on-success", "always"],
         metavar="{never,on-success,always}",
-        help="Destroy disposition for the per-run dir (BASE/<run-id>): never | on-success (default) | "
-        "always. Passed THROUGH to the binary (which owns the LOCAL reap) and also gates the driver's "
-        "REMOTE per-run reap (SPEC §11.4) so remote matches local semantics.",
+        help="Destroy disposition for the LOCAL per-batch run-root: never | on-success (default) | always. "
+        "Passed THROUGH to the binary, which owns the LOCAL reap (SPEC §11.5). The REMOTE sweep is "
+        "keep-on-failure by construction (the driver keeps a failed test's batch), not gated by this.",
     )
     parser.addoption(
         "--temp-reap-age-days",
         default=7,
         type=int,
         metavar="N",
-        help="Age-sweep backstop (SPEC §11.4): purge REMOTE run prefixes older than N days (default 7). "
-        "Best-effort, controller-only, and only when the registered reaper supports listing run prefixes.",
+        help="Age-sweep backstop (SPEC §11.5): purge REMOTE `<root>/<old-session-id>` prefixes older than N "
+        "days (default 7). Best-effort, controller-only, and only when the registered reaper supports "
+        "listing run prefixes.",
     )
     # --- @requires-driven provisioning / interactive shell ------------------
     parser.addoption(
@@ -476,14 +480,14 @@ def _run_id(config):
 
 
 # ---------------------------------------------------------------------------
-# TEMP/DATA storage inputs (SPEC §11.3): the driver FOLLOWS the in-main temp-dir
-# model (duckdb test/helpers/test_config.cpp). It originates ONLY $BASE + $RUN_ID
-# (the run mnemonic, broadcast to every xdist worker so the whole run shares ONE
-# identity) plus an optional read-only DATA dir, and passes --temp-dir-base /
-# --run-id to EVERY unittest invocation. The BINARY composes TEMP_DIR=$BASE/$RUN_ID,
-# derives LOCAL_*, and owns local create/reap — the driver never composes the four
-# full paths, never derives LOCAL_*, never sets a TEMP_DIR env var. NOT pid-tagged:
-# the mnemonic is what makes the run's dirs one shared, reapable set across workers.
+# TEMP/DATA storage inputs (SPEC §11.2/§11.3). The driver originates ONLY the run's
+# `root` + `session-id` (the run mnemonic, via `_run_id` — broadcast to every xdist
+# worker so the whole run shares ONE identity) plus an optional read-only DATA dir.
+# It does NOT compose any full path here: `_invoke` composes the ONE per-invocation
+# --temp-dir-base = <root>/<session-id>/<batch-id> (SPEC §11.4). The BINARY appends
+# the <test-id> leaf, derives LOCAL_*, and owns local create/reap — the driver never
+# composes LOCAL_*, never sets a TEMP_DIR env var. The mnemonic session-id is what
+# makes the run's dirs one shared, reapable set across workers (not pid-tagged).
 # ---------------------------------------------------------------------------
 
 # A root is REMOTE when it carries a URI scheme other than file:// (s3://, abfss://,
@@ -498,35 +502,36 @@ def _is_remote_root(value):
     return bool(m) and m.group(1).lower() != "file"
 
 
-def _base(config):
-    """This run's $BASE — the root the binary composes $BASE/$RUN_ID under. The explicit
-    `--temp-dir-base` (may be local OR remote, e.g. s3://…), else a stable per-user local scratch."""
+def _root(config):
+    """This run's `<root>` — the outer base under which `_invoke` composes `<root>/<session-id>/
+    <batch-id>` (SPEC §11.2). The explicit `--temp-dir-base` (may be local OR remote, e.g. s3://…),
+    else the binary's own default temp-dir name (`duckdb_unittest_tempdir`, resolved by the binary
+    relative to its working dir)."""
     base = config.getoption("--temp-dir-base", default=None)
-    return base if base else os.path.join(tempfile.gettempdir(), "ducktest")
+    return base if base else "duckdb_unittest_tempdir"
 
 
 def _temp_roots(config):
-    """Originate the run's storage inputs the driver hands the binary (SPEC §11.3), cached on config.
+    """Originate the run's storage inputs the driver hands the binary (SPEC §11.2/§11.3), cached on config.
 
-    FOLLOWS the in-main temp-dir model: the driver originates only `$BASE` + `$RUN_ID` (the run
-    mnemonic, via `_run_id` — broadcast to every xdist worker so the whole run shares ONE identity)
-    plus an optional read-only DATA dir. The BINARY composes TEMP_DIR=$BASE/$RUN_ID, derives
-    LOCAL_TEMP_DIR, and owns local create/reap; the driver never composes the four full paths, never
-    derives LOCAL_*, never sets a TEMP_DIR env var.
+    The driver originates only `root` + `session_id` (the run mnemonic, via `_run_id` — broadcast to
+    every xdist worker so the whole run shares ONE identity) plus an optional read-only DATA dir. NO
+    full-path composition here and NO LOCAL_*: `_invoke` composes the per-invocation --temp-dir-base =
+    `<root>/<session-id>/<batch-id>`, and the BINARY appends the `<test-id>` leaf + derives LOCAL_*.
 
     Returns the driver's bookkeeping dict:
-      * `base` / `run_id`  → --temp-dir-base / --run-id; also the REMOTE reaper's run-root $BASE/$RUN_ID;
-      * `data_dir`         → --data-dir when set, else None (the binary defaults to working_dir/data) —
-                             a plain read-only path, never composed with the run-id, never reaped;
-      * `destroy`          → the --temp-dir-destroy disposition, passed through so the binary's local
-                             reap matches the driver's REMOTE reap.
+      * `root`       → the outer base; also the REMOTE reaper's `<root>` (it sweeps `<root>/<session-id>/`);
+      * `session_id` → the run mnemonic, the `<session-id>` level (date-sortable; the age-sweep sorts on it);
+      * `data_dir`   → --data-dir when set, else None (the binary defaults to working_dir/data) — a plain
+                       read-only path, never composed with the session-id/batch-id, never reaped;
+      * `destroy`    → the --temp-dir-destroy disposition, passed through to gate the binary's LOCAL reap.
     """
     cached = getattr(config, "_sqllogic_temp_roots", None)
     if cached is not None:
         return cached
     roots = {
-        "base": _base(config),
-        "run_id": _run_id(config),
+        "root": _root(config),
+        "session_id": _run_id(config),
         "data_dir": config.getoption("--data-dir", default=None),
         "destroy": config.getoption("--temp-dir-destroy", default="on-success"),
     }
@@ -1174,38 +1179,20 @@ def pytest_configure(config):
             config.option.log_cli_level = "INFO"
 
 
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item, call):
-    """Standard rep_setup/rep_call stash: the per-test remote reaper reads it for its keep-on-failure
-    gate (SPEC §11.4). Item-local, so it works on the xdist worker that ran the test — no queue."""
-    from .reaper import stash_report
-
-    outcome = yield
-    stash_report(item, outcome.get_result())
-
-
-def pytest_runtest_teardown(item, nextitem):
-    """Per-test REMOTE reap (primary, SPEC §11.4): purge ${TEMP_DIR}/${token} if the test passed. Runs
-    on the worker (it knows its own outcome). No-op when TEMP_DIR is local / no reaper / the test failed
-    (keep-on-failure). Order-independent w.r.t. fixture teardown — a remote reap is a prefix delete."""
-    from .reaper import reap_test
-
-    reap_test(item.config, item)
-
-
 def pytest_sessionfinish(session, exitstatus):
     # Controller-only: stop store-present services + shut the store down, then apply the temp-dir policy.
     config = session.config
     if getattr(config, "workerinput", None) is not None:
         return  # this is a worker
     _teardown_store(config)
-    # REMOTE reaping (SPEC §11.4), controller-only: the per-run safety net (gated by --temp-dir-destroy)
-    # then the best-effort age-sweep. No-ops when $BASE is local / no reaper is registered. There is NO
-    # driver-side LOCAL rmtree here: the binary owns LOCAL create/reap-on-success (it received
-    # --temp-dir-destroy), so the driver must not double-manage the run dir it reaps.
-    from .reaper import age_sweep, reap_run
+    # REMOTE reaping (SPEC §11.5), controller-only + once: the driver does NOTHING local (the binary owns
+    # LOCAL create/reap, as-it-goes — it received --temp-dir-base/--temp-dir-run-id/--temp-dir-destroy).
+    # Here it applies the one session-end remote sweep (keep-on-failure by keep-list) then the best-effort
+    # age-sweep backstop. Both no-op when <root> is local / no reaper is registered. A run that never
+    # reaches sessionfinish does no sweep — the age-sweep is the eventual backstop (SPEC §11.5).
+    from .reaper import age_sweep, sweep_session
 
-    reap_run(config, session)
+    sweep_session(config)
     age_sweep(config)
 
 
@@ -1225,8 +1212,9 @@ def run_paired(request, *, env=None):
     and pytest.skip on a skipped test. Pass ``env`` (e.g. a provisioning fixture's ``bindings.env``) to
     inject vars the body substitutes via ``${...}`` (merged over os.environ).
 
-    The run's originated TEMP/DATA roots (SPEC §11.3) are attached automatically — this invocation
-    shares the same set as every batched `.test`, never re-derived here.
+    The run's originated TEMP/DATA roots (SPEC §11.2) are attached automatically — this invocation
+    shares the run's `<root>/<session-id>` and composes its own `<batch-id>` from the body name, never
+    re-derived here.
     """
     working_dir = request.config.sqllogic_working_dir
     binary = find_binary(request.config, working_dir)
@@ -1240,6 +1228,7 @@ def run_paired(request, *, env=None):
                     [test_name],
                     working_dir,
                     _temp_roots(request.config),
+                    batch_id=_test_batch_id(test_name),
                     env=env,
                     extra_args=resolve_unittest_args(request.config),
                 )

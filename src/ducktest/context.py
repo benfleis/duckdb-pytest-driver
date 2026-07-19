@@ -113,6 +113,9 @@ class Plan:
     reachable_suites: frozenset[str] = frozenset()  # suite names a selected item belongs to
     needed_credentials: frozenset[str] = frozenset()  # credential keys the selection requires
     needed_services: frozenset[str] = frozenset()  # service keys the selection requires
+    # node-id → <batch-id> for the collected SqlLogic items, so the session-end remote sweep can map a
+    # FAILED test to the batch dir to keep (SPEC §11.6). Built by the controller from the real items.
+    node_batch_ids: dict = field(default_factory=dict)
     # collection provenance, for the verify/authoritative reconcile (kills false-green):
     fs_names: frozenset[str] = frozenset()
     binary_names: frozenset[str] = frozenset()
@@ -188,7 +191,8 @@ class SessionContext:
     duckdb_cli: Optional[str] = None  # resolved duckdb CLI (for provisioner init-SQL / --repl)
     store: Any = None  # store handle; started only if a reachable suite declares a resource
     plan: Optional[Plan] = None  # set by the controller's SCAN phase
-    temp_reaper: Any = None  # REMOTE-storage reaper (purge/list) a backend registers; None => no-op
+    temp_reaper: Any = None  # REMOTE-storage reaper (sweep/list) a backend registers; None => no-op
+    failed_nodeids: set = field(default_factory=set)  # controller-collected failed node-ids (§11.5 keep-list)
 
     # convenience passthroughs so callers read `ctx.suite(...)` not `ctx.registry.suites[...]`
     def suite(self, name: str) -> Any:

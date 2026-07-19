@@ -8,6 +8,7 @@ even inside a batch. Binary resolution, `run_paired` (driving a same-stem body),
 live in driver.plugin.
 """
 
+import hashlib
 import json
 import os
 import shlex
@@ -17,6 +18,42 @@ import threading
 import warnings
 
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# <batch-id>: the per-invocation temp run-root segment (SPEC §11.2 / §11.4).
+# The composed --temp-dir-base is <root>/<session-id>/<batch-id>; <batch-id>
+# identifies ONE unittest invocation so concurrent invocations never share a
+# run-root (§11.6 concurrency). A batched invocation reuses the batch's id; a
+# single (unbatched) test / paired-driver invocation derives one from the test
+# name; an individual re-run gets its OWN distinct id (see _rerun_batch_id).
+# ---------------------------------------------------------------------------
+
+
+def _batch_dir(batch_no) -> str:
+    return f"batch-{batch_no}"
+
+
+def _test_batch_id(test_name: str) -> str:
+    return "test-" + hashlib.sha1(test_name.encode()).hexdigest()[:10]
+
+
+def item_batch_id(item) -> str:
+    """The `<batch-id>` path segment for an item's temp run-root (SPEC §11.2).
+
+    A batched `SqlLogicItem` carries its `_batch_id` (assigned by `assign_batches`); an unbatched
+    single test (`--batch-size 1`) has none, so its id derives from the test name. The controller
+    computes the SAME id for its keep-list mapping (node-id → batch-id), so both agree by construction.
+    """
+    bid = getattr(item, "_batch_id", None)
+    return _batch_dir(bid) if bid is not None else _test_batch_id(item._test_name)
+
+
+def _rerun_batch_id(batch_id: str, test_name: str) -> str:
+    """A DISTINCT batch-id for an individual re-run so its run-root never collides with the batch's
+    (SPEC §11.6). The re-run is a throwaway for a clean per-test diff — the failed test's authoritative
+    artifacts already live under the batch's own `<batch-id>/<test-id>/`, which the keep-list preserves."""
+    return f"{batch_id}-rerun-{_test_batch_id(test_name)}"
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +125,7 @@ class SqlLogicItem(pytest.Item):
             [self._test_name],
             self._working_dir,
             self._temp_roots,
+            batch_id=item_batch_id(self),
             extra_args=resolve_unittest_args(self.config),
         )
         _raise_for_result(_parse_result(result), test_file=str(self.path))
@@ -102,6 +140,7 @@ class SqlLogicItem(pytest.Item):
                     self._binary,
                     self._working_dir,
                     self._temp_roots,
+                    batch_id=item_batch_id(self),
                     extra_args=resolve_unittest_args(self.config),
                 )
         r = _batch_cache[self._batch_id].get(self._test_name, {"status": "internal_error"})
@@ -124,7 +163,12 @@ class SqlLogicItem(pytest.Item):
 
 
 def _execute_batch(
-    test_names: list, binary: str, working_dir: str, temp_roots: dict = None, extra_args: list = None
+    test_names: list,
+    binary: str,
+    working_dir: str,
+    temp_roots: dict = None,
+    batch_id: str = None,
+    extra_args: list = None,
 ) -> dict:
     """Run a batch.  On failure, re-run individually for per-test attribution."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -144,6 +188,7 @@ def _execute_batch(
             ],
             working_dir,
             temp_roots,
+            batch_id=batch_id,
             extra_args=extra_args,
         )
     finally:
@@ -151,21 +196,29 @@ def _execute_batch(
 
     # Per-test outcome is attributable from the name-tagged [TEST_EVENT] stream, so a clean batch
     # needs no re-run. A test the events mark failed/incomplete is re-run alone to get a clean,
-    # per-test diff (the batch's combined output isn't sliced per test).
+    # per-test diff (the batch's combined output isn't sliced per test). The re-run runs under its
+    # OWN distinct batch-id (SPEC §11.6) so its run-root never collides with the batch's.
     events = _scan_test_events(result["stdout"] + result["stderr"])
     statuses = {}
     for name in test_names:
         st = _classify(events, name, result)
         if st["status"] in ("fail", "internal_error"):
-            st = _invoke_single(name, binary, working_dir, temp_roots, extra_args=extra_args)
+            st = _invoke_single(
+                name, binary, working_dir, temp_roots, batch_id=_rerun_batch_id(batch_id, name), extra_args=extra_args
+            )
         statuses[name] = st
     return statuses
 
 
 def _invoke_single(
-    test_name: str, binary: str, working_dir: str, temp_roots: dict = None, extra_args: list = None
+    test_name: str,
+    binary: str,
+    working_dir: str,
+    temp_roots: dict = None,
+    batch_id: str = None,
+    extra_args: list = None,
 ) -> dict:
-    result = _invoke(binary, [test_name], working_dir, temp_roots, extra_args=extra_args)
+    result = _invoke(binary, [test_name], working_dir, temp_roots, batch_id=batch_id, extra_args=extra_args)
     return _parse_result(result)
 
 
@@ -188,8 +241,23 @@ def resolve_unittest_args(config) -> list:
     return tokens
 
 
+def _compose_base(root, session_id, batch_id) -> str:
+    """The ONE composed per-batch run-root string `<root>/<session-id>/<batch-id>` (SPEC §11.4).
+
+    Joined with `/` so it is correct for a local root (POSIX) AND a remote one (`s3://…`); the binary
+    then appends only the `<test-id>` leaf under it.
+    """
+    return "/".join((str(root).rstrip("/"), str(session_id), str(batch_id)))
+
+
 def _invoke(
-    binary: str, args: list, working_dir: str, temp_roots: dict = None, env: dict = None, extra_args: list = None
+    binary: str,
+    args: list,
+    working_dir: str,
+    temp_roots: dict = None,
+    batch_id: str = None,
+    env: dict = None,
+    extra_args: list = None,
 ) -> dict:
     # Opt into the binary's per-test event stream on every invocation (single + batch). Requires the
     # C++ --emit-test-events flag to be built into the binary, else Catch2 errors on the unknown arg.
@@ -197,13 +265,15 @@ def _invoke(
     args = ["--emit-test-events", *(extra_args or []), *args]
     run_env = dict(os.environ)
     if temp_roots:
-        # FOLLOW the in-main temp-dir model (SPEC §11.3): the driver originates $BASE + $RUN_ID and the
-        # BINARY composes TEMP_DIR=$BASE/$RUN_ID, derives LOCAL_*, and owns local create/reap. So pass
-        # --temp-dir-base / --run-id (NOT --temp-dir EXACT) and set NO TEMP_DIR/LOCAL_TEMP_DIR env var
-        # (the binary composes/overwrites it anyway). --temp-dir-destroy is passed THROUGH so the
-        # binary's local reap matches the driver's disposition. DATA is a plain read-only path:
+        # SPEC §11.4: compose the per-batch run-root and pass it as the ONE --temp-dir-base string
+        # (<root>/<session-id>/<batch-id>) — NOT --temp-dir EXACT, and NOT a TEMP_DIR/LOCAL_*/DATA_DIR
+        # env var (the binary composes/derives + would overwrite those). --temp-dir-run-id off so the
+        # binary appends no extra run-id level (ResolveRunIdRoot returns the base verbatim). The binary
+        # then adds only the <test-id> leaf, derives LOCAL_*, and owns local create/reap. --temp-dir-
+        # destroy is passed THROUGH to gate the binary's LOCAL reap. DATA is a plain read-only path:
         # --data-dir only when the driver has an override, else the binary defaults to working_dir/data.
-        temp_args = ["--temp-dir-base", str(temp_roots["base"]), "--run-id", str(temp_roots["run_id"])]
+        base = _compose_base(temp_roots["root"], temp_roots["session_id"], batch_id)
+        temp_args = ["--temp-dir-base", base, "--temp-dir-run-id", "off"]
         if temp_roots.get("destroy"):
             temp_args += ["--temp-dir-destroy", str(temp_roots["destroy"])]
         if temp_roots.get("data_dir"):

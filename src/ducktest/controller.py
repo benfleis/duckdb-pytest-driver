@@ -37,6 +37,9 @@ from .context import Plan, get_context
 class Controller:
     """The controller-side collect-first orchestrator (see the module docstring)."""
 
+    def __init__(self) -> None:
+        self._config: Optional[pytest.Config] = None
+
     # -- store lifecycle + out-of-session service commands (before collection) ---------------------
 
     @pytest.hookimpl(trylast=True)
@@ -47,6 +50,7 @@ class Controller:
         `--teardown-service` (do the op + `pytest.exit`, needs no binary); (2) start the shared store
         + publish its address to the env PRE-FORK, so workers inherit it at spawn (`pytest_sessionstart`).
         """
+        self._config = config  # held for pytest_runtest_logreport (which pytest passes no config)
         if getattr(config, "workerinput", None) is not None:
             return  # a worker connects to the controller's store; it starts none of its own
         from . import plugin
@@ -91,10 +95,22 @@ class Controller:
             return True
         return None
 
+    @pytest.hookimpl
+    def pytest_runtest_logreport(self, report) -> None:
+        """Controller-side failed-node collection for the session-end remote keep-list (SPEC §11.5). The
+        Controller is registered only on the controller, and xdist forwards worker reports here, so this
+        sees every test's outcome without a worker-side stash. pytest passes no config → use `self._config`."""
+        if self._config is None:
+            return
+        from .reaper import record_failure
+
+        record_failure(self._config, report)
+
     def _build_plan(self, config: pytest.Config, items: list) -> Plan:
         """From the REAL selected items, derive reachable suites + needed creds/services + the reconcile
-        provenance. Membership comes from what `-m`/`-k` actually selected, not a predictor."""
+        provenance + the node-id→batch-id map. Membership comes from what `-m`/`-k` actually selected."""
         from . import plugin
+        from .sqllogic import item_batch_id
 
         reachable = plugin._reachable_suites(config, items)
         suites = {t.name: t for t in plugin.get_suites(config)}
@@ -105,11 +121,18 @@ class Controller:
             svcs.update(s.key for s in suite.services)
 
         fs_names = frozenset(getattr(it, "_test_name", it.nodeid) for it in items)
+        # node-id → <batch-id> for the SqlLogic items (those carrying `_test_name`); the session-end
+        # sweep maps a failed test to the batch dir to keep (SPEC §11.6). Batch numbering is
+        # deterministic (collection order), so this matches the <batch-id> the worker composes.
+        node_batch_ids = {
+            it.nodeid: item_batch_id(it) for it in items if getattr(it, "_test_name", None) is not None
+        }
         return Plan(
             selected_nodeids=frozenset(it.nodeid for it in items),
             reachable_suites=frozenset(reachable),
             needed_credentials=frozenset(creds),
             needed_services=frozenset(svcs),
+            node_batch_ids=node_batch_ids,
             fs_names=fs_names,
             binary_names=plugin.binary_names_if_any(config),
         )
