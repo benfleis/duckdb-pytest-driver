@@ -132,16 +132,21 @@ class Provisioner:
         )
 
     def teardown(self, bindings: Optional[Bindings] = None) -> None:
-        """Drop each namespace tracked in `bindings.isolated` (the ONLY teardown input the base reads).
+        """Reclaim physical storage FIRST, THEN drop the namespaces — the stack/LIFO order.
 
-        Redesign note: a backend that also stages physical storage (parquet/delta files under a `rw`
-        prefix) overrides `reclaim_physical(bindings)` — the shipped base dropped catalog metadata
-        only, so every `rw` provision leaked files. The base calls it after the namespace drop."""
+        A `rw` provision builds: create namespace -> create+seed tables (+ for external-storage
+        backends, write data files at a LOCATION). Unwinding must be LIFO: reclaim the files, THEN
+        drop the namespace. `reclaim_physical` runs BEFORE `drop_sql` because a file reclaim (iceberg
+        `DROP TABLE ... PURGE`, or deleting objects at an external LOCATION) needs the catalog to
+        still REFERENCE the tables — once the namespace is dropped they can't be enumerated and the
+        files orphan. For catalog-MANAGED backends `reclaim_physical` is a no-op and `DROP ... CASCADE`
+        reclaims their storage, so this order is correct for both. (`bindings.isolated` is the only
+        framework field the base reads.)"""
+        if bindings is not None:
+            self.reclaim_physical(bindings)  # files first, while the catalog still references them
         isolated = list(bindings.isolated) if bindings else []
         for ns in isolated:
             self.execute(self.drop_sql(ns))
-        if bindings is not None:
-            self.reclaim_physical(bindings)
 
     def ensure_isolated(self, namespace, state, dry_run, *, create_sql=None):
         if namespace in state.isolated:
