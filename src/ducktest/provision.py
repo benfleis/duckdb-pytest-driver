@@ -72,11 +72,12 @@ def provision_service(config, svc) -> dict:
 
 
 @dataclass
-class _State:
+class State:
     """The rich WORKING object a backend's hooks populate during `provision()`. Its data becomes the
     opaque `Bindings.backend` payload at the return boundary — so the FRAMEWORK never sees
     catalog/default_schema/tables (it reads only token/isolated/env/summary), but the backend keeps
-    the ergonomic rich structure its `instantiate`/`rw_target`/`make_init_sql` need."""
+    the ergonomic rich structure its `instantiate`/`rw_target`/`make_init_sql` need. Public so a
+    backend can construct it in `new_state` (returning it, or a subclass with extra fields)."""
 
     token: str
     catalog: Optional[str] = None
@@ -91,7 +92,7 @@ class Provisioner:
     """Base Provisioner: the generic access-policy spec-loop + RO once-guard + teardown. A backend
     overrides the hooks (`execute`, `rw_target`, `ro_target`, `instantiate`, `make_init_sql` required;
     the rest have defaults). `provision()` returns the framework `Bindings`; backend-shaped data is in
-    `Bindings.backend` (a `_State`, or a backend subclass of it via `new_state`)."""
+    `Bindings.backend` (a `State`, or a backend subclass of it via `new_state`)."""
 
     def __init__(self):
         self._shared_ro = set()  # RO targets instantiated once per session (per worker under xdist)
@@ -120,7 +121,7 @@ class Provisioner:
             self.dry_run_summary(state)
         return self._freeze(state)
 
-    def _freeze(self, state: _State) -> Bindings:
+    def _freeze(self, state: State) -> Bindings:
         """The Bindings SPLIT realized at one boundary: framework fields promoted, rich state opaque."""
         return Bindings(
             token=state.token,
@@ -151,15 +152,15 @@ class Provisioner:
         if not dry_run:
             self.execute(sql)
 
-    # -- hooks a backend implements (state is the rich _State / a subclass) --
+    # -- hooks a backend implements (state is the rich State / a subclass) --
 
     def before_provision(self, specs, token, dry_run):
         """Optional up-front validation before any spec is provisioned. Default: no-op."""
 
-    def new_state(self, token, *, params=None) -> _State:
-        """Construct the working state. Default bare `_State(token)`; override to preset
-        catalog/default_schema or return a `_State` subclass with extra backend fields."""
-        return _State(token=token)
+    def new_state(self, token, *, params=None) -> State:
+        """Construct the working state. Default bare `State(token)`; override to preset
+        catalog/default_schema or return a `State` subclass with extra backend fields."""
+        return State(token=token)
 
     def execute(self, sql):
         raise NotImplementedError

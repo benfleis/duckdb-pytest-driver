@@ -30,7 +30,7 @@ from .store import (  # noqa: F401  (the process-shared store: facade acknowledg
     ProvisionTimeout,
 )
 from .requires import requires, requires_matrix, Requirement, collect_requirements  # noqa: F401
-from .provision import register_provisioner, get_provisioner, Provisioner, Bindings  # noqa: F401
+from .provision import register_provisioner, get_provisioner, Provisioner, Bindings, State  # noqa: F401
 from .suites import (  # noqa: F401  (test-suite declaration API + registry; Phase 0: inert)
     register_suite,
     get_suites,
@@ -78,6 +78,7 @@ __all__ = [
     "get_provisioner",
     "Provisioner",
     "Bindings",
+    "State",
     "register_suite",
     "get_suites",
     "credential",
