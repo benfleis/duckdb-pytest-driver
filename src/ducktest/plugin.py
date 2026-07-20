@@ -1442,10 +1442,11 @@ def pytest_collection_modifyitems(session, config, items):
         _apply_suite_markers(config, items, suites)
         _default_scan_deselect(config, items, suites)
 
-    yield
-
-    # POST-yield: after selection is final. Dedupe by nodeid (a driver .py named explicitly is collected
-    # both natively and by our hook; a .test reachable via FS + `unittest -l` overlaps).
+    # Dedupe by nodeid, then batch — both pre-yield: assign_batches' xdist_group marker must exist before
+    # xdist's plain pytest_collection_modifyitems (remote.py) appends the `@group` nodeid suffix that
+    # `--dist=loadgroup` reads to keep a batch on one worker. Stamping post-yield (after our hookwrapper's
+    # yield) runs too late — loadgroup then scatters a batch across workers, each re-running the whole
+    # batch on the same `<session-id>/<batch-id>` temp dir concurrently.
     seen = set()
     deduped = []
     for it in items:
@@ -1456,8 +1457,34 @@ def pytest_collection_modifyitems(session, config, items):
     items[:] = deduped
 
     batch_size = config.getoption("--batch-size", default=10)
-    if batch_size > 1:
-        assign_batches(items, batch_size=batch_size)
+    n_batches = assign_batches(items, batch_size=batch_size) if batch_size > 1 else 0
+
+    # Batching only groups correctly under --dist=loadgroup (it honors the xdist_group mark); any other
+    # parallel scheduler scatters a batch across workers, and each re-runs the whole batch on the same
+    # temp dir (IO/lock corruption). Fail loud instead. Gated on real batches (n_batches) so a pure-
+    # Python parallel run — no .test items — isn't blocked; serial (-n0) is one process, so it's safe.
+    if n_batches and getattr(config.option, "numprocesses", None):
+        dist = getattr(config.option, "dist", "no")
+        if dist != "loadgroup":
+            raise pytest.UsageError(
+                f"--batch-size {batch_size} needs --dist=loadgroup for a parallel (-n) run, but got "
+                f"--dist={dist!r}. loadgroup keeps each batch on one worker; any other scheduler scatters "
+                f"a batch across workers and corrupts its shared temp dir. Pass --dist=loadgroup, or set "
+                f"--batch-size 1 to disable batching."
+            )
+
+    yield
+
+    # Selection is final; trim each batch's member list to survivors so a -k/-m run doesn't execute
+    # excluded tests in the single -f invocation (the marker + `_batch_id` stay — batch already grouped).
+    survivors: dict = {}
+    for it in items:
+        bid = getattr(it, "_batch_id", None)
+        if bid is not None:
+            survivors.setdefault(bid, []).append(it._test_name)
+    for it in items:
+        if getattr(it, "_batch_id", None) is not None:
+            it._batch_test_names = survivors[it._batch_id]
 
     # Workers adopt the plan's env FROM THE STORE (SPEC §3.7): provision what their real selection needs
     # (creds + services), single-flighted so the controller's up-front boot/fetch isn't duplicated. The

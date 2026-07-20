@@ -1,0 +1,58 @@
+#!/bin/zsh
+# Diagnostic shim for the unittest binary — logs every invocation the driver makes, then runs the real
+# binary transparently (forwards its exit code, so pass/fail is unaffected). Point the driver at it:
+#
+#   DUCKTEST_UNITTEST=build/release/test/unittest \
+#     uv run pytest -n auto --dist=loadgroup --rootdir "$PWD" \
+#       --unittest-bin /abs/path/to/dev/wrap-unittest.sh <paths>
+#
+# NOTE the `--rootdir "$PWD"`: pytest treats the `--unittest-bin` path value as a rootdir hint, so an
+# absolute path INTO this repo (which has its own pyproject.toml pytest config) would otherwise re-anchor
+# rootdir here and collect 0 of your duckdb tests. Pinning --rootdir to your duckdb checkout avoids that.
+# (Or just copy this file somewhere outside any repo with a pytest config and point --unittest-bin there.)
+#
+# One append-only line per invocation across all workers. Env:
+#   DUCKTEST_UNITTEST   (required) path to the real unittest binary
+#   DUCKTEST_WRAP_LOG   (optional) log file; default ./unittest-invocations.log
+#
+# Analysis after a run — how many times each temp base ran (1× per batch when loadgroup groups it;
+# >1× ⇒ batches scattering across workers, the concurrency-corruption condition):
+#   awk -F'BASE=' '{split($2,b," ");print b[1]}' unittest-invocations.log | sort | uniq -c | sort -rn | head
+# Overlap check (two workers live on the same base at once) is at the bottom of this file.
+
+real=${DUCKTEST_UNITTEST:-build/release/test/unittest}
+log=${DUCKTEST_WRAP_LOG:-./unittest-invocations.log}
+
+# pull the --temp-dir-base value out of argv for easy grouping
+base=""; prev=""
+for a in "$@"; do [[ $prev == "--temp-dir-base" ]] && base=$a; prev=$a; done
+
+start=$(date +%s.%N)
+"$real" "$@"; rc=$?
+end=$(date +%s.%N)
+
+print -r -- "PID=$$ START=$start END=$end RC=$rc BASE=$base ARGS=${(j: :)@}" >> "$log"
+exit $rc
+
+# ---------------------------------------------------------------------------------------------------
+# Overlap check (python3 <this-file>-style; paste after a run). Flags any two invocations that shared a
+# --temp-dir-base while both were live — two workers writing the same temp dir at once. Zero ⇒ grouped.
+#
+#   python3 - unittest-invocations.log <<'PY'
+#   import re, sys
+#   rows=[]
+#   for ln in open(sys.argv[1]):
+#       m=dict(re.findall(r'(PID|START|END|BASE)=(\S+)', ln))
+#       if m.get('BASE'): rows.append((m['BASE'], float(m['START']), float(m['END']), m['PID']))
+#   by={}
+#   for b,s,e,p in rows: by.setdefault(b,[]).append((s,e,p))
+#   n=0
+#   for b,v in by.items():
+#       v.sort()
+#       for i in range(len(v)):
+#           for j in range(i+1,len(v)):
+#               if v[j][0] < v[i][1]:
+#                   n+=1; print(f"OVERLAP {b}: PID {v[i][2]} & {v[j][2]}")
+#   print("overlapping same-base pairs:", n, "| invocations:", len(rows))
+#   PY
+# ---------------------------------------------------------------------------------------------------
