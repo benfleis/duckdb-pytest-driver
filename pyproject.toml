@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "duckdb-pytest-driver"
+version = "0.1.0"
+description = "Generic pytest front-end over the duckdb unittest (Catch2) binary: collect & run .test files, Python drivers, @requires provisioning."
+readme = "README.md"
+# >=3.9: str.removeprefix (plugin.py terminal-summary) is 3.9+; back-compat isn't a goal.
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "DuckDB contributors" }]
+keywords = ["duckdb", "pytest", "sqllogic", "testing"]
+classifiers = [
+    "Framework :: Pytest",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+]
+# >=7.4: the pytest_ignore_collect hook uses the collection_path arg (added in 7.4).
+dependencies = ["pytest>=7.4"]
+
+[project.optional-dependencies]
+# For CONSUMERS who want `-n` parallelism: `pip install duckdb-pytest-driver[xdist]`.
+xdist = ["pytest-xdist"]
+
+# For DEVELOPING the driver: its own self-tests spin up inner `pytest -n 2` subprocesses (the
+# controller/worker store, broadcast, and service tests), so xdist is required to run them. `uv run`
+# includes the `dev` group by default, so plain `uv run pytest` works with no extra flag.
+[dependency-groups]
+dev = ["pytest-xdist"]
+
+[project.urls]
+Homepage = "https://github.com/duckdb/duckdb"
+
+# Auto-registers the plugin in any pytest process that has this package installed —
+# replaces the old `pytest_plugins = ["ducktest.plugin"]` line + sys.path hacks.
+[project.entry-points.pytest11]
+ducktest = "ducktest.plugin"
+
+# `ducktest` front-end (currently: `ducktest configure`) — writes the base pytest
+# config a plugin can't inject, so bare `pytest` works afterward.
+[project.scripts]
+ducktest = "ducktest.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ducktest"]
+
+# Scope the package's own `pytest` run to its self-tests; the runnable examples under
+# examples/ are collected only when targeted explicitly (`pytest examples/...`).
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Plain `pytest` runs the OFFLINE suite only — the docker resource-bring-up tier is opt-in behind the
+# `--run-docker` flag (see tests/conftest.py). NOT via `addopts = -m 'not docker'`: pytest's `-m` is
+# single-valued, so any user `-m` (e.g. `-m 'not slow'`) would REPLACE it and silently let the tier boot
+# real containers, and `pytest <that_file>` would deselect it. The flag can't be defeated that way.
+
+[tool.ruff]
+line-length = 120

@@ -1,0 +1,27 @@
+name: publish-images
+
+# Manual only -- publish the resource emulator images to ghcr on demand (no auto triggers yet).
+# Requires the GHCR_PAT secret: a classic PAT with write:packages owned by the namespace account
+# (benfleis while DUCKTEST_IMAGE_NS=ghcr.io/benfleis). This mirrors the runbook a dev runs by hand.
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # Everything is a `mirror`, so ONE runner covers every arch: `docker pull --platform` fetches any
+    # arch without running it (no QEMU). Becomes an amd+arm matrix only when a `build` image is added.
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_CLI_EXPERIMENTAL: enabled  # `docker manifest` (the --finalize step) is gated on some docker builds
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Log in to ghcr
+        # username = the PAT owner; changes with the namespace (-> duckdb on the item-4 migration).
+        run: echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u benfleis --password-stdin
+      - name: Publish per-arch slices
+        run: uv run ducktest publish-images --push
+      - name: Finalize multi-arch manifests
+        run: uv run ducktest publish-images --finalize --push

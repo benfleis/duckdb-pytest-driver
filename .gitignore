@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Claude Code: a global ignore (**/.claude/) hides this dir. Keep the entrypoint tracked
+# (it just imports AGENTS.md) so collaborators' Claude Code loads the shared norms; ignore the rest.
+CLAUDE.local.md
+!.claude/
+.claude/*
+!.claude/CLAUDE.md
+
+# Local-only agent overrides — personal variants that stay out of VCS.
+# (.agents/ itself IS tracked; only these local carve-outs are ignored.)
+AGENTS.local.md
+.agents/skills-local/

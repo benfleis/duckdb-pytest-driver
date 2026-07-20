@@ -1,0 +1,43 @@
+name: tests
+
+# Thin wrapper: CI calls the same commands a dev runs (AGENTS.md "Dev loop"). No logic here.
+on:
+  push:
+    branches: [v0-dev, main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    # The self-tests: stub unittest binary, no docker, no network (5 skip for "no duckdb CLI").
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Lint
+        run: uvx ruff check .
+      - name: Offline suite
+        run: uv run pytest
+
+  docker:
+    # The opt-in tier: boots real azurite/minio FROM ghcr (DUCKTEST_IMAGE_SOURCE defaults to ghcr).
+    # Public images -> no registry auth. Docker is preinstalled on ubuntu-latest.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # guard rail: a stuck container/seed fails here, never the 6h job default
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install rclone (current release; apt's is often too old for the azureblob emulator)
+        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+      - name: Pre-pull served images (warm cache, fail fast if unpullable)
+        run: uv run ducktest pull-images
+      - name: Docker tier
+        # -n0 -s: serial + unbuffered so container/seed output streams live (xdist buffers it)
+        run: uv run pytest --run-docker -m docker -n0 -s
