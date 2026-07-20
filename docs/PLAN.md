@@ -295,6 +295,19 @@ This object-store instantiator is the piece that plugs into the base `Provisione
      auto-discover a running service... build it when we know we need it") — likely: record the owning
      PID/run-id in a small on-disk file per service key at boot (both the managed and `provision-service`
      paths), have teardown/stop check it and refuse (or `--force`) if the owner is still alive.
+- **`--steps` narration under `-n>1`** _(discussed, never captured until 2026-07-20)_ — today `--steps`
+  (and `--repl`) hard-force `-n0` (`pytest_configure`, "single-process") because `step()` records are
+  `logging` events surfaced via pytest's live-log (`log_cli`), which is controller-side: worker logs don't
+  reach it under xdist, and even if they did they'd interleave incoherently across workers. The idea:
+  route step begin/end events through the store — which already exists in-session for the store address +
+  service env — as a small event stream (queue/broadcast), have the controller drain and render them
+  serialized per-worker/per-test, so `--steps` can KEEP `-n>1` instead of collapsing to serial. Scope: a
+  step-event channel on the store, worker-side `step()` publishing (in addition to / instead of the local
+  log), a controller-side drainer + renderer, and dropping the `-n0` force in `_narrating`'s configure
+  block (the guard already skips serial; nothing there needs changing). Note the store is per-invocation
+  (not cross-process), which is fine here — this coordinates workers *within* one run, its actual purpose.
+  Until then, `--steps` = serial is correct, not a bug; the help text should say "forces `-n0` (pending
+  queue-forwarded narration)" so it reads as deferred, not permanent.
 - **Matrix** — one body × N cells (catalog/engine), via pytest `parametrize` / scoped
   fixtures / `pytest_generate_tests`. Cells are batch-1 and likely imply `slow`. Per-cell
   variable injection into the body is the open mechanism (the default-schema trick covers many
