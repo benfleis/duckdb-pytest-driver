@@ -180,8 +180,10 @@ def _start(config):
             wait_until(
                 lambda: minio_alive(block),
                 _READY_TIMEOUT_S,
-                lambda: f"MinIO container {CONTAINER!r} did not become ready on "
-                f"{block.get('endpoint')} after {_READY_TIMEOUT_S}s (image {IMAGE}).",
+                lambda: (
+                    f"MinIO container {CONTAINER!r} did not become ready on "
+                    f"{block.get('endpoint')} after {_READY_TIMEOUT_S}s (image {IMAGE})."
+                ),
             )
             _ensure_bucket(block)
         except Exception:

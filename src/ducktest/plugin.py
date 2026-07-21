@@ -725,8 +725,8 @@ def _parse_existing_services(cli_values, environ):
         _add(result, entry)
     prefix = "DUCKTEST_EXISTING_SERVICE_"  # per-service env (DUCKTEST_EXISTING_SERVICES lacks the '_')
     for name, val in environ.items():
-        if name.startswith(prefix) and name[len(prefix):]:
-            result[_norm_service_key(name[len(prefix):])] = _existing_entry_value(val)
+        if name.startswith(prefix) and name[len(prefix) :]:
+            result[_norm_service_key(name[len(prefix) :])] = _existing_entry_value(val)
     for value in cli_values or []:  # highest: CLI (each value may itself be a list)
         for entry in _split(value):
             _add(result, entry)

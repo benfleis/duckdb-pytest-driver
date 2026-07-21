@@ -124,9 +124,7 @@ class Controller:
         # node-id → <batch-id> for the SqlLogic items (those carrying `_test_name`); the session-end
         # sweep maps a failed test to the batch dir to keep (SPEC §11.6). Batch numbering is
         # deterministic (collection order), so this matches the <batch-id> the worker composes.
-        node_batch_ids = {
-            it.nodeid: item_batch_id(it) for it in items if getattr(it, "_test_name", None) is not None
-        }
+        node_batch_ids = {it.nodeid: item_batch_id(it) for it in items if getattr(it, "_test_name", None) is not None}
         return Plan(
             selected_nodeids=frozenset(it.nodeid for it in items),
             reachable_suites=frozenset(reachable),
