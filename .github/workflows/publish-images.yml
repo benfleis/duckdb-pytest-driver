@@ -6,8 +6,14 @@ name: publish-images
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read   # least privilege; GHCR_PAT does the push, GITHUB_TOKEN needs nothing
+
 jobs:
   publish:
+    # Owner + main only (mirrors publish-uc-image.yml): only benfleis, only from main, may
+    # dispatch a run that touches GHCR_PAT. workflow_dispatch never fires on a PR.
+    if: github.actor == 'benfleis' && github.ref == 'refs/heads/main'
     # Everything is a `mirror`, so ONE runner covers every arch: `docker pull --platform` fetches any
     # arch without running it (no QEMU). Becomes an amd+arm matrix only when a `build` image is added.
     runs-on: ubuntu-latest
