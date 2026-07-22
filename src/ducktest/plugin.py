@@ -434,6 +434,23 @@ def pytest_load_initial_conftests(early_config, parser, args):
     yield
 
 
+def pytest_exception_interact(node, call, report):
+    """Render provisioning/credential INFRA failures as their one-line reason, not a traceback.
+
+    ProvisionFailed / ProvisionTimeout / ResourceMissing are store signals, not code bugs (a service
+    never became ready, a credential fetch failed as the poison-pill owner, a resource was never
+    provisioned) — the store/fixture frames are pure noise. Collapse them to the message for EVERY
+    consumer, at any phase (setup/call/teardown). The exception type is untouched (still catchable
+    upstream); only its rendering changes — so a consumer needs no per-fixture `try/except` to get a
+    clean, loud failure.
+    """
+    excinfo = getattr(call, "excinfo", None)
+    if excinfo is not None and excinfo.errisinstance(
+        (store.ProvisionFailed, store.ProvisionTimeout, store.ResourceMissing)
+    ):
+        report.longrepr = str(excinfo.value)
+
+
 def pytest_ignore_collect(collection_path, config):
     """Skip the configured top-level dirs under working_dir (default: duckdb/, build/)."""
     working_dir = _working_dir(config)

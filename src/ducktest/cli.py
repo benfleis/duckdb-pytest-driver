@@ -75,9 +75,9 @@ dev = [
 [tool.uv]
 package = false
 
-# The driver isn't published yet — resolve it from your local checkout (adjust if it isn't a sibling):
+# TODO: update to tagged release when ready
 [tool.uv.sources]
-duckdb-pytest-driver = { path = "../driver", editable = true }
+duckdb-pytest-driver = { git = "https://github.com/benfleis/duckdb-pytest-driver", branch = "dev/v0.2" }
 
 # Conform to duckdb's python black settings (so `ruff format` matches CI).
 [tool.ruff]
