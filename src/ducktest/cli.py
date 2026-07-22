@@ -75,9 +75,14 @@ dev = [
 [tool.uv]
 package = false
 
-# The driver isn't published yet — resolve it from your local checkout (adjust if it isn't a sibling):
+# TODO: update to tagged release when ready
 [tool.uv.sources]
-duckdb-pytest-driver = { path = "../driver", editable = true }
+duckdb-pytest-driver = { git = "https://github.com/benfleis/duckdb-pytest-driver", branch = "dev/v0.2" }
+
+# Conform to duckdb's python black settings (so `ruff format` matches CI).
+[tool.ruff]
+line-length = 120
+format.quote-style = "preserve"
 """
 
 # ducktest OWNS these: it keeps them byte-exact and refuses to clobber a hand-edit (stops with a diff).
@@ -192,15 +197,19 @@ def _publish_images(args):
                 for p in e["platforms"]:  # one machine covers every arch: pull doesn't execute the image
                     at = "%s-%s" % (target, arch_of(p))
                     print("  mirror %s [%s] -> %s" % (e["source"], p, at))
-                    if (run(["docker", "pull", "--platform", p, e["source"]])
-                            or run(["docker", "tag", e["source"], at])
-                            or run(["docker", "push", at])):
+                    if (
+                        run(["docker", "pull", "--platform", p, e["source"]])
+                        or run(["docker", "tag", e["source"], at])
+                        or run(["docker", "push", at])
+                    ):
                         sys.stderr.write("✗ mirror failed for %s [%s] (is `docker login ghcr.io` done?)\n" % (name, p))
                         rc = 1
             else:  # build: native host arch only (no QEMU) — run on each arch's machine
                 p = "linux/%s" % arch
                 if p not in e["platforms"]:
-                    print("  build %s: host arch %s not in %s — nothing to do on this machine" % (name, p, e["platforms"]))
+                    print(
+                        "  build %s: host arch %s not in %s — nothing to do on this machine" % (name, p, e["platforms"])
+                    )
                     continue
                 at = "%s-%s" % (target, arch)
                 print("  build %s [%s] -> %s" % (e["source"], p, at))
@@ -209,7 +218,9 @@ def _publish_images(args):
                     rc = 1
         if not args.push:
             print("\nlog in (each machine):  docker login ghcr.io -u <user>   (token needs write:packages)")
-            print("push per arch:           ducktest publish-images --push        (mirrors: any one box; builds: amd + arm)")
+            print(
+                "push per arch:           ducktest publish-images --push        (mirrors: any one box; builds: amd + arm)"
+            )
             print("then stitch, once:       ducktest publish-images --finalize --push")
     return rc
 
@@ -254,13 +265,15 @@ def main(argv=None):
     # a dash-leading pytest flag from ever mis-binding to the service filter — the old footgun.
     if "--" in argv:
         idx = argv.index("--")
-        head, passthrough = argv[:idx], argv[idx + 1:]
+        head, passthrough = argv[:idx], argv[idx + 1 :]
     else:
         head, passthrough = argv, []
 
     parser = argparse.ArgumentParser(prog="ducktest", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
-    p_cfg = sub.add_parser("configure", help="write pytest.ini + a starter pyproject.toml so pytest / uv run pytest work")
+    p_cfg = sub.add_parser(
+        "configure", help="write pytest.ini + a starter pyproject.toml so pytest / uv run pytest work"
+    )
     p_cfg.add_argument("dir", nargs="?", default=".", help="target repo dir (default: cwd)")
     p_cfg.set_defaults(func=_configure)
 
@@ -279,7 +292,9 @@ def main(argv=None):
     )
     p_pub.set_defaults(func=_publish_images)
 
-    p_pull = sub.add_parser("pull-images", help="pre-pull the resources' served images (warm cache / fail fast before the docker tier)")
+    p_pull = sub.add_parser(
+        "pull-images", help="pre-pull the resources' served images (warm cache / fail fast before the docker tier)"
+    )
     p_pull.add_argument("--dry-run", action="store_true", help="print the docker pull plan, run nothing")
     p_pull.set_defaults(func=_pull_images)
 

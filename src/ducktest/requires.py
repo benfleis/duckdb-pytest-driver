@@ -117,9 +117,13 @@ def requires(source, access="ro", properties=None, name=None):
         pass  # a named fixture ref — instantiated by the backend instantiator (fixtures.py)
     elif isinstance(source, str):
         if not source:
-            raise ValueError("@requires: `source` must be a TableSpec(...) ref, a non-empty table FQN string, or a backend-defined lazy ref (with `name=`)")
+            raise ValueError(
+                "@requires: `source` must be a TableSpec(...) ref, a non-empty table FQN string, or a backend-defined lazy ref (with `name=`)"
+            )
     elif not source:
-        raise ValueError("@requires: `source` must be a TableSpec(...) ref, a table FQN string, or a backend-defined lazy ref (with `name=`)")
+        raise ValueError(
+            "@requires: `source` must be a TableSpec(...) ref, a table FQN string, or a backend-defined lazy ref (with `name=`)"
+        )
     elif not name:
         raise ValueError(
             f"@requires: source={source!r} is neither a TableSpec(...) nor a string, so it's a "

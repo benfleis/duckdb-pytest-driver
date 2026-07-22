@@ -48,6 +48,7 @@ from .fixtures import (  # noqa: F401  (the table-spec lane: schema + seed insta
     get_instantiator,
 )
 from .steps import step  # noqa: F401
+from .duckshell import DuckShell, connect_shell, last_json_array  # noqa: F401  (pure-Python SQL runner over the built duckdb shell)
 from .sqldef import (  # noqa: F401  (generic multi-statement SQL-def core)
     split_statements,
     sql_literal,
@@ -94,6 +95,9 @@ __all__ = [
     "register_instantiator",
     "get_instantiator",
     "step",
+    "DuckShell",
+    "connect_shell",
+    "last_json_array",
     "split_statements",
     "sql_literal",
     "build_insert",

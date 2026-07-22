@@ -159,8 +159,10 @@ def _start(config):
             wait_until(
                 lambda: azurite_alive(block),
                 _READY_TIMEOUT_S,
-                lambda: f"Azurite container {CONTAINER!r} did not become ready on "
-                f"{block.get('endpoint')} after {_READY_TIMEOUT_S}s (image {IMAGE}).",
+                lambda: (
+                    f"Azurite container {CONTAINER!r} did not become ready on "
+                    f"{block.get('endpoint')} after {_READY_TIMEOUT_S}s (image {IMAGE})."
+                ),
             )
         except Exception:
             _docker("rm", "-f", CONTAINER, check=False)  # don't leak a half-booted container
