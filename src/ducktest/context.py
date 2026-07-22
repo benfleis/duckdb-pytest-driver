@@ -176,7 +176,7 @@ class Bindings:
 class SessionContext:
     """Built once at `pytest_configure`; the single carrier of session invariants + the registry.
 
-    `binary`/`duckdb_cli`/`working_dir` are resolved ONCE here (fail-fast on `--build auto`
+    `binary`/`duckdb_shell`/`working_dir` are resolved ONCE here (fail-fast on `--build auto`
     ambiguity happens at construction, session-level, not lazily per collection root). `plan` is
     None until the collect-first controller fills it in the SCAN phase. `store` is an opaque handle
     (typed Any to keep this module import-cycle-free); it's None until a suite that declares a
@@ -188,7 +188,7 @@ class SessionContext:
     options: dict[str, Any] = field(default_factory=dict)
     registry: Registry = field(default_factory=Registry)
     binary: Optional[str] = None  # resolved duckdb `unittest` binary (None until a lane needs it)
-    duckdb_cli: Optional[str] = None  # resolved duckdb CLI (for provisioner init-SQL / --repl)
+    duckdb_shell: Optional[str] = None  # resolved duckdb shell (for provisioner init-SQL / --repl)
     store: Any = None  # store handle; started only if a reachable suite declares a resource
     plan: Optional[Plan] = None  # set by the controller's SCAN phase
     temp_sweeper: Any = None  # REMOTE-storage sweeper (sweep/list) a backend registers; None => no-op

@@ -3,8 +3,8 @@
 Two layers:
   * pure-parse tests (no duckdb) — header parsing, list parsing, File stems, the
     type-map helper;
-  * middleman tests (need a duckdb CLI) — instantiate a fixture and read back its
-    resolved schema + rows. Skipped cleanly if no `duckdb` is on PATH / $DUCKDB_CLI.
+  * middleman tests (need a duckdb shell) — instantiate a fixture and read back its
+    resolved schema + rows. Skipped cleanly if no `duckdb` is on PATH / $DUCKDB_SHELL.
 """
 
 import os
@@ -27,11 +27,11 @@ from ducktest.fixtures import (
 )
 
 
-def _cli():
-    return os.environ.get("DUCKDB_CLI") or shutil.which("duckdb")
+def _shell():
+    return os.environ.get("DUCKDB_SHELL") or shutil.which("duckdb")
 
 
-needs_duckdb = pytest.mark.skipif(_cli() is None, reason="no duckdb CLI (set $DUCKDB_CLI or PATH)")
+needs_duckdb = pytest.mark.skipif(_shell() is None, reason="no duckdb shell (set $DUCKDB_SHELL or PATH)")
 
 
 # --- pure parse / helpers (no duckdb) --------------------------------------
@@ -99,7 +99,7 @@ _IDNAME = "-- fixture: id_name\nCREATE TABLE id_name (id INTEGER, name VARCHAR);
 @needs_duckdb
 def test_canonicalize_simple(tmp_path):
     fx = parse_table_spec(_SIMPLE, str(tmp_path / "simple_table.sql"))
-    t = canonicalize(_cli(), fx, workdir=str(tmp_path))
+    t = canonicalize(_shell(), fx, workdir=str(tmp_path))
     assert t.name == "simple_table"
     assert t.column_names() == ["id"]
     assert t.columns[0].type == "INTEGER"
@@ -112,7 +112,7 @@ def test_canonicalize_simple(tmp_path):
 def test_instantiator_resolves_types(tmp_path):
     fx = parse_table_spec(_IDNAME, str(tmp_path / "id_name.sql"))
     db = str(tmp_path / "out.duckdb")
-    t = DuckDBInstantiator().instantiate(fx, db, duckdb_bin=_cli())
+    t = DuckDBInstantiator().instantiate(fx, db, duckdb_bin=_shell())
     assert [(c.name, c.type) for c in t.columns] == [("id", "INTEGER"), ("name", "VARCHAR")]
     assert t.seed_data == [(1, "a"), (2, "b")]
     assert os.path.isfile(db)  # the db file is the isolation boundary
@@ -164,7 +164,7 @@ def test_loading_is_deferred_to_test_run(pytester):
 def test_instantiator_seed_none_empties(tmp_path):
     fx = parse_table_spec(_SIMPLE, str(tmp_path / "simple_table.sql"))
     db = str(tmp_path / "empty.duckdb")
-    t = DuckDBInstantiator().instantiate(fx, db, duckdb_bin=_cli(), seed=None)
+    t = DuckDBInstantiator().instantiate(fx, db, duckdb_bin=_shell(), seed=None)
     assert t.column_names() == ["id"]
     assert t.seed_data == []  # coupled seed dropped
 
@@ -173,7 +173,7 @@ def test_instantiator_seed_none_empties(tmp_path):
 def test_instantiator_seed_replaces(tmp_path):
     fx = parse_table_spec(_SIMPLE, str(tmp_path / "simple_table.sql"))
     db = str(tmp_path / "replaced.duckdb")
-    t = DuckDBInstantiator().instantiate(fx, db, duckdb_bin=_cli(), seed=[(9,), (10,)])
+    t = DuckDBInstantiator().instantiate(fx, db, duckdb_bin=_shell(), seed=[(9,), (10,)])
     assert t.seed_data == [(9,), (10,)]
 
 
@@ -181,6 +181,6 @@ def test_instantiator_seed_replaces(tmp_path):
 def test_load_fixture_from_disk(tmp_path):
     (tmp_path / "id_name.sql").write_text(_IDNAME)
     fx = load_table_spec(TableSpec("id_name"), [tmp_path])  # .sql suffix optional
-    t = canonicalize(_cli(), fx, workdir=str(tmp_path))
+    t = canonicalize(_shell(), fx, workdir=str(tmp_path))
     assert t.name == "id_name"
     assert len(t.seed_data) == 2

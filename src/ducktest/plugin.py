@@ -33,7 +33,7 @@ import pytest
 from . import store
 from .collect import assign_batches, has_driver, is_driver  # noqa: F401 (re-exported: role model)
 from .context import SessionContext, get_context, set_context
-from .fixtures import duckdb_cli_for
+from .fixtures import duckdb_shell_for
 from .mnemonic import run_id as _make_run_id
 from .steps import step
 from .suites import get_suites
@@ -116,7 +116,7 @@ def register_options(parser):
         "--duckdb-binary",
         default=None,
         metavar="PATH",
-        help="Explicit path to the duckdb CLI. Overrides --build and $BUILD_DIR. Default: the `duckdb` "
+        help="Explicit path to the duckdb shell. Overrides --build and $BUILD_DIR. Default: the `duckdb` "
         "next to the resolved unittest binary (build/<variant>/duckdb).",
     )
     parser.addoption(
@@ -223,7 +223,7 @@ def register_options(parser):
         action="store_true",
         default=False,
         help="With --repl: print the resolved @requires specs, the provision plan and the would-be "
-        "duckdb init SQL, then stop. Performs NO DDL, does NOT launch the CLI, does NOT tear down.",
+        "duckdb init SQL, then stop. Performs NO DDL, does NOT launch the shell, does NOT tear down.",
     )
     parser.addoption(
         "--steps",
@@ -311,16 +311,16 @@ def find_binary(config, working_dir):
 
 
 def find_duckdb(config, working_dir):
-    """Return the duckdb CLI path (--duckdb-bin > $BUILD_DIR > the `duckdb` next to the unittest binary)."""
+    """Return the duckdb shell path (--duckdb-bin > $BUILD_DIR > the `duckdb` next to the unittest binary)."""
     explicit = config.getoption("--duckdb-bin", default=None)
     if explicit:
         path = os.path.abspath(explicit)
     else:
         build_dir = os.environ.get("BUILD_DIR")
-        path = os.path.join(build_dir, "duckdb") if build_dir else duckdb_cli_for(find_binary(config, working_dir))
+        path = os.path.join(build_dir, "duckdb") if build_dir else duckdb_shell_for(find_binary(config, working_dir))
     if not os.path.isfile(path):
         raise pytest.UsageError(
-            f"duckdb CLI not found at {path}. Build build/<variant>/duckdb (selected by --build / "
+            f"duckdb shell not found at {path}. Build build/<variant>/duckdb (selected by --build / "
             "$BUILD_DIR), or pass --duckdb-bin PATH."
         )
     return path
@@ -1305,8 +1305,8 @@ def pytest_collection_finish(session):
     if not config.getoption("--repl", default=False):
         return
     if getattr(config, "workerinput", None) is not None:
-        return  # xdist workers also reach here; only the controller drives the CLI
-    _cli_provision_flow(session, config)
+        return  # xdist workers also reach here; only the controller drives the shell
+    _shell_provision_flow(session, config)
 
 
 def _item_params(item):
@@ -1314,7 +1314,7 @@ def _item_params(item):
     return dict(cs.params) if cs is not None else {}
 
 
-def _cli_provision_flow(session, config):
+def _shell_provision_flow(session, config):
     from .requires import collect_requirements
     from .provision import get_provisioner
 
@@ -1344,7 +1344,7 @@ def _cli_provision_flow(session, config):
         print("=" * 70)
         if dry_run:
             pytest.exit("--repl --provision-dry-run: nothing to provision; would launch a bare REPL", returncode=0)
-        _launch_cli(config, "")
+        _launch_shell(config, "")
         pytest.exit("--repl session complete", returncode=0)
         return
 
@@ -1370,14 +1370,14 @@ def _cli_provision_flow(session, config):
         print(provisioner.make_init_sql(bindings, redact=True))
         print("-------------------------------------------------------")
         print()
-        print("--provision-dry-run: NO DDL executed, CLI NOT launched, NO teardown.")
+        print("--provision-dry-run: NO DDL executed, shell NOT launched, NO teardown.")
         pytest.exit("--repl --provision-dry-run complete", returncode=0)
         return
 
     bindings = provisioner.provision(specs, token, dry_run=False, params=_item_params(item))
     try:
         init_sql = provisioner.make_init_sql(bindings)
-        _launch_cli(config, init_sql)
+        _launch_shell(config, init_sql)
     finally:
         if keep:
             print()
@@ -1404,15 +1404,15 @@ def _provision_token(config, node=None):
     return f"{token}_{hashlib.sha1(node.nodeid.encode()).hexdigest()[:6]}"
 
 
-def _launch_cli(config, init_sql):
+def _launch_shell(config, init_sql):
     """Write init_sql to a temp file and exec an interactive `duckdb -unsigned -init`."""
     working_dir = getattr(config, "sqllogic_working_dir", os.getcwd())
     binary = find_binary(config, working_dir)
     build_dir = os.path.dirname(os.path.dirname(binary))
     duckdb_bin = os.path.join(build_dir, "duckdb")
     if not os.path.isfile(duckdb_bin):
-        raise pytest.UsageError(f"--repl: duckdb CLI not found at {duckdb_bin}. Build it (e.g. make release).")
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", prefix="cli_init.", delete=False) as f:
+        raise pytest.UsageError(f"--repl: duckdb shell not found at {duckdb_bin}. Build it (e.g. make release).")
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", prefix="shell_init.", delete=False) as f:
         f.write(init_sql)
         init_path = f.name
     capman = config.pluginmanager.getplugin("capturemanager")
@@ -1430,7 +1430,7 @@ def _launch_cli(config, init_sql):
             tty.close()
 
     try:
-        with step("launching interactive duckdb CLI (exit to continue)"):
+        with step("launching interactive duckdb shell (exit to continue)"):
             if capman is not None:
                 with capman.global_and_fixture_disabled():
                     _run()

@@ -30,7 +30,7 @@ and only the instantiator changes. One spec can become MANY tables (one per para
 several data variants).
 
 DUCKDB IS THE CONVERTER. We never hand-parse the SQL or hand-declare column types: we run the
-spec body through the located duckdb CLI (the `<build>/duckdb` next to the unittest binary,
+spec body through the located duckdb shell (the `<build>/duckdb` next to the unittest binary,
 the same one `--repl` uses; NO python-duckdb dependency) and read back the resolved schema
 (`DESCRIBE`) + rows (`SELECT *`) as JSON. That canonical `Table` is what non-duckdb
 instantiators translate.
@@ -236,14 +236,14 @@ def load_table_spec(ref, search_paths) -> LoadedTableSpec:
 
 
 # ---------------------------------------------------------------------------
-# DuckDB middleman — instantiate + introspect via the located CLI
+# DuckDB middleman — instantiate + introspect via the located shell
 # ---------------------------------------------------------------------------
 
 
-def duckdb_cli_for(unittest_binary: str) -> str:
-    """Derive the duckdb CLI path from the unittest binary path.
+def duckdb_shell_for(unittest_binary: str) -> str:
+    """Derive the duckdb shell path from the unittest binary path.
 
-    Mirrors plugin._launch_cli: the CLI is `<build>/duckdb`, two dirs up from
+    Mirrors plugin._launch_shell: the shell is `<build>/duckdb`, two dirs up from
     `<build>/test/unittest`. Same resolution the `--repl` path uses.
     """
     build_dir = os.path.dirname(os.path.dirname(unittest_binary))

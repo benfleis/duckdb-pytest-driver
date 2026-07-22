@@ -8,7 +8,7 @@ shape a real backend follows:
   * a `resources` fixture reads the test's `@requires(source=Fixture(...))`, asks the
     instantiator to instantiate each definition, and hands the test the resulting tables.
 
-A REAL backend differs in only two places: (1) it resolves the duckdb CLI from the
+A REAL backend differs in only two places: (1) it resolves the duckdb shell from the
 build path via `find_duckdb(config, working_dir)` rather than PATH, and (2) its
 instantiator is a Databricks/Iceberg one that applies the 2x2 storage properties. The
 fixture files and the test bodies do not change.
@@ -28,10 +28,10 @@ _HERE = pathlib.Path(__file__).parent
 _FIXTURES = [_HERE / "fixtures"]
 
 
-def _duckdb_cli():
+def _duckdb_shell():
     # Demo locator: env override, else PATH. (A real consumer derives it from the
-    # build path via fixtures.duckdb_cli_for(find_binary(config, working_dir)).)
-    return os.environ.get("DUCKDB_CLI") or shutil.which("duckdb")
+    # build path via fixtures.duckdb_shell_for(find_binary(config, working_dir)).)
+    return os.environ.get("DUCKDB_SHELL") or shutil.which("duckdb")
 
 
 def pytest_configure(config):
@@ -51,9 +51,9 @@ class Resources:
 @pytest.fixture
 def resources(request):
     """Instantiate every `@requires(source=Fixture(...))` on the test into one duckdb db."""
-    cli = _duckdb_cli()
-    if not cli:
-        pytest.skip("no duckdb CLI found (set $DUCKDB_CLI or put `duckdb` on PATH)")
+    shell = _duckdb_shell()
+    if not shell:
+        pytest.skip("no duckdb shell found (set $DUCKDB_SHELL or put `duckdb` on PATH)")
 
     instantiator = DuckDBInstantiator()
     tmp = tempfile.mkdtemp(prefix="fixdemo.")
@@ -63,7 +63,7 @@ def resources(request):
         if not isinstance(req.source, Fixture):
             continue  # this demo only handles Fixture refs
         definition = load_fixture(req.source, _FIXTURES)
-        table = instantiator.instantiate(definition, db, duckdb_bin=cli, seed=req.source.seed)
+        table = instantiator.instantiate(definition, db, duckdb_bin=shell, seed=req.source.seed)
         tables[table.name] = table
     try:
         yield Resources(db, tables)
