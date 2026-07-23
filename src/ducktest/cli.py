@@ -29,6 +29,7 @@ import difflib
 import os
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError, version
 
 # The canonical config `configure` writes. Kept in sync with README.md's documented stub.
 _PYTEST_INI = """\
@@ -75,9 +76,9 @@ dev = [
 [tool.uv]
 package = false
 
-# TODO: update to tagged release when ready
+# Pinned to this driver's release tag by `ducktest configure` (a dev/untagged driver -> main).
 [tool.uv.sources]
-duckdb-pytest-driver = { git = "https://github.com/benfleis/duckdb-pytest-driver", branch = "dev/v0.2" }
+duckdb-pytest-driver = { git = "https://github.com/benfleis/duckdb-pytest-driver", __DRIVER_REF__ }
 
 # Conform to duckdb's python black settings (so `ruff format` matches CI).
 [tool.ruff]
@@ -90,6 +91,17 @@ _OWNED_FILES = {"pytest.ini": _PYTEST_INI}
 # ducktest SCAFFOLDS these: written only when absent, then left alone forever — yours to fill in. Kept
 # separate from owned files precisely because you WILL edit them (real deps), so a diff must not block.
 _SCAFFOLD_FILES = {"pyproject.toml": _PYPROJECT}
+
+
+def _driver_git_ref():
+    """The git ref to pin the scaffold's driver source at: the release TAG matching THIS installed
+    driver (e.g. `tag = "v0.2.0"`), or `branch = "main"` for a dev/untagged install (a `.dev`/`+local`
+    version has no matching tag, so track the branch instead)."""
+    try:
+        v = version("duckdb-pytest-driver")
+    except PackageNotFoundError:
+        return 'branch = "main"'
+    return 'branch = "main"' if (".dev" in v or "+" in v) else 'tag = "v%s"' % v
 
 
 def _configure(args):
@@ -129,6 +141,7 @@ def _configure(args):
         if os.path.exists(path):
             print("✓ %s exists — leaving it as-is (yours to edit)" % path)
             continue
+        want = want.replace("__DRIVER_REF__", _driver_git_ref())
         with open(path, "w") as f:
             f.write(want)
         print("✓ wrote %s (starter — add your test deps, then `uv run pytest`)" % path)

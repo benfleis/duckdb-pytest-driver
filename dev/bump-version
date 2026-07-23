@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Release: bump [project].version in pyproject.toml, commit, and tag vX.Y.Z.
+
+    dev/bump-version patch|minor|major
+
+The tag is the release: `ducktest configure` reads the installed driver's version and pins a
+consumer's scaffold at `tag = "v<version>"` (see cli._driver_git_ref), so bump -> commit -> tag
+is all it takes for a new pinned release. Zero deps.
+
+Run from a clean tree; pushing is left to you (the command is printed at the end).
+"""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent  # the driver repo root
+PYPROJECT = ROOT / "pyproject.toml"
+
+
+def die(msg):
+    sys.exit("bump-version: " + msg)
+
+
+def git(*args, **kw):
+    # Always operate on the driver repo, regardless of the invoking cwd.
+    return subprocess.run(["git", *args], cwd=str(ROOT), **kw)
+
+
+def _dirty():
+    return git("diff", "--quiet").returncode != 0 or git("diff", "--cached", "--quiet").returncode != 0
+
+
+def main():
+    part = (sys.argv[1:] or [""])[0]
+    if part not in ("patch", "minor", "major"):
+        die("usage: dev/bump-version patch|minor|major")
+    if _dirty():
+        die("working tree not clean -- commit or stash first")
+
+    text = PYPROJECT.read_text()
+    m = re.search(r'(?m)^version = "(\d+)\.(\d+)\.(\d+)"', text)
+    if not m:
+        die("could not find [project] version in " + str(PYPROJECT))
+    major, minor, patch = (int(g) for g in m.groups())
+    major, minor, patch = {
+        "major": (major + 1, 0, 0),
+        "minor": (major, minor + 1, 0),
+        "patch": (major, minor, patch + 1),
+    }[part]
+    new = "%d.%d.%d" % (major, minor, patch)
+    tag = "v" + new
+
+    PYPROJECT.write_text(text[: m.start()] + 'version = "%s"' % new + text[m.end() :])
+    git("commit", "-am", "Release " + tag, check=True)
+    git("tag", "-a", tag, "-m", "Release " + tag, check=True)
+    print("tagged %s.  push:  git push && git push origin %s" % (tag, tag))
+
+
+if __name__ == "__main__":
+    main()

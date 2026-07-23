@@ -8,7 +8,10 @@
 
 import types
 
-from ducktest.cli import _PYPROJECT, _PYTEST_INI, _configure
+from ducktest.cli import _PYPROJECT, _PYTEST_INI, _configure, _driver_git_ref
+
+# configure fills the scaffold's driver source ref (release tag of THIS installed driver, else main).
+_EXPECTED_PYPROJECT = _PYPROJECT.replace("__DRIVER_REF__", _driver_git_ref())
 
 
 def _run(tmp_path):
@@ -19,11 +22,14 @@ def test_writes_both_files_on_a_fresh_repo(tmp_path):
     rc = _run(tmp_path)
     assert rc == 0
     assert (tmp_path / "pytest.ini").read_text() == _PYTEST_INI
-    assert (tmp_path / "pyproject.toml").read_text() == _PYPROJECT
+    assert (tmp_path / "pyproject.toml").read_text() == _EXPECTED_PYPROJECT
     # the scaffold must actually be usable as the "one venv" anchor
     body = (tmp_path / "pyproject.toml").read_text()
     assert "[dependency-groups]" in body
     assert "package = false" in body  # extension, not an installable package
+    # the driver source ref was filled in (placeholder gone; pinned to a release tag or the main branch)
+    assert "__DRIVER_REF__" not in body
+    assert ('tag = "v' in body) or ('branch = "main"' in body)
 
 
 def test_existing_pyproject_is_left_untouched(tmp_path):
@@ -40,7 +46,7 @@ def test_idempotent_second_run(tmp_path):
     assert _run(tmp_path) == 0
     # second run: pytest.ini already matches, pyproject already exists → both no-ops, still rc=0
     assert _run(tmp_path) == 0
-    assert (tmp_path / "pyproject.toml").read_text() == _PYPROJECT
+    assert (tmp_path / "pyproject.toml").read_text() == _EXPECTED_PYPROJECT
 
 
 def test_hand_edited_pytest_ini_is_not_clobbered(tmp_path):
@@ -49,4 +55,4 @@ def test_hand_edited_pytest_ini_is_not_clobbered(tmp_path):
     assert rc == 1  # owned file diverged → configure fails loud rather than overwriting
     assert (tmp_path / "pytest.ini").read_text() == "[pytest]\naddopts = -q\n"  # untouched
     # scaffold still lands on the same run (independent of the owned-file failure)
-    assert (tmp_path / "pyproject.toml").read_text() == _PYPROJECT
+    assert (tmp_path / "pyproject.toml").read_text() == _EXPECTED_PYPROJECT
