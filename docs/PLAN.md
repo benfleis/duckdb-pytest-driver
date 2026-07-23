@@ -209,6 +209,12 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
    selection) resolved above the binary; delta (minio/s3/gh-workflows) + iceberg need it. Open:
    registry home (conftest `register_profile` vs a declarative file — lean declarative for
    shareability), and profile × `@requires`/matrix interaction (a profile may pin an axis).
+6. **Provisioning preflight** _(nice-to-have; consumers' CI does a blind `docker pull` today)_. A
+   suite-aware command that DOWNLOADS + VALIDATES the selected run's provisioned requirements before
+   the tests run — warm the served images (cf. `pull-images`), confirm creds present, probe service
+   reachability — failing fast + clear. Would replace the raw `docker pull "$IMAGE"` in a consumer's
+   CI (e.g. UC `integration-tests.yml`). Open: pytest-invoked (`--preflight` / collect-then-provision)
+   vs CLI (`ducktest preflight -m <suite>`); overlap with `pull-images`.
 
 ## Base `Provisioner` + object-store `@requires` wiring
 
