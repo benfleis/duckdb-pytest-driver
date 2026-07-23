@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "duckdb-pytest-driver"
-version = "0.1.0"
+version = "0.2.0"
 description = "Generic pytest front-end over the duckdb unittest (Catch2) binary: collect & run .test files, Python drivers, @requires provisioning."
 readme = "README.md"
 # >=3.9: str.removeprefix (plugin.py terminal-summary) is 3.9+; back-compat isn't a goal.
