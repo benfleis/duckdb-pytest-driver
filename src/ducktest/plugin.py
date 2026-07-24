@@ -907,10 +907,12 @@ def emit_plan(config, plan):
             f.write(payload + "\n")
 
 
-def provision_reachable(config, reachable_suite_names):
-    """Provision everything the reachable suites need: fetch their credentials, provision their
-    services, adopt env. Dedup by key (a shared service/credential is ONE resource). The single
-    up-front execute path; workers run it too (from their own selection), coordinated by the store.
+def _for_each_reachable_resource(config, reachable_suite_names, *, on_credential, on_service):
+    """The shared gather: walk every reachable suite's credentials/services, each exactly ONCE
+    (dedup by key — a shared service/credential is ONE resource), calling `on_credential(cred)` /
+    `on_service(svc)`. `provision_reachable` and `_repl_resource_init_sql` were two structurally
+    near-identical copies of this loop (RESOURCE-PLANNING.md §1, problem 3); this is the one they
+    both drive, differing only in what a callback does with the resource.
     """
     suites = {t.name: t for t in get_suites(config)}
     seen_creds, seen_svcs = set(), set()
@@ -922,21 +924,38 @@ def provision_reachable(config, reachable_suite_names):
             if cred.key in seen_creds:
                 continue
             seen_creds.add(cred.key)
-            _fetch_or_read_credential(config, cred)
+            on_credential(cred)
         for svc in suite.services:
             if svc.key in seen_svcs:
                 continue
             seen_svcs.add(svc.key)
-            try:
-                provision_service(config, svc)
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except BaseException:
-                # Up-front service provisioning is best-effort pre-warm: a failure (e.g. a dead
-                # --existing-service, which raises pytest.fail's BaseException-derived Failed) is
-                # re-surfaced authoritatively when a fixture pulls it or a test uses its env — as a
-                # per-test setup error — not a whole-collection abort here.
-                pass
+            on_service(svc)
+
+
+def provision_reachable(config, reachable_suite_names):
+    """Provision everything the reachable suites need: fetch their credentials, provision their
+    services, adopt env. Dedup by key (a shared service/credential is ONE resource). The single
+    up-front execute path; workers run it too (from their own selection), coordinated by the store.
+    """
+
+    def _on_service(svc):
+        try:
+            provision_service(config, svc)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException:
+            # Up-front service provisioning is best-effort pre-warm: a failure (e.g. a dead
+            # --existing-service, which raises pytest.fail's BaseException-derived Failed) is
+            # re-surfaced authoritatively when a fixture pulls it or a test uses its env — as a
+            # per-test setup error — not a whole-collection abort here.
+            pass
+
+    _for_each_reachable_resource(
+        config,
+        reachable_suite_names,
+        on_credential=lambda cred: _fetch_or_read_credential(config, cred),
+        on_service=_on_service,
+    )
 
 
 def _reachable_suites(config, items):
@@ -973,31 +992,31 @@ def _repl_resource_init_sql(config, session, *, redact=False) -> str:
     no later fixture-pull to resurface the error, so a swallowed failure would just be a silent,
     unexplained bare shell — worse than no feature at all.
     """
-    suites = {t.name: t for t in get_suites(config) if t.name in _reachable_suites(config, session.items)}
-    seen_creds, seen_svcs = set(), set()
     parts = []
-    for name in sorted(suites):
-        suite = suites[name]
-        for cred in suite.credentials:
-            if cred.key in seen_creds or cred.to_init_sql is None:
-                continue
-            seen_creds.add(cred.key)
-            value = _read_provisioned_credential(config, cred)
-            if value is not None:
-                parts.append(cred.to_init_sql(value, redact=redact))
-        for svc in suite.services:
-            if svc.key in seen_svcs or svc.to_init_sql is None:
-                continue
-            seen_svcs.add(svc.key)
-            try:
-                block = provision_service(config, svc)
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except BaseException as exc:
-                raise pytest.UsageError(
-                    f"--repl: service {svc.key!r} failed to provision (needed for its --repl init SQL): {exc}"
-                ) from exc
-            parts.append(svc.to_init_sql(block, redact=redact))
+
+    def _on_credential(cred):
+        if cred.to_init_sql is None:
+            return
+        value = _read_provisioned_credential(config, cred)
+        if value is not None:
+            parts.append(cred.to_init_sql(value, redact=redact))
+
+    def _on_service(svc):
+        if svc.to_init_sql is None:
+            return
+        try:
+            block = provision_service(config, svc)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as exc:
+            raise pytest.UsageError(
+                f"--repl: service {svc.key!r} failed to provision (needed for its --repl init SQL): {exc}"
+            ) from exc
+        parts.append(svc.to_init_sql(block, redact=redact))
+
+    _for_each_reachable_resource(
+        config, _reachable_suites(config, session.items), on_credential=_on_credential, on_service=_on_service
+    )
     return "".join(p for p in parts if p)
 
 
