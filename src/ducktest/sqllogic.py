@@ -324,11 +324,17 @@ def _invoke(
             "stdout": "",
             "stderr": f"unittest binary not found: {binary}\nBuild the extension first (e.g. make debug).",
         }
-    return {
+    result = {
         "returncode": proc.returncode,
         "stdout": proc.stdout.decode("utf-8", errors="replace"),
         "stderr": proc.stderr.decode("utf-8", errors="replace"),
     }
+    if temp_roots:
+        # The event-tag check (RESOURCE-PLANNING.md §5 phase 9): confirm the binary's [TEST_EVENT]
+        # stream is actually attributable to THIS invocation, not just assumed to be from "whatever
+        # subprocess I launched" -- `base` is the one value we know this invocation was given.
+        _verify_event_temp_dirs(_scan_test_events(result["stdout"] + result["stderr"]), base)
+    return result
 
 
 # The unittest binary emits a per-test JSON event stream on stderr (gated by --emit-test-events,
@@ -360,6 +366,23 @@ def _scan_test_events(output: str) -> dict:
         if ev.get("event") == "end":
             tests[ev.get("name")] = ev
     return tests
+
+
+def _verify_event_temp_dirs(events: dict, expected_base: str) -> None:
+    """Fail loud if any `end` event's echoed `temp_dir` doesn't start with THIS invocation's
+    composed `--temp-dir-base` (the event-tag check, RESOURCE-PLANNING.md §5 phase 9) — proof the
+    stream belongs to the subprocess we just ran, not silently assumed. A binary too old to echo
+    `temp_dir` (the field is simply absent) skips the check for that event, same as `_classify`'s
+    existing "no terminal event -> trust the return code" fallback for an old/crashed binary.
+    """
+    for name, ev in events.items():
+        temp_dir = ev.get("temp_dir")
+        if temp_dir and not temp_dir.startswith(expected_base):
+            raise RuntimeError(
+                f"[TEST_EVENT] for {name!r} echoed temp_dir={temp_dir!r}, which does not start with "
+                f"this invocation's --temp-dir-base={expected_base!r} -- the event stream may be "
+                "misattributed to the wrong subprocess."
+            )
 
 
 def _binary_output(combined: str) -> str:

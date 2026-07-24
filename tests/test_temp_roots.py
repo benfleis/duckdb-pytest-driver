@@ -255,3 +255,66 @@ def test_provisioned_env_layers_over_ambient(clean_env, tmp_path):
     assert "ENV DATA_DIR=s3://override" in out
     # ...but the driver itself never sets TEMP_DIR (the binary composes it from --temp-dir-base)
     assert "ENV TEMP_DIR=<unset>" in out
+
+
+# -----------------------------------------------------------------------------
+# The event-tag check: a [TEST_EVENT] end's echoed temp_dir must match THIS invocation's base
+#
+
+# A `--temp-dir-base`-aware stub that emits one `[TEST_EVENT] end` with a `temp_dir` it composes
+# from its own argv -- unless STUB_TEMP_DIR_OVERRIDE forces a different (wrong) value, to prove the
+# mismatch case fails loud.
+_EVENT_STUB = textwrap.dedent(
+    """\
+    #!/usr/bin/env python3
+    import json, os, sys
+
+    def parse_base(argv):
+        it = iter(argv)
+        for a in it:
+            if a == "--temp-dir-base":
+                return next(it, None)
+        return None
+
+    base = parse_base(sys.argv[1:])
+    override = os.environ.get("STUB_TEMP_DIR_OVERRIDE")
+    temp_dir = override if override else (base + "/leaf" if base else "")
+    ev = {"event": "end", "name": "b.test", "status": "ok", "passes": 1, "fails": 0,
+          "skip-mode": 0, "temp_dir": temp_dir}
+    sys.stderr.write("[TEST_EVENT] " + json.dumps(ev) + "\\n")
+    sys.exit(0)
+    """
+)
+
+
+def _event_stub(tmp_path):
+    p = tmp_path / "event_unittest"
+    p.write_text(_EVENT_STUB)
+    p.chmod(p.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return str(p)
+
+
+def test_invoke_passes_when_echoed_temp_dir_matches_the_composed_base(clean_env, tmp_path):
+    roots = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    result = _invoke(_event_stub(tmp_path), ["b.test"], str(tmp_path), roots, batch_id="batch-0")
+    assert result["returncode"] == 0  # no RuntimeError raised: the echoed temp_dir matched
+
+
+def test_invoke_fails_loud_when_echoed_temp_dir_does_not_match(clean_env, tmp_path):
+    roots = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    with pytest.raises(RuntimeError, match="does not start with"):
+        _invoke(
+            _event_stub(tmp_path),
+            ["b.test"],
+            str(tmp_path),
+            roots,
+            batch_id="batch-0",
+            env={"STUB_TEMP_DIR_OVERRIDE": "/somewhere/else/leaf"},
+        )
+
+
+def test_invoke_skips_the_check_when_temp_dir_field_is_absent(clean_env, tmp_path):
+    # an old binary that doesn't echo temp_dir (the field is just missing) -- no false failure.
+    roots = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    result = _invoke(_echo_stub(tmp_path), ["b.test"], str(tmp_path), roots, batch_id="batch-0")
+    assert result["returncode"] == 0
