@@ -95,9 +95,17 @@ class Provisioner:
     `Bindings.backend` (a `State`, or a backend subclass of it via `new_state`)."""
 
     def __init__(self):
-        self._shared_ro = set()  # RO targets instantiated once per session (per worker under xdist)
+        # RO targets instantiated once this INVOCATION. Store-backed single-flight across workers
+        # when a store is running (see `_ro_already_shared`); this bare set is the fallback for when
+        # it isn't (e.g. a provisioner-only suite declaring no service/credential never starts one) --
+        # same as the shipped per-worker behavior, and also the always-used path in `dry_run` (a
+        # preview must never claim a real cross-worker slot).
+        self._shared_ro = set()
 
-    def provision(self, specs, token, *, dry_run=False, params=None) -> Bindings:
+    def provision(self, specs, token, *, dry_run=False, params=None, config=None) -> Bindings:
+        """`config` (optional) is the pytest config -- passed by the framework's call sites so the
+        RO once-guard can single-flight through the store; omit it (as direct/unit-test callers do)
+        to fall back to the bare per-process guard. See `_ro_already_shared`."""
         self.before_provision(specs, token, dry_run)
         state = self.new_state(token, params=params)
         for spec in specs:
@@ -106,12 +114,8 @@ class Provisioner:
                 self.instantiate(spec, target, dry_run, state)
             else:
                 target = self.ro_target(spec, state)
-                if target in self._shared_ro:
+                if self._ro_already_shared(spec, target, state, dry_run, config):
                     state.plan.append(f"[ro] {target} already provisioned this session")
-                else:
-                    self.instantiate(spec, target, dry_run, state)
-                    if not dry_run:
-                        self._shared_ro.add(target)
         self.finalize_state(state)
         state.env = self.env_for(state)
         if dry_run:
@@ -142,6 +146,59 @@ class Provisioner:
         isolated = list(bindings.isolated) if bindings else []
         for ns in isolated:
             self.execute(self.drop_sql(ns))
+
+    def _ro_already_shared(self, spec, target, state, dry_run, config) -> bool:
+        """Instantiate `target` at most once THIS INVOCATION; return whether it was already done
+        (by us or another worker) so the caller appends the "already provisioned" plan line instead.
+
+        Store-backed single-flight across workers when a store is running -- the same coordination
+        primitive `Service`/`Credential` already use (`store.copy_or_provision`), promoted here per
+        RESOURCE-PLANNING.md §4's validation: RO instantiation is typically an idempotent
+        `CREATE ... IF NOT EXISTS`, safe to dedupe the same way. A failed instantiate poisons the key
+        for the rest of the session (no retry storm) -- the same contract every other store-coordinated
+        resource already has, not a new one invented here.
+
+        Falls back to the bare per-process `_shared_ro` set when no store is running (a
+        provisioner-only suite that declares no service/credential never starts one) -- identical to
+        the shipped per-worker behavior. `dry_run` ALWAYS uses that same bare-set path: a preview must
+        never claim a real cross-worker slot.
+        """
+        if dry_run or config is None:
+            if target in self._shared_ro:
+                return True
+            self.instantiate(spec, target, dry_run, state)
+            if not dry_run:
+                self._shared_ro.add(target)
+            return False
+
+        from .plugin import get_store
+
+        handle = get_store(config)
+        if handle is None:
+            if target in self._shared_ro:
+                return True
+            self.instantiate(spec, target, dry_run, state)
+            self._shared_ro.add(target)
+            return False
+
+        from . import store as _store
+
+        ran = False
+
+        def _factory():
+            nonlocal ran
+            self.instantiate(spec, target, dry_run, state)
+            ran = True
+            return True
+
+        _store.copy_or_provision(handle, self._ro_store_key(target), _factory)
+        return not ran
+
+    def _ro_store_key(self, target) -> str:
+        """Store key for a RO target -- namespaced by this Provisioner's concrete class so two
+        different backends sharing one store never collide even if a target string coincides."""
+        cls = type(self)
+        return f"ro::{cls.__module__}.{cls.__qualname__}::{target}"
 
     def ensure_isolated(self, namespace, state, dry_run, *, create_sql=None):
         if namespace in state.isolated:

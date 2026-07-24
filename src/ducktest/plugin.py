@@ -1366,7 +1366,7 @@ def resources(request, matrix_cell):  # matrix_cell: closure hook for indirect @
             "(the backend conftest must call ducktest.register_provisioner)."
         )
     token = _provision_token(request.config, request.node)
-    bindings = provisioner.provision(specs, token, params=_item_params(request.node))
+    bindings = provisioner.provision(specs, token, params=_item_params(request.node), config=request.config)
     try:
         yield bindings
     finally:
@@ -1450,7 +1450,7 @@ def _shell_provision_flow(session, config):
     print("=" * 70)
 
     if dry_run:
-        bindings = provisioner.provision(specs, token, dry_run=True, params=_item_params(item))
+        bindings = provisioner.provision(specs, token, dry_run=True, params=_item_params(item), config=config)
         print()
         print("----- would-be duckdb init SQL (secrets redacted) -----")
         print(_repl_resource_init_sql(config, session, redact=True) + provisioner.make_init_sql(bindings, redact=True))
@@ -1460,7 +1460,7 @@ def _shell_provision_flow(session, config):
         pytest.exit("--repl --provision-dry-run complete", returncode=0)
         return
 
-    bindings = provisioner.provision(specs, token, dry_run=False, params=_item_params(item))
+    bindings = provisioner.provision(specs, token, dry_run=False, params=_item_params(item), config=config)
     try:
         init_sql = _repl_resource_init_sql(config, session) + provisioner.make_init_sql(bindings)
         _launch_shell(config, init_sql)
