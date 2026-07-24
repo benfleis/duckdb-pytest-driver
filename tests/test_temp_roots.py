@@ -15,7 +15,7 @@ import textwrap
 import pytest
 
 from ducktest.plugin import _is_remote_root, _temp_roots
-from ducktest.sqllogic import _invoke, _test_batch_id, item_batch_id
+from ducktest.sqllogic import _cell_suffix, _invoke, _test_batch_id, item_batch_id
 
 RUN_ID = "2026-07-18T00-00-00Z--brave-fox-42"
 
@@ -135,6 +135,44 @@ def test_item_batch_id_batched_vs_single():
     assert item_batch_id(single) == _test_batch_id("test/a.test")
     # a per-test id is stable + distinct across test names
     assert _test_batch_id("test/a.test") != _test_batch_id("test/b.test")
+
+
+def test_item_batch_id_is_cell_aware_when_unbatched():
+    # two matrix-cell siblings of the SAME file, both unbatched (--batch-size 1, so neither has a
+    # real `_batch_id`) -- without folding `_cell` in, both would collide on the identical temp-dir
+    # path (found while validating the suite-matrix mechanism against a real paired-driver run).
+    class _It:
+        pass
+
+    cell_a = _It()
+    cell_a._batch_id = None
+    cell_a._test_name = "test/a.test"
+    cell_a._cell = "azurite-az"
+
+    cell_b = _It()
+    cell_b._batch_id = None
+    cell_b._test_name = "test/a.test"
+    cell_b._cell = "azure-az"
+
+    assert item_batch_id(cell_a) != item_batch_id(cell_b)
+    assert item_batch_id(cell_a) == item_batch_id(cell_a)  # stable, repeatable
+
+
+def test_cell_suffix_none_is_empty_unchanged_default():
+    assert _cell_suffix(None) == ""
+
+
+def test_cell_suffix_bare_string_id():
+    # `.test` fan-out stamps `_cell` as a plain backend-id string (plugin.py's `_expand_test_matrix`).
+    assert _cell_suffix("azurite-az") == "[azurite-az]"
+
+
+def test_cell_suffix_dict_is_deterministic_regardless_of_key_order():
+    # `@requires_matrix`/`.py` suite fan-out hand `matrix_cell` a dict -- key order must not matter
+    # (run_paired reads it fresh from a fixture each call; a stable seed needs sorted keys).
+    a = _cell_suffix({"backend": "azurite-az", "storage": "managed"})
+    b = _cell_suffix({"storage": "managed", "backend": "azurite-az"})
+    assert a == b == "[backend=azurite-az,storage=managed]"
 
 
 # -----------------------------------------------------------------------------

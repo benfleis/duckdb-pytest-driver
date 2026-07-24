@@ -38,15 +38,32 @@ def _test_batch_id(test_name: str) -> str:
     return "test-" + hashlib.sha1(test_name.encode()).hexdigest()[:10]
 
 
+def _cell_suffix(cell) -> str:
+    """A stable string suffix for a matrix cell (a bare id string, a cell dict, or None — both
+    shapes occur: `.test` fan-out stamps a plain backend-id string, `.py`/`@requires_matrix` cells
+    are dicts), folded into a batch-id seed so two cells of the SAME test never collide on the same
+    temp-dir path. `""` for None (today's behavior, unchanged for every non-matrix test)."""
+    if not cell:
+        return ""
+    if isinstance(cell, dict):
+        cell = ",".join(f"{k}={cell[k]}" for k in sorted(cell))
+    return f"[{cell}]"
+
+
 def item_batch_id(item) -> str:
     """The `<batch-id>` path segment for an item's temp run-root (SPEC §11.2).
 
     A batched `SqlLogicItem` carries its `_batch_id` (assigned by `assign_batches`); an unbatched
-    single test (`--batch-size 1`) has none, so its id derives from the test name. The controller
-    computes the SAME id for its keep-list mapping (node-id → batch-id), so both agree by construction.
+    single test (`--batch-size 1`) has none, so its id derives from the test name (+ its matrix
+    `_cell` stamp, if any — two cell siblings of the same file share a `_test_name` and, unbatched,
+    would otherwise collide on the identical temp-dir path). The controller computes the SAME id
+    for its keep-list mapping (node-id → batch-id) by calling this function directly, so both agree
+    by construction.
     """
     bid = getattr(item, "_batch_id", None)
-    return _batch_dir(bid) if bid is not None else _test_batch_id(item._test_name)
+    if bid is not None:
+        return _batch_dir(bid)
+    return _test_batch_id(item._test_name + _cell_suffix(getattr(item, "_cell", None)))
 
 
 def _rerun_batch_id(batch_id: str, test_name: str) -> str:
@@ -70,6 +87,16 @@ _batch_cache_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 
+def _new_item(parent, *, name, test_name, binary, working_dir, temp_roots):
+    """The one place that builds a `SqlLogicItem` from its invocation-constant fields — shared by
+    `SqlLogicFile.collect()` (the original, one per file) and the suite-matrix `.test` splice
+    (`plugin.py`'s `_expand_test_matrix`, one sibling per cell) so a `from_parent` signature change
+    has exactly one call site to update, not two independently-drifting ones."""
+    return SqlLogicItem.from_parent(
+        parent, name=name, test_name=test_name, binary=binary, working_dir=working_dir, temp_roots=temp_roots
+    )
+
+
 class SqlLogicFile(pytest.File):
     """One .test file → one SqlLogicItem."""
 
@@ -84,7 +111,7 @@ class SqlLogicFile(pytest.File):
         from .plugin import _temp_roots  # lazy: plugin imports this lane (avoid import cycle)
 
         test_name = os.path.relpath(str(self.path), self._working_dir)
-        yield SqlLogicItem.from_parent(
+        yield _new_item(
             self,
             name=self.path.stem,
             test_name=test_name,

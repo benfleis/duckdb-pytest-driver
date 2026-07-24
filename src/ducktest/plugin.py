@@ -41,7 +41,9 @@ from .suites import get_suites
 from .sqllogic import (
     SqlLogicFile,
     SqlLogicItem,
+    _cell_suffix,
     _invoke,
+    _new_item,
     _parse_result,
     _raise_for_result,
     _test_batch_id,
@@ -1284,7 +1286,7 @@ def _expand_test_matrix(config, items, suites):
             expanded.append(item)
             continue
         for cell in suite.matrix:
-            sibling = SqlLogicItem.from_parent(
+            sibling = _new_item(
                 item.parent,
                 name=f"{item.name}[{cell['backend']}]",
                 test_name=item._test_name,
@@ -1487,13 +1489,16 @@ def run_paired(request, *, env=None):
     inject vars the body substitutes via ``${...}`` (merged over os.environ).
 
     The run's originated TEMP/DATA roots (SPEC §11.2) are attached automatically — this invocation
-    shares the run's `<root>/<session-id>` and composes its own `<batch-id>` from the body name, never
-    re-derived here.
+    shares the run's `<root>/<session-id>` and composes its own `<batch-id>` from the body name (+ its
+    matrix cell, if any — a `@requires_matrix`/suite-`matrix=`-parametrized paired driver calls
+    `run_paired` once per cell, all with the identical body name; folding the cell in keeps each
+    cell's temp-dir path distinct), never re-derived here.
     """
     working_dir = request.config.sqllogic_working_dir
     binary = find_binary(request.config, working_dir)
     test_path = _stem_path(request.path, ".test")
     test_name = os.path.relpath(test_path, working_dir)
+    cell = request.getfixturevalue("matrix_cell")
     with step(f"running {test_name}"):
         _raise_for_result(
             _parse_result(
@@ -1502,7 +1507,7 @@ def run_paired(request, *, env=None):
                     [test_name],
                     working_dir,
                     _temp_roots(request.config),
-                    batch_id=_test_batch_id(test_name),
+                    batch_id=_test_batch_id(test_name + _cell_suffix(cell)),
                     env=env,
                     extra_args=resolve_unittest_args(request.config),
                 )
