@@ -1,360 +1,237 @@
-# Resource planning — a unified sharing-scope model (PROPOSAL, not built)
+# Resource Planning: a unified provisioning model
 
-> **Status: design proposal.** Nothing in this doc is implemented. It exists to pin down a target shape
-> before the next few resource-provisioning features (matrix-aware backends, attach-only cloud
-> resources, cross-resource `depends_on`) get built as three more one-off, parallel mechanisms instead of
-> one generalization. See `ARCHITECTURE.md` (the model as built today) and `PLAN.md` (the roadmap this
-> feeds into) for what's actually live.
+> **Status:** proposal, validated against real code, ready to implement. Supersedes the ad hoc
+> per-mechanism approach to resource sharing; does not change any test-facing interface.
 
-## Why this doc exists
+**Cross-references.** Builds on `ARCHITECTURE.md` (the model as built), `SERVICES.md` (service/credential
+mechanics — extended here, not replaced), and `PLAN.md` (roadmap; this folds in and supersedes the
+*Multi-service dependencies* entry). Prompted by `to_init_sql` (`SERVICES.md` § *`--repl` init SQL*,
+shipped 2026-07-23) turning out to be the third independently-invented "gather + dedup" mechanism.
+Validated by reading real code in `az` (azurite service, planned `azure_spn` credential), `uc`
+(`DatabricksProvisioner`, `OssProvisioner`), and `ice` (`IcebergProvisioner`) — see § *Validation*.
 
-Three times now, the driver has solved "a resource is shared by more than one test; provision it once,
-tear it down once, don't redo the work" — and gotten a slightly different answer each time:
+## 1. What problems are we solving?
 
-1. **Credentials/services** (`Credential`/`Service`, `suites.py`): shared **once per invocation**, via the
-   store's cross-process single-flight (`PENDING → SET | FAILED`). Genuinely necessary here — two workers
-   racing `docker run --name X` actually conflicts.
-2. **RO tables** (`Provisioner._shared_ro`, `provision.py:100-114`): shared **once per worker process** —
-   a plain in-memory `set()` on the (per-worker) Provisioner instance. Weaker than (1), and — as far as
-   we can tell — not because RO instantiation *needs* to be weaker (it's typically an idempotent
-   `CREATE ... IF NOT EXISTS`, safe to redundantly run), but because this code predates the store's
-   generalization and was never revisited.
-3. **`--repl` init SQL** (`_repl_resource_init_sql`, `plugin.py`, 2026-07-23): a *third*, structurally
-   near-identical "gather across reachable suites, dedup by key" loop, written because the first two
-   didn't compose into something this could reuse.
+The driver has solved "a resource is shared by more than one test — provision it once, don't redo the
+work" three separate times, three separate ways:
 
-Meanwhile, RW tables get a *third kind* of scope for free: per-test isolation via the `token` (optionally
-folded with a matrix cell — see `uc`'s `cell_schema_name(commit, storage, token)`,
-`test/py/uc/databricks/engine.py:122`).
+1. **Services/credentials** (`suites.py`): shared once per invocation via the store's cross-process
+   single-flight. Correct — two workers racing `docker run --name X` genuinely conflicts.
+2. **RO tables** (`Provisioner._shared_ro`, `provision.py:100-114`): shared once per *worker process*, via
+   a plain in-memory `set()`. Weaker than (1) for no principled reason — RO instantiation is typically an
+   idempotent `CREATE ... IF NOT EXISTS`, safe to coordinate the same way; this code just predates the
+   store's generalization.
+3. **`--repl` init SQL** (`plugin.py`, `_repl_resource_init_sql`): a third, structurally near-identical
+   "gather across reachable suites, dedup by key" loop, written because (1) and (2) didn't compose into
+   something reusable.
 
-None of these are wrong in isolation. But every new cross-cutting mechanism (this doc is prompted by
-three concrete upcoming ones — a real backend matrix, attach-only cloud resources, and multi-service
-ordering) is at risk of becoming a *fourth* parallel implementation of "shared resource, some scope,
-provision-before-first-use, teardown-after-last-use" instead of one.
+Underneath that, five concrete problems, each with a concrete forcing case:
 
-## Target use cases
+- **P1 — sharing scope is implicit in *which system* implemented a resource**, not a declared property.
+  No single place says "this is invocation-global" the way none says "this is per-test."
+- **P2 — the RO dedup key isn't matrix-cell-aware, and nothing enforces that it should be.**
+  `ro_target(spec, state)`'s return value **is** the dedup key (`provision.py:108-114`); `uc`'s only real
+  implementation never folds cell identity into it, because its RO sources happen to be static FQNs — an
+  accident of what's been tried, not evidence it's safe in general. Azure's 3-way backend matrix
+  (`{azure-az, azure-abfss, azurite-az}` sharing one test body) is exactly the case where a
+  non-cell-aware key silently over- or under-shares.
+- **P3 — no resource shape exists for "externally owned, no managed lifecycle at all."**
+  `service()` requires `start`; a pre-provisioned real Azure/S3 account has no boot and no teardown, it
+  just permanently exists. Azure's two real-cloud matrix cells and httpfs's public read-only server both
+  need this and can't express it today.
+- **P4 — batching and resource-sharing compute "what can this item share" independently**, for the same
+  underlying question. `collect.py`'s `_batch_key` (`(binary, working_dir)`) and the resource-sharing key
+  above are unrelated code answering the same shape of question — concretely risking two items that must
+  stay isolated (env-sensitive tests sharing a worker; two matrix cells of a future fanned `.test` file)
+  landing in the same batch purely because an unrelated pair of fields happened to match.
+- **P5 — Iceberg's `rest`→`minio` ordering** (`Service.depends_on` exists, unresolved) is "provision
+  before first use, teardown after last use," solved once, for two services, not generalized.
 
-These are the concrete cases the model below is scoped against — not hypotheticals:
+**Concrete consumers this is scoped against** (not hypotheticals): `--repl`/azurite (shipped); RO/RW
+sharing generally; azure's 3-way backend matrix; httpfs's analogous matrix (not yet built); UC
+Databricks/OSS (already mostly conformant); Iceberg (`depends_on`, plus a real stress-test of "shared
+resource" via its per-worker embedded Spark connection).
 
-- **`--repl` works on azurite** (shipped 2026-07-23, `to_init_sql` — see `SERVICES.md`). The first case;
-  this doc generalizes past it, doesn't redo it.
-- **RO/RW sharing is inherent, but the *scope* and *key* need fixing.** RW's per-test isolation via
-  `token` is right. RO's per-worker sharing is (probably) accidentally weaker than it needs to be, and —
-  more importantly — its dedup key isn't matrix-cell-aware anywhere today (below).
-- **Azure's 3-way backend matrix**: one test body (`azure.test`) needs to run against
-  `{azure-az, azure-abfss, azurite-az}`. Each cell materializes to a secret + a `DATA_DIR`/`TEMP_DIR` pair:
-  two cells point at **pre-provisioned, externally-owned** real Azure paths
-  (`az://<real-blob-account>/<fixed-data-path>`, `abfss://<real-adls-account>/<fixed-data-path>`, plus a
-  writable temp prefix under each) that this driver never boots or tears down; the third
-  (`azurite-az`) is **locally booted, driver-owned, ephemeral** (boot, populate, teardown — the existing
-  `AZURITE_SERVICE` shape). Same test body, same abstract resource *shape*, three genuinely different
-  lifecycle owners.
-- **httpfs's matrix** (not yet built here): `{minio-bucket, a public read-only https server}`, plus real
-  S3/R2/GCS variants. Same shape as azure's: a mix of locally-booted emulators and pre-provisioned
-  external endpoints sharing one test body.
-- **UC (Databricks/OSS)**: Databricks is already on the unified `Bindings`/`env` model (credential +
-  RO/RW tables, no matrix today). OSS is blocked on a separate `uctl` tooling gap, not a design gap.
-- **Iceberg**: `rest` depends on `minio` being up first (`Service.depends_on` exists, validated, but
-  start-order resolution + reverse-order teardown aren't implemented yet — `PLAN.md` § *Multi-service
-  dependencies*). This is the same "provision before first use, teardown after last use" principle,
-  scoped (so far) to only two services.
+## 2. What's the approach?
 
-Concurrency is explicitly **not** the goal of this phase — everything the driver runs today is linear
-per worker anyway. The goal is **consistent correctness** (a resource dedup key that can't silently
-collapse two different things, a lifecycle model that doesn't special-case "pre-provisioned, no
-teardown" as an afterthought). If the scope/key/`TEMP_DIR` model ends up right, concurrency becomes
-close to free later — it's a side effect worth naming, not a design driver now.
-
-## The gap, precisely
-
-Three concrete problems, not one vague "unify everything":
-
-### 1. Sharing scope is implicit in *which code path a resource happens to go through*, not a declared property
-
-A resource's actual lifecycle guarantee (per-invocation single-flight vs. per-worker best-effort vs.
-per-test-isolated) is currently a consequence of *which of the two systems* (`Service`/`Credential` vs.
-`Provisioner`) it was written against — not something stated once and enforced uniformly. There's no
-single place that says "this resource is invocation-global" the way there's no single place that says
-"this resource is per-test-isolated" — you find out by reading which mechanism happened to implement it.
-
-### 2. The RO dedup key isn't matrix-cell-aware, and nothing enforces that it should be
-
-`Provisioner.ro_target(spec, state)`'s return value **is** the `_shared_ro` dedup key
-(`provision.py:108-114`). Today's only real consumer (`uc`'s Databricks `ro_target`,
-`engine.py:313-320`) never folds cell/`params` identity into it — because Databricks' RO sources are
-static premade FQNs, not backend-varying. That's an accident of what's been tried, not evidence the key
-doesn't need cell-awareness: the azure 3-way matrix is exactly the case where it would — `azure.test`'s
-`@requires`-equivalent resource resolves to a *different account* per cell, sharing one nominal source.
-Without an explicit, enforced rule that the dedup key is a function of `(resolved identity, cell)`, a
-backend can silently under-share (redo work) or — worse — over-share (cell B's lookup satisfied by cell
-A's wrong-backend target) purely by omission.
-
-### 3. There's no resource shape for "externally owned, no managed lifecycle at all"
-
-`service()` requires `start` (`suites.py` — "Only `start` is required" per `SERVICES.md`). A
-pre-provisioned real Azure/S3 account has no boot and no teardown — it just exists, permanently, outside
-this driver's control. Today that's not a first-class resource; it'd have to be smuggled in as constant
-env or a service with a `start` that's never meant to be called (relying on every consumer always
-declaring it `--existing-service`, which is exactly the kind of implicit contract this doc is trying to
-get rid of).
-
-### 4. Batching and resource-sharing already compute "what can this item share" independently, for what's the same question
-
-`collect.py`'s `assign_batches`/`_batch_key` (`collect.py:182-187`) already computes a key —
-`(binary, working_dir)` — to decide which items may share **one `unittest -f filelist` subprocess call**.
-That's a *different mechanism*, computed by *unrelated code*, answering the *same shape of question* as
-gap #2's resource-sharing key: "what can this item share with that item." Nothing connects them today.
-Concretely, that's a real hazard, not just an aesthetic one: `_batch_key` doesn't (and can't yet) include
-resource/matrix-cell identity, so nothing structurally prevents two items that *must* stay isolated (two
-different matrix cells of what will eventually be a fanned `.test` file; today, `cli_auth.test`-style
-env-sensitive tests sharing a worker with an unrelated cloud test) from landing in the same batch/worker
-purely because their `(binary, working_dir)` happen to match. §*The unifying primitive*, below, is the
-fix for gaps #2 and #4 together, not two separate fixes.
-
-## The unifying primitive: one key per item, computed once ("decorate")
-
-Read scan → collect-first plan → execute (`ARCHITECTURE.md` § *xdist model*) as three phases today:
-**scan** (collect every item, `.py` and `.test` alike), **plan** (`Controller.pytest_collection`
-resolves reachability, provisions services/credentials up front), **execute** (run each item, batched or
-not). Insert one more, between scan and plan: **decorate** — compute exactly ONE canonical key per item,
-before anything gets scheduled or provisioned. Everything downstream (batching, resource sharing, token
-generation) becomes a *projection or policy over that one key*, not a separate mechanism:
+**One canonical key per test item, computed once**, in a new "decorate" step inserted between *scan* and
+*plan* in the existing collect-first pipeline (`ARCHITECTURE.md` § *xdist model*). Every downstream
+decision — batching, resource sharing, token generation, provisioning order — becomes a projection or
+policy function *over that one key*, not an independently invented mechanism.
 
 ```
-key(item) = (binary, working_dir, config_variant, resource_identity, cell)
+key(item) = (build, run_setting, backend, access, cell)
 ```
 
-- `binary` / `working_dir` — already computed today, `_batch_key`'s two components.
-- `config_variant` — **new**: a named run-level axis (e.g. httpfs's `{curl, httplib,
-  connection_caching, dynamic}` — see § *A different "matrix"*, below) once it's declared as a small set
-  of named variants instead of an ambient global CLI flag. Until declared, this component is constant
-  for a whole invocation, same as today.
-- `resource_identity` / `cell` — the `@requires`/`@requires_matrix` resolved source + per-cell
-  properties that already exist for `.py` tests today; the not-yet-built equivalent for bare `.test`
-  files once matrix fan-out lands.
+- `build`, `run_setting` — constant for a whole invocation (or a whole worker, if `run_setting` is ever
+  partitioned): which binary, which whole-run config sweep (e.g. httpfs's `{curl, httplib,
+  connection_caching, dynamic}`). Never varies test-by-test.
+- `backend`, `access`, `cell` — vary per test: which account/service this test talks to, whether it's
+  `rw` (private) or `ro` (shareable), which matrix cell if any.
 
-**Everything else is a policy function *over* this key, not an independently-invented mechanism:**
+**Every resource also has two independent, composable properties** — not five flat mutually-exclusive
+scopes (an earlier draft of this doc had that wrong):
 
-- **Batching equivalence** = items may share one subprocess call iff they project equal on
-  `(binary, working_dir, config_variant)`. Today's `_batch_key` is exactly this projection with
-  `config_variant` fixed (it doesn't exist yet) — extending it later is additive, not a rewrite.
-  **Critically, `resource_identity`/`cell` must stay OUT of the batching-equivalence projection on
-  purpose** — not because it doesn't matter, but because two different cells can never share one
-  subprocess call *anyway* (Catch2's one-file-one-registration wall, § *What this doc does not solve*).
-  Once cell-fan-out exists, cell identity has to additionally *exclude* co-batching across cells — the
-  projection stays a *subset* of the full key, deliberately, to prevent exactly the gap #4 hazard.
-- **RW isolation token** = a deterministic value derived from the **full** key (`access="rw"`) — this is
-  what `_provision_token`/`cell_schema_name(commit, storage, token)` already hand-compute today (an
-  ad hoc `<date>_<mnemonic>_<nodeid-hash>` format); the proposal is that the token simply **is** a
-  canonical encoding of the key, not a separately-invented string that happens to also be unique.
-- **RO shared-target identity** = a deterministic value derived from the key **projected onto
-  `(resolved source identity, cell)`** — dropping `binary`/`working_dir`/`config_variant`. Whether that
-  projection is always correct (should an RO table really be shared across two different `config_variant`s?)
-  is a real, backend-dependent question — flagged in *Open questions*, not assumed away.
-- **Provisioning schedule** for invocation-scoped resources (services, credentials, `invocation-external`
-  paths) projects onto just the resource-identity component — a docker container doesn't care which
-  matrix cell or build variant is asking for it.
+1. **Where does the account/connection come from?** `invocation-managed` (we boot it, tear it down) /
+   `invocation-attached` (already running, we just connect) / `invocation-external` (permanently exists,
+   outside our control — the new one).
+2. **Does a specific resource riding on that connection get shared, or does this test get its own
+   private copy?** `per-invocation-shared` (ro, promoted from today's per-worker `_shared_ro`) /
+   `per-test-isolated` (rw, via a token).
 
-This is deliberately still "collect-first": decorating (computing keys) is pure — no side effects, no
-scheduling decisions, just data. A separate graph/scheduler stage consumes the decorated keys to build
-the actual plan (batch assignment, provision-before-first-use/teardown-after-last-use ordering, resource
-dedup). Policy (which projection, which hash) is applied *before* the graph processor runs, not folded
-into it — the graph processor still just executes a plan built from already-computed keys, same
-separation of concerns the collect-first redesign already established at a coarser grain.
+These compose, and often nest: Databricks' catalog is `invocation-external`; the schema created inside it
+is `per-test-isolated`; the table inside *that* schema is too, but doesn't need independent teardown
+tracking — dropping the schema (`CASCADE`) takes it with it. Azure's real-cloud account is
+`invocation-external`; its read-only `DATA_DIR` is `per-invocation-shared`; a write test's `TEMP_DIR`
+prefix under the same account is `per-test-isolated`. "Where the connection came from" and "how a given
+piece of data on it is shared" are independent questions at every layer.
 
-## Proposed model
+**Explicitly not solved here:** fanning one bare `.test` file into N matrix-cell pytest items is still
+blocked by Catch2's one-file-one-registered-test model (a C++ test-harness constraint, not a driver
+choice) — this proposal makes *what gets provisioned per cell* uniform and correct, not *how a `.test`
+file becomes N items*, which is separate follow-on design work. Whole-invocation config sweeps (httpfs's
+`{curl, httplib, ...}`) stay as repeated `pytest --unittest-args='--test-config ...'` invocations — that
+mechanism already exists and fits what this axis actually is (a DBConfig setting, not a resource).
 
-### A resource node has an explicit sharing scope
+## 3. What's the design?
 
-Four scopes, not two:
+### The key, as data
 
-| scope | lifecycle | today's analog | dedup mechanism |
+```yaml
+- test: test/azurite/azure.test
+  build: az/build/debug/test/unittest
+  run_setting: null
+  backend: azurite-az
+  substrate: invocation-managed          # AZURITE_SERVICE, booted by this run
+  access: ro
+  token: null
+  extras: {AZURE_STORAGE_CONNECTION_STRING: "...", AZ_DATA_DIR: testing-private}
+
+- test: test/azurite/azure.test           # hypothetical matrix cell, same file
+  build: az/build/debug/test/unittest
+  run_setting: null
+  backend: azure-az
+  substrate: invocation-external          # permanently exists, never booted/torn down
+  access: ro
+  token: null
+  extras: {AZ_STORAGE_ACCOUNT: duckdblabstestdatablob, AZ_DATA_DIR: duckdblabs-data/common/azure_data}
+
+- test: test/azure/azure_writes.test
+  build: az/build/release/test/unittest
+  run_setting: null
+  backend: azure-az
+  substrate: invocation-external
+  access: rw
+  token: "20260724_azwrite_a1b2c3"         # the token IS the write path's unique segment
+  extras: {AZ_TEMP_DIR: duckdblabs-write-testing/extension/azure/20260724_azwrite_a1b2c3}
+
+- test: uc read test
+  build: uc/build/release/test/unittest
+  run_setting: null
+  backend: uc-databricks
+  substrate: invocation-external           # the CATALOG; its schema is created per-test, not this
+  access: ro
+  token: null
+  extras: {CATALOG: my_write_catalog, SCHEMA: main, TABLE: simple_table}
+```
+
+`build`/`run_setting` repeat for every job in a run; `backend`/`substrate`/`access`/`token` are what
+actually decide sharing; `extras` is delivered, never consulted for sharing decisions.
+
+### Four small planner functions, over that data
+
+```python
+def batch_key(job):
+    """Jobs sharing this may run in the same unittest subprocess call."""
+    return (job.build, job.run_setting)
+
+def coordination_key(job):
+    """None => nothing to wait on (rw: always private; invocation-external: always just there).
+    Otherwise: the store key jobs with the SAME value single-flight around."""
+    if job.access == "rw" or job.substrate == "invocation-external":
+        return None
+    return (job.backend, job.access)
+
+def token(job):
+    """Only rw jobs get one -- unique per (build, backend, test, nodeid). Already exists today as
+    _provision_token (plugin.py:1459) -- this formalizes its guarantee, doesn't replace it."""
+    return stable_hash(job.build, job.backend, job.test, job.nodeid) if job.access == "rw" else None
+
+def env_for(job):
+    """The one genuinely backend-specific function -- every consumer supplies its own -- but always
+    the same shape: (job, its token) in, a flat env dict out."""
+    return BACKEND_ENV_RESOLVERS[job.backend](job, token(job))
+```
+
+`batch_key` deliberately excludes `backend`/`cell` — not because they don't matter, but because two cells
+can never share one subprocess call anyway (the Catch2 wall), so keeping the projection narrow is what
+*prevents* accidental cross-cell contamination once fan-out exists, rather than requiring new
+special-casing later.
+
+### Walked through scan → decorate → plan → execute
+
+Take the azurite-az RO job and the azure-az RW job above: **scan** collects both, same as today.
+**decorate** computes their keys — pure, no side effects. **plan**: their `batch_key`s match (same `az`
+binary, no `run_setting`), so they're *eligible* to share a subprocess call (ordinary xdist batching
+decides whether they actually do); their `coordination_key`s differ (`("azurite-az","ro")` vs. `None`) —
+the RO job gets single-flighted through the store, the RW job never coordinates with anyone, it just gets
+its own token. **execute**: whichever happens, the two jobs never contend, because coordination and
+token assignment were already resolved before either one ran.
+
+## 4. Validation against real code
+
+- **UC's `DatabricksProvisioner`** (`engine.py:259-320`): promoting RO to store-backed sharing is safe.
+  Its worker-persistent state (`_refs`, `_cell_for_default`) resets at the top of every `provision()`
+  call — unrelated to `_shared_ro`'s cross-call persistence. `ro_target` populates `state.tables`/`_refs`
+  *unconditionally*, before the shared/skip check — a worker that loses the single-flight race still
+  gets correct env output; only the redundant `execute()` DDL would additionally be skipped.
+- **UC's `identity.py`** already exports the generic `CATALOG`/`SCHEMA`/`TABLE` vocabulary this proposal
+  wants as a driver-level default — it just isn't promoted out of UC yet, so Iceberg (which has the same
+  shape of need) can't reuse it without copying it.
+- **Iceberg's `IcebergProvisioner`** (`provisioner.py`): its RO tables generate through an embedded,
+  deliberately-per-worker PySpark connection ("each xdist worker gets its own embedded session"). Looks
+  like proof per-worker sharing is sometimes inherent — it isn't: the generated data lands in a warehouse
+  path that's the same for every worker; only *who executes the generate() call* is worker-bound. Store
+  coordination ("can this be skipped, it's done") and execution ownership ("who does it when it's needed")
+  are separable — the first worker to win the race runs its own connection, everyone else just reads what
+  got written.
+- **Iceberg's `minio`/`rest` services** are still a raw `docker-compose.yml`, not declared as driver
+  `Service`s — the `depends_on` ordering case (P5) is still plan-only there, not checked against real code.
+- **`TEMP_DIR` teardown** is already substrate-agnostic and needs no new design: `--temp-dir-destroy
+  {never,on-success,always}` (`plugin.py:189-197`, default `on-success`) plus a remote sweep that's
+  keep-on-failure by construction already apply the same regardless of what's under the path.
+- **Token generation is already driver-core**: `_provision_token` (`plugin.py:1459`) is the one function
+  every `.provision()` call site uses today (both the ordinary `resources` fixture path and `--repl`),
+  producing a `[0-9a-zA-Z_]`-safe string; `uc`'s `cell_schema_name` already incorporates it as a substring
+  rather than reinventing it. What's missing is turning that observed convention into an enforced,
+  documented contract, not building anything new.
+- **RO sharing across `run_setting` values**: asserted as a hard rule rather than a per-case judgment —
+  `run_setting` is *defined* to never affect what data an RO source contains. If a real case seems to
+  need it to, that's the test modeled wrong (should be a different `backend`), not a reason to widen the
+  sharing key.
+
+## 5. Phased implementation
+
+No big-bang rewrite; each phase is independently shippable and (except phase 4) behavior-preserving.
+
+| # | phase | repo(s) | risk |
 |---|---|---|---|
-| **invocation-managed** | boot once, teardown once, whole run | `Service` (managed) | store single-flight |
-| **invocation-attached** | no boot, no teardown, just `attach`+`alive` once | `Service` (`--existing-service`) | store, present but inert |
-| **invocation-external** | no boot, no teardown, **no attach probe either** — just a location + a credential, assumed always there | *(none today — the gap)* | none needed; it's a constant |
-| **per-test-isolated** | instantiate per `(token, cell)`, teardown per test | `Provisioner` rw | token (+ cell) in the target name |
-| **per-invocation-shared** | instantiate once per `(resolved identity, cell)`, never torn down mid-run | `Provisioner` ro (currently per-*worker*, see below) | store single-flight, keyed by `(identity, cell)` |
+| 1 | Canonical per-item key as a real data structure ("decorate"), initially carrying just `(build, run_setting)` — same as today's `_batch_key` | driver | none — pure refactor |
+| 2 | Dedupe the reachable-suite gather loop (`provision_reachable` + `_repl_resource_init_sql` → one shared helper) | driver | none |
+| 3 | Promote `_shared_ro` to store-backed single-flight | driver | low — behavior-preserving per § 4 |
+| 4 | Extend the key with `backend`/`access`/`cell`; make RW-token uniqueness and RO-shared-identity explicit, named guarantees over the key (generators unchanged, see § 4) | driver | **touches the `Provisioner` contract every consumer implements** |
+| 5 | `service()`'s `start=None` allowed; `provision_service` routes to `attach()` unconditionally when there's no `start` — this *is* `invocation-external`, no new type | driver | low, additive |
+| 6 | Resolve `depends_on` (topological order + reverse teardown) across the unified resource-node set | driver | subsumes Iceberg's P5 |
+| 7 | Promote `CATALOG`/`SCHEMA`/`TABLE` (already in `uc/identity.py`) to a driver-owned default vocabulary | driver, then uc/ice adopt | low |
+| 8 | `az`: collapse `AZ_DATA_DIR`/`AZ_TEMP_DIR`/`ABFSS_*` to plain `DATA_DIR`/`TEMP_DIR` now that the `{proto}` `foreach` loop moves out into the matrix mechanism instead of living in the test body | az | touches every `.test` body |
+| 9 | *(separate track, not gated on 1–8)* `.test`-file matrix fan-out mechanics — file generation vs. native collector fan-out | driver + az | design not yet started |
 
-`invocation-external` is the new one the azure/httpfs matrices need for their pre-provisioned cells — a
-resource that is neither managed nor attach-probed, just a fixed fact (an account name, a fixed
-`DATA_DIR`, a credential to reach it). It's simpler than a `Service`, not a variant of one; forcing it
-through `service()`'s `start`-required shape would be the wrong direction.
+## 6. Remaining open questions
 
-### RO gets promoted from per-worker to per-invocation, using the mechanism that already exists
-
-`_shared_ro` becomes a store-backed single-flight, the same primitive services/credentials already use —
-not a new mechanism, just RO stopping being the one resource class that doesn't get it. This is
-behavior-preserving for every current caller (idempotent `CREATE`s stay idempotent; they just happen
-once instead of once-per-worker) and is the concrete "consistency now, concurrency for free later" case:
-removing N redundant `CREATE`s across workers is exactly the kind of win the store was built for.
-
-**One nuance this needs, found by checking it against Iceberg's real `IcebergProvisioner`**
-(`ice/test/py/iceberg/provisioner.py`): its RO tables are generated through `iceberg_spark_local`, an
-*embedded* PySpark session that's deliberately **not** a driver `Service` — the code says so explicitly:
-"each xdist worker gets its own embedded session" (`provisioner.py:51`), because there's no cheap way to
-share a live JVM object across OS processes. At first glance that looks like a case where per-worker
-sharing is *inherent*, not an accident to fix — a real crack in "just promote everything to the store."
-It isn't, once two questions get separated:
-
-- **"Can this work be skipped because it's already done?"** — invocation-wide, store-coordinated, same
-  as any other RO resource. Iceberg's actual generated *data* lands in a fixed warehouse path
-  (`_SPARK_LOCAL_WAREHOUSE`) that's the same for every worker on the machine — nothing about *that* is
-  worker-bound.
-- **"Who actually performs the work, if it does need doing?"** — worker-owned, and sometimes genuinely
-  can't be anything else (you can't hand a live PySpark session to another process). That's fine: the
-  first worker to win the store's single-flight race runs `generate()` on *its own* connection, writes to
-  the shared path, and marks the store `SET`; every other worker sees `SET` and never calls `instantiate()`
-  at all — it just uses what got written.
-
-So the promotion still holds; the model just needs to say this explicitly, because "the resource can be
-shared" and "the connection that touches it can be shared" are different claims, and conflating them is
-exactly what would make Iceberg look like an exception when it isn't one.
-
-### The dedup/sharing key becomes an explicit, first-class input — never an implicit side effect
-
-See § *The unifying primitive*, above: the RO/RW dedup key stops being "whatever string a backend's
-`ro_target`/`to_init_sql`/etc. happened to return" and becomes an explicit projection of the one
-canonical per-item key. A backend still owns how *identity* resolves (that part is correctly
-backend-specific — an FQN, an account name, whatever); what stops being backend-discretionary is
-*whether cell identity folds into sharing* — that's a property of the projection, applied uniformly,
-not something a backend can silently get wrong by omission.
-
-### Scheduling: one topological rule, not one per resource kind
-
-"Provision before first use, teardown after last use" — generalized past the two-service Iceberg case
-(`rest`/`minio`) to the full resource-node set (`depends_on` already exists on `Service`; the missing
-piece is resolution + reverse-order teardown, tracked in `PLAN.md`). Once every resource — service,
-credential, RO table, invocation-external path — is a node in the same graph, this is one scheduler, not
-bespoke ordering logic per resource kind.
-
-## How this maps onto the target use cases
-
-- **`--repl`/azurite**: unaffected — already an `invocation-managed` service; `to_init_sql` stays as-is.
-- **RO/RW + matrix**: RW's `token`(+cell) isolation is already correct, unchanged. RO moves to
-  `per-invocation-shared` (store-backed) with an explicit `(identity, cell)` key — closes gap #2 and #1
-  above for the one consumer (Databricks) that has RO today, and makes the key contract explicit before
-  a second RO consumer (azure) needs it.
-- **Azure 3-way matrix**: `azurite-az` is `invocation-managed` (today's `AZURITE_SERVICE`, unchanged).
-  `azure-az`/`azure-abfss` become `invocation-external` nodes — an account name, a fixed `DATA_DIR`, and
-  the `azure_spn` credential (already planned, see the earlier azure-conversion conversation) reached via
-  `to_init_sql`. Per-cell `TEMP_DIR` still needs *something* under it to own cleanup of what a test
-  writes — for pre-provisioned accounts that's a path-prefix sweep (the same mechanism `TEMP_DIR`/remote
-  reap already uses for other resources, per `SPEC.md` §11), not a container teardown. Matrix fan-out
-  itself (turning one `azure.test` into three pytest-visible items) is a **separate, still-open**
-  problem — see the note below; this doc unifies *what gets provisioned per cell*, not *how a `.test`
-  file becomes N items*.
-
-  **`DATA_DIR`/`TEMP_DIR` are the delivery mechanism, and they already exist** — a per-item key resolves
-  to a set of values (which account, which data path, which temp prefix); `DATA_DIR`/`TEMP_DIR` are
-  exactly the existing, already-built channel those values reach a test through, per cell, no new
-  plumbing needed. The one real check, done against a live file (`test/azurite/azure.test`): its body
-  hardcodes the literal `testing-private` instead of substituting `{AZ_DATA_DIR}` — so it isn't
-  matrix-ready as written, while the already-migrated cloud tests (`test/azure/basic.test` and siblings)
-  already use the placeholder correctly. That's a small, mechanical rewrite per file where it's missing,
-  not a gap in the model — most bodies already follow the convention; this is confirmation the model
-  composes with what's already there, not a new problem to solve.
-- **httpfs matrix**: same shape as azure's — extra evidence this generalizes rather than being
-  azure-specific.
-- **UC/Iceberg**: Databricks already conforms (no change). Iceberg's `rest`→`minio` ordering is exactly
-  the topological-scheduling piece above, generalized rather than reimplemented per resource kind. OSS UC's
-  `uctl` blocker is unrelated infrastructure, out of scope here. **Caveat, found during the
-  categorization pass**: Iceberg's `minio`/`rest` are still a raw `docker-compose.yml`
-  (`ice/scripts/docker-compose.yml`), not yet declared as driver `Service`s at all — so the
-  `depends_on` ordering case is still only a plan, not something checked against real code yet.
-
-## A different "matrix" that looks similar but isn't: whole-invocation config sweeps
-
-httpfs's CI (`IntegrationTests.yml`) runs its **entire suite four times**, each under a different
-`--test-config` (`httpfs_{dynamic,curl,httplib,connection_caching}.json`). Three of those vary
-`httpfs_client_implementation`/`httpfs_connection_caching` — plain `DBConfig`-scoped `SET` options
-(`src/httpfs_extension.cpp:132-172`, `config.SetHTTPUtil(...)`), cheap to flip at runtime, per the
-extension's own comment ("HTTP util classes are supposed to be cheap … don't store resources"). The
-fourth varies `statically_loaded_extensions` (compiled-in vs. `LOAD`-at-runtime), a build/linkage
-assumption.
-
-This is **not** a resource-node matrix in this doc's sense: there's no service, credential, or table
-identity involved, no per-test lifecycle, nothing to provision or tear down — it's a single
-whole-**invocation** `DBConfig`/`on_init` knob applied uniformly to every test in one `unittest` run.
-Ducktest already generalizes this correctly, today, with no new mechanism: `--unittest-args` is
-deliberately whole-invocation-scoped (threaded into every batched `unittest` call uniformly —
-`resolve_unittest_args`, `sqllogic.py:230`, whose own docstring uses `--test-config x.json` as its
-example). The right shape stays "run `pytest --unittest-args='--test-config …json'` N times" — that's
-not a workaround for a driver limitation, it's the correct fit for what this axis actually is. Naming it
-here only to keep it from getting conflated with the per-test backend matrix above in a future reader's
-mental model — they look superficially similar ("a matrix of test configs") but are different in kind.
-
-**If this axis were ever declared as a named `config_variant`** (§ *The unifying primitive*) instead of
-staying an ambient global CLI flag, worker-level partitioning of the sweep — running all four configs
-*concurrently* in one `pytest -n 4` session instead of four sequential full-suite passes — falls out of
-the *same* batching-equivalence projection, for free: items with different `config_variant` values
-already wouldn't batch together (different projection), so nothing new has to be built to keep them on
-separate workers, they just naturally don't co-batch. Worth remembering if this sweep ever becomes worth
-parallelizing; not a reason to build it now.
-
-## What this doc does *not* solve
-
-**Fanning a bare `.test` file into N matrix-cell pytest items is still blocked by Catch2's registration
-model**, independent of everything above (see the earlier conversation this session: one `.test` file is
-one registered Catch2 test case, so two cells of the same file can never share one subprocess
-invocation — each cell needs its own `unittest`/shell invocation). This doc makes *what a cell needs
-provisioned* uniform and correct; it doesn't remove the need for N separate invocations for a fanned
-`.test` file. Whether that's solved by file generation (a template stamped into N `.test` files, one per
-cell — the pragmatic answer today) or by teaching the collector a native fan-out is a separate design
-question, deliberately out of scope here.
-
-## Incremental adoption (no big-bang rewrite)
-
-1. **(pure refactor, no behavior change)** Introduce the canonical per-item key as a real data structure,
-   computed once in a "decorate" step between scan and plan. Initially it carries exactly what
-   `_batch_key` carries today (`binary`, `working_dir`) — this step is just giving the existing thing a
-   name and a home, not changing what it does.
-2. **(mechanical, low-risk)** Dedupe the reachable-suite gather loop itself — `provision_reachable` and
-   `_repl_resource_init_sql` become one shared "for each reachable suite's active resource, call `f`"
-   helper. No behavior change.
-3. **(behavior-preserving hardening)** Promote `_shared_ro` from a per-worker `set()` to a store-backed
-   single-flight. Existing callers unaffected; redundant cross-worker instantiation goes away.
-4. **(real API addition)** Extend the key with `resource_identity`/`cell`, and make RW-token generation
-   and RO-shared-identity both explicit *policy functions over a projection of the key* — replacing
-   today's independently-hand-rolled `_provision_token`/`cell_schema_name`/`ro_target`-as-key. This is
-   the first change that touches the `Provisioner` contract every consumer implements.
-5. **(new capability)** Add `invocation-external` as a resource kind — no `start` required, just a fixed
-   block/value + optional credential. This is what azure's two pre-provisioned cells and httpfs's public
-   read-only server actually need.
-6. **(scheduling)** Resolve `depends_on` (topological start order + reverse teardown) across the unified
-   resource-node set — subsumes Iceberg's `rest`/`minio` case for free once it's not scoped to services
-   only.
-7. **(optional, only if it becomes worth it)** Declare `config_variant` as a named axis (httpfs's
-   http-client sweep) and fold it into the key — unlocks worker-partitioned concurrent sweeps for free
-   via the existing batching-equivalence projection (step 1), per § *A different "matrix"* above. Not
-   currently justified by need; listed for completeness.
-8. **(separate track)** `.test`-file matrix fan-out mechanics (file generation vs. a native collector
-   concept) — deliberately decoupled from 1-7; can proceed independently once resource provisioning
-   itself is uniform. **Prerequisite from step 1's key design, though**: batching equivalence must
-   exclude `resource_identity`/`cell` from its projection *before* fan-out lands, or two cells of a
-   fanned file can silently co-batch (gap #4) the moment fan-out is turned on.
-
-## Open questions
-
-- Is `@requires_matrix`'s per-cell `properties` dict the right vehicle to carry the cell key into
-  `invocation-external`/RO dedup, or does a bare-`.test`-oriented equivalent (no Python, no `@requires`)
-  need its own, parallel cell-identity concept?
-- For `invocation-external` resources, who owns `TEMP_DIR` cleanup semantics when the resource is a
-  pre-provisioned real-cloud path rather than a driver-managed container — is the existing remote-reap
-  sweep (`SPEC.md` §11) already sufficient, or does a pre-provisioned path need a narrower/scoped prefix
-  convention to avoid the driver ever touching data it doesn't own?
-- Should `invocation-external` be a genuinely new `Service`/`Credential`-adjacent type, or expressible as
-  a `Service` with `start=None` allowed (relaxing today's "start required" constraint) plus `attach`
-  always assumed? The former is cleaner conceptually; the latter reuses more existing plumbing.
-- Does promoting RO to store-backed sharing (step 3) have any consumer relying on today's per-worker
-  semantics as a *feature* (e.g. worker-local state a backend's `instantiate` mutates that shouldn't be
-  shared)? Worth an audit of `uc`'s Databricks `ro_target`/`instantiate` before flipping this.
-- Is RO sharing ever *correctly* scoped narrower than "drop `config_variant` from the projection"? E.g. if
-  a `config_variant` changes what data an RO source actually contains (not just how it's fetched), sharing
-  across variants would be a real bug, not just redundant work — this needs a per-case answer, not a
-  blanket rule baked into the projection.
-- If RW tokens become a canonical encoding of the full key rather than today's hand-built
-  `<date>_<mnemonic>_<hash>`/`cell_schema_name` strings, does any consumer's naming convention depend on
-  the *current* format — length limits, allowed characters in a schema/catalog name, a regex some tooling
-  parses? A key-encoding change here is a real migration, not purely additive, unlike most of the steps
-  above.
+- How exactly does `.test`-file fan-out work mechanically (phase 9) — collector-native, or generated
+  files? Genuinely undecided, deliberately deferred.
+- Is declaring `run_setting` (httpfs's sweep) as a real key component ever worth building, or does it stay
+  a documented-but-unimplemented capability indefinitely? Not currently justified by need.
+- For `invocation-external` resources reached over `TEMP_DIR`, does the existing remote-reap sweep need a
+  narrower prefix convention so the driver never touches data outside what it wrote? (Low risk, per § 4,
+  but not yet stress-tested against a real `invocation-external` write path.)

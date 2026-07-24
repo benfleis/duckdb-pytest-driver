@@ -83,21 +83,16 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
 - Everything in **v0-dev sprints** below (collection trust is explicitly the "100% trust" blocker).
 - **Reported-unit flip** and **`.test_slow`/`.test_coverage` silently ignored** (Status snapshot /
   PLAN.md:59-65) — both are silent-wrongness risks, not nice-to-haves.
-- **Resource-planning unification** (design proposal, 2026-07-23) — **`docs/RESOURCE-PLANNING.md`**.
-  Prompted by `to_init_sql` being the THIRD near-identical "gather across reachable suites, dedup by key"
-  loop (after `provision_reachable`'s env/populate adoption and `Provisioner._shared_ro`'s per-worker RO
-  dedup). Proposes: an explicit sharing-scope taxonomy (invocation-managed / invocation-attached /
-  invocation-external / per-test-isolated / per-invocation-shared) instead of scope being an implicit
-  consequence of which mechanism a resource happens to go through; promoting RO from per-*worker* to
-  per-*invocation* sharing (the store primitive services already have); making the RO/RW dedup key an
-  explicit `(identity, cell)` tuple (today's `ro_target` return value doubles as the key with no
-  matrix-cell awareness — fine for Databricks' static RO sources, not fine for azure's upcoming
-  backend-varying matrix); and a new `invocation-external` resource kind (no `start`, no teardown — a
-  pre-provisioned real-cloud path) that the azure 3-way matrix (`{azure-az, azure-abfss, azurite-az}`)
-  and httpfs's matrix need and can't express today. Explicitly subsumes *Multi-service dependencies*
-  below (the same "provision before first use, teardown after last use" principle, generalized past
-  services) — read that section for the concrete Iceberg/azure-proxy forcing cases. Phased adoption path
-  in the doc; nothing here is built yet.
+- **Resource-planning unification** (design proposal, validated against real code, ready to implement —
+  **`docs/RESOURCE-PLANNING.md`**, rewritten as a tight PRD 2026-07-24). One canonical per-item key
+  (`build, run_setting, backend, access, cell`), computed once in a new "decorate" step; batching,
+  RO/RW sharing, token generation, and provisioning order all become projections/policies over that one
+  key instead of independently-invented mechanisms (prompted by `to_init_sql` being the third
+  near-identical gather-loop). Explicitly subsumes *Multi-service dependencies* below — read that section
+  for the concrete Iceberg/azure-proxy forcing cases. 9-phase adoption path in the doc, phases 1-6 driver,
+  7 driver+consumers (promote UC's already-correct `CATALOG`/`SCHEMA`/`TABLE` vocabulary), 8 az
+  (`AZ_DATA_DIR`/`AZ_TEMP_DIR` → plain `DATA_DIR`/`TEMP_DIR`), 9 separate track (`.test`-file matrix
+  fan-out, still blocked on Catch2's one-file-one-test model). Nothing built yet as of this note.
 - **Multi-service dependencies** (new, found 2026-07-14 pushing on Iceberg — see *Roadmap* below).
   **Still open after the azurite/service-layer commit (`f95d33b`)** — that landed `attach`/`alive` on
   `Service` (`suites.py:74-101`, the `--existing-service` mechanism, see `docs/SERVICES.md`) but nothing
