@@ -27,6 +27,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import warnings
 
 import pytest
 
@@ -39,6 +40,7 @@ from .steps import step
 from .suites import get_suites
 from .sqllogic import (
     SqlLogicFile,
+    SqlLogicItem,
     _invoke,
     _parse_result,
     _raise_for_result,
@@ -1213,6 +1215,89 @@ def _item_in_suite(config, item, suite):
     return _item_in_suite_path(config, item, suite)
 
 
+# ---------------------------------------------------------------------------
+# Suite-level matrix fan-out (RESOURCE-PLANNING.md §5 phase 9): a suite's `matrix=` elevates
+# `@requires_matrix`'s per-test cell fan-out to "every member of this suite runs across these
+# cells", for BOTH `.py` (pytest_generate_tests, collection-time parametrize) and `.test`
+# (a post-collection list-splice — SqlLogicFile.collect() stays a plain single yield).
+# ---------------------------------------------------------------------------
+
+
+def _has_own_matrix_parametrize(metafunc) -> bool:
+    """True iff the test function already carries its own `@requires_matrix`-style parametrize
+    over `matrix_cell` (explicit wins over the suite's implicit matrix — see the plan's
+    Composition question: today's suite-membership is coarse path/marker-only, with no
+    include/exclude to resolve a conflict declaratively, so explicit-wins is the pragmatic default)."""
+    for mark in metafunc.definition.iter_markers(name="parametrize"):
+        if mark.args and mark.args[0] == "matrix_cell":
+            return True
+    return False
+
+
+def pytest_generate_tests(metafunc):
+    """`.py` suite-matrix fan-out: a test that pulls in `matrix_cell` (directly, or transitively via
+    `resources`) gets parametrized over its suite's `matrix=` cells — the SAME indirect-fixture
+    plumbing `@requires_matrix` already established (plugin.py's `matrix_cell` fixture), so no new
+    consumption-side code is needed. A test with its own `@requires_matrix` is left alone (explicit
+    wins), with a verbose-mode note so the override isn't silent."""
+    if "matrix_cell" not in metafunc.fixturenames:
+        return
+    config = metafunc.config
+    suites = [s for s in get_suites(config) if s.matrix]
+    if not suites:
+        return
+    suite = next((s for s in suites if _item_in_suite(config, metafunc.definition, s)), None)
+    if suite is None:
+        return
+    if _has_own_matrix_parametrize(metafunc):
+        if config.option.verbose > 0:
+            warnings.warn(
+                f"{metafunc.definition.nodeid}: has its own @requires_matrix AND belongs to suite "
+                f"{suite.name!r} (matrix=...) — the test's own matrix wins; the suite's is not applied."
+            )
+        return
+    metafunc.parametrize(
+        "matrix_cell",
+        [pytest.param(cell, id=cell["backend"]) for cell in suite.matrix],
+        indirect=True,
+    )
+
+
+def _expand_test_matrix(config, items, suites):
+    """`.test` suite-matrix fan-out: replace each `SqlLogicItem` belonging to a `matrix=` suite with
+    one sibling per cell, stamping `_cell` (feeds `decorate()`'s `Key.cell`, so `_batch_key` never
+    batches two cells of the same file together — impossible anyway, since Catch2's registered test
+    identity IS the file path). Runs BEFORE dedup/`assign_batches` so batching sees the full,
+    cell-expanded set. Non-SqlLogic items and items whose suite declares no matrix pass through
+    untouched — a no-op for every suite that doesn't use this.
+    """
+    matrix_suites = [s for s in suites if s.matrix]
+    if not matrix_suites:
+        return items
+    expanded = []
+    for item in items:
+        if not isinstance(item, SqlLogicItem):
+            expanded.append(item)
+            continue
+        suite = next((s for s in matrix_suites if _item_in_suite(config, item, s)), None)
+        if suite is None:
+            expanded.append(item)
+            continue
+        for cell in suite.matrix:
+            sibling = SqlLogicItem.from_parent(
+                item.parent,
+                name=f"{item.name}[{cell['backend']}]",
+                test_name=item._test_name,
+                binary=item._binary,
+                working_dir=item._working_dir,
+                temp_roots=item._temp_roots,
+            )
+            sibling._cell = cell["backend"]
+            sibling._matrix_cell = cell  # full cell dict, for a backend conftest that wants more
+            expanded.append(sibling)
+    return expanded
+
+
 def _apply_suite_markers(config, items, suites):
     """Stamp each suite's marker on every item that belongs to it BY PATH (the auto-marker).
 
@@ -1638,6 +1723,11 @@ def pytest_collection_modifyitems(session, config, items):
         # (a plain impl) reads them — the whole trick for `-m cloud` selecting a marker-less body.
         _apply_suite_markers(config, items, suites)
         _default_scan_deselect(config, items, suites)
+        # `.test` suite-matrix fan-out (§ phase 9): splice cell siblings in for the survivors of
+        # selection, THEN re-stamp suite markers so the new sibling items carry them too (a `-m
+        # <suite>` deselection reads markers, which must exist before this hookwrapper yields).
+        items[:] = _expand_test_matrix(config, items, suites)
+        _apply_suite_markers(config, items, suites)
 
     # Dedupe by nodeid, then batch — both pre-yield: assign_batches' xdist_group marker must exist before
     # xdist's plain pytest_collection_modifyitems (remote.py) appends the `@group` nodeid suffix that

@@ -182,11 +182,15 @@ def assign_batches(items: list, *, batch_size: int) -> int:
 
 
 def _batch_key(item) -> Optional[tuple]:
-    """The affinity key: same binary + same working dir batch together. None = not a SqlLogic item.
+    """The affinity key: same binary + same working dir + same matrix cell batch together.
+    None = not a SqlLogic item.
 
-    A projection of the canonical per-item `Key` (`decorate.py`) onto its two invocation-constant
-    fields — `batch_key` deliberately excludes anything that varies test-by-test (see
-    `docs/RESOURCE-PLANNING.md` §3), which today is nothing else anyway.
+    A projection of the canonical per-item `Key` (`decorate.py`), reading the item's `_cell` stamp
+    (set by the suite-matrix `.test` fan-out, `plugin.py`) if any — `None` for a non-matrix item,
+    unchanged from before. `cell` MUST be a batch-affinity component: two cells of the same file can
+    never share one subprocess invocation regardless of policy — Catch2's registered test identity
+    IS the file path, so one invocation can't report two independently-attributed outcomes for what
+    Catch2 considers a single test. Different files sharing a cell still batch together (same env).
     """
-    key = decorate(item)
-    return None if key is None else (key.build, key.run_setting)
+    key = decorate(item, cell=getattr(item, "_cell", None))
+    return None if key is None else (key.build, key.run_setting, key.cell)

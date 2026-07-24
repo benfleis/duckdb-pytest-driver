@@ -224,12 +224,17 @@ No big-bang rewrite; each phase is independently shippable and (except phase 4) 
 | 6 | Resolve `depends_on` (topological order + reverse teardown) across the unified resource-node set | driver | subsumes Iceberg's P5 |
 | 7 | Promote `CATALOG`/`SCHEMA`/`TABLE` (already in `uc/identity.py`) to a driver-owned default vocabulary | driver, then uc/ice adopt | low |
 | 8 | `az`: collapse `AZ_DATA_DIR`/`AZ_TEMP_DIR`/`ABFSS_*` to plain `DATA_DIR`/`TEMP_DIR` now that the `{proto}` `foreach` loop moves out into the matrix mechanism instead of living in the test body | az | touches every `.test` body |
-| 9 | *(separate track, not gated on 1–8)* `.test`-file matrix fan-out mechanics — file generation vs. native collector fan-out | driver + az | design not yet started |
+| 9 | *(separate track, not gated on 1–8)* Suite-level matrix (`register_suite(matrix=...)`): `.py` fan-out via `pytest_generate_tests` (reuses `@requires_matrix`'s `matrix_cell` indirect plumbing), `.test` fan-out via a post-collection list-splice in `pytest_collection_modifyitems` (`collect()` stays a plain single yield); `_batch_key` gains `cell` | driver | **landed** (`suites.py`/`plugin.py`/`collect.py`; `tests/test_suite_matrix.py`) |
 
 ## 6. Remaining open questions
 
-- How exactly does `.test`-file fan-out work mechanically (phase 9) — collector-native, or generated
-  files? Genuinely undecided, deliberately deferred.
+- Phase 9 answered its own mechanical question: collector-native (a list-splice after `collect()`
+  runs), not generated files — see `plugin.py`'s `_expand_test_matrix`.
+- Suite membership itself is still coarse (path-subtree + a per-item marker escape hatch, no
+  include/exclude/pattern list) — the same underlying gap as "how do we declare a weekly smoke-test
+  subset out of 1000+ tests." Phase 9's composition rule (a test's own `@requires_matrix` wins over
+  its suite's `matrix=`, with a verbose-mode note) is contingent on that coarseness; a richer
+  suite-membership mechanism, if ever built, would likely flip this to fail-loud-on-conflict instead.
 - Is declaring `run_setting` (httpfs's sweep) as a real key component ever worth building, or does it stay
   a documented-but-unimplemented capability indefinitely? Not currently justified by need.
 - For `invocation-external` resources reached over `TEMP_DIR`, does the existing remote-reap sweep need a

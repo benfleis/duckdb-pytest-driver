@@ -171,6 +171,14 @@ class Suite:
       credentials : tuple of ``Credential`` descriptors (class-1).
       services    : tuple of ``Service`` descriptors (class-2).
       provisioner : the backend provisioner for this suite's ``@requires`` tests, or None.
+      matrix      : tuple of cell dicts every member of this suite fans out across — the suite-level
+                    counterpart of a per-test ``@requires_matrix`` (docs/RESOURCE-PLANNING.md §5 phase
+                    9). Each cell is an OPEN, backend-interpreted dict, same spirit as a
+                    ``Requirement.properties`` -- the framework validates only that ``"backend"`` is
+                    present (it's the id a `.test` sibling's name and a `.py` cell's ``pytest.param``
+                    id are built from); everything else is for the backend's own conftest/provisioner
+                    to read (e.g. via ``matrix_cell``). ``()`` => no suite-level matrix (today's
+                    behavior, unchanged).
     """
 
     name: str
@@ -180,6 +188,7 @@ class Suite:
     credentials: Tuple[Credential, ...] = ()
     services: Tuple[Service, ...] = ()
     provisioner: object = field(default=None)
+    matrix: Tuple[dict, ...] = ()
 
 
 def credential(
@@ -316,6 +325,7 @@ def register_suite(
     credentials=(),
     services=(),
     provisioner=None,
+    matrix=(),
 ) -> None:
     """Register a suite on ``config`` (call from a ``test/conftest.py`` ``pytest_configure``).
 
@@ -324,6 +334,11 @@ def register_suite(
     to ``name``. ``credentials`` / ``services`` must be the descriptors built by
     :func:`credential` / :func:`service`. Phase 0 records only — no fetch, no selection,
     no hooks.
+
+    ``matrix`` is the suite-level fan-out: a list of cell dicts, each requiring a ``"backend"``
+    key (see :class:`Suite`). Fan-out itself (`.py` via ``pytest_generate_tests``, `.test` via a
+    post-collection splice) is Phase-9 behavior, not performed here — this call only validates
+    shape and holds the cells.
 
     Re-registering an already-registered ``name`` **raises** ``ValueError`` (a duplicate
     suite name is almost certainly a double-declaration bug; failing loud matches the
@@ -341,6 +356,12 @@ def register_suite(
     for s in svcs:
         if not isinstance(s, Service):
             raise TypeError(f"register_suite: `services` must be service(...) descriptors, got {type(s).__name__}")
+    cells = tuple(matrix)
+    for cell in cells:
+        if not isinstance(cell, dict) or not cell.get("backend"):
+            raise TypeError(
+                f"register_suite: each `matrix` cell must be a dict with a non-empty 'backend' key, got {cell!r}"
+            )
 
     regs = getattr(config, _ATTR, None)
     if regs is None:
@@ -358,6 +379,7 @@ def register_suite(
             credentials=creds,
             services=svcs,
             provisioner=provisioner,
+            matrix=cells,
         )
     )
 

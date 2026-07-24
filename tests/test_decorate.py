@@ -10,13 +10,15 @@ from ducktest.decorate import Key, coordination_key, decorate, rw_identity
 
 
 class _FakeItem:
-    """Minimal stand-in carrying only what `decorate` reads."""
+    """Minimal stand-in carrying only what `decorate`/`_batch_key` read."""
 
-    def __init__(self, binary=None, working_dir=None):
+    def __init__(self, binary=None, working_dir=None, cell=None):
         if binary is not None:
             self._binary = binary
         if working_dir is not None:
             self._working_dir = working_dir
+        if cell is not None:
+            self._cell = cell
 
 
 def test_decorate_returns_none_for_non_sqllogic_item():
@@ -35,7 +37,7 @@ def test_decorate_carries_build_and_run_setting():
 def test_batch_key_is_a_projection_of_the_canonical_key():
     item = _FakeItem(binary="/bin/unittest", working_dir="/work")
     key = decorate(item)
-    assert _batch_key(item) == (key.build, key.run_setting)
+    assert _batch_key(item) == (key.build, key.run_setting, key.cell)
     assert _batch_key(_FakeItem()) is None
 
 
@@ -60,8 +62,19 @@ def test_decorate_accepts_backend_access_cell_overrides():
     item = _FakeItem(binary="/bin/unittest", working_dir="/work")
     key = decorate(item, backend="azurite-az", access="ro", cell="managed")
     assert key == Key(build="/bin/unittest", run_setting="/work", backend="azurite-az", access="ro", cell="managed")
-    # build/run_setting-only batching is unaffected by the extra fields being set
-    assert _batch_key(item) == (key.build, key.run_setting)
+    # _batch_key reads `_cell` off the item itself, not decorate()'s override args above
+    assert _batch_key(item) == (key.build, key.run_setting, None)
+
+
+def test_batch_key_is_cell_aware():
+    # a suite-matrix `.test` sibling stamps `_cell` (plugin.py); _batch_key must fold it in so two
+    # cells of the SAME file never share a batch key (Catch2 can't attribute 2 outcomes to 1 test),
+    # while different files in the SAME cell still match (still share a batch).
+    a1 = _FakeItem(binary="/bin/unittest", working_dir="/work", cell="azurite-az")
+    a2 = _FakeItem(binary="/bin/unittest", working_dir="/work", cell="azurite-az")
+    b = _FakeItem(binary="/bin/unittest", working_dir="/work", cell="azure-az")
+    assert _batch_key(a1) == _batch_key(a2)
+    assert _batch_key(a1) != _batch_key(b)
 
 
 def test_coordination_key_is_none_for_rw_or_unresolved_backend():
