@@ -177,8 +177,15 @@ class Suite:
                     ``Requirement.properties`` -- the framework validates only that ``"backend"`` is
                     present (it's the id a `.test` sibling's name and a `.py` cell's ``pytest.param``
                     id are built from); everything else is for the backend's own conftest/provisioner
-                    to read (e.g. via ``matrix_cell``). ``()`` => no suite-level matrix (today's
-                    behavior, unchanged).
+                    to read (e.g. via ``matrix_cell``, or an ``"env"`` key threaded per-invocation into
+                    a bare `.test`'s subprocess -- see ``sqllogic.py``'s ``_matrix_cell_env``). ``()``
+                    => no suite-level matrix (today's behavior, unchanged).
+      auto_init_sql: whether a bare `.test` item in this suite gets this suite's credentials'/
+                    services' ``to_init_sql`` output run (via upstream's ``--init-sqllogic``) before
+                    its body -- the non-``--repl`` generalization of ``to_init_sql`` (until now, a
+                    resource's init SQL only ever reached an interactive ``--repl`` session; a bare
+                    `.test` had to hand-write its own ``CREATE SECRET`` instead). ``False`` => today's
+                    behavior, unchanged.
     """
 
     name: str
@@ -189,6 +196,7 @@ class Suite:
     services: Tuple[Service, ...] = ()
     provisioner: object = field(default=None)
     matrix: Tuple[dict, ...] = ()
+    auto_init_sql: bool = False
 
 
 def credential(
@@ -326,6 +334,7 @@ def register_suite(
     services=(),
     provisioner=None,
     matrix=(),
+    auto_init_sql=False,
 ) -> None:
     """Register a suite on ``config`` (call from a ``test/conftest.py`` ``pytest_configure``).
 
@@ -339,6 +348,9 @@ def register_suite(
     key (see :class:`Suite`). Fan-out itself (`.py` via ``pytest_generate_tests``, `.test` via a
     post-collection splice) is Phase-9 behavior, not performed here — this call only validates
     shape and holds the cells.
+
+    ``auto_init_sql`` opts every bare `.test` item in this suite into its credentials'/services'
+    ``to_init_sql`` output (see :class:`Suite`).
 
     Re-registering an already-registered ``name`` **raises** ``ValueError`` (a duplicate
     suite name is almost certainly a double-declaration bug; failing loud matches the
@@ -362,6 +374,8 @@ def register_suite(
             raise TypeError(
                 f"register_suite: each `matrix` cell must be a dict with a non-empty 'backend' key, got {cell!r}"
             )
+    if not isinstance(auto_init_sql, bool):
+        raise TypeError("register_suite: `auto_init_sql` must be a bool")
 
     regs = getattr(config, _ATTR, None)
     if regs is None:
@@ -380,6 +394,7 @@ def register_suite(
             services=svcs,
             provisioner=provisioner,
             matrix=cells,
+            auto_init_sql=auto_init_sql,
         )
     )
 

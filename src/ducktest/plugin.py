@@ -1114,6 +1114,85 @@ def _repl_resource_init_sql(config, session, *, redact=False) -> str:
 
 
 # ---------------------------------------------------------------------------
+# auto_init_sql: the non-`--repl` generalization of `to_init_sql` (RESOURCE-PLANNING.md §5 phase 9,
+# folded in alongside the suite-matrix work). A suite opts in (`register_suite(auto_init_sql=True)`)
+# so a bare `.test` item gets its credentials'/services' `to_init_sql` output run via upstream's
+# `--init-sqllogic` (one `statement ok` block, executed before the test body, in the SAME runner
+# instance/process) instead of requiring the body to hand-write its own `CREATE SECRET`.
+# ---------------------------------------------------------------------------
+
+
+def _suite_init_sql(config, suite) -> str:
+    """Aggregate `suite`'s OWN credentials'/services' `to_init_sql` output (never redacted — this
+    feeds a real subprocess, not a preview). Same "read back what provision_reachable already
+    provisioned up front" spirit as `_repl_resource_init_sql`, just scoped to one suite instead of
+    every reachable one — `auto_init_sql` opts in per suite, not per invocation.
+
+    Best-effort per service (unlike `_repl_resource_init_sql`'s fail-loud `--repl` path): a service
+    that fails to reprovision here just contributes nothing, since there's no interactive user to
+    surface the error to — the test itself will fail clearly once it tries to use the missing secret.
+    """
+    parts = []
+    for cred in suite.credentials:
+        if cred.to_init_sql is None:
+            continue
+        value = _read_provisioned_credential(config, cred)
+        if value is not None:
+            parts.append(cred.to_init_sql(value, redact=False))
+    for svc in suite.services:
+        if svc.to_init_sql is None:
+            continue
+        try:
+            block = provision_service(config, svc)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException:
+            continue
+        parts.append(svc.to_init_sql(block, redact=False))
+    return "".join(p for p in parts if p)
+
+
+def _write_init_sqllogic_snippet(sql_text: str) -> str:
+    """One `statement ok` block wrapping `sql_text` verbatim, as a `--init-sqllogic`-ready `.test`
+    file. DuckDB's `Query()` executes a `;`-separated multi-statement batch in one call, so a
+    `to_init_sql` producing more than one statement needs no per-statement splitting here.
+
+    Left on disk for the rest of the invocation (a few bytes, at most one per opted-in suite per
+    worker process) — not worth the LOCAL_*/DATA sweep machinery real test data already has.
+    """
+    fd, path = tempfile.mkstemp(suffix=".test", prefix="ducktest-init-sqllogic-")
+    with os.fdopen(fd, "w") as f:
+        f.write(f"statement ok\n{sql_text}\n")
+    return path
+
+
+_init_sqllogic_paths: dict = {}  # (id(config), suite.name) -> temp .test path, or "" (nothing to inject)
+
+
+def _init_sqllogic_arg_for_item(config, item) -> list:
+    """`["--init-sqllogic", path]` for a bare `.test` item whose suite opts in via
+    `auto_init_sql=True`; `[]` for a non-opted-in suite, or one with nothing to inject (no
+    credential/service `to_init_sql`, or none currently provisioned).
+
+    Memoized per `(config, suite)` for this worker process — `_suite_init_sql` reads back already-
+    provisioned resources, so recomputing it per test would just rebuild the identical string.
+    """
+    suites = [s for s in get_suites(config) if s.auto_init_sql]
+    if not suites:
+        return []
+    suite = next((s for s in suites if _item_in_suite(config, item, s)), None)
+    if suite is None:
+        return []
+    key = (id(config), suite.name)
+    path = _init_sqllogic_paths.get(key)
+    if path is None:
+        sql = _suite_init_sql(config, suite)
+        path = _write_init_sqllogic_snippet(sql) if sql else ""
+        _init_sqllogic_paths[key] = path
+    return ["--init-sqllogic", path] if path else []
+
+
+# ---------------------------------------------------------------------------
 # Out-of-session service lifecycle commands (--provision-service / --teardown-service)
 # ---------------------------------------------------------------------------
 

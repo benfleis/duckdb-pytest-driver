@@ -38,6 +38,18 @@ def _test_batch_id(test_name: str) -> str:
     return "test-" + hashlib.sha1(test_name.encode()).hexdigest()[:10]
 
 
+def _matrix_cell_env(item) -> dict:
+    """The per-invocation env override for a matrix-fanned `.test` item, if its cell dict carries
+    one (`plugin.py`'s `_expand_test_matrix` stamps `_matrix_cell` with the suite's cell dict
+    verbatim) -- e.g. two cells of the same file needing DIFFERENT DATA_DIR/TEMP_DIR values can't
+    both mutate the shared `os.environ` (the up-front `to_env`/adopt model is invocation-wide, not
+    cell-aware); `_invoke`'s own `env=` already layers per-subprocess-call, which is exactly cell-
+    scoped. The framework doesn't interpret the cell otherwise -- an "env" key is just read if
+    present. `None` for a non-matrix item (today's behavior, unchanged)."""
+    cell = getattr(item, "_matrix_cell", None)
+    return cell.get("env") if cell else None
+
+
 def _cell_suffix(cell) -> str:
     """A stable string suffix for a matrix cell (a bare id string, a cell dict, or None — both
     shapes occur: `.test` fan-out stamps a plain backend-id string, `.py`/`@requires_matrix` cells
@@ -147,13 +159,16 @@ class SqlLogicItem(pytest.Item):
     # -- single-test path (batch_size == 1) ----------------------------------
 
     def _run_single(self):
+        from .plugin import _init_sqllogic_arg_for_item
+
         result = _invoke(
             self._binary,
             [self._test_name],
             self._working_dir,
             self._temp_roots,
             batch_id=item_batch_id(self),
-            extra_args=resolve_unittest_args(self.config),
+            env=_matrix_cell_env(self),
+            extra_args=[*_init_sqllogic_arg_for_item(self.config, self), *resolve_unittest_args(self.config)],
         )
         _raise_for_result(_parse_result(result), test_file=str(self.path))
 
@@ -162,13 +177,16 @@ class SqlLogicItem(pytest.Item):
     def _run_batched(self):
         with _batch_cache_lock:
             if self._batch_id not in _batch_cache:
+                from .plugin import _init_sqllogic_arg_for_item
+
                 _batch_cache[self._batch_id] = _execute_batch(
                     self._batch_test_names,
                     self._binary,
                     self._working_dir,
                     self._temp_roots,
                     batch_id=item_batch_id(self),
-                    extra_args=resolve_unittest_args(self.config),
+                    env=_matrix_cell_env(self),
+                    extra_args=[*_init_sqllogic_arg_for_item(self.config, self), *resolve_unittest_args(self.config)],
                 )
         r = _batch_cache[self._batch_id].get(self._test_name, {"status": "internal_error"})
         _raise_for_result(r, test_file=str(self.path))
@@ -195,6 +213,7 @@ def _execute_batch(
     working_dir: str,
     temp_roots: dict = None,
     batch_id: str = None,
+    env: dict = None,
     extra_args: list = None,
 ) -> dict:
     """Run a batch.  On failure, re-run individually for per-test attribution."""
@@ -216,6 +235,7 @@ def _execute_batch(
             working_dir,
             temp_roots,
             batch_id=batch_id,
+            env=env,
             extra_args=extra_args,
         )
     finally:
@@ -231,7 +251,13 @@ def _execute_batch(
         st = _classify(events, name, result)
         if st["status"] in ("fail", "internal_error"):
             st = _invoke_single(
-                name, binary, working_dir, temp_roots, batch_id=_rerun_batch_id(batch_id, name), extra_args=extra_args
+                name,
+                binary,
+                working_dir,
+                temp_roots,
+                batch_id=_rerun_batch_id(batch_id, name),
+                env=env,
+                extra_args=extra_args,
             )
         statuses[name] = st
     return statuses
@@ -243,9 +269,10 @@ def _invoke_single(
     working_dir: str,
     temp_roots: dict = None,
     batch_id: str = None,
+    env: dict = None,
     extra_args: list = None,
 ) -> dict:
-    result = _invoke(binary, [test_name], working_dir, temp_roots, batch_id=batch_id, extra_args=extra_args)
+    result = _invoke(binary, [test_name], working_dir, temp_roots, batch_id=batch_id, env=env, extra_args=extra_args)
     return _parse_result(result)
 
 
