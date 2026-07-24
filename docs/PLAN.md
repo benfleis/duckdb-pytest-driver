@@ -83,6 +83,21 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
 - Everything in **v0-dev sprints** below (collection trust is explicitly the "100% trust" blocker).
 - **Reported-unit flip** and **`.test_slow`/`.test_coverage` silently ignored** (Status snapshot /
   PLAN.md:59-65) — both are silent-wrongness risks, not nice-to-haves.
+- **Resource-planning unification** (design proposal, 2026-07-23) — **`docs/RESOURCE-PLANNING.md`**.
+  Prompted by `to_init_sql` being the THIRD near-identical "gather across reachable suites, dedup by key"
+  loop (after `provision_reachable`'s env/populate adoption and `Provisioner._shared_ro`'s per-worker RO
+  dedup). Proposes: an explicit sharing-scope taxonomy (invocation-managed / invocation-attached /
+  invocation-external / per-test-isolated / per-invocation-shared) instead of scope being an implicit
+  consequence of which mechanism a resource happens to go through; promoting RO from per-*worker* to
+  per-*invocation* sharing (the store primitive services already have); making the RO/RW dedup key an
+  explicit `(identity, cell)` tuple (today's `ro_target` return value doubles as the key with no
+  matrix-cell awareness — fine for Databricks' static RO sources, not fine for azure's upcoming
+  backend-varying matrix); and a new `invocation-external` resource kind (no `start`, no teardown — a
+  pre-provisioned real-cloud path) that the azure 3-way matrix (`{azure-az, azure-abfss, azurite-az}`)
+  and httpfs's matrix need and can't express today. Explicitly subsumes *Multi-service dependencies*
+  below (the same "provision before first use, teardown after last use" principle, generalized past
+  services) — read that section for the concrete Iceberg/azure-proxy forcing cases. Phased adoption path
+  in the doc; nothing here is built yet.
 - **Multi-service dependencies** (new, found 2026-07-14 pushing on Iceberg — see *Roadmap* below).
   **Still open after the azurite/service-layer commit (`f95d33b`)** — that landed `attach`/`alive` on
   `Service` (`suites.py:74-101`, the `--existing-service` mechanism, see `docs/SERVICES.md`) but nothing
@@ -110,7 +125,13 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
   mutating it. `_provision_eager_services` (`plugin.py`, in `_SuiteController.pytest_configure` right after
   `_fetch_credentials`, controller pre-fork) boots each reachable suite's eager services via
   `provision_service`, runs `populate` once, adopts `to_env` — so workers + the `.test` subprocess inherit
-  it. Also unblocks `--repl` on a service-backed suite (same gap). Azure uses it:
+  it. Also unblocks `--repl` on a service-backed suite (same gap) — **though only the connection ENV**;
+  the session still had no secret/`USE` typed for you (unlike a `@requires`-driven suite's
+  `make_init_sql`). **SHIPPED 2026-07-23:** `Service`/`Credential` gained `to_init_sql(block|value, *,
+  redact=False) -> str`, gathered by `--repl` (`_repl_resource_init_sql`, `plugin.py`) from every
+  reachable suite's active services/credentials and prepended to a provisioner's `make_init_sql` (or
+  used alone when there's no provisioner) — azurite/minio ship the worked examples. See `docs/SERVICES.md`
+  § *`--repl` init SQL*. Azure uses it:
   `use_service(AZURITE_SERVICE, provision="eager", to_env=azurite_env+AZ_DATA_DIR, populate=rclone-sync
   data/)`; live-verified boot + attach paths. See `docs/SERVICES.md`.
   - **`attach` × eager compose (resolved):** an `--existing-service`-attached eager service adopts

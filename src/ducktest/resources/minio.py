@@ -104,6 +104,25 @@ def minio_env(block):
     }
 
 
+def minio_init_sql(block, *, redact=False):
+    """`--repl` init SQL: a ready-to-use S3 secret (parallels ``azurite_init_sql`` — see its docstring
+    for why env alone isn't enough). ``redact=True`` masks the key material for the dry-run preview.
+    """
+    key_id = "<redacted>" if redact else block["access_key"]
+    secret = "<redacted>" if redact else block["secret_key"]
+    return (
+        "CREATE OR REPLACE SECRET ducktest_minio (\n"
+        "    TYPE S3,\n"
+        f"    KEY_ID '{key_id}',\n"
+        f"    SECRET '{secret}',\n"
+        f"    ENDPOINT '{block['s3_endpoint']}',\n"
+        f"    REGION '{block['region']}',\n"
+        f"    URL_STYLE '{block['url_style']}',\n"
+        f"    USE_SSL {'true' if block['use_ssl'] else 'false'}\n"
+        ");\n"
+    )
+
+
 def minio_alive(block):
     """Liveness probe: MinIO's ``/minio/health/ready`` returns 200 once it can serve.
 
@@ -205,6 +224,7 @@ MINIO_SERVICE = service(
     attach=lambda overrides, config: minio_block(**overrides),
     alive=minio_alive,
     fixture="minio",
+    to_init_sql=minio_init_sql,
 )
 
 

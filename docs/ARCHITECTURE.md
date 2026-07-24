@@ -66,14 +66,14 @@ Resources ride on a suite and come in two shapes, distinguished by *when* they'r
 | when | **eager** — once, up front, on the controller | **`on_demand`** (default) — first worker to need it; or **`eager`** — up front on suite-selection (its `provision=` disposition) |
 | why | an `op`/biometric prompt must land at invocation | expensive → boot only if pulled; but a *bare `.test`* has no fixture to pull, so a bare-`.test` suite makes its service `eager` |
 | shared how | fetched once, broadcast to workers | one instance, shared across workers |
-| you write | `credential(fetch, validate, error, adopt, available)` | `service(start, stop, fixture, attach, alive)`; suite policy via `use_service(provision, to_env, populate)` |
+| you write | `credential(fetch, validate, error, adopt, available, to_init_sql)` | `service(start, stop, fixture, attach, alive)`; suite policy via `use_service(provision, to_env, populate, to_init_sql)` |
 
 Both are carried between the controller and workers by **the store** (below).
 
 ### Credentials
 
-Declared with `credential(key, fetch=, validate=, error=, adopt=, available=, late_fetch=True)`. The
-resolution a worker applies before running a selected credentialed test:
+Declared with `credential(key, fetch=, validate=, error=, adopt=, available=, late_fetch=True,
+to_init_sql=)`. The resolution a worker applies before running a selected credentialed test:
 
 1. **up-front store hit** — if the suite was *predictably* selected (`-m`, path), the controller already
    fetched (`fetch` is env-first, prompting only for gaps), validated, and published it; workers read it.
@@ -118,6 +118,11 @@ store-scope analog of `instantiate`) and adopts **`to_env(block)`** into `os.env
 subprocess inherits the connection env. `populate` runs for *any* disposition; `to_env` is adopted by
 whichever process provisions the service. The `provision` vocabulary is `{eager, on_demand, per_test,
 never}` (`per_test`/`never` are named but not wired — fail loud). Full model: **docs/SERVICES.md**.
+
+A service/credential can also carry **`to_init_sql(block|value, *, redact=False) -> str`** — SQL fed
+into a `--repl` session's `-init` file (e.g. azurite's default connection secret), so a bare-`.test`,
+provisioner-less suite's `--repl` isn't dropped with the connection env set but nothing typed for you.
+See **docs/SERVICES.md** § *`--repl` init SQL*.
 
 ## The store
 

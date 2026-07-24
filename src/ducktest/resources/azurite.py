@@ -101,6 +101,16 @@ def azurite_env(block):
     }
 
 
+def azurite_init_sql(block, *, redact=False):
+    """`--repl` init SQL: a ready-to-use connection secret, so dropping into a shell on an
+    azurite-backed suite doesn't leave you retyping the connection string by hand (DuckDB's own
+    ``CREATE SECRET`` with no ``PROVIDER`` never auto-reads env vars, so the env alone isn't enough).
+    ``redact=True`` (the ``--provision-dry-run`` preview) swaps the connection string for a placeholder.
+    """
+    conn = "<redacted>" if redact else block["connection_string"]
+    return f"CREATE OR REPLACE SECRET ducktest_azurite (TYPE AZURE, CONNECTION_STRING '{conn}');\n"
+
+
 def azurite_alive(block):
     """Cheap, non-authenticating liveness probe: any HTTP response from the endpoint means Azurite is up.
 
@@ -183,6 +193,7 @@ AZURITE_SERVICE = service(
     attach=lambda overrides, config: azurite_block(**overrides),
     alive=azurite_alive,
     fixture="azurite",
+    to_init_sql=azurite_init_sql,
 )
 
 

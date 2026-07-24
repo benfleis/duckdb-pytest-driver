@@ -65,6 +65,17 @@ class Credential:
                  ``available()`` in env, the backstop performs a LATE ``fetch`` (single-flighted across
                  workers via the store, so at most one interactive prompt), rescuing e.g. a
                  ``-k``-selected run. Set False for strict "fail fast, never prompt mid-run" (CI).
+      to_init_sql: ``to_init_sql(value, *, redact=False) -> str`` -- SQL fed into a ``--repl`` session's
+                 ``-init`` file (e.g. a ``CREATE SECRET`` built from the fetched creds), the credential
+                 analog of a ``Provisioner``'s ``make_init_sql``. ``redact=True`` is for
+                 ``--provision-dry-run``'s printed preview; None => this credential contributes no SQL
+                 (a bare `--repl` on a credential-only suite stays a plain shell, as before).
+                 CAVEAT: ``--repl`` reads back an ALREADY-fetched value (no re-fetch) -- if
+                 ``available()`` short-circuited the up-front fetch (creds usable via preset env, never
+                 written to the store), there's nothing to read back, so this contributes no SQL even
+                 though the credential is genuinely usable. No current consumer combines ``available``
+                 with ``to_init_sql``; if one needs both, ``to_init_sql`` should be prepared to build its
+                 SQL from env directly rather than assume a store-backed value.
     """
 
     key: str
@@ -74,6 +85,7 @@ class Credential:
     adopt: Optional[str] = None
     available: Optional[Callable] = None
     late_fetch: bool = True
+    to_init_sql: Optional[Callable] = None
 
 
 @dataclass(frozen=True)
@@ -114,10 +126,17 @@ class Service:
                 service is up. It mutates the shared service, not per-process state (HOW the service is
                 seeded, not WHEN it is provisioned). MUST be idempotent (it re-runs against an attached,
                 possibly-seeded instance). None => nothing to populate.
+      to_init_sql: ``to_init_sql(block, *, redact=False) -> str`` — SQL fed into a ``--repl`` session's
+                ``-init`` file (e.g. a ``CREATE SECRET`` built from the block's connection string), the
+                service analog of a ``Provisioner``'s ``make_init_sql``. Without it, ``--repl`` on a
+                service-backed, provisioner-less suite (a bare-``.test`` suite like azurite) drops you
+                into a shell with the connection env set but no secret/``USE`` typed for you — this is
+                what closes that gap. ``redact=True`` is for ``--provision-dry-run``'s printed preview
+                (mask the secret material, keep the shape). None => this service contributes no SQL.
 
-    Policy fields (``to_env`` / ``populate``) are usually set via :func:`use_service`, which binds a
-    *shared* descriptor (e.g. ``AZURITE_SERVICE``) to one suite's policy without mutating the shared
-    one. See ``docs/SERVICES.md``.
+    Policy fields (``to_env`` / ``populate`` / ``to_init_sql``) are usually set via :func:`use_service`,
+    which binds a *shared* descriptor (e.g. ``AZURITE_SERVICE``) to one suite's policy without mutating
+    the shared one. See ``docs/SERVICES.md``.
     """
 
     key: str
@@ -129,6 +148,7 @@ class Service:
     depends_on: Tuple[str, ...] = ()
     to_env: Optional[Callable] = None
     populate: Optional[Callable] = None
+    to_init_sql: Optional[Callable] = None
 
 
 @dataclass(frozen=True)
@@ -157,12 +177,14 @@ class Suite:
     provisioner: object = field(default=None)
 
 
-def credential(key, *, fetch, validate=None, error=None, adopt=None, available=None, late_fetch=True) -> Credential:
+def credential(
+    key, *, fetch, validate=None, error=None, adopt=None, available=None, late_fetch=True, to_init_sql=None
+) -> Credential:
     """Build a frozen :class:`Credential` descriptor (see its docstring for the fields).
 
     Validates only shape: ``key`` non-empty, ``fetch`` (and any ``validate`` / ``error`` /
-    ``available``) callable, ``adopt`` one of ``None`` / ``"env"``. Nothing is fetched — Phase 0
-    just holds the callables.
+    ``available`` / ``to_init_sql``) callable, ``adopt`` one of ``None`` / ``"env"``. Nothing is
+    fetched — Phase 0 just holds the callables.
     """
     if not key or not isinstance(key, str):
         raise ValueError("credential: `key` must be a non-empty string")
@@ -176,6 +198,8 @@ def credential(key, *, fetch, validate=None, error=None, adopt=None, available=N
         raise TypeError("credential: `available` must be callable or None")
     if adopt not in (None, "env"):
         raise ValueError(f"credential: `adopt` must be None or 'env', got {adopt!r}")
+    if to_init_sql is not None and not callable(to_init_sql):
+        raise TypeError("credential: `to_init_sql` must be callable or None (to_init_sql(value, *, redact) -> str)")
     return Credential(
         key=key,
         fetch=fetch,
@@ -184,6 +208,7 @@ def credential(key, *, fetch, validate=None, error=None, adopt=None, available=N
         adopt=adopt,
         available=available,
         late_fetch=bool(late_fetch),
+        to_init_sql=to_init_sql,
     )
 
 
@@ -198,12 +223,13 @@ def service(
     depends_on=(),
     to_env=None,
     populate=None,
+    to_init_sql=None,
 ) -> Service:
     """Build a frozen :class:`Service` descriptor (see its docstring for the fields).
 
     Validates only shape: ``key`` non-empty, the callables callable, ``fixture`` a string or None,
-    ``depends_on`` a tuple of keys. Nothing is started here. Policy (``to_env`` / ``populate``) is
-    usually applied via :func:`use_service`.
+    ``depends_on`` a tuple of keys. Nothing is started here. Policy (``to_env`` / ``populate`` /
+    ``to_init_sql``) is usually applied via :func:`use_service`.
     """
     if not key or not isinstance(key, str):
         raise ValueError("service: `key` must be a non-empty string")
@@ -221,6 +247,8 @@ def service(
         raise TypeError("service: `to_env` must be callable or None (to_env(block) -> dict)")
     if populate is not None and not callable(populate):
         raise TypeError("service: `populate` must be callable or None (populate(block, config))")
+    if to_init_sql is not None and not callable(to_init_sql):
+        raise TypeError("service: `to_init_sql` must be callable or None (to_init_sql(block, *, redact) -> str)")
     deps = tuple(depends_on)
     if not all(isinstance(d, str) and d for d in deps):
         raise TypeError("service: `depends_on` must be a tuple of non-empty service-key strings")
@@ -234,16 +262,18 @@ def service(
         depends_on=deps,
         to_env=to_env,
         populate=populate,
+        to_init_sql=to_init_sql,
     )
 
 
-def use_service(base, *, to_env=None, populate=None, depends_on=None) -> Service:
+def use_service(base, *, to_env=None, populate=None, depends_on=None, to_init_sql=None) -> Service:
     """Bind a *shared* :class:`Service` descriptor to one suite's policy.
 
     Returns a COPY of ``base`` with the policy fields set — so a shared descriptor (e.g. azurite's
     ``AZURITE_SERVICE``, reused across azure/delta/uc) stays generic while each suite supplies its own
-    ``to_env`` (derived env) and ``populate`` (structure+data). Values not given fall back to ``base``'s.
-    See ``docs/SERVICES.md``.
+    ``to_env`` (derived env), ``populate`` (structure+data), and optionally overrides ``to_init_sql``
+    (``--repl`` init SQL — most suites just inherit the shared descriptor's, e.g. azurite's default
+    connection secret). Values not given fall back to ``base``'s. See ``docs/SERVICES.md``.
     """
     import dataclasses
 
@@ -253,12 +283,15 @@ def use_service(base, *, to_env=None, populate=None, depends_on=None) -> Service
         raise TypeError("use_service: `to_env` must be callable or None")
     if populate is not None and not callable(populate):
         raise TypeError("use_service: `populate` must be callable or None")
+    if to_init_sql is not None and not callable(to_init_sql):
+        raise TypeError("use_service: `to_init_sql` must be callable or None")
     deps = base.depends_on if depends_on is None else tuple(depends_on)
     if not all(isinstance(d, str) and d for d in deps):
         raise TypeError("use_service: `depends_on` must be a tuple of non-empty service-key strings")
     return dataclasses.replace(
         base,
         to_env=to_env if to_env is not None else base.to_env,
+        to_init_sql=to_init_sql if to_init_sql is not None else base.to_init_sql,
         populate=populate if populate is not None else base.populate,
         depends_on=deps,
     )

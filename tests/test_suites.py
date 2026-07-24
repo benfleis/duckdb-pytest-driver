@@ -151,3 +151,41 @@ def test_service_shape_validation():
         service("k", start="not-callable")
     with pytest.raises(TypeError, match="fixture"):
         service("k", start=_start, fixture=123)
+
+
+def test_to_init_sql_held_and_defaults_none():
+    def cred_sql(value, *, redact=False):
+        return "-- cred\n"
+
+    def svc_sql(block, *, redact=False):
+        return "-- svc\n"
+
+    cred = credential("c", fetch=_load_creds, to_init_sql=cred_sql)
+    assert cred.to_init_sql is cred_sql
+    assert credential("c2", fetch=_load_creds).to_init_sql is None
+
+    svc = service("s", start=_start, to_init_sql=svc_sql)
+    assert svc.to_init_sql is svc_sql
+    assert service("s2", start=_start).to_init_sql is None
+
+
+def test_to_init_sql_shape_validation():
+    with pytest.raises(TypeError, match="to_init_sql"):
+        credential("c", fetch=_load_creds, to_init_sql="not-callable")
+    with pytest.raises(TypeError, match="to_init_sql"):
+        service("s", start=_start, to_init_sql="not-callable")
+
+
+def test_use_service_to_init_sql_override_and_inherit():
+    from ducktest import use_service
+
+    def base_sql(block, *, redact=False):
+        return "-- base\n"
+
+    def override_sql(block, *, redact=False):
+        return "-- override\n"
+
+    base = service("svc", start=_start, to_init_sql=base_sql)
+    assert use_service(base).to_init_sql is base_sql  # inherited when not given
+    assert use_service(base, to_init_sql=override_sql).to_init_sql is override_sql  # overridden
+    assert base.to_init_sql is base_sql  # base untouched

@@ -877,6 +877,20 @@ def _fetch_or_read_credential(config, cred):
         os.environ.update({k: str(v) for k, v in block.items()})
 
 
+def _read_provisioned_credential(config, cred):
+    """Best-effort read of a credential's ALREADY-fetched value, with no new fetch (no repeat `op`/CLI
+    prompt) — for `--repl`'s init-SQL gather, which runs after up-front provisioning already fetched it.
+    None if there's no store (no suite anywhere declares a credential/service) or it was never fetched
+    (e.g. `available()` short-circuited it — the value was never broadcast, only the env)."""
+    handle = get_store(config)
+    if handle is None:
+        return None
+    try:
+        return store.copy(handle, cred.key)
+    except store.ResourceMissing:
+        return None
+
+
 def emit_plan(config, plan):
     """Write `plan` as JSON to `--emit-plan`'s PATH (stdout if '-'); no-op if the flag is unset. Runs
     on the controller only (where the Plan is built), so exactly one artifact is emitted per run."""
@@ -940,6 +954,51 @@ def _reachable_suites(config, items):
                 names.add(suite.name)
                 break
     return names
+
+
+def _repl_resource_init_sql(config, session, *, redact=False) -> str:
+    """`--repl` init SQL contributed by reachable suites' active services/credentials — the
+    service/credential analog of a `Provisioner`'s `make_init_sql`, for a suite that has no provisioner
+    at all (bare-`.test` suites like azurite/az/minio/s3). Without this, dropping into `--repl` on such
+    a suite gives you the connection env but no secret/`USE` already typed (unlike a `@requires`-driven
+    suite, whose provisioner's `make_init_sql` covers it).
+
+    Everything here was already provisioned up front by `provision_reachable` (same reachability gate),
+    so this reads back what's there — it fetches/boots nothing new, and a credential with no
+    `to_init_sql` (or never actually fetched, e.g. `available()` short-circuited it) just contributes
+    nothing, same as a service with no `to_init_sql`.
+
+    UNLIKE `provision_reachable`'s best-effort service loop, a service that fails to (re-)provision
+    here FAILS LOUD (`pytest.UsageError`, not swallowed): `--repl` is an interactive human command with
+    no later fixture-pull to resurface the error, so a swallowed failure would just be a silent,
+    unexplained bare shell — worse than no feature at all.
+    """
+    suites = {t.name: t for t in get_suites(config) if t.name in _reachable_suites(config, session.items)}
+    seen_creds, seen_svcs = set(), set()
+    parts = []
+    for name in sorted(suites):
+        suite = suites[name]
+        for cred in suite.credentials:
+            if cred.key in seen_creds or cred.to_init_sql is None:
+                continue
+            seen_creds.add(cred.key)
+            value = _read_provisioned_credential(config, cred)
+            if value is not None:
+                parts.append(cred.to_init_sql(value, redact=redact))
+        for svc in suite.services:
+            if svc.key in seen_svcs or svc.to_init_sql is None:
+                continue
+            seen_svcs.add(svc.key)
+            try:
+                block = provision_service(config, svc)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as exc:
+                raise pytest.UsageError(
+                    f"--repl: service {svc.key!r} failed to provision (needed for its --repl init SQL): {exc}"
+                ) from exc
+            parts.append(svc.to_init_sql(block, redact=redact))
+    return "".join(p for p in parts if p)
 
 
 # ---------------------------------------------------------------------------
@@ -1296,7 +1355,8 @@ def resources(request, matrix_cell):  # matrix_cell: closure hook for indirect @
 
 
 # ---------------------------------------------------------------------------
-# --repl: @requires-driven provision -> interactive duckdb -> teardown
+# --repl: provision (via @requires, and/or the selected suites' services/credentials) ->
+# interactive duckdb -> teardown
 # ---------------------------------------------------------------------------
 
 
@@ -1340,11 +1400,18 @@ def _shell_provision_flow(session, config):
         print()
         print("=" * 70)
         print(f"--repl for test: {item.nodeid}")
-        print("no @requires + no provisioner -> launching a bare duckdb REPL")
+        print("no @requires + no provisioner -> launching a duckdb REPL")
         print("=" * 70)
         if dry_run:
-            pytest.exit("--repl --provision-dry-run: nothing to provision; would launch a bare REPL", returncode=0)
-        _launch_shell(config, "")
+            init_sql = _repl_resource_init_sql(config, session, redact=True)
+            if init_sql:
+                print()
+                print("----- would-be duckdb init SQL (secrets redacted) -----")
+                print(init_sql)
+                print("-------------------------------------------------------")
+            print()
+            pytest.exit("--repl --provision-dry-run: nothing to provision; shell NOT launched.", returncode=0)
+        _launch_shell(config, _repl_resource_init_sql(config, session))
         pytest.exit("--repl session complete", returncode=0)
         return
 
@@ -1367,7 +1434,7 @@ def _shell_provision_flow(session, config):
         bindings = provisioner.provision(specs, token, dry_run=True, params=_item_params(item))
         print()
         print("----- would-be duckdb init SQL (secrets redacted) -----")
-        print(provisioner.make_init_sql(bindings, redact=True))
+        print(_repl_resource_init_sql(config, session, redact=True) + provisioner.make_init_sql(bindings, redact=True))
         print("-------------------------------------------------------")
         print()
         print("--provision-dry-run: NO DDL executed, shell NOT launched, NO teardown.")
@@ -1376,7 +1443,7 @@ def _shell_provision_flow(session, config):
 
     bindings = provisioner.provision(specs, token, dry_run=False, params=_item_params(item))
     try:
-        init_sql = provisioner.make_init_sql(bindings)
+        init_sql = _repl_resource_init_sql(config, session) + provisioner.make_init_sql(bindings)
         _launch_shell(config, init_sql)
     finally:
         if keep:

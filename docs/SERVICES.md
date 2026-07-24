@@ -301,6 +301,38 @@ ARCHITECTURE § *Fixtures* "archive/directory fixtures") is the next step; it sh
 base `Provisioner` refactor. The `rclone.conf` dump from `provision-service --seed` (P2 §) also lands
 with that wiring.
 
+## `--repl` init SQL — `to_init_sql`
+
+A `@requires`-driven suite's `--repl` gets a working session for free: the `Provisioner`'s
+`make_init_sql(bindings)` builds the `CREATE SECRET`/`USE` DDL fed into duckdb's `-init` file
+(ARCHITECTURE.md § *Provisioning per-test tables*). A bare-`.test` suite (azurite, minio, and any
+future service/credential-only suite — no `@requires`, no provisioner) had no such thing: `--repl`
+dropped you into a shell with the connection env set (via `to_env`/`adopt="env"`) but nothing typed
+for you, because DuckDB's own `CREATE SECRET` with no `PROVIDER` never auto-reads env vars.
+
+`Service`/`Credential` close that gap with the same shape as `to_env`:
+
+- **`Service.to_init_sql(block, *, redact=False) -> str`** — e.g. azurite's default
+  `CREATE OR REPLACE SECRET ducktest_azurite (TYPE AZURE, CONNECTION_STRING '…')`.
+- **`Credential.to_init_sql(value, *, redact=False) -> str`** — same shape, built from the fetched
+  credential value instead of a service block.
+
+`--repl` gathers `to_init_sql` from every reachable suite's active services/credentials (dedup by key,
+same as `provision_reachable`) and prepends it to whatever a provisioner also contributes — nothing new
+is fetched/booted, it only reads back what up-front provisioning already put in the store.
+`redact=True` is `--provision-dry-run`'s printed preview (mask the secret material, keep the shape,
+mirroring `make_init_sql(redact=True)`). None (the default) => that service/credential contributes no
+SQL, same as today.
+
+**Caveat for `credential(available=…, to_init_sql=…)`:** the gather reads back an already-fetched value
+from the store, it never re-fetches. If `available()` short-circuits the up-front fetch (creds already
+usable via preset env), nothing was ever written to the store, so `--repl` contributes no SQL for that
+credential even though it's genuinely usable — no consumer combines the two today, but a future one
+should build its `to_init_sql` from env directly rather than assume a store-backed value.
+
+See azurite's/minio's `resources/*.py` (`azurite_init_sql`/`minio_init_sql`) for the
+worked examples.
+
 ## Layering discipline (why this is mostly generic)
 
 Adding Azurite forced almost nothing azurite-specific. The generic mechanisms — attach declaration +
