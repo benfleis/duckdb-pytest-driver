@@ -47,6 +47,7 @@ from .fixtures import (  # noqa: F401  (the table-spec lane: schema + seed insta
     register_instantiator,
     get_instantiator,
 )
+from .identity import TableRef, env_key, build_env  # noqa: F401  (CATALOG/SCHEMA/TABLE env vocabulary, phase 7)
 from .steps import step  # noqa: F401
 from .duckshell import DuckShell, connect_shell, last_json_array  # noqa: F401  (pure-Python SQL runner over the built duckdb shell)
 from .sqldef import (  # noqa: F401  (generic multi-statement SQL-def core)
@@ -94,6 +95,9 @@ __all__ = [
     "TableSpec",
     "register_instantiator",
     "get_instantiator",
+    "TableRef",
+    "env_key",
+    "build_env",
     "step",
     "DuckShell",
     "connect_shell",
