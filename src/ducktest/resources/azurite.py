@@ -221,6 +221,11 @@ def rclone_remote(block=None):
             "type": "azureblob",
             "account": block.get("account", ACCOUNT),
             "key": block.get("key", KEY),
-            "endpoint": block["endpoint"],
+            # rclone's azureblob backend addresses containers as <endpoint>/<container> when `account`
+            # is also given -- so `endpoint` here must be the ACCOUNT-suffixed blob endpoint, not the
+            # bare host:port (found live: bare `endpoint` gave every request a 400 from azurite, since
+            # rclone was PUTting to `http://host:port/<container>`, missing the `/devstoreaccount1`
+            # segment azurite's URL routing requires).
+            "endpoint": block["blob_endpoint"],
         },
     )

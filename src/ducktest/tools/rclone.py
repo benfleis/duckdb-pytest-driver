@@ -7,17 +7,25 @@ backend), so this module is generic; a *service* supplies only its :class:`Remot
 knowledge), e.g. azurite's ``{"type": "azureblob", "use_emulator": True}``.
 
 Two ways to address a remote:
-  - **inline** (file-free, hermetic): ``:azureblob,use_emulator=true:container/prefix`` — used for the
-    automated path. Safe only when param VALUES carry no ``,``/``=``/``/`` (fine for ``use_emulator``;
-    a real account KEY would mangle it — use a config file for those).
+  - **inline** (file-free, hermetic): ``:azureblob,use_emulator=true:container/prefix`` — the default,
+    automated path. Only safe when param VALUES carry no ``,``/``=``/``/``/``:`` (fine for
+    ``use_emulator``; a real account KEY or a non-default endpoint URL always mangles it).
   - **config file** (the human affordance + the secret-bearing path): a named ``[remote]`` stanza; verbs
     take ``config=<path>`` and address it as ``name:container/prefix``. :func:`write_conf` dumps one.
+
+Every verb picks between these **automatically** (`_effective_config`) — inline when the remote's
+params allow it, else a temp config file, cleaned up after the call. A caller never needs to know or
+check which happened; pass ``config=`` explicitly only to use a specific persistent conf file (e.g. the
+human-affordance dump from ``provision-service --seed``).
 
 Verbs are thin ``rclone`` subprocess wrappers that raise on failure with the captured tail. The actual
 calls need a live endpoint (Ben's-box/docker verified); the serialization + prefix logic is offline-pure.
 """
 
+import os
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 
@@ -28,6 +36,39 @@ def _v(x):
     if x is False:
         return "false"
     return str(x)
+
+
+# Characters the inline `:type,k=v,...:path` form can't carry in a value (see Remote.inline's
+# docstring): `,`/`=` collide with the k=v/list separators; `/`/`:` collide with rclone's own
+# remote:path addressing. A real account key (base64: `/`, `=`) or a non-default endpoint URL
+# (`:`, `/`) always trips this -- found live via a reverse-port-mapped azurite instance, where
+# _populate's inline mkdir/sync silently failed with "no Host in request URL".
+_UNSAFE_INLINE_CHARS = (",", "=", "/", ":")
+
+
+def _inline_safe(remote) -> bool:
+    """Whether `remote`'s params can address safely via `Remote.inline()` -- False if any non-`type`
+    value carries a character the inline syntax can't carry (a real key or a custom endpoint always
+    will; `use_emulator=true`-style defaults never do)."""
+    return not any(any(c in _UNSAFE_INLINE_CHARS for c in _v(v)) for k, v in remote.params.items() if k != "type")
+
+
+@contextmanager
+def _effective_config(remote, config):
+    """The config path a verb should actually use: the caller's explicit `config` verbatim, or a
+    temp file auto-written (via `write_conf`) when `remote`'s inline form isn't safe, or `None` to
+    stay inline (the common, local/default-emulator case). Callers should never need to know which
+    happened -- this is the fix for `_inline_safe` returning False, applied transparently."""
+    if config is not None or _inline_safe(remote):
+        yield config
+        return
+    fd, path = tempfile.mkstemp(prefix="ducktest-rclone-", suffix=".conf")
+    os.close(fd)
+    write_conf(remote, path)
+    try:
+        yield path
+    finally:
+        os.unlink(path)
 
 
 @dataclass(frozen=True)
@@ -105,27 +146,32 @@ def _run(args, config=None):
 
 def mkdir(remote, path="", *, config=None):
     """DCL: ensure a container/bucket (or path) exists. Idempotent."""
-    _run(["mkdir", remote.target(path, config=config)], config=config)
+    with _effective_config(remote, config) as cfg:
+        _run(["mkdir", remote.target(path, config=cfg)], config=cfg)
 
 
 def sync(src, remote, path="", *, config=None):
     """DML: make the remote path mirror local ``src`` (uploads new/changed, deletes extra)."""
-    _run(["sync", src, remote.target(path, config=config)], config=config)
+    with _effective_config(remote, config) as cfg:
+        _run(["sync", src, remote.target(path, config=cfg)], config=cfg)
 
 
 def purge(remote, path="", *, config=None):
     """Clean: delete the remote path and its contents."""
-    _run(["purge", remote.target(path, config=config)], config=config)
+    with _effective_config(remote, config) as cfg:
+        _run(["purge", remote.target(path, config=cfg)], config=cfg)
 
 
 def check(src, remote, path="", *, config=None):
     """Verify the remote path matches local ``src`` (the cheap ro re-seed guard). Raises on mismatch."""
-    _run(["check", src, remote.target(path, config=config)], config=config)
+    with _effective_config(remote, config) as cfg:
+        _run(["check", src, remote.target(path, config=cfg)], config=cfg)
 
 
 def ls(remote, path="", *, config=None):
     """List objects under the remote path (returns rclone's stdout)."""
-    return _run(["ls", remote.target(path, config=config)], config=config)
+    with _effective_config(remote, config) as cfg:
+        return _run(["ls", remote.target(path, config=cfg)], config=cfg)
 
 
 def seed(remote, src, container, name, *, access, token=None, config=None):
