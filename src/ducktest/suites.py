@@ -94,8 +94,13 @@ class Service:
 
     Fields (held only in Phase 0):
       key     : logical service name (the OSS docker container is the model).
-      start   : ``start(config)`` — brings the service up (UC's ``start_container``). The
-                lone required callable.
+      start   : ``start(config)`` — brings the service up (UC's ``start_container``).
+                ``None`` => this service has NO managed lifecycle at all: it permanently exists
+                outside this run's control (a real cloud account, a public read-only server) --
+                RESOURCE-PLANNING.md's ``invocation-external`` (phase 5). ``provision_service``
+                then routes straight to ``attach()`` unconditionally, whether or not
+                ``--existing-service`` was declared -- there is nothing else it COULD do. No new
+                descriptor type: this is the same ``Service`` shape, just without a boot.
       stop    : ``stop(config)`` — tears it down once on the controller (UC's
                 ``teardown_shared``); None => no explicit teardown.
       fixture : name of the session fixture this service backs (e.g. ``"uc_server"``), used
@@ -140,7 +145,7 @@ class Service:
     """
 
     key: str
-    start: Callable
+    start: Optional[Callable] = None
     stop: Optional[Callable] = None
     fixture: Optional[str] = None
     attach: Optional[Callable] = None
@@ -215,7 +220,7 @@ def credential(
 def service(
     key,
     *,
-    start,
+    start=None,
     stop=None,
     fixture=None,
     attach=None,
@@ -230,11 +235,15 @@ def service(
     Validates only shape: ``key`` non-empty, the callables callable, ``fixture`` a string or None,
     ``depends_on`` a tuple of keys. Nothing is started here. Policy (``to_env`` / ``populate`` /
     ``to_init_sql``) is usually applied via :func:`use_service`.
+
+    ``start=None`` declares a service with NO managed lifecycle -- ``invocation-external``
+    (RESOURCE-PLANNING.md phase 5): it just permanently exists, so ``provision_service`` always
+    attaches (never boots), whether or not ``--existing-service`` was declared for it.
     """
     if not key or not isinstance(key, str):
         raise ValueError("service: `key` must be a non-empty string")
-    if not callable(start):
-        raise TypeError("service: `start` must be callable (start(config))")
+    if start is not None and not callable(start):
+        raise TypeError("service: `start` must be callable or None (start(config); None = invocation-external)")
     if stop is not None and not callable(stop):
         raise TypeError("service: `stop` must be callable or None")
     if fixture is not None and not isinstance(fixture, str):

@@ -806,8 +806,14 @@ def provision_service(config, svc):
 
     - **existing** (``--existing-service <key>`` / env): attach (build block + probe ``alive`` +
       populate); no boot, no store, no teardown.
-    - **managed** (default): single-flight boot via the store — the first caller runs ``start`` +
-      ``populate`` under the per-key lock and publishes the block; concurrent callers read it.
+    - **no ``start`` at all** (``svc.start is None``): ``invocation-external`` (RESOURCE-PLANNING.md
+      phase 5) — the service has NO managed lifecycle, it just permanently exists, so this routes
+      straight to ``attach()`` with all-defaults overrides UNCONDITIONALLY, same as a declared
+      ``--existing-service`` with no override. No store, no teardown, no boot attempt (there's
+      nothing to boot).
+    - **managed** (default, ``start`` given): single-flight boot via the store — the first caller
+      runs ``start`` + ``populate`` under the per-key lock and publishes the block; concurrent
+      callers read it.
 
     Adopts ``to_env`` into THIS process's ``os.environ`` (how a test — even a bare ``.test`` — gets a
     service's connection env). Returns the block; a test cannot tell which stance ran (identical shape).
@@ -816,6 +822,8 @@ def provision_service(config, svc):
     existing = _existing_services(config)
     if _norm_service_key(svc.key) in existing:
         block = _attach_service(config, svc, existing[_norm_service_key(svc.key)])
+    elif svc.start is None:
+        block = _attach_service(config, svc, {})
     else:
         handle = get_store(config)
         if handle is None:
@@ -1069,7 +1077,12 @@ def run_service_command(config):
         pytest.exit("ducktest --provision-service: no matching declared service(s)", returncode=1)
     for _, svc in targets:
         probe = svc.attach({}, config) if svc.attach is not None else {}
-        if svc.alive is not None and svc.alive(probe):
+        if svc.start is None:
+            # invocation-external (phase 5): no boot capability at all, it just permanently exists --
+            # nothing for this command to do beyond reporting the attach line.
+            print(f"✓ {svc.key}: invocation-external (no start) — nothing to provision")
+            block = probe
+        elif svc.alive is not None and svc.alive(probe):
             print(f"✓ {svc.key}: already running at {probe.get('endpoint', '<default>')} (skipped)")
             block = probe
         else:
