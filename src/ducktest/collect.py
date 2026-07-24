@@ -24,6 +24,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+from .decorate import decorate
+
 # --- the member/role model (roles are not file types) -----------------------------------------
 
 _BODY_SUFFIXES = (".test",)  # `.test_slow`/`.test_coverage` recognized separately, behind --slow
@@ -180,9 +182,11 @@ def assign_batches(items: list, *, batch_size: int) -> int:
 
 
 def _batch_key(item) -> Optional[tuple]:
-    """The affinity key: same binary + same working dir batch together. None = not a SqlLogic item."""
-    b = getattr(item, "_binary", None)
-    w = getattr(item, "_working_dir", None)
-    if b is None or w is None:
-        return None
-    return (b, w)
+    """The affinity key: same binary + same working dir batch together. None = not a SqlLogic item.
+
+    A projection of the canonical per-item `Key` (`decorate.py`) onto its two invocation-constant
+    fields — `batch_key` deliberately excludes anything that varies test-by-test (see
+    `docs/RESOURCE-PLANNING.md` §3), which today is nothing else anyway.
+    """
+    key = decorate(item)
+    return None if key is None else (key.build, key.run_setting)
