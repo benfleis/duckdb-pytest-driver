@@ -195,10 +195,26 @@ class Provisioner:
         return not ran
 
     def _ro_store_key(self, target) -> str:
-        """Store key for a RO target -- namespaced by this Provisioner's concrete class so two
-        different backends sharing one store never collide even if a target string coincides."""
+        """Store key for a RO target -- namespaced so two different backends sharing one store
+        never collide even if a target string coincides.
+
+        The namespace is `self.backend()` when a subclass names one explicitly, else this
+        Provisioner's concrete class -- the RO-shared-identity guarantee
+        (`decorate.coordination_key`, phase 4) is really keyed on `backend`, not on which Python
+        class happens to implement it; the class-qualname fallback is what phase 3 shipped before
+        `backend()` existed, kept as the default for every existing subclass that doesn't override
+        it (so this is a strict behavior-preserving default, not a required change)."""
         cls = type(self)
-        return f"ro::{cls.__module__}.{cls.__qualname__}::{target}"
+        namespace = self.backend() or f"{cls.__module__}.{cls.__qualname__}"
+        return f"ro::{namespace}::{target}"
+
+    def backend(self) -> Optional[str]:
+        """Optional: this Provisioner's backend identity (`decorate.Key.backend` -- e.g.
+        `"azurite-az"`, `"uc-databricks"`), for callers that want to reason about RO sharing scope
+        by NAME rather than by which Python class implements it. None (the default) => `_ro_store_key`
+        falls back to the class-qualname scoping every Provisioner already had before this hook
+        existed -- overriding it is opt-in, never required."""
+        return None
 
     def ensure_isolated(self, namespace, state, dry_run, *, create_sql=None):
         if namespace in state.isolated:
