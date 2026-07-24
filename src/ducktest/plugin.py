@@ -801,7 +801,16 @@ def _boot_and_populate(config, svc):
     return block
 
 
-def provision_service(config, svc):
+def _resolve_service(config, key):
+    """The registered `Service` descriptor for `key` (any suite), or None if undeclared."""
+    for suite in get_suites(config):
+        for svc in suite.services:
+            if svc.key == key:
+                return svc
+    return None
+
+
+def provision_service(config, svc, *, _visiting=()):
     """Provision a class-2 service — the ONE routing point (docs/SPEC.md §3.6). Attach-or-boot:
 
     - **existing** (``--existing-service <key>`` / env): attach (build block + probe ``alive`` +
@@ -815,10 +824,30 @@ def provision_service(config, svc):
       runs ``start`` + ``populate`` under the per-key lock and publishes the block; concurrent
       callers read it.
 
+    ``depends_on`` (RESOURCE-PLANNING.md phase 6, subsumes ``docs/PLAN.md``'s Iceberg
+    ``rest``→``minio`` case): before any of the above, every key in ``svc.depends_on`` is
+    provisioned FIRST, recursively — start order falls out of the recursion by construction, no
+    separate scheduling pass needed. A cycle (A depends on B depends on A) fails loud
+    (``pytest.UsageError``) instead of recursing forever; ``_visiting`` is the internal
+    cycle-detection breadcrumb — never pass it yourself.
+
     Adopts ``to_env`` into THIS process's ``os.environ`` (how a test — even a bare ``.test`` — gets a
     service's connection env). Returns the block; a test cannot tell which stance ran (identical shape).
     Idempotent: called both up front (from the collect-first plan) and on a fixture pull.
     """
+    if svc.depends_on:
+        if svc.key in _visiting:
+            chain = " -> ".join((*_visiting, svc.key))
+            raise pytest.UsageError(f"service depends_on cycle detected: {chain}")
+        visiting = (*_visiting, svc.key)
+        for dep_key in svc.depends_on:
+            dep = _resolve_service(config, dep_key)
+            if dep is None:
+                raise pytest.UsageError(
+                    f"service {svc.key!r} declares depends_on={dep_key!r}, but no service with that key is registered"
+                )
+            provision_service(config, dep, _visiting=visiting)
+
     existing = _existing_services(config)
     if _norm_service_key(svc.key) in existing:
         block = _attach_service(config, svc, existing[_norm_service_key(svc.key)])
@@ -835,29 +864,81 @@ def provision_service(config, svc):
     return block
 
 
+def _all_services(config):
+    """Every distinct declared `Service` across all suites, dedup by key (first registration wins)
+    — the full node set `depends_on` ordering (phase 6) resolves over."""
+    seen, out = set(), []
+    for suite in get_suites(config):
+        for svc in suite.services:
+            if svc.key in seen:
+                continue
+            seen.add(svc.key)
+            out.append(svc)
+    return out
+
+
+def _topological_service_order(services):
+    """`services`, ordered so every service comes after everything in its `depends_on` — Kahn's
+    algorithm, deterministic (ties broken by input order), cycle-checked: a service whose
+    `depends_on` can never be satisfied (an undeclared key, or a cycle among `services`) raises
+    loud rather than silently dropping it.
+    """
+    by_key = {s.key: s for s in services}
+    indegree = {s.key: 0 for s in services}
+    children: dict = {s.key: [] for s in services}
+    for s in services:
+        for dep in s.depends_on:
+            if dep not in by_key:
+                raise pytest.UsageError(
+                    f"service {s.key!r} declares depends_on={dep!r}, but no service with that key is registered"
+                )
+            indegree[s.key] += 1
+            children[dep].append(s.key)
+    ready = [s.key for s in services if indegree[s.key] == 0]
+    order = []
+    while ready:
+        key = ready.pop(0)
+        order.append(key)
+        for child in children[key]:
+            indegree[child] -= 1
+            if indegree[child] == 0:
+                ready.append(child)
+    if len(order) != len(services):
+        cyclic = sorted(set(by_key) - set(order))
+        raise pytest.UsageError(f"service depends_on cycle detected among: {cyclic}")
+    return [by_key[k] for k in order]
+
+
 def _stop_services(config):
-    """Controller, at sessionfinish (pre store-shutdown): stop each service that was started.
+    """Controller, at sessionfinish (pre store-shutdown): stop each STARTED service, in REVERSE
+    topological order (`depends_on`, phase 6) — a dependency (e.g. `minio`) is stopped only after
+    everything that depends on it (e.g. `rest`) already has been, the reverse of
+    `provision_service`'s recursive start order.
 
     A block exists in the store under a service's key iff some worker provisioned it, so store-presence
-    == started; stop each once here (dedup by key — a shared service is ONE physical resource).
+    == started; dedup by key (a shared service is ONE physical resource). The topological sort runs
+    over only the STARTED subset (never the full declared set) — `provision_service` always
+    provisions a service's dependencies before itself, so a started service's dependencies are
+    necessarily started too, meaning an unreached/never-provisioned service (however its
+    `depends_on` is shaped) can never surface a spurious cycle/undeclared-key error at teardown.
     """
     handle = get_store(config)
     if handle is None:
         return
-    seen = set()
-    for suite in get_suites(config):
-        for svc in suite.services:
-            if svc.stop is None or svc.key in seen:
-                continue
-            seen.add(svc.key)
-            try:
-                store.copy(handle, svc.key)  # present => was provisioned this run
-            except store.ResourceMissing:
-                continue
-            try:
-                svc.stop(config)
-            except Exception:
-                pass  # teardown must not raise at session end
+    started = []
+    for svc in _all_services(config):
+        try:
+            store.copy(handle, svc.key)  # present => was provisioned this run
+        except store.ResourceMissing:
+            continue
+        started.append(svc)
+    for svc in reversed(_topological_service_order(started)):
+        if svc.stop is None:
+            continue
+        try:
+            svc.stop(config)
+        except Exception:
+            pass  # teardown must not raise at session end
 
 
 # ---------------------------------------------------------------------------
