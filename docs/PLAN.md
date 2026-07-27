@@ -687,6 +687,20 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
   directive or runner flag: wait-on-signal / sleep / wait-for-stdin) so `lldb` can attach to
   the right unittest subprocess mid-test. Tractable because each paired test already runs in
   its own subprocess; needs to target exactly ONE test.
+- **discover + collect a `unittest_cpp` sibling (out-of-tree C++ tests)** — an out-of-tree
+  extension can't compile its C++ `TEST_CASE`s into the base `unittest` without editing the
+  vendored duckdb submodule (no clean `UNITTEST_OBJECT_FILES` hook; httpfs/delta/iceberg all
+  avoid it), so it ships a standalone `unittest_cpp` (httpfs `test/unittest` pattern,
+  `EXCLUDE_FROM_ALL`). The driver should discover a `unittest_cpp` next to `unittest` in the
+  resolved build dir (`--build`/`$BUILD_DIR`), enumerate its Catch cases
+  (`--list-test-names-only`), and fold them into the SAME scan/collect/filter pass as sqllogic —
+  so C++ + `.test` items select by name/tag/path uniformly (duckdb-core's single-surface model,
+  across two binaries). **Invariant: absence != failure** — it's `EXCLUDE_FROM_ALL`, so a plain
+  build lacks it; collect nothing / quiet skip, never error. Retires the per-extension stopgap
+  (UC: `test/functions/{CMakeLists.txt,test_cpp.py}`, with `dbuild` building the target on demand).
+  Ref exe wiring: `src/d/httpfs/test/unittest/`. _(UC hand-build accepted for now; filed
+  2026-07-26 from the scan-plan C++ unit-test work — SerializeFiltersToIRC / position-set coverage
+  no `.test` can drive in isolation.)_
 
 ## Driver interface (Fork A — being designed)
 
