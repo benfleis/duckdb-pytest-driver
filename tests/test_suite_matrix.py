@@ -164,4 +164,5 @@ def test_cell_fanned_siblings_of_the_same_file_never_share_a_batch_key():
         decorate(same_file_cell_a, cell="azurite-az").build,
         decorate(same_file_cell_a, cell="azurite-az").run_setting,
         "azurite-az",
+        (),  # no real `.config` on this fake -> no --init-sqllogic distinction
     )

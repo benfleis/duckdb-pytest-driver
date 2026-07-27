@@ -123,6 +123,44 @@ def test_service_without_to_init_sql_contributes_nothing(pytester):
     result.assert_outcomes(passed=1)
 
 
+def test_require_line_becomes_a_load_statement_not_a_bare_directive(pytester):
+    # A to_init_sql MAY prepend "require <ext>\n\n" (see _extract_requires) -- --init-sqllogic's
+    # consumer (_write_init_sqllogic_snippet) hoists that to a real `require` directive, but --repl's
+    # output here is written verbatim into a plain `duckdb -init` file (_launch_shell), which has no
+    # `require` directive at all. Confirms it's converted to `LOAD <ext>;` instead, not left bare
+    # (a real regression: a prior version left "require azure" untranslated, breaking --repl on
+    # every azurite-backed suite -- the CLI would choke on it as unparseable SQL).
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def _init_sql(block, *, redact=False):
+            return "require azure\\n\\nCREATE OR REPLACE SECRET s1 (TYPE AZURE, CONNECTION_STRING 'x');\\n"
+
+        def pytest_configure(config):
+            register_suite(config, "s", default=True,
+                services=[service("svc", start=lambda config: {"endpoint": "svc://up"}, to_init_sql=_init_sql)])
+        """,
+    )
+    _write(
+        pytester,
+        "test_inner.py",
+        """
+        from ducktest.plugin import _repl_resource_init_sql
+
+        def test_gather(request):
+            sql = _repl_resource_init_sql(request.config, request.session)
+            assert "require azure" not in sql
+            assert sql.startswith("LOAD azure;\\n")
+            assert "CREATE OR REPLACE SECRET s1" in sql
+        """,
+    )
+    result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1)
+
+
 def test_shared_service_across_suites_contributes_once(pytester):
     _write(
         pytester,

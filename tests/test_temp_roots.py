@@ -318,3 +318,98 @@ def test_invoke_skips_the_check_when_temp_dir_field_is_absent(clean_env, tmp_pat
     roots = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
     result = _invoke(_echo_stub(tmp_path), ["b.test"], str(tmp_path), roots, batch_id="batch-0")
     assert result["returncode"] == 0
+
+
+# -----------------------------------------------------------------------------
+# Matrix-cell `properties` (SPEC §11.4's "matrix-cell overrides of root/data_dir"): confirmatory
+# only -- _split_matrix_cell_properties/_matrix_cell_temp_roots/_matrix_cell_env (the phase-boundary
+# structs) are the primary test surface, in test_auto_init_sql.py. These prove that wiring actually
+# reaches the subprocess argv/env, nothing more.
+#
+
+_PROPERTIES_ECHO_STUB = textwrap.dedent(
+    """\
+    #!/usr/bin/env python3
+    import os, sys
+    print("ARGV " + " ".join(sys.argv[1:]))
+    print("ENV AZURE_STORAGE_ACCOUNT=%s" % os.environ.get("AZURE_STORAGE_ACCOUNT", "<unset>"))
+    sys.exit(0)
+    """
+)
+
+
+def _properties_echo_stub(tmp_path):
+    p = tmp_path / "properties_echo_unittest"
+    p.write_text(_PROPERTIES_ECHO_STUB)
+    p.chmod(p.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return str(p)
+
+
+class _FakeMatrixItem:
+    def __init__(self, matrix_cell):
+        self._matrix_cell = matrix_cell
+
+
+def test_matrix_cell_properties_override_temp_dir_root_data_dir_and_reach_env(clean_env, tmp_path):
+    from ducktest.sqllogic import _matrix_cell_env, _matrix_cell_temp_roots
+
+    base = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    item = _FakeMatrixItem(
+        {
+            "backend": "azure-az",
+            "properties": {
+                "temp_dir_root": "az://acct.blob.core.windows.net/w",
+                "data_dir": "az://acct.blob.core.windows.net/d",
+                "AZURE_STORAGE_ACCOUNT": "acct",
+            },
+        }
+    )
+    roots = _matrix_cell_temp_roots(item, base)
+    env = _matrix_cell_env(item)
+    out = _invoke(_properties_echo_stub(tmp_path), ["b.test"], str(tmp_path), roots, batch_id="batch-0", env=env)[
+        "stdout"
+    ]
+    assert f"--temp-dir-base az://acct.blob.core.windows.net/w/{RUN_ID}/batch-0" in out
+    assert "--data-dir az://acct.blob.core.windows.net/d" in out
+    assert "ENV AZURE_STORAGE_ACCOUNT=acct" in out
+
+
+def test_two_matrix_cells_never_collide_on_temp_dir_root_or_data_dir(clean_env, tmp_path):
+    # The actual motivating bug: az's `test/core` suite fans one .test file across two cells
+    # (azure-az, azure-abfss) needing DIFFERENT storage accounts -- they must never resolve to the
+    # same --temp-dir-base/--data-dir, even sharing a batch-id.
+    from ducktest.sqllogic import _matrix_cell_temp_roots
+
+    base = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    az_item = _FakeMatrixItem(
+        {
+            "backend": "azure-az",
+            "properties": {
+                "temp_dir_root": "az://acct1.blob.core.windows.net/w",
+                "data_dir": "az://acct1.blob.core.windows.net/d",
+            },
+        }
+    )
+    abfss_item = _FakeMatrixItem(
+        {
+            "backend": "azure-abfss",
+            "properties": {
+                "temp_dir_root": "abfss://acct2.dfs.core.windows.net/w",
+                "data_dir": "abfss://acct2.dfs.core.windows.net/d",
+            },
+        }
+    )
+    az_out = _invoke(
+        _echo_stub(tmp_path), ["b.test"], str(tmp_path), _matrix_cell_temp_roots(az_item, base), batch_id="batch-0"
+    )["stdout"]
+    abfss_out = _invoke(
+        _echo_stub(tmp_path),
+        ["b.test"],
+        str(tmp_path),
+        _matrix_cell_temp_roots(abfss_item, base),
+        batch_id="batch-0",
+    )["stdout"]
+    assert f"--temp-dir-base az://acct1.blob.core.windows.net/w/{RUN_ID}/batch-0" in az_out
+    assert f"--temp-dir-base abfss://acct2.dfs.core.windows.net/w/{RUN_ID}/batch-0" in abfss_out
+    assert "--data-dir az://acct1.blob.core.windows.net/d" in az_out
+    assert "--data-dir abfss://acct2.dfs.core.windows.net/d" in abfss_out
