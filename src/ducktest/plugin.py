@@ -1210,23 +1210,27 @@ _init_sqllogic_paths: dict = {}  # (id(config), suite.name) -> temp .test path, 
 
 
 def _init_sqllogic_arg_for_item(config, item) -> list:
-    """`["--init-sqllogic", path]` for a bare `.test` item whose suite opts in via
-    `auto_init_sql=True`; `[]` for a non-opted-in suite, or one with nothing to inject (no
-    credential/service `to_init_sql`, or none currently provisioned).
+    """`["--init-sqllogic", path]` for a `.test` item that needs preamble SQL injected: its suite's
+    `auto_init_sql=True` credential/service SQL, and/or a matrix cell's own `init_sql` property —
+    merged into ONE snippet (never two `--init-sqllogic` args). `[]` when there's nothing to inject.
 
-    Memoized per `(config, suite)` for this worker process — `_suite_init_sql` reads back already-
-    provisioned resources, so recomputing it per test would just rebuild the identical string.
+    Memoized per `(config, suite, cell_sql)` for this worker — `_suite_init_sql` reads back already-
+    provisioned resources, so recomputing the identical string per test is wasted work; the cell's SQL
+    is part of the key so distinct cells of the same file don't share a snippet.
     """
-    suites = [s for s in get_suites(config) if s.auto_init_sql]
-    if not suites:
+    from .sqllogic import _matrix_cell_init_sql
+
+    cell_sql = _matrix_cell_init_sql(item)
+    suite = next(
+        (s for s in get_suites(config) if s.auto_init_sql and _item_in_suite(config, item, s)), None
+    )
+    if suite is None and not cell_sql:
         return []
-    suite = next((s for s in suites if _item_in_suite(config, item, s)), None)
-    if suite is None:
-        return []
-    key = (id(config), suite.name)
+    key = (id(config), suite.name if suite else None, cell_sql or "")
     path = _init_sqllogic_paths.get(key)
     if path is None:
-        sql = _suite_init_sql(config, suite)
+        parts = [p for p in (_suite_init_sql(config, suite) if suite else "", cell_sql) if p]
+        sql = "\n\n".join(parts)
         path = _write_init_sqllogic_snippet(sql) if sql else ""
         _init_sqllogic_paths[key] = path
     return ["--init-sqllogic", path] if path else []

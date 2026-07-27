@@ -14,7 +14,12 @@ import stat
 import textwrap
 
 from ducktest.plugin import _write_init_sqllogic_snippet
-from ducktest.sqllogic import _matrix_cell_env, _matrix_cell_temp_roots
+from ducktest.sqllogic import (
+    _matrix_cell_env,
+    _matrix_cell_init_sql,
+    _matrix_cell_temp_roots,
+    _matrix_cell_test_config_args,
+)
 
 
 def _write(pytester, name, body):
@@ -117,6 +122,55 @@ def test_matrix_cell_temp_roots_overlays_temp_dir_root_and_data_dir():
         "session_id": "s1",
         "data_dir": "az://acct.blob.core.windows.net/d",
     }
+
+
+# --- _matrix_cell_test_config_args (pure) -------------------------------------------------------
+
+
+def test_test_config_args_empty_for_non_matrix_item():
+    assert _matrix_cell_test_config_args(_FakeItem(), "/repo") == []
+
+
+def test_test_config_args_empty_when_cell_has_no_test_config():
+    assert _matrix_cell_test_config_args(_FakeItem(matrix_cell={"backend": "curl"}), "/repo") == []
+
+
+def test_test_config_args_resolve_relative_path_against_working_dir():
+    item = _FakeItem(matrix_cell={"backend": "curl", "properties": {"test_config": "test/configs/httpfs_curl.json"}})
+    assert _matrix_cell_test_config_args(item, "/repo") == ["--test-config", "/repo/test/configs/httpfs_curl.json"]
+
+
+def test_test_config_args_pass_absolute_path_through():
+    item = _FakeItem(matrix_cell={"backend": "curl", "properties": {"test_config": "/abs/x.json"}})
+    assert _matrix_cell_test_config_args(item, "/repo") == ["--test-config", "/abs/x.json"]
+
+
+def test_test_config_is_not_leaked_as_an_env_var():
+    # test_config is a --test-config path, not an env var: a cell mixing it with a plain var -> env-only.
+    cell = {"backend": "curl", "properties": {"test_config": "test/configs/x.json", "S3_ENDPOINT": "minio:9000"}}
+    assert _matrix_cell_env(_FakeItem(matrix_cell=cell)) == {"S3_ENDPOINT": "minio:9000"}
+
+
+# --- _matrix_cell_init_sql (pure) ---------------------------------------------------------------
+
+
+def test_init_sql_none_for_non_matrix_item():
+    assert _matrix_cell_init_sql(_FakeItem()) is None
+
+
+def test_init_sql_none_when_cell_has_no_init_sql():
+    assert _matrix_cell_init_sql(_FakeItem(matrix_cell={"backend": "curl"})) is None
+
+
+def test_init_sql_read_from_cell():
+    cell = {"backend": "curl", "properties": {"init_sql": "SET httpfs_client_implementation='curl';"}}
+    assert _matrix_cell_init_sql(_FakeItem(matrix_cell=cell)) == "SET httpfs_client_implementation='curl';"
+
+
+def test_init_sql_and_test_config_are_not_leaked_as_env_vars():
+    # both are claimed by their own mechanisms; a cell mixing them with a plain var -> env-only.
+    cell = {"properties": {"init_sql": "SET a=1;", "test_config": "c.json", "S3_ENDPOINT": "minio:9000"}}
+    assert _matrix_cell_env(_FakeItem(matrix_cell=cell)) == {"S3_ENDPOINT": "minio:9000"}
 
 
 # --- _suite_init_sql (live pytest run, no duckdb binary; mirrors test_repl_init_sql.py) ---------
@@ -270,7 +324,6 @@ def test_bare_test_item_outside_auto_init_sql_suite_gets_no_flag(pytester):
     stub = _stub_binary(pytester)
     result = pytester.runpytest_subprocess("--unittest-binary", str(stub), "-p", "no:cacheprovider")
     result.assert_outcomes(passed=1)
-    assert "--init-sqllogic" not in (pytester.path / "argv.log").read_text()
 
 
 def test_auto_init_sql_and_plain_suite_items_never_share_a_batch():

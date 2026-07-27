@@ -231,6 +231,13 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
    reachability — failing fast + clear. Would replace the raw `docker pull "$IMAGE"` in a consumer's
    CI (e.g. UC `integration-tests.yml`). Open: pytest-invoked (`--preflight` / collect-then-provision)
    vs CLI (`ducktest preflight -m <suite>`); overlap with `pull-images`.
+7. **Matrix cell decomposition** _(driven by httpfs dogfooding — docs/MATRIX.md)_. A cell can carry a
+   whole duckdb `--test-config` JSON (`test_config`, done) or, lighter, inline preamble SQL (`init_sql`,
+   done — merges into the item's `--init-sqllogic`). Still MISSING: a **native per-cell `skip`/`only`**
+   (deselect items for a cell at collection — a real pytest deselect, `-rA`/`-k`-composable), so a
+   config sweep needn't route skips through `--test-config`'s binary-level `skip_tests`. Note: the
+   extension-**loading** axis (static vs dynamic) has no `SET`/deselect equivalent → always needs
+   `test_config`. Hooks the matrix expansion / `pytest_collection_modifyitems`.
 
 ## Base `Provisioner` + object-store `@requires` wiring
 

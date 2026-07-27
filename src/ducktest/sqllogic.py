@@ -59,16 +59,49 @@ def _matrix_cell_properties(item) -> dict:
 # declare the root, never the composed TEMP_DIR.
 _TEMP_ROOTS_PROPERTY_KEYS = {"temp_dir_root": "root", "data_dir": "data_dir"}
 
+# A cell's `test_config` property is a duckdb `--test-config` JSON path (its `on_init` SQL,
+# `statically_loaded_extensions`, `skip_tests`) passed to the binary -- NOT a literal env var.
+_TEST_CONFIG_PROPERTY_KEY = "test_config"
+
+# A cell's `init_sql` property is inline preamble SQL (e.g. `SET x='y';`) merged into the item's
+# `--init-sqllogic` snippet ahead of the body (plugin._init_sqllogic_arg_for_item) -- NOT an env var.
+# The lighter alternative to `test_config` for a pure-SET cell (see docs/MATRIX.md).
+_INIT_SQL_PROPERTY_KEY = "init_sql"
+
+# Property names claimed by a dedicated mechanism, so never routed into env vars / temp roots.
+_CLAIMED_PROPERTY_KEYS = frozenset({_TEST_CONFIG_PROPERTY_KEY, _INIT_SQL_PROPERTY_KEY})
+
 
 def _split_matrix_cell_properties(properties: dict):
     """Split a cell's `properties` dict into `(env, temp_roots)` -- the ONE place that decides which
     property names are `--temp-dir-base`/`--data-dir` CLI args (`_TEMP_ROOTS_PROPERTY_KEYS`) vs
-    literal env vars (everything else, passed through verbatim)."""
+    literal env vars (everything else, passed through verbatim). `_CLAIMED_PROPERTY_KEYS`
+    (`test_config`/`init_sql`) are handled by their own mechanisms, never env vars."""
     env, temp_roots = {}, {}
     for key, value in properties.items():
+        if key in _CLAIMED_PROPERTY_KEYS:
+            continue
         dest = _TEMP_ROOTS_PROPERTY_KEYS.get(key)
         (temp_roots if dest else env)[dest or key] = value
     return env, temp_roots
+
+
+def _matrix_cell_init_sql(item):
+    """A matrix cell's `init_sql` property -- inline preamble SQL merged into the item's
+    `--init-sqllogic` snippet ahead of the body -- or `None` for a non-matrix item / a cell without
+    one. Merged (not a second `--init-sqllogic`) by `plugin._init_sqllogic_arg_for_item`."""
+    return _matrix_cell_properties(item).get(_INIT_SQL_PROPERTY_KEY) or None
+
+
+def _matrix_cell_test_config_args(item, working_dir) -> list:
+    """`["--test-config", <path>]` when a matrix cell declares a `test_config` property (a duckdb
+    test-config JSON: its `on_init` SQL, `statically_loaded_extensions`, `skip_tests`); `[]` for a
+    non-matrix item or a cell without one. Path resolves relative to `working_dir`. Reusing duckdb's
+    native `--test-config` lets a consumer matrix over its existing config JSONs (see docs/MATRIX.md)."""
+    path = _matrix_cell_properties(item).get(_TEST_CONFIG_PROPERTY_KEY)
+    if not path:
+        return []
+    return ["--test-config", path if os.path.isabs(path) else os.path.join(working_dir, path)]
 
 
 def _matrix_cell_env(item) -> dict:
@@ -214,7 +247,11 @@ class SqlLogicItem(pytest.Item):
             _matrix_cell_temp_roots(self, self._temp_roots),
             batch_id=item_batch_id(self),
             env=_matrix_cell_env(self),
-            extra_args=[*_init_sqllogic_arg_for_item(self.config, self), *resolve_unittest_args(self.config)],
+            extra_args=[
+                *_matrix_cell_test_config_args(self, self._working_dir),
+                *_init_sqllogic_arg_for_item(self.config, self),
+                *resolve_unittest_args(self.config),
+            ],
         )
         _raise_for_result(_parse_result(result), test_file=str(self.path))
 
@@ -232,7 +269,11 @@ class SqlLogicItem(pytest.Item):
                     _matrix_cell_temp_roots(self, self._temp_roots),
                     batch_id=item_batch_id(self),
                     env=_matrix_cell_env(self),
-                    extra_args=[*_init_sqllogic_arg_for_item(self.config, self), *resolve_unittest_args(self.config)],
+                    extra_args=[
+                        *_matrix_cell_test_config_args(self, self._working_dir),
+                        *_init_sqllogic_arg_for_item(self.config, self),
+                        *resolve_unittest_args(self.config),
+                    ],
                 )
         r = _batch_cache[self._batch_id].get(self._test_name, {"status": "internal_error"})
         _raise_for_result(r, test_file=str(self.path))

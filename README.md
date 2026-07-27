@@ -22,7 +22,8 @@ There are three shapes of test, and one suite can mix them:
 It installs as a pytest plugin, so there's no separate runner: you run `pytest`.
 
 The design and internals are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (the model),
-[docs/INTERNALS.md](docs/INTERNALS.md) (extending it), and [docs/PLAN.md](docs/PLAN.md) (the roadmap).
+[docs/INTERNALS.md](docs/INTERNALS.md) (extending it), [docs/MATRIX.md](docs/MATRIX.md) (running one
+`.test` body across cells — backends, configs), and [docs/PLAN.md](docs/PLAN.md) (the roadmap).
 
 ## Collecting Python-native tests
 
