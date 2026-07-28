@@ -76,6 +76,15 @@ class Credential:
                  though the credential is genuinely usable. No current consumer combines ``available``
                  with ``to_init_sql``; if one needs both, ``to_init_sql`` should be prepared to build its
                  SQL from env directly rather than assume a store-backed value.
+                 If the returned SQL needs an extension loaded (e.g. ``CREATE SECRET ... TYPE AZURE``),
+                 prepend ``"require <ext>\\n\\n"`` rather than a ``LOAD <ext>;`` statement --
+                 ``_write_init_sqllogic_snippet`` (``plugin.py``) pulls `require` lines out ahead of the
+                 wrapping ``statement ok`` block (a directive can't go inside one) and routes them
+                 through the SAME reliable extension-loading path a `.test` file's own `require` uses
+                 (`SQLLogicTestRunner::LoadExtension`: static/linked first, then `INSTALL ... FROM` the
+                 compile-time-known local repo, then `LOAD`). A bare `LOAD <ext>;` inside the SQL text
+                 skips all of that and only checks `$HOME/.duckdb`'s cache -- it "works" only by
+                 accident, wherever that happens to already be populated.
     """
 
     key: str
@@ -138,6 +147,9 @@ class Service:
                 into a shell with the connection env set but no secret/``USE`` typed for you — this is
                 what closes that gap. ``redact=True`` is for ``--provision-dry-run``'s printed preview
                 (mask the secret material, keep the shape). None => this service contributes no SQL.
+                Also feeds `auto_init_sql`/`--init-sqllogic` (a bare `.test` item), not just `--repl` --
+                see :class:`Credential`'s `to_init_sql` docstring for the `"require <ext>\\n\\n"`
+                prepend convention if the SQL needs an extension loaded.
 
     Policy fields (``to_env`` / ``populate`` / ``to_init_sql``) are usually set via :func:`use_service`,
     which binds a *shared* descriptor (e.g. ``AZURITE_SERVICE``) to one suite's policy without mutating
@@ -177,9 +189,14 @@ class Suite:
                     ``Requirement.properties`` -- the framework validates only that ``"backend"`` is
                     present (it's the id a `.test` sibling's name and a `.py` cell's ``pytest.param``
                     id are built from); everything else is for the backend's own conftest/provisioner
-                    to read (e.g. via ``matrix_cell``, or an ``"env"`` key threaded per-invocation into
-                    a bare `.test`'s subprocess -- see ``sqllogic.py``'s ``_matrix_cell_env``). ``()``
-                    => no suite-level matrix (today's behavior, unchanged).
+                    to read (e.g. via ``matrix_cell``, same spirit as ``requires.py``'s
+                    ``Requirement.properties``). A bare `.test`'s subprocess specifically reads a
+                    ``"properties"`` key (``sqllogic.py``'s ``_matrix_cell_properties``): declare WHAT
+                    a cell needs (``temp_dir_root``, ``data_dir``, or any plain env var name) and the
+                    framework decides downstream whether that becomes a ``--temp-dir-base``/
+                    ``--data-dir`` CLI arg or a literal env var (``_split_matrix_cell_properties``) --
+                    never the conftest's call. ``()`` => no suite-level matrix (today's behavior,
+                    unchanged).
       auto_init_sql: whether a bare `.test` item in this suite gets this suite's credentials'/
                     services' ``to_init_sql`` output run (via upstream's ``--init-sqllogic``) before
                     its body -- the non-``--repl`` generalization of ``to_init_sql`` (until now, a

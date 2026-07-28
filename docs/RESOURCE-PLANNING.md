@@ -105,7 +105,7 @@ mechanism already exists and fits what this axis actually is (a DBConfig setting
   substrate: invocation-managed          # AZURITE_SERVICE, booted by this run
   access: ro
   token: null
-  extras: {AZURE_STORAGE_CONNECTION_STRING: "...", AZ_DATA_DIR: testing-private}
+  env: {AZURE_STORAGE_CONNECTION_STRING: "...", AZ_DATA_DIR: testing-private}
 
 - test: test/azurite/azure.test           # hypothetical matrix cell, same file
   build: az/build/debug/test/unittest
@@ -114,7 +114,7 @@ mechanism already exists and fits what this axis actually is (a DBConfig setting
   substrate: invocation-external          # permanently exists, never booted/torn down
   access: ro
   token: null
-  extras: {AZ_STORAGE_ACCOUNT: duckdblabstestdatablob, AZ_DATA_DIR: duckdblabs-data/common/azure_data}
+  env: {AZ_STORAGE_ACCOUNT: duckdblabstestdatablob, AZ_DATA_DIR: duckdblabs-data/common/azure_data}
 
 - test: test/azure/azure_writes.test
   build: az/build/release/test/unittest
@@ -123,7 +123,7 @@ mechanism already exists and fits what this axis actually is (a DBConfig setting
   substrate: invocation-external
   access: rw
   token: "20260724_azwrite_a1b2c3"         # the token IS the write path's unique segment
-  extras: {AZ_TEMP_DIR: duckdblabs-write-testing/extension/azure/20260724_azwrite_a1b2c3}
+  env: {AZ_TEMP_DIR: duckdblabs-write-testing/extension/azure/20260724_azwrite_a1b2c3}
 
 - test: uc read test
   build: uc/build/release/test/unittest
@@ -132,11 +132,11 @@ mechanism already exists and fits what this axis actually is (a DBConfig setting
   substrate: invocation-external           # the CATALOG; its schema is created per-test, not this
   access: ro
   token: null
-  extras: {CATALOG: my_write_catalog, SCHEMA: main, TABLE: simple_table}
+  env: {CATALOG: my_write_catalog, SCHEMA: main, TABLE: simple_table}
 ```
 
 `build`/`run_setting` repeat for every job in a run; `backend`/`substrate`/`access`/`token` are what
-actually decide sharing; `extras` is delivered, never consulted for sharing decisions.
+actually decide sharing; `env` is delivered, never consulted for sharing decisions.
 
 ### Four small planner functions, over that data
 

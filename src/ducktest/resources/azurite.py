@@ -102,13 +102,18 @@ def azurite_env(block):
 
 
 def azurite_init_sql(block, *, redact=False):
-    """`--repl` init SQL: a ready-to-use connection secret, so dropping into a shell on an
-    azurite-backed suite doesn't leave you retyping the connection string by hand (DuckDB's own
-    ``CREATE SECRET`` with no ``PROVIDER`` never auto-reads env vars, so the env alone isn't enough).
+    """Init SQL (both `--repl` and `auto_init_sql`/`--init-sqllogic`): a ready-to-use connection
+    secret, so dropping into a shell -- or running a bare `.test` body -- on an azurite-backed suite
+    doesn't leave you retyping the connection string by hand (DuckDB's own ``CREATE SECRET`` with no
+    ``PROVIDER`` never auto-reads env vars, so the env alone isn't enough). ``require azure`` first
+    (not a ``LOAD azure;`` statement) -- see ``Credential.to_init_sql``'s docstring: `--init-sqllogic`
+    runs this before the test body's own `require azure` ever would, and only `require` routes through
+    the reliable `LoadExtension` C++ path (local-repo install first); a bare `LOAD azure;` only checks
+    `$HOME/.duckdb`'s cache and fails cold outside a dev machine that already happens to have it.
     ``redact=True`` (the ``--provision-dry-run`` preview) swaps the connection string for a placeholder.
     """
     conn = "<redacted>" if redact else block["connection_string"]
-    return f"CREATE OR REPLACE SECRET ducktest_azurite (TYPE AZURE, CONNECTION_STRING '{conn}');\n"
+    return f"require azure\n\nCREATE OR REPLACE SECRET ducktest_azurite (TYPE AZURE, CONNECTION_STRING '{conn}');\n"
 
 
 def azurite_alive(block):

@@ -231,6 +231,13 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
    reachability — failing fast + clear. Would replace the raw `docker pull "$IMAGE"` in a consumer's
    CI (e.g. UC `integration-tests.yml`). Open: pytest-invoked (`--preflight` / collect-then-provision)
    vs CLI (`ducktest preflight -m <suite>`); overlap with `pull-images`.
+7. **Matrix cell decomposition** _(driven by httpfs dogfooding — docs/MATRIX.md)_. A cell can carry a
+   whole duckdb `--test-config` JSON (`test_config`, done) or, lighter, inline preamble SQL (`init_sql`,
+   done — merges into the item's `--init-sqllogic`). Still MISSING: a **native per-cell `skip`/`only`**
+   (deselect items for a cell at collection — a real pytest deselect, `-rA`/`-k`-composable), so a
+   config sweep needn't route skips through `--test-config`'s binary-level `skip_tests`. Note: the
+   extension-**loading** axis (static vs dynamic) has no `SET`/deselect equivalent → always needs
+   `test_config`. Hooks the matrix expansion / `pytest_collection_modifyitems`.
 
 ## Base `Provisioner` + object-store `@requires` wiring
 
@@ -687,6 +694,20 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
   directive or runner flag: wait-on-signal / sleep / wait-for-stdin) so `lldb` can attach to
   the right unittest subprocess mid-test. Tractable because each paired test already runs in
   its own subprocess; needs to target exactly ONE test.
+- **discover + collect a `unittest_cpp` sibling (out-of-tree C++ tests)** — an out-of-tree
+  extension can't compile its C++ `TEST_CASE`s into the base `unittest` without editing the
+  vendored duckdb submodule (no clean `UNITTEST_OBJECT_FILES` hook; httpfs/delta/iceberg all
+  avoid it), so it ships a standalone `unittest_cpp` (httpfs `test/unittest` pattern,
+  `EXCLUDE_FROM_ALL`). The driver should discover a `unittest_cpp` next to `unittest` in the
+  resolved build dir (`--build`/`$BUILD_DIR`), enumerate its Catch cases
+  (`--list-test-names-only`), and fold them into the SAME scan/collect/filter pass as sqllogic —
+  so C++ + `.test` items select by name/tag/path uniformly (duckdb-core's single-surface model,
+  across two binaries). **Invariant: absence != failure** — it's `EXCLUDE_FROM_ALL`, so a plain
+  build lacks it; collect nothing / quiet skip, never error. Retires the per-extension stopgap
+  (UC: `test/functions/{CMakeLists.txt,test_cpp.py}`, with `dbuild` building the target on demand).
+  Ref exe wiring: `src/d/httpfs/test/unittest/`. _(UC hand-build accepted for now; filed
+  2026-07-26 from the scan-plan C++ unit-test work — SerializeFiltersToIRC / position-set coverage
+  no `.test` can drive in isolation.)_
 
 ## Driver interface (Fork A — being designed)
 

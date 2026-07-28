@@ -366,6 +366,16 @@ coordination primitive that can't actually coordinate them.
 - Selected-but-unprovisionable → `pytest.fail`, counted (the north star, pinned end to end).
 - Boot and attach blocks are shape-identical (pinned); attached services never enter the store.
 - Store: single-flight under contention; poison-pill fails fast without retry (pinned).
+- **Every scan→decorate→plan→execute boundary that carries state is an inspectable dict/struct, and
+  that struct — not the eventual subprocess argv/env — is the primary unit-test surface.** (Raised
+  2026-07-25, the az matrix `properties` work; the discipline this project is converging toward,
+  §10 item 5's `Plan.as_dict()` being the limit case.) A matrix cell's `properties` dict (decorate-
+  time), `_split_matrix_cell_properties`'s `(env, temp_roots)` tuple, and the merged `temp_roots`
+  dict (execute-time) are each asserted on directly, not just inferred from a stub binary's argv —
+  see `test_auto_init_sql.py`'s `_matrix_cell_env`/`_matrix_cell_temp_roots` tests. An E2E/stub-
+  binary test (`test_temp_roots.py`'s pattern) still earns its keep — it's what proves the struct's
+  wiring actually reaches the binary — but it's confirmatory, not where correctness of the struct
+  itself gets proven; a phase's own test should never be the ONLY test of that phase's output.
 
 ## 10. Open decisions (carry into implementation)
 1. **Cross-process service ownership** — ship `provision-service`/`teardown-service` on a new on-disk
@@ -395,6 +405,15 @@ coordination primitive that can't actually coordinate them.
    pytest (that reinvents the predictor we deleted). A fresh `execv` of pytest is warranted only if an
    *outer* script wants a clean per-mode invocation; internally, test/reassert share the binary and
    run/repl is a CLI subprocess.
+6. **`--temp-dir-base` naming/env-parity** (raised 2026-07-25, the az suite-matrix work). `--data-dir`
+   has a `DUCKDB_TEST_DATA_DIR` env fallback (`test_config.cpp`'s generic `DUCKDB_TEST_*` option
+   loop); `--temp-dir-base` doesn't — it's parsed directly in `unittest.cpp`'s argv loop, CLI-only.
+   Also, `root` (§11.2's own term for the same thing) reads better than `base` for what's a *prefix*
+   two more levels get appended onto. **Leaning:** fix both upstream (env fallback + a `root`-named
+   flag, `--temp-dir-base` kept as a deprecated alias) rather than carry the asymmetry indefinitely —
+   low blast radius, and it removes the CLI-arg-only reason `_matrix_cell_temp_roots` (§11.4) has to
+   thread this as an argv token instead of plain env. Until it lands: `sqllogic.py`'s `_invoke` has a
+   `TODO` at the `--temp-dir-base` assignment; update both there and here together.
 
 ## 11. TEMP / DATA storage — dir structure + lifecycle (authoritative)
 
@@ -412,6 +431,18 @@ follows pins the **driver ↔ binary division** exactly.
   *provisioning*, never test execution.
 
 **Litmus: if it's swept, it's TEMP; DATA is never swept.**
+
+**`DATA_DIR`/`TEMP_DIR` are permanently reserved names — a `.test` body can never `require-env`
+either one.** Found live in the az suite-matrix work (2026-07-25): `test_sqllogictest.cpp`
+unconditionally copies the binary's *entire* `test_env` map (which always has `DATA_DIR`/`TEMP_DIR`
+set — override or the local-scratch default, never absent) into a fresh test's substitution scope
+*before* the body parses. `require-env DATA_DIR`/`require-env TEMP_DIR` then always hits
+`sqllogic_test_runner.cpp`'s "already defined" guard — **regardless of whether `--data-dir`/
+`--temp-dir-base` was set**; the override changes what the names *resolve to*, not whether
+`require-env` against them is legal. The fix for a `.test` file that needs these values is to use
+`{DATA_DIR}`/`{TEMP_DIR}` substitution directly and drop the `require-env` gate for those two names
+specifically (it's dead weight — they're never actually absent, so the gate can only ever fail, not
+skip). Any *other* env var name is unaffected and `require-env`s normally.
 
 ### 11.2 TEMP directory structure
 ```
@@ -447,6 +478,21 @@ just gets the free incremental optimization, remote doesn't.
   no `/$RUN_ID` level is appended (`ResolveRunIdRoot` returns `$BASE`).
 - **`--temp-dir-destroy {never|on-success|always}`** — gates the binary's **local** sweep only.
 - **`--data-dir <dir>`** — only when overriding the read-only DATA axis; no lifecycle.
+
+**Matrix-cell overrides of `root`/`data_dir`** (the az suite-matrix work, 2026-07-25). `_temp_roots
+(config)` is cached once per `config` — session-wide, not cell-aware — but a suite-level `matrix=`
+cell (two cells of the same `.test` file needing *different* remote roots, e.g. `az://` vs `abfss://`
+against different storage accounts) can't share one `--temp-dir-base`/`--data-dir`. A cell declares
+its need as a flat `"properties"` dict — e.g. `{"temp_dir_root": "az://acct.blob.../w", "data_dir":
+"az://acct.blob.../d"}` — same spirit as `requires.py`'s `Requirement.properties`: the conftest says
+*what* it needs; `sqllogic.py`'s `_split_matrix_cell_properties` is the ONE place that decides which
+property names route into `temp_roots` (`temp_dir_root` → `root`, `data_dir` → `data_dir` — both
+then flow through the composition above) versus passing straight through as a literal env var (any
+other key). A conftest never picks CLI-arg-vs-env-var itself. `temp_dir_root` is deliberately not
+named `TEMP_DIR`/`temp_dir` — it's the *prefix* `<root>` in §11.2's tree, not the composed value; a
+cell is fixed at collect+decorate time (`_expand_test_matrix`), strictly before `assign_batches`
+mints `<batch-id>` in the plan phase, so a cell can only ever declare the root, never the batch- or
+test-id-qualified path. See `_matrix_cell_temp_roots`/`_matrix_cell_env` for the merge.
 
 ### 11.5 Execution — local (binary, as-it-goes) vs remote (driver, one sweep)
 - **Local = entirely the binary, incrementally.** `DestroyTestTempDir` sweeps each passing `<test-id>/`;

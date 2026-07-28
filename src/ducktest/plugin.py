@@ -1110,7 +1110,14 @@ def _repl_resource_init_sql(config, session, *, redact=False) -> str:
     _for_each_reachable_resource(
         config, _reachable_suites(config, session.items), on_credential=_on_credential, on_service=_on_service
     )
-    return "".join(p for p in parts if p)
+    # A to_init_sql MAY prepend "require <ext>\n\n" (see _extract_requires) -- but this string is
+    # written verbatim into a real `duckdb -init` file (_launch_shell), which has no `require`
+    # directive at all (that's the SQLLogicTest runner's, not the CLI's). Convert to plain `LOAD
+    # <ext>;` instead: fine for an interactive --repl session on a real dev machine's ordinary
+    # $HOME, unlike the sandboxed one --init-sqllogic runs under (see _write_init_sqllogic_snippet).
+    requires, sql = _extract_requires("".join(p for p in parts if p))
+    loads = "".join(f"LOAD {r[len('require ') :]};\n" for r in requires)
+    return loads + sql
 
 
 # ---------------------------------------------------------------------------
@@ -1152,17 +1159,50 @@ def _suite_init_sql(config, suite) -> str:
     return "".join(p for p in parts if p)
 
 
+def _extract_requires(sql_text: str) -> tuple:
+    """Pull `require <ext>` lines out of `sql_text` -- a `to_init_sql` MAY prepend `"require
+    <ext>\\n\\n"` to declare an extension it needs loaded, rather than a bare `LOAD <ext>;`
+    statement (see `Credential`/`Service.to_init_sql` docstrings in `suites.py` for why: only
+    `require`'s C++ handling, `SQLLogicTestRunner::LoadExtension`, reliably tries built-in/static
+    loading first, then `INSTALL <ext> FROM` the compile-time-known local repo, before `LOAD`; a
+    bare `LOAD <ext>;` only ever checks `$HOME/.duckdb`'s cache and "works" by accident).
+
+    Returns `(requires, sql)`: the deduped require lines (insertion order), and the remaining text
+    with those lines removed. `require <ext>` is a sqllogic DIRECTIVE, not SQL or a shell command --
+    each of this function's two callers translates it differently for what THEIR consumer actually
+    understands: `_write_init_sqllogic_snippet` emits it as a real `require` directive (the `unittest`
+    binary's sqllogic runner); `_repl_resource_init_sql` converts it to a plain `LOAD <ext>;`
+    statement (the real `duckdb` CLI's `-init` file has no `require` directive at all -- a bare LOAD
+    is fine there, since `--repl` runs on a real dev machine's ordinary `$HOME`, not the
+    `--init-sqllogic` path's freshly sandboxed one that made the bare-LOAD form unreliable there)."""
+    requires = []
+    sql_lines = []
+    for line in sql_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("require ") and stripped not in requires:
+            requires.append(stripped)
+        elif not stripped.startswith("require "):
+            sql_lines.append(line)
+    return requires, "\n".join(sql_lines).strip("\n")
+
+
 def _write_init_sqllogic_snippet(sql_text: str) -> str:
-    """One `statement ok` block wrapping `sql_text` verbatim, as a `--init-sqllogic`-ready `.test`
-    file. DuckDB's `Query()` executes a `;`-separated multi-statement batch in one call, so a
-    `to_init_sql` producing more than one statement needs no per-statement splitting here.
+    """A `--init-sqllogic`-ready `.test` file: any `require <ext>` lines in `sql_text`
+    (`_extract_requires`) are emitted ahead of a `statement ok` block wrapping the rest verbatim --
+    a directive can't sit inside a `statement ok`. DuckDB's `Query()` executes a `;`-separated
+    multi-statement batch in one call, so a `to_init_sql` producing more than one SQL statement
+    needs no per-statement splitting here. No `statement ok` block at all when nothing but
+    `require` lines remain (an empty one would be a parse error).
 
     Left on disk for the rest of the invocation (a few bytes, at most one per opted-in suite per
     worker process) — not worth the LOCAL_*/DATA sweep machinery real test data already has.
     """
+    requires, sql = _extract_requires(sql_text)
+    preamble = "".join(f"{r}\n\n" for r in requires)
+    body = f"statement ok\n{sql}\n" if sql else ""
     fd, path = tempfile.mkstemp(suffix=".test", prefix="ducktest-init-sqllogic-")
     with os.fdopen(fd, "w") as f:
-        f.write(f"statement ok\n{sql_text}\n")
+        f.write(f"{preamble}{body}")
     return path
 
 
@@ -1170,23 +1210,27 @@ _init_sqllogic_paths: dict = {}  # (id(config), suite.name) -> temp .test path, 
 
 
 def _init_sqllogic_arg_for_item(config, item) -> list:
-    """`["--init-sqllogic", path]` for a bare `.test` item whose suite opts in via
-    `auto_init_sql=True`; `[]` for a non-opted-in suite, or one with nothing to inject (no
-    credential/service `to_init_sql`, or none currently provisioned).
+    """`["--init-sqllogic", path]` for a `.test` item that needs preamble SQL injected: its suite's
+    `auto_init_sql=True` credential/service SQL, and/or a matrix cell's own `init_sql` property —
+    merged into ONE snippet (never two `--init-sqllogic` args). `[]` when there's nothing to inject.
 
-    Memoized per `(config, suite)` for this worker process — `_suite_init_sql` reads back already-
-    provisioned resources, so recomputing it per test would just rebuild the identical string.
+    Memoized per `(config, suite, cell_sql)` for this worker — `_suite_init_sql` reads back already-
+    provisioned resources, so recomputing the identical string per test is wasted work; the cell's SQL
+    is part of the key so distinct cells of the same file don't share a snippet.
     """
-    suites = [s for s in get_suites(config) if s.auto_init_sql]
-    if not suites:
+    from .sqllogic import _matrix_cell_init_sql
+
+    cell_sql = _matrix_cell_init_sql(item)
+    suite = next(
+        (s for s in get_suites(config) if s.auto_init_sql and _item_in_suite(config, item, s)), None
+    )
+    if suite is None and not cell_sql:
         return []
-    suite = next((s for s in suites if _item_in_suite(config, item, s)), None)
-    if suite is None:
-        return []
-    key = (id(config), suite.name)
+    key = (id(config), suite.name if suite else None, cell_sql or "")
     path = _init_sqllogic_paths.get(key)
     if path is None:
-        sql = _suite_init_sql(config, suite)
+        parts = [p for p in (_suite_init_sql(config, suite) if suite else "", cell_sql) if p]
+        sql = "\n\n".join(parts)
         path = _write_init_sqllogic_snippet(sql) if sql else ""
         _init_sqllogic_paths[key] = path
     return ["--init-sqllogic", path] if path else []

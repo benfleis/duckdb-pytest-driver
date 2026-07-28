@@ -38,16 +38,95 @@ def _test_batch_id(test_name: str) -> str:
     return "test-" + hashlib.sha1(test_name.encode()).hexdigest()[:10]
 
 
-def _matrix_cell_env(item) -> dict:
-    """The per-invocation env override for a matrix-fanned `.test` item, if its cell dict carries
-    one (`plugin.py`'s `_expand_test_matrix` stamps `_matrix_cell` with the suite's cell dict
-    verbatim) -- e.g. two cells of the same file needing DIFFERENT DATA_DIR/TEMP_DIR values can't
-    both mutate the shared `os.environ` (the up-front `to_env`/adopt model is invocation-wide, not
-    cell-aware); `_invoke`'s own `env=` already layers per-subprocess-call, which is exactly cell-
-    scoped. The framework doesn't interpret the cell otherwise -- an "env" key is just read if
-    present. `None` for a non-matrix item (today's behavior, unchanged)."""
+def _matrix_cell_properties(item) -> dict:
+    """The single per-cell `properties` dict a matrix-fanned `.test` item's cell carries, if any
+    (`plugin.py`'s `_expand_test_matrix` stamps `_matrix_cell` with the suite's cell dict verbatim).
+    Homogeneous, backend-declared vocabulary -- same spirit as `requires.py`'s `Requirement.properties`:
+    a cell says WHAT it needs (`temp_dir_root`, `data_dir`, or any plain env var name); which of
+    those becomes a `--temp-dir-base`/`--data-dir` CLI arg vs a literal env var is THIS module's
+    call (`_split_matrix_cell_properties`), never the conftest's. `{}` for a non-matrix item or a
+    cell with no `properties` key."""
     cell = getattr(item, "_matrix_cell", None)
-    return cell.get("env") if cell else None
+    return (cell.get("properties") if cell else None) or {}
+
+
+# Property names this module claims and routes into `temp_roots` (`--temp-dir-base`/`--data-dir`)
+# instead of passing through as a literal env var; everything else is a plain env var, verbatim.
+# `temp_dir_root` is deliberately NOT `TEMP_DIR`/`--temp-dir-base` itself -- it's the prefix
+# `_invoke` composes `<root>/<session-id>/<batch-id>` onto (SPEC §11.2/§11.4). `<batch-id>` isn't
+# minted until `assign_batches` runs in the PLAN phase, strictly after a matrix cell's properties
+# are fixed at collect+decorate time (`_expand_test_matrix` runs first) -- so a cell can only ever
+# declare the root, never the composed TEMP_DIR.
+_TEMP_ROOTS_PROPERTY_KEYS = {"temp_dir_root": "root", "data_dir": "data_dir"}
+
+# A cell's `test_config` property is a duckdb `--test-config` JSON path (its `on_init` SQL,
+# `statically_loaded_extensions`, `skip_tests`) passed to the binary -- NOT a literal env var.
+_TEST_CONFIG_PROPERTY_KEY = "test_config"
+
+# A cell's `init_sql` property is inline preamble SQL (e.g. `SET x='y';`) merged into the item's
+# `--init-sqllogic` snippet ahead of the body (plugin._init_sqllogic_arg_for_item) -- NOT an env var.
+# The lighter alternative to `test_config` for a pure-SET cell (see docs/MATRIX.md).
+_INIT_SQL_PROPERTY_KEY = "init_sql"
+
+# Property names claimed by a dedicated mechanism, so never routed into env vars / temp roots.
+_CLAIMED_PROPERTY_KEYS = frozenset({_TEST_CONFIG_PROPERTY_KEY, _INIT_SQL_PROPERTY_KEY})
+
+
+def _split_matrix_cell_properties(properties: dict):
+    """Split a cell's `properties` dict into `(env, temp_roots)` -- the ONE place that decides which
+    property names are `--temp-dir-base`/`--data-dir` CLI args (`_TEMP_ROOTS_PROPERTY_KEYS`) vs
+    literal env vars (everything else, passed through verbatim). `_CLAIMED_PROPERTY_KEYS`
+    (`test_config`/`init_sql`) are handled by their own mechanisms, never env vars."""
+    env, temp_roots = {}, {}
+    for key, value in properties.items():
+        if key in _CLAIMED_PROPERTY_KEYS:
+            continue
+        dest = _TEMP_ROOTS_PROPERTY_KEYS.get(key)
+        (temp_roots if dest else env)[dest or key] = value
+    return env, temp_roots
+
+
+def _matrix_cell_init_sql(item):
+    """A matrix cell's `init_sql` property -- inline preamble SQL merged into the item's
+    `--init-sqllogic` snippet ahead of the body -- or `None` for a non-matrix item / a cell without
+    one. Merged (not a second `--init-sqllogic`) by `plugin._init_sqllogic_arg_for_item`."""
+    return _matrix_cell_properties(item).get(_INIT_SQL_PROPERTY_KEY) or None
+
+
+def _matrix_cell_test_config_args(item, working_dir) -> list:
+    """`["--test-config", <path>]` when a matrix cell declares a `test_config` property (a duckdb
+    test-config JSON: its `on_init` SQL, `statically_loaded_extensions`, `skip_tests`); `[]` for a
+    non-matrix item or a cell without one. Path resolves relative to `working_dir`. Reusing duckdb's
+    native `--test-config` lets a consumer matrix over its existing config JSONs (see docs/MATRIX.md)."""
+    path = _matrix_cell_properties(item).get(_TEST_CONFIG_PROPERTY_KEY)
+    if not path:
+        return []
+    return ["--test-config", path if os.path.isabs(path) else os.path.join(working_dir, path)]
+
+
+def _matrix_cell_env(item) -> dict:
+    """The per-invocation env override for a matrix-fanned `.test` item, from its cell's
+    `properties` (the non-`temp_dir_root`/`data_dir` entries) -- e.g. two cells of the same file
+    needing DIFFERENT values can't both mutate the shared `os.environ` (the up-front `to_env`/adopt
+    model is invocation-wide, not cell-aware); `_invoke`'s own `env=` already layers per-subprocess-
+    call, which is exactly cell-scoped. `None` for a non-matrix item or a cell with no plain-env
+    properties (today's behavior, unchanged)."""
+    env, _ = _split_matrix_cell_properties(_matrix_cell_properties(item))
+    return env or None
+
+
+def _matrix_cell_temp_roots(item, base: dict) -> dict:
+    """`base` (the run-wide `_temp_roots(config)`), with a matrix cell's `temp_dir_root`/`data_dir`
+    properties overlaid as `root`/`data_dir` -- same rationale as `_matrix_cell_env`, for the SAME
+    two fields (`--temp-dir-base`/`--data-dir` are already remote-capable, SPEC §11.2/§11.3, but
+    `_temp_roots` is cached once per `config`, not cell-aware): two cells of the same file needing
+    DIFFERENT remote roots (e.g. `az://` vs `abfss://`, different storage accounts) can't share one
+    `--temp-dir-base`/`--data-dir`. `session_id`/`destroy` stay run-wide -- only `root`/`data_dir`
+    are ever cell-specific. `base` unchanged for a non-matrix item or a cell with neither property."""
+    _, override = _split_matrix_cell_properties(_matrix_cell_properties(item))
+    if not override:
+        return base
+    return {**base, **{k: v for k, v in override.items() if v is not None}}
 
 
 def _cell_suffix(cell) -> str:
@@ -165,10 +244,14 @@ class SqlLogicItem(pytest.Item):
             self._binary,
             [self._test_name],
             self._working_dir,
-            self._temp_roots,
+            _matrix_cell_temp_roots(self, self._temp_roots),
             batch_id=item_batch_id(self),
             env=_matrix_cell_env(self),
-            extra_args=[*_init_sqllogic_arg_for_item(self.config, self), *resolve_unittest_args(self.config)],
+            extra_args=[
+                *_matrix_cell_test_config_args(self, self._working_dir),
+                *_init_sqllogic_arg_for_item(self.config, self),
+                *resolve_unittest_args(self.config),
+            ],
         )
         _raise_for_result(_parse_result(result), test_file=str(self.path))
 
@@ -183,10 +266,14 @@ class SqlLogicItem(pytest.Item):
                     self._batch_test_names,
                     self._binary,
                     self._working_dir,
-                    self._temp_roots,
+                    _matrix_cell_temp_roots(self, self._temp_roots),
                     batch_id=item_batch_id(self),
                     env=_matrix_cell_env(self),
-                    extra_args=[*_init_sqllogic_arg_for_item(self.config, self), *resolve_unittest_args(self.config)],
+                    extra_args=[
+                        *_matrix_cell_test_config_args(self, self._working_dir),
+                        *_init_sqllogic_arg_for_item(self.config, self),
+                        *resolve_unittest_args(self.config),
+                    ],
                 )
         r = _batch_cache[self._batch_id].get(self._test_name, {"status": "internal_error"})
         _raise_for_result(r, test_file=str(self.path))
@@ -327,6 +414,10 @@ def _invoke(
         # destroy is passed THROUGH to gate the binary's LOCAL sweep. DATA is a plain read-only path:
         # --data-dir only when the driver has an override, else the binary defaults to working_dir/data.
         base = _compose_base(temp_roots["root"], temp_roots["session_id"], batch_id)
+        # TODO: DuckDB's --temp-dir-base has no DUCKDB_TEST_*-style env fallback (unlike --data-dir),
+        # and "base" reads worse than "root" for what's really a prefix another two levels get
+        # appended onto (SPEC §11.4) -- once upstream lands an env-settable, root-named equivalent,
+        # switch this (and the CLI flag this driver itself exposes) over to match.
         temp_args = ["--temp-dir-base", base, "--temp-dir-run-id", "off"]
         if temp_roots.get("destroy"):
             temp_args += ["--temp-dir-destroy", str(temp_roots["destroy"])]

@@ -37,7 +37,8 @@ def test_decorate_carries_build_and_run_setting():
 def test_batch_key_is_a_projection_of_the_canonical_key():
     item = _FakeItem(binary="/bin/unittest", working_dir="/work")
     key = decorate(item)
-    assert _batch_key(item) == (key.build, key.run_setting, key.cell)
+    # 4th component: the resolved --init-sqllogic argv, () for a fake with no real `.config`.
+    assert _batch_key(item) == (key.build, key.run_setting, key.cell, ())
     assert _batch_key(_FakeItem()) is None
 
 
@@ -63,7 +64,7 @@ def test_decorate_accepts_backend_access_cell_overrides():
     key = decorate(item, backend="azurite-az", access="ro", cell="managed")
     assert key == Key(build="/bin/unittest", run_setting="/work", backend="azurite-az", access="ro", cell="managed")
     # _batch_key reads `_cell` off the item itself, not decorate()'s override args above
-    assert _batch_key(item) == (key.build, key.run_setting, None)
+    assert _batch_key(item) == (key.build, key.run_setting, None, ())
 
 
 def test_batch_key_is_cell_aware():
