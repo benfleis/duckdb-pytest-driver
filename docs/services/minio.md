@@ -16,10 +16,11 @@ CREATE SECRET (TYPE S3, KEY_ID …, SECRET …, ENDPOINT '127.0.0.1:9000', URL_S
 |---|---|---|
 | `access_key` / `secret_key` | `admin` / `password` | local dev creds, see below |
 | `region` | `us-east-1` | |
+| `domain` | `None` | optional bare FQDN enabling virtual-host bucket routing |
 | `port` | `9000` | |
 | `endpoint` | `http://127.0.0.1:9000` | for rclone + health probes |
 | `s3_endpoint` | `127.0.0.1:9000` | derived host:port for duckdb `ENDPOINT` |
-| `url_style` | `path` | fixed: local MinIO can't do virtual-host addressing |
+| `url_style` | `path` | conservative default; a configured domain accepts path and vhost requests |
 | `use_ssl` | `False` | fixed: http |
 | `bucket` | `ducktest` | |
 | `container` | `ducktest-minio` | the `docker exec` target for `mc` |
@@ -51,6 +52,10 @@ The AWS names are what glue/boto/pyarrow read; the `S3_*` names are what a body 
   check otherwise depends on Docker's host storage. Raise the cap for large seed datasets.
 - **Bucket pre-create** via rclone — MinIO auto-creates nothing, and any write to a missing bucket is
   `NoSuchBucket`. Idempotent.
+- **Optional virtual-host routing** — `DUCKTEST_MINIO_DOMAIN=<bare-fqdn>` passes `MINIO_DOMAIN` to the
+  container and uses `http://<domain>:<port>` as the public endpoint. The domain and its bucket
+  subdomains must resolve to the host loopback; for network-enabled tests,
+  `127.0.0.1.nip.io` supplies that wildcard DNS behavior.
 - **Two failure points after `docker run`**: readiness and bucket creation. Both clean up the container
   before re-raising.
 
@@ -105,7 +110,7 @@ pulls it otherwise.
 
 ## Knobs
 
-`DUCKTEST_MINIO_ACCESS_KEY`, `_SECRET_KEY`, `_REGION`, `_BUCKET`, `_IMAGE`, `_PIN`, `_CONTAINER`
+`DUCKTEST_MINIO_ACCESS_KEY`, `_SECRET_KEY`, `_REGION`, `_BUCKET`, `_DOMAIN`, `_IMAGE`, `_PIN`, `_CONTAINER`
 (`ducktest-minio`), `_S3_PORT` (9000), `_CONSOLE_PORT` (9001), `_TMPFS_SIZE` (2g), `_READY_TIMEOUT_S` (20).
 Namespace and source are global: `DUCKTEST_IMAGE_NS`, `DUCKTEST_IMAGE_SOURCE`.
 
@@ -113,8 +118,8 @@ Namespace and source are global: `DUCKTEST_IMAGE_NS`, `DUCKTEST_IMAGE_SOURCE`.
 
 The httpfs corpus was built against a bespoke compose stack. Unmet by the defaults: region
 `eu-west-1`, the legacy `minio_duckdb_user` credentials plus a **second** user, three buckets
-(`test-bucket` with **versioning**, `test-bucket-2`, `test-bucket-public` with an anonymous policy), and
-virtual-host addressing via `test-bucket.duckdb-minio.com` hostnames.
+(`test-bucket` with **versioning**, `test-bucket-2`, `test-bucket-public` with an anonymous policy).
 
 The `mc` helpers cover the second user, versioning, and anonymous policy. Bucket layout belongs in a
-suite's `populate`. Virtual-host addressing has no mechanism yet.
+suite's `populate`. The suite can enable virtual-host coverage with
+`DUCKTEST_MINIO_DOMAIN=127.0.0.1.nip.io`.

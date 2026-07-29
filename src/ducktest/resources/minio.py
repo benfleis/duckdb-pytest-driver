@@ -28,6 +28,9 @@ ACCESS_KEY = os.environ.get("DUCKTEST_MINIO_ACCESS_KEY", "admin")
 SECRET_KEY = os.environ.get("DUCKTEST_MINIO_SECRET_KEY", "password")
 REGION = os.environ.get("DUCKTEST_MINIO_REGION", "us-east-1")
 DEFAULT_BUCKET = os.environ.get("DUCKTEST_MINIO_BUCKET", "ducktest")
+# Optional wildcard-resolved base domain for virtual-host bucket access. MinIO expects the bare FQDN;
+# clients address buckets as ``<bucket>.<domain>``.
+DOMAIN = os.environ.get("DUCKTEST_MINIO_DOMAIN") or None
 
 # Driver-owned image: `images/minio/Dockerfile` layers `mc` into the server image.
 # A DUCKTEST_MINIO_IMAGE override must also carry `mc`.
@@ -55,19 +58,23 @@ def minio_block(**overrides):
 
     ``s3_endpoint`` (host:port, no scheme — what duckdb's ``ENDPOINT`` wants) is DERIVED from
     ``endpoint``, so overriding the endpoint keeps them consistent; that's why this is a function and
-    not a dict (docs/SERVICES.md). MinIO on ``127.0.0.1`` needs path-style + no TLS, so ``url_style``
-    and ``use_ssl`` are fixed.
+    not a dict (docs/SERVICES.md). ``domain`` enables MinIO's virtual-host routing while ``url_style``
+    stays path by default; consumers can exercise either style against the same endpoint.
     """
     port = int(overrides.get("port", S3_PORT))
-    endpoint = (overrides.get("endpoint") or f"http://127.0.0.1:{port}").rstrip("/")
+    domain = overrides.get("domain", DOMAIN) or None
+    if domain and any(token in domain for token in (":", "/", ",")):
+        raise ValueError("minio domain must be one bare FQDN without a scheme, port, path, or comma")
+    endpoint = (overrides.get("endpoint") or f"http://{domain or '127.0.0.1'}:{port}").rstrip("/")
     b = {
         "access_key": overrides.get("access_key", ACCESS_KEY),
         "secret_key": overrides.get("secret_key", SECRET_KEY),
         "region": overrides.get("region", REGION),
+        "domain": domain,
         "port": port,
         "endpoint": endpoint,  # scheme'd http URL — for rclone + the health probe
         "s3_endpoint": endpoint.split("://", 1)[-1],  # host:port — for duckdb ENDPOINT / SET s3_endpoint
-        "url_style": "path",  # local MinIO can't do virtual-host addressing
+        "url_style": "path",  # conservative default; a configured domain also accepts vhost requests
         "use_ssl": False,  # http, not https
         "bucket": overrides.get("bucket", DEFAULT_BUCKET),
         "container": overrides.get("container", CONTAINER),
@@ -212,6 +219,7 @@ def _start(config):
     """
     with step(f"starting MinIO ({IMAGE})"):
         _docker("rm", "-f", CONTAINER, check=False)  # force-remove any leftover
+        domain_env = ("-e", f"MINIO_DOMAIN={DOMAIN}") if DOMAIN else ()
         _docker(
             "run",
             "-d",
@@ -225,6 +233,7 @@ def _start(config):
             f"MINIO_ROOT_USER={ACCESS_KEY}",
             "-e",
             f"MINIO_ROOT_PASSWORD={SECRET_KEY}",
+            *domain_env,
             "--tmpfs",
             f"/data:size={TMPFS_SIZE}",  # see TMPFS_SIZE
             IMAGE,

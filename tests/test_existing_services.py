@@ -12,6 +12,7 @@ import textwrap
 import pytest
 
 from ducktest.plugin import _norm_service_key, _parse_existing_services
+from ducktest.resources import minio
 from ducktest.resources.azurite import ACCOUNT, azurite_alive, azurite_block, azurite_env
 from ducktest.resources.minio import (
     ACCESS_KEY,
@@ -142,6 +143,31 @@ def test_minio_block_defaults():
     assert b["bucket"] == DEFAULT_BUCKET
     assert b["container"] == CONTAINER
     assert b["mc_alias"] == "ducktest"
+    assert b["domain"] is None
+
+
+def test_minio_block_domain_uses_resolvable_public_endpoint():
+    b = minio_block(domain="127.0.0.1.nip.io")
+    assert b["domain"] == "127.0.0.1.nip.io"
+    assert b["endpoint"] == "http://127.0.0.1.nip.io:9000"
+    assert b["s3_endpoint"] == "127.0.0.1.nip.io:9000"
+    assert b["url_style"] == "path"
+
+
+def test_minio_managed_start_passes_domain_to_container(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(minio, "DOMAIN", "127.0.0.1.nip.io")
+    monkeypatch.setattr(minio, "_docker", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(minio, "wait_until", lambda *args: None)
+    monkeypatch.setattr(minio, "_ensure_bucket", lambda block: None)
+
+    block = minio._start(None)
+
+    run_args = next(args for args, _ in calls if args[0] == "run")
+    domain_index = run_args.index("MINIO_DOMAIN=127.0.0.1.nip.io")
+    assert run_args[domain_index - 1 : domain_index + 1] == ("-e", "MINIO_DOMAIN=127.0.0.1.nip.io")
+    assert block["endpoint"] == "http://127.0.0.1.nip.io:9000"
 
 
 def test_minio_block_endpoint_override_recomputes_s3_endpoint():
