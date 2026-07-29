@@ -25,11 +25,26 @@ dependencies = ["pytest>=7.4"]
 # For CONSUMERS who want `-n` parallelism: `pip install duckdb-pytest-driver[xdist]`.
 xdist = ["pytest-xdist"]
 
+# For CONSUMERS who need TLS fixtures — the shared `ca` service and httpserver's HTTPS mode. Just a cert
+# generator, so it carries NO python floor and no proxy: TLS-origin tests work on the driver's own 3.9 floor.
+tls = ["cryptography>=42"]
+
+# For CONSUMERS who want L7 fault injection / capture (the in-venv mitmproxy service):
+# `pip install duckdb-pytest-driver[mitm]`. Superset of [tls] — mitm signs with the same shared CA.
+# The `python_version >= "3.12"` marker keeps the 3.9 FLOOR (the driver vendors into duckdb core) while
+# satisfying uv's universal lock: modern mitmproxy needs >=3.12, so on older interpreters that dep drops
+# out and the mitm service is unavailable (its self-test skips on a missing `mitmdump`) while [tls] — and
+# so the CA and the HTTPS origin — keeps working.
+mitm = ["mitmproxy>=11; python_version >= '3.12'", "cryptography>=42"]
+
 # For DEVELOPING the driver: its own self-tests spin up inner `pytest -n 2` subprocesses (the
 # controller/worker store, broadcast, and service tests), so xdist is required to run them. `uv run`
 # includes the `dev` group by default, so plain `uv run pytest` works with no extra flag.
 [dependency-groups]
-dev = ["pytest-xdist"]
+# mitmproxy: the mitm-service self-test boots a real `mitmdump` subprocess (offline — no docker, no
+# network), so `uv run pytest` exercises it. Same 3.12 marker as the `[mitm]` extra above, so the dev
+# env resolves on the 3.9 floor (the dep drops out; the test skips) and installs mitm on 3.12+.
+dev = ["pytest-xdist", "mitmproxy>=11; python_version >= '3.12'"]
 
 [project.urls]
 Homepage = "https://github.com/duckdb/duckdb"
