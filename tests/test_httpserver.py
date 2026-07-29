@@ -1,11 +1,4 @@
-"""Offline self-test for the in-venv httpserver service.
-
-Boots a REAL file-server subprocess — but a local process in this venv, so (like the mitm self-test) it's
-genuinely offline (no docker, no network) and runs in the default suite. It drives the pure
-``(control_dir, docroot, port)`` lifecycle (``_spawn``/``_shutdown``) directly, so no pytest config is
-needed. The HTTP path is pure stdlib (no extra deps); the HTTPS path mints a leaf from the shared CA, so it
-gates on the ``[tls]`` extra (cryptography, ca.py's generator) — not on mitmproxy.
-"""
+"""Offline tests for the in-venv httpserver service."""
 
 import os
 import socket
@@ -22,8 +15,7 @@ _HAVE_TLS = ca._IMPORT_ERROR is None
 
 
 def _free_port() -> int:
-    """An ephemeral port the OS just handed us — closed immediately, so the server can bind it. A tiny
-    reuse race is acceptable in a test (and avoids colliding with a real run on the fixed default)."""
+    """Return an ephemeral port for the test server."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -120,7 +112,7 @@ def test_start_https_adopts_ca_trust_through_http_block(monkeypatch, tmp_path):
 
 
 def test_lifecycle_http(tmp_path):
-    """Boot → alive → actually serves a written file over HTTP → stop → dead. The write-back contract."""
+    """Boot, serve a file written after startup, then stop."""
     control, docroot = str(tmp_path / "ctl"), str(tmp_path / "www")
     port = _free_port()
 
@@ -132,7 +124,7 @@ def test_lifecycle_http(tmp_path):
         assert hs.http_alive(block)
         assert os.path.exists(proc.pidfile(hs.PROC, control))
 
-        # write into the served docroot AFTER boot (as a .test body's COPY does) and read it back
+        # Write after boot, matching a `.test` body that materializes files with COPY.
         with open(os.path.join(docroot, "hello.csv"), "w") as f:
             f.write("a\n1\n")
         with urllib.request.urlopen(f"{block['endpoint']}/hello.csv", timeout=5) as r:
@@ -188,7 +180,7 @@ def test_lifecycle_https(tmp_path):
         assert block["endpoint"] == f"https://127.0.0.1:{port}"
         with open(os.path.join(docroot, "hello.csv"), "w") as f:
             f.write("b\n2\n")
-        # trust ONLY the shared CA — proves the leaf chains to the anchor duckdb's ca_cert_file points at
+        # Trust only the shared CA, proving the leaf chains to the exported anchor.
         ctx = ssl.create_default_context(cafile=ca_block["ca_cert_file"])
         with urllib.request.urlopen(f"{block['endpoint']}/hello.csv", context=ctx, timeout=5) as r:
             assert r.read() == b"b\n2\n"

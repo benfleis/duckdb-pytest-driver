@@ -2,13 +2,13 @@
 
 `ducktest.resources.minio` · key `minio` · fixture `minio` · **docker**
 
-The S3 sibling of azurite (the worked example in [../SERVICES.md](../SERVICES.md)). duckdb consumes it as:
+S3-compatible object store service. duckdb consumes it as:
 
 ```sql
 CREATE SECRET (TYPE S3, KEY_ID …, SECRET …, ENDPOINT '127.0.0.1:9000', URL_STYLE 'path', USE_SSL 0);
 ```
 
-`to_init_sql=minio_init_sql` emits exactly that secret, named `ducktest_minio`.
+`minio_init_sql` emits this secret as `ducktest_minio`.
 
 ## Block
 
@@ -17,8 +17,8 @@ CREATE SECRET (TYPE S3, KEY_ID …, SECRET …, ENDPOINT '127.0.0.1:9000', URL_S
 | `access_key` / `secret_key` | `admin` / `password` | local dev creds, see below |
 | `region` | `us-east-1` | |
 | `port` | `9000` | |
-| `endpoint` | `http://127.0.0.1:9000` | scheme'd — for rclone + the health probe |
-| `s3_endpoint` | `127.0.0.1:9000` | **derived** — host:port, what duckdb's `ENDPOINT` wants |
+| `endpoint` | `http://127.0.0.1:9000` | for rclone + health probes |
+| `s3_endpoint` | `127.0.0.1:9000` | derived host:port for duckdb `ENDPOINT` |
 | `url_style` | `path` | fixed: local MinIO can't do virtual-host addressing |
 | `use_ssl` | `False` | fixed: http |
 | `bucket` | `ducktest` | |
@@ -29,8 +29,7 @@ Auth varies per consumer, so everything is parameterized: ice-fixture and duckla
 on `:9000`, ice-nessie `minioadmin`/`minioadmin` on `:9002`. Override via `use_service(MINIO_SERVICE, …)`,
 `--existing-service minio={json}`, or the `DUCKTEST_MINIO_*` env.
 
-> These are local dev credentials, not secrets — the emulator authenticates against exactly these, and
-> they're overridable, so the default is config.
+> These are local emulator credentials, not secrets.
 
 ## Env
 
@@ -47,24 +46,20 @@ The AWS names are what glue/boto/pyarrow read; the `S3_*` names are what a body 
 
 ## Boot
 
-- **Always-create** (`docker rm -f` first) so a container leaked by an interrupted run can't wedge the port.
+- **Always-create** (`docker rm -f` first) so stale containers do not keep the port.
 - **`/data` is a tmpfs** (`--tmpfs /data:size=2g`, `DUCKTEST_MINIO_TMPFS_SIZE`). MinIO's minimum-free-drive
-  check otherwise trips on the host's docker storage and returns `507 XMinioStorageFull` (found live,
-  2026-07-16). RAM-backed gives it a clean sized drive regardless of host disk, and it's ephemeral. Raise
-  the cap for large seed datasets.
+  check otherwise depends on Docker's host storage. Raise the cap for large seed datasets.
 - **Bucket pre-create** via rclone — MinIO auto-creates nothing, and any write to a missing bucket is
   `NoSuchBucket`. Idempotent.
-- **Two failure points after `docker run`** (readiness and the bucket create; azurite has only the first).
-  Both `docker rm -f` the half-booted container before re-raising, since `start` raises before the block is
-  stored and `_stop_services` would never reach it.
+- **Two failure points after `docker run`**: readiness and bucket creation. Both clean up the container
+  before re-raising.
 
 `alive` polls `/minio/health/ready` and requires 200 — the endpoint is authoritative, so a 503 during
 startup means not ready.
 
 ## `mc` helpers
 
-The image carries the `mc` client (see below), so admin operations run via `docker exec` rather than a
-second container. All of these are idempotent and set the alias first.
+The image carries the `mc` client, so admin operations run via `docker exec`.
 
 | | |
 |---|---|
@@ -75,15 +70,12 @@ second container. All of these are idempotent and set the alias first.
 | `minio_version_enable(block, bucket)` | enable bucket versioning |
 | `minio_anonymous_set(block, policy, bucket)` | anonymous access, e.g. `policy='public'` |
 
-An **attached** service (`--existing-service`) must pass a `container` override whose image contains `mc`,
-or these raise.
+Attached services must pass a `container` override whose image contains `mc`.
 
 ## rclone
 
-MinIO always needs explicit creds + endpoint, and the `endpoint` value (`http://…` — the `:` and `/`)
-mangles rclone's inline address form, as would a real secret key. So a MinIO remote must go through a
-**config-file stanza** (`write_conf` + `config=`), never inline. That's what the bucket pre-create does and
-what real seeding must do.
+MinIO uses a config-file stanza (`write_conf` + `config=`), not rclone's inline remote syntax. The URL and
+credentials do not round-trip safely through the inline form.
 
 ```python
 remote = minio_rclone(block)   # type=s3, provider=Minio, creds + endpoint + region
@@ -91,27 +83,25 @@ remote = minio_rclone(block)   # type=s3, provider=Minio, creds + endpoint + reg
 
 ## Image
 
-We ship our own image, not a mirror of upstream's: `resources/images/minio/Dockerfile` layers the `mc`
-client into the MinIO server image. A substitute via `DUCKTEST_MINIO_IMAGE` must also carry `mc`.
+The MinIO image is built from `resources/images/minio/Dockerfile`, which layers `mc` into the server
+image. A `DUCKTEST_MINIO_IMAGE` override must also contain `mc`.
 
 | | |
 |---|---|
-| kind | `build` — `publish-images` builds the Dockerfile, it doesn't copy a ref |
+| kind | `build` |
 | source | `resources/images/minio` |
 | pin | `RELEASE.…-mc…` — names both upstreams the Dockerfile bakes in |
 | served | follows `DUCKTEST_IMAGE_SOURCE`; per-instance override `DUCKTEST_MINIO_IMAGE` |
 
-Bump the pin whenever either Dockerfile `ARG` moves, or a rebuild overwrites a published tag with
-different contents.
+Bump the pin whenever a Dockerfile `ARG` changes.
 
 ```bash
 ducktest build-images            # local build, tagged as the served ref
 ducktest publish-images --push   # one buildx call: every arch, manifest pushed
 ```
 
-`build-images` uses the served ref as its tag, so a local build and the published image are
-interchangeable — docker runs the local one when it exists and pulls when it doesn't. A stale local build
-therefore shadows a newer published one.
+`build-images` tags the local build as the served ref, so Docker uses the local image when present and
+pulls it otherwise.
 
 ## Knobs
 
@@ -121,10 +111,10 @@ Namespace and source are global: `DUCKTEST_IMAGE_NS`, `DUCKTEST_IMAGE_SOURCE`.
 
 ## Gap: httpfs's S3 suite needs more than the defaults
 
-The httpfs corpus (45 files) was built against a bespoke compose stack. Unmet by the defaults: region
+The httpfs corpus was built against a bespoke compose stack. Unmet by the defaults: region
 `eu-west-1`, the legacy `minio_duckdb_user` credentials plus a **second** user, three buckets
 (`test-bucket` with **versioning**, `test-bucket-2`, `test-bucket-public` with an anonymous policy), and
 virtual-host addressing via `test-bucket.duckdb-minio.com` hostnames.
 
-The `mc` helpers cover the second user, versioning and the anonymous policy; bucket layout and policy
-belong in a suite's `populate`, which nothing wires up yet. Virtual-host addressing has no mechanism.
+The `mc` helpers cover the second user, versioning, and anonymous policy. Bucket layout belongs in a
+suite's `populate`. Virtual-host addressing has no mechanism yet.

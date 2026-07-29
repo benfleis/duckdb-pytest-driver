@@ -51,8 +51,8 @@ def test_registry_schema_and_entries():
     assert reg["azurite"]["kind"] == "mirror"
     assert reg["azurite"]["source"].startswith("mcr.microsoft.com/")
     assert reg["azurite"]["platforms"] == ["linux/amd64", "linux/arm64"]  # multi-arch by default
-    # minio ships our OWN image (mc layered into the server image), so it is a `build`, not a mirror:
-    # `source` is the Dockerfile DIR, not an image ref. Azurite carries the mirror assertions above.
+    # minio is a build image: `source` is the Dockerfile dir, not an image ref.
+    # Azurite carries the mirror assertions above.
     assert reg["minio"]["kind"] == "build"
     assert reg["minio"]["source"].endswith(os.path.join("resources", "images", "minio"))
     assert os.path.isabs(reg["minio"]["source"])  # docker build resolves `source` against the CLI's cwd
@@ -77,7 +77,7 @@ def test_push_dry_run_prints_per_arch_plan_no_docker(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert rc == 0
     assert not called  # dry run runs no docker
-    # a mirror emits BOTH arch slices from one machine
+    # a mirror emits both arch slices from one machine
     assert f"{_images.IMAGE_NS}/ducktest-azurite:2026-07-17-amd64" in out
     assert f"{_images.IMAGE_NS}/ducktest-azurite:2026-07-17-arm64" in out
     assert "--finalize" in out  # tells you the next step
@@ -92,7 +92,7 @@ def test_push_runs_core_docker_pull_tag_push_per_arch(monkeypatch):
     monkeypatch.setattr("ducktest.cli.subprocess.run", lambda cmd, *a, **k: cmds.append(cmd) or _P())
     rc = _publish_images(_args(push=True))
     assert rc == 0
-    # the MIRROR path stays core-docker-only: buildx is reached for `build` kinds and nothing else
+    # the mirror path stays core-docker-only; buildx is only used for `build` kinds
     mirror_cmds = [c for c in cmds if any("azurite" in tok for tok in c)]
     assert mirror_cmds and not any("buildx" in tok for c in mirror_cmds for tok in c)
     # mirror path is pull --platform / tag / push, per arch
@@ -160,8 +160,7 @@ def test_finalize_skips_build_kinds(monkeypatch, capsys):
 
 
 def test_build_images_tags_the_local_build_as_the_served_ref(capsys, monkeypatch):
-    """The tag IS the point: local and published are interchangeable, so no env override is needed —
-    docker runs the local image when it exists and pulls when it doesn't."""
+    """Local builds use the served ref, so no env override is needed."""
     monkeypatch.setattr(_images, "IMAGE_SOURCE", "ghcr")
     _images.register_image("fakebuild", "build", "path/to/dockerdir", "v1")
     try:
@@ -178,8 +177,8 @@ def test_build_images_skips_mirrors(capsys):
     rc = _build_images(_pull_args(dry_run=True))
     out = capsys.readouterr().out
     assert rc == 0
-    assert "ducktest-azurite" not in out  # the mirror is not built
-    assert "ducktest-minio" in out  # the real build kind is
+    assert "ducktest-azurite" not in out  # mirror
+    assert "ducktest-minio" in out  # build kind
 
 
 def test_build_images_runs_no_docker_on_dry_run(monkeypatch, capsys):
@@ -197,7 +196,7 @@ def test_build_images_runs_no_docker_on_dry_run(monkeypatch, capsys):
 def test_namespace_agnostic(ns, capsys):
     _publish_images(_args(push=False, namespace=ns))
     out = capsys.readouterr().out
-    assert ("%s/ducktest-minio:" % ns) in out
+    assert f"{ns}/ducktest-minio:" in out
     # --namespace fully displaces the fallback: nothing may still print the default ns.
     assert _images.IMAGE_NS == ns or _images.IMAGE_NS not in out
 

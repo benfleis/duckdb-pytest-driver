@@ -2,24 +2,21 @@
 
 `ducktest.resources.ca` · key `ca` · **no process** · needs `[tls]` to generate
 
-The one certificate authority every TLS service in a run signs against. What must be shared is the CA, not
-a cert: each TLS server gets its own leaf signed by this anchor, duckdb trusts the single `ca_cert_file`,
-so every leaf is trusted.
+Shared certificate authority for local TLS services. Each TLS service gets its own leaf certificate
+signed by this CA; clients trust `ca_cert_file`.
 
-It has no process — `start` generates, `stop` is `None`, `alive` is "the cert file exists". It's a service
-only to get **`to_env`**, which adopts the trust vars into `os.environ` pre-fork so a bare `.test` inherits
-them with no `.py` driver.
+It has no process. `start` generates the CA, `stop` is `None`, and `alive` checks the cert file. `to_env`
+exports trust settings for bare `.test` files.
 
 ## Block
 
 | field | |
 |---|---|
 | `dir` | the CA directory (`.ducktest/ca/`) |
-| `ca_pem` | `<dir>/ducktest-ca.pem` — key + cert; what a proxy **signs** with |
-| `ca_cert_file` | `<dir>/ducktest-ca-cert.pem` — cert only; the **trust anchor** |
+| `ca_pem` | `<dir>/ducktest-ca.pem` — key + cert for signing |
+| `ca_cert_file` | `<dir>/ducktest-ca-cert.pem` — cert-only trust anchor |
 
-Both paths derive from `dir`. Files are named generically rather than after a consumer — mitm renames its
-copies to `mitmproxy-ca*`.
+Both paths derive from `dir`.
 
 ## Env
 
@@ -30,45 +27,34 @@ copies to `mitmproxy-ca*`.
 
 ## Generation
 
-`ensure_ca(config)` generates once into `.ducktest/ca/` and is idempotent. The scratch dir is stable
-across runs, so the anchor is trusted once and kept rather than regenerated per session.
+`ensure_ca(config)` generates once into `.ducktest/ca/` and is idempotent.
 
-Built with `cryptography` directly — a self-signed CA (`BasicConstraints(ca=True)`, `KeyUsage` with
-`key_cert_sign`, SKI) written as key PEM + cert PEM concatenated in `ducktest-ca.pem`, plus the cert alone
-in `ducktest-ca-cert.pem`. That concatenated layout is what mitmproxy reads both halves out of when it
-adopts the CA, so it is a format contract, not an implementation detail — `test_mitmproxy_can_sign_with_our_ca`
-pins it via mitmproxy's own loader.
+The CA is built with `cryptography`. `ducktest-ca.pem` contains key + cert because mitmproxy reads both
+from one PEM file; `ducktest-ca-cert.pem` contains only the cert.
 
 ## Minting a leaf
 
-A proxy mints leaves per connection; a TLS **origin** needs a concrete cert up front:
+A TLS origin needs a concrete cert before it starts:
 
 ```python
 leaf = leaf_cert(ca_block, "127.0.0.1", ["127.0.0.1", "localhost"], dest_dir)
 # -> {"certfile": …, "keyfile": …}  — feed to ssl.SSLContext.load_cert_chain
 ```
 
-Each SAN string becomes an IP or DNS `GeneralName`. The leaf chains to the anchor `ca_cert_file` points
-at, so duckdb trusts it with no extra config.
+Each SAN string becomes an IP or DNS `GeneralName`.
 
 ## Dependencies on a base install
 
-`cryptography` is the optional `[tls]` extra, but [`httpserver`](httpserver.md) imports this module at
-module scope and its **plain-HTTP path must work without it**. So the imports are at the top of the file
-behind a guard, and `_generate_ca` / `leaf_cert` call `_require_deps()` first:
+`cryptography` is the optional `[tls]` extra. Pure block/env helpers and plain HTTP imports still work
+without it; `_generate_ca` and `leaf_cert` fail with:
 
 ```
 TLS provisioning needs cryptography (No module named 'cryptography') —
 install it: pip install duckdb-pytest-driver[tls]
 ```
 
-The original `ImportError` is chained as `__cause__`. `ca_block`, `ca_env`, `ca_alive` and the plain-HTTP
-server keep working.
-
-`[tls]` carries **no python floor** — only `[mitm]` does, because mitmproxy needs 3.12+. So the CA and
-httpserver's HTTPS mode work on the driver's own 3.9 floor; only the proxy drops out. `[mitm]` includes
-`cryptography`, since mitm signs with this same CA. [`mitmproxy`](mitmproxy.md) needs the `mitmdump`
-**binary** rather than an importable module, so it checks `shutil.which` instead.
+`[tls]` has no extra Python-version floor. `[mitm]` includes `cryptography` and is gated by mitmproxy's
+Python requirements.
 
 ## Consumers
 
@@ -77,11 +63,8 @@ httpserver's HTTPS mode work on the driver's own 3.9 floor; only the proxy drops
 | [`mitmproxy`](mitmproxy.md) | copies `ducktest-ca*` into its confdir as `mitmproxy-ca*`, so it signs with the shared anchor instead of generating its own |
 | [`httpserver`](httpserver.md) (TLS) | conditionally mints a `127.0.0.1`/`localhost` leaf via `leaf_cert` |
 
-`mitmproxy` declares `depends_on=("ca",)`, which orders the boot — `provision_service` provisions
-dependencies recursively (with cycle detection) before the dependent's `start`. It still calls
-`ensure_ca(config)` from its own `_start`, because ordering is not delivery: a dependent is never handed
-its dependency's block, so the call is how the block is *read*. Generation is idempotent, so repeated
-callers are safe.
+`mitmproxy` declares `depends_on=("ca",)`, so the CA is provisioned before mitm starts. It still calls
+`ensure_ca(config)` in `_start` to read the CA block.
 
 `httpserver` is conditional: plain HTTP does not provision the CA, while HTTPS generates the CA and
 includes the trust env through the `httpserver` block.

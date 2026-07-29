@@ -1,39 +1,16 @@
-"""mitmproxy addon: the proxy-profile behavior dispatcher (loaded by ``mitmdump -s``).
+"""mitmproxy addon loaded by ``mitmdump -s``.
 
-IMPORT-CLEAN by contract: this runs INSIDE the mitmdump process (a separate interpreter from pytest),
-loaded by file PATH — so it may import only ``mitmproxy`` + the stdlib, never the driver's pytest-side
-modules (no ``from ..suites import …``). That's the same discipline every behavior module must follow:
-behaviors are pure ``(flow, ctx)`` callables the proxy process imports, decoupled from the framework
-that *selects* them.
+This module runs in mitmdump's interpreter and must import with stdlib only. Keep mitmproxy imports
+inside behavior methods so pytest can import the same registry and parser without the ``[mitm]`` extra.
 
-The ``mitmproxy`` import is DEFERRED into the behaviors that need it so this module also imports
-cleanly with the stdlib ALONE. That is what lets the pytest side (``mitm_profile``) read
-:data:`BEHAVIORS` and reuse :func:`parse_profile` for validation without the ``[mitm]`` extra installed
-— one registry and one grammar shared by both processes, instead of a second copy that drifts. Every
-registered behavior module must follow the same rule (import ``mitmproxy`` inside the method, not at
-module scope) or it becomes unreadable from the pytest side.
+Traffic selects behaviors with two headers:
 
-Selection is per-request, by two headers duckdb carries (verified end-to-end against a real build):
+  * ``x-ducktest-proxy-setting``: comma-separated ``name[;k=v;...]`` entries applied in order.
+  * ``x-ducktest-test``: per-test tag used for state keys and deterministic RNG seeds.
 
-  * ``x-ducktest-proxy-setting`` — a COMMA-LIST of behaviors to apply, each ``name[;k=v;…]``
-    (e.g. ``latency;ms=500, fail_nth;n=1``). Applied in order; a behavior that short-circuits (sets
-    ``flow.response`` in the request phase) stops later request-phase behaviors.
-  * ``x-ducktest-test`` — the per-test IDENTITY tag. Keys per-``(tag, name)`` state (so stateful
-    behaviors isolate per test under one shared proxy across xdist workers) and seeds a reproducible
-    per-``(tag, name)`` RNG. Later also the capture-attribution key.
-
-A behavior is a CLASS: params are declared in ``__init__`` (which coerces, because wire params arrive as
-strings) and the effect goes in ``__call__(self, flow, ctx)``, sync or async. Declaring params in a
-signature is what makes a typo — ``latency(msec=500)`` — a plain ``TypeError`` at the call site rather
-than a silently-applied default. ``ctx`` carries ``phase`` (``"request"``/``"response"``), ``rng``,
-``state`` (a per-``(tag, name)`` dict) and ``tag``; params are on ``self``.
-
-Behavior classes are named in lower_snake_case, unlike normal Python classes: the class name IS the wire
-name, and the call site reads as a declaration (``proxy_init_sql(fail_nth(n=1), latency(ms=500))``).
-
-A *fault* is just one CATEGORY of behavior here — ``require_auth`` sits beside ``latency``/``fail_nth``
-to prove the surface is general, which is why the vocabulary is "behavior" (one callable) and "profile"
-(an ordered set of them), not "fault".
+Behavior params are declared in ``__init__`` and coerced there because wire params are strings.
+``__call__(self, flow, ctx)`` implements the request/response effect. The lower_snake_case class name is
+the wire name, e.g. ``proxy_init_sql(fail_nth(n=1), latency(ms=500))``.
 """
 
 import asyncio
@@ -59,26 +36,17 @@ _log = logging.getLogger("ducktest.mitm_profile")
 class ProxyBehavior:
     """Base for a behavior: declare params in ``__init__``, do the work in ``__call__``.
 
-    Subclasses follow one convention — **one attribute per ``__init__`` param, same name** — because
-    :meth:`params` reads the signature and then reads those attributes back to rebuild the wire form.
-    That is what removes the separate param table the function-based version needed: the signature IS
-    the schema, so an unknown key is Python's own ``TypeError`` and a default lives in exactly one
-    place.
+    Subclasses store one attribute per ``__init__`` param with the same name. :meth:`params` reads the
+    signature and those attributes to rebuild the wire form.
 
-    ``__init__`` runs in BOTH processes — on the pytest side at decoration time with Python values, and
-    in mitmdump per request with strings off the wire. So it must coerce (``int(ms)``) and must do
-    nothing else: no I/O, no state. Per-request state belongs in ``ctx.state``, which is keyed
-    ``(tag, name)`` and survives across the fresh instance the dispatcher builds for each request.
+    ``__init__`` runs in both processes: at pytest import time with Python values and in mitmdump per
+    request with strings. It should only coerce params. Per-request state belongs in ``ctx.state``.
     """
 
-    #: Whether the behavior accumulates state across requests (keyed by tag). Declared, not inferred,
-    #: so a shared tag — a batch of bare `.test` bodies under one invocation — can be rejected rather
-    #: than silently sharing one counter across every body in the batch (see findings.md).
+    #: Whether the behavior accumulates state across requests, keyed by tag.
     stateful = False
 
-    #: Members a param may not shadow. Deliberately TINY — every name here is one a behavior author
-    #: cannot use, and `name`/`value`/`code` are exactly the words a header or status behavior wants.
-    #: That is why the wire name is read off the CLASS rather than kept as an instance attribute.
+    #: Members a param may not shadow.
     RESERVED = ("params", "to_str", "stateful", "RESERVED")
 
     def __init_subclass__(cls, **kwargs):
@@ -126,16 +94,15 @@ class ProxyBehavior:
     def to_str(self) -> str:
         """``latency(ms=500)`` -> ``"latency;ms=500"``.
 
-        EVERY declared param is emitted, defaults included, so the header states exactly what the proxy
-        will apply instead of leaving it to a default the reader has to look up.
+        Every declared param is emitted, defaults included.
         """
-        name = type(self).__name__  # the wire name; NOT an attribute, so `name` stays free as a param
+        name = type(self).__name__  # the wire name; `name` stays free as a param
         return SEP_PARAM.join([name] + [f"{k}{SEP_ASSIGN}{v}" for k, v in self.params().items()])
 
     def __eq__(self, other):
         if not isinstance(other, ProxyBehavior):
             return NotImplemented
-        # By name + rendered params, NOT by class identity: the addon is imported twice (by path in
+        # By name + rendered params, not by class identity: the addon is imported twice (by path in
         # mitmdump, by package on the pytest side), so `type(a) is type(b)` can be false for what is
         # plainly the same behavior.
         return self.to_str() == other.to_str()
@@ -195,8 +162,7 @@ class fail_nth(ProxyBehavior):
 
 
 class require_auth(ProxyBehavior):
-    """A NON-fault behavior (proves the surface is general): demand proxy auth, 407 unless the request
-    presents ``Proxy-Authorization``."""
+    """Demand proxy auth; return 407 unless the request presents ``Proxy-Authorization``."""
 
     def __call__(self, flow, ctx):
         from mitmproxy import http  # deferred: keeps this module stdlib-importable (see module docstring)
@@ -232,8 +198,7 @@ def parse_profile(value):
     """``"latency;ms=500, fail_nth;n=1"`` -> ``[("latency", {"ms": "500"}), ("fail_nth", {"n": "1"})]``.
     Tolerant: blank entries and malformed ``k=v`` fragments are skipped, not fatal.
 
-    PUBLIC because the pytest side parses the same grammar (``Profile.from_str``). Sharing this one
-    function is what makes the two sides structurally incapable of disagreeing about the format.
+    Public because the pytest side parses the same grammar (``Profile.from_str``).
     """
     out = []
     for entry in value.split(SEP_BEHAVIOR):
@@ -315,8 +280,7 @@ class HttpProxy:
         for name, params in parse_profile(spec):
             cls = BEHAVIORS.get(name)
             if cls is None:
-                # Reached only if something bypassed `Profile.from_str`'s name check (which errors at
-                # collection): an inert behavior here would be a silent false green.
+                # Reached only if something bypassed `Profile.from_str`'s collection-time name check.
                 _log.warning("unknown proxy behavior %r (ignored)", name)
                 continue
             ctx = _Ctx(phase, random.Random(f"{tag}:{name}"), self._state.setdefault((tag, name), {}), tag)
@@ -326,7 +290,7 @@ class HttpProxy:
                 res = cls(**params)(flow, ctx)
                 if inspect.isawaitable(res):
                     await res
-            except Exception:  # a buggy behavior must not break unrelated traffic
+            except Exception:  # noqa: BLE001 - a buggy behavior must not break unrelated traffic
                 _log.exception("proxy behavior %r raised (ignored)", name)
             if phase == "request" and flow.response is not None:
                 break  # a behavior short-circuited; skip the rest of the request-phase chain

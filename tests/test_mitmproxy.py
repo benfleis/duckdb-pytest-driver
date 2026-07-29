@@ -1,12 +1,4 @@
-"""Offline self-test for the in-venv mitmproxy service (Stage 0: plumbing + CA trust).
-
-Boots a REAL ``mitmdump`` subprocess — but that's a local process in this venv, so unlike the docker
-resource tier this is genuinely offline (no docker, no network) and runs in the default suite. It
-drives the pure ``(confdir, port)`` lifecycle (``_spawn``/``_shutdown``) directly, so no pytest config
-/ SessionContext is needed; the config-wrapped ``_start``/``_stop`` are thin ``scratch(...)`` wrappers
-over these. Proves: the proxy comes up + is alive, the CA lands in the confdir (what ``ca_cert_file``
-points at), the block/env shapes are right, and teardown actually kills it.
-"""
+"""Offline tests for the in-venv mitmproxy service."""
 
 import os
 import shutil
@@ -23,8 +15,7 @@ pytestmark = pytest.mark.skipif(shutil.which("mitmdump") is None, reason="mitmdu
 
 
 def _free_port() -> int:
-    """An ephemeral port the OS just handed us — closed immediately, so mitmdump can bind it. A tiny
-    reuse race is acceptable in a test (and avoids colliding with a real run on the fixed default)."""
+    """Return an ephemeral port for mitmdump."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -46,8 +37,7 @@ def test_declares_depends_on_ca():
 
 
 def test_missing_mitmdump_reports_the_binary_not_the_ca(monkeypatch, tmp_path):
-    """mitm needs a BINARY on PATH, so that's what it checks. `_start` checks it before doing any CA work:
-    a base install asked to boot a proxy should read 'mitmdump not found', not a TLS/crypto message."""
+    """A missing mitmdump reports the mitm extra, before CA setup."""
     monkeypatch.setattr(mitm.shutil, "which", lambda _: None)
     monkeypatch.setattr(mitm, "scratch", lambda config, *parts: str(tmp_path))
 
@@ -61,8 +51,7 @@ def test_missing_mitmdump_reports_the_binary_not_the_ca(monkeypatch, tmp_path):
 
 
 def test_seeds_confdir_from_shared_ca(tmp_path):
-    """mitm boots with the SHARED CA seeded into its confdir (byte-identical), so it signs against the
-    one trust anchor rather than generating its own."""
+    """mitm seeds its confdir from the shared CA."""
     from ducktest.resources import ca
 
     cablock = ca._generate_ca(str(tmp_path / "ca"))

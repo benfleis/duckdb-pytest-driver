@@ -1,8 +1,7 @@
 name: publish-images
 
-# Manual only, and account-agnostic: the target namespace defaults to ghcr.io/<this repo's owner>, so a
-# fork publishes into its own namespace with no edit to this file. Override per run with the `namespace`
-# input (e.g. to publish into an org namespace from a personal fork).
+# Manual image publishing. The namespace defaults to ghcr.io/<repo owner>; override it per run with the
+# `namespace` input.
 on:
   workflow_dispatch:
     inputs:
@@ -13,21 +12,14 @@ on:
 
 permissions:
   contents: read
-  packages: write   # lets the free per-run GITHUB_TOKEN push into ghcr.io/<repo owner>
+  packages: write
 
 jobs:
   publish:
-    # The repo owner only. Dispatch already requires write access; this is the extra guard on the run
-    # that touches registry credentials. `environment: publish` is the real gate — add a required
-    # reviewer there (and hold GHCR_PAT as an environment secret) to approve every run by hand.
+    # Only the repo owner may publish. The `publish` environment can add reviewer approval.
     if: github.actor == github.repository_owner
     environment: publish
-    # Any branch: workflow_dispatch runs the workflow file from the branch you pick, so a change to
-    # this file or a Dockerfile can be exercised before it lands on main.
-    #
-    # One runner covers every arch: a mirror copies each platform with `pull --platform`, a build emits
-    # all of them from one buildx call. QEMU is cheap because our Dockerfiles have no RUN steps; an
-    # image that adds them would want a native runner per arch instead.
+    # One runner covers all platforms: mirrors use `pull --platform`; builds use buildx.
     runs-on: ubuntu-latest
     env:
       DOCKER_CLI_EXPERIMENTAL: enabled  # some docker builds gate `docker manifest` on this
@@ -36,24 +28,19 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - uses: docker/setup-qemu-action@v3    # before buildx: registers the binfmt handlers
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Resolve namespace
-        # ghcr rejects mixed-case repository names, and owner logins are mixed-case, so lowercase it.
-        # Set as an env var (not a step output) because it IS the DUCKTEST_IMAGE_NS knob the CLI reads.
+        # ghcr rejects mixed-case repository names.
         run: |
           ns='${{ inputs.namespace }}'
           [ -n "$ns" ] || ns="ghcr.io/${GITHUB_REPOSITORY_OWNER}"
           echo "DUCKTEST_IMAGE_NS=$(echo "$ns" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
       - name: Log in to ghcr
-        # GITHUB_TOKEN can write ghcr.io/<repo owner> (personal or org) on its own, so the default path
-        # needs no stored secret. GHCR_PAT — a classic PAT with write:packages owned by the namespace
-        # account — is only required to push somewhere the repo owner isn't, e.g. an org namespace.
-        # ghcr authenticates by the token, so the username only has to be a real account.
+        # GHCR_PAT is only needed when publishing outside ghcr.io/<repo owner>.
         run: echo "${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
       - name: Publish
         run: uv run ducktest publish-images --push
-      # A second call because --finalize selects the stitching phase instead of the push phase. Mirrors
-      # only; buildx already pushed the manifest for build kinds.
+      # Mirrors need a manifest-stitching pass; build images are skipped by --finalize.
       - name: Finalize multi-arch manifests
         run: uv run ducktest publish-images --finalize --push

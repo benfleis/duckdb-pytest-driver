@@ -2,37 +2,37 @@
 
 Covers the properties the design rests on:
 
-1. ``mitm_addon`` imports with the STDLIB ALONE, so the pytest side can read ``BEHAVIORS`` and reuse
+1. ``mitm_addon`` imports with stdlib only, so the pytest side can read ``BEHAVIORS`` and reuse
    ``parse_profile`` without the ``[mitm]`` extra. Checked in a subprocess with ``mitmproxy`` masked, so
    the assertion is about the module and not about what happens to be installed here.
-2. ``to_str``/``from_str`` round-trip through the ADDON'S OWN parser — one grammar, no drift.
+2. ``to_str``/``from_str`` round-trip through the addon's parser.
 3. An unknown behavior name raises at declaration time. The addon can only log-and-ignore one
    (``_apply``), which would run a test with no behavior applied and pass — a false green.
-4. A misspelled PARAM is the same false green one level down, and dies on the ``__init__`` signature —
+4. A misspelled param is the same false green one level down, and dies on the ``__init__`` signature —
    the class-based API's reason for existing.
 """
 
 import importlib
 import json
+import re
 import subprocess
 import sys
-import re
 import textwrap
 
 import pytest
 
+from ducktest.resources import mitm_addon
+from ducktest.resources.mitm_addon import HEADER_SETTING, HEADER_TAG, ProxyBehavior, fail_nth, latency, require_auth
 from ducktest.resources.mitm_profile import (
+    TAG_PLACEHOLDER,
     Profile,
     as_profile,
     behavior_name,
     known_behaviors,
-    TAG_PLACEHOLDER,
     proxy_init_sql,
     register_proxy_behaviors,
     registered_behavior_modules,
 )
-from ducktest.resources import mitm_addon
-from ducktest.resources.mitm_addon import HEADER_SETTING, HEADER_TAG, ProxyBehavior, fail_nth, latency, require_auth
 
 ADDON_PATH = mitm_addon.__file__
 
@@ -73,7 +73,7 @@ def test_addon_imports_with_stdlib_alone():
         print(",".join(sorted(m.BEHAVIORS)))
         """
     )
-    out = subprocess.run([sys.executable, "-c", probe, ADDON_PATH], capture_output=True, text=True, timeout=60)
+    out = subprocess.run([sys.executable, "-c", probe, ADDON_PATH], capture_output=True, text=True, timeout=60, check=False)
     assert out.returncode == 0, f"addon needs mitmproxy at import time:\n{out.stderr}"
     assert out.stdout.strip() == "fail_nth,latency,require_auth,status"
 

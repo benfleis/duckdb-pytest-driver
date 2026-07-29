@@ -1,17 +1,12 @@
-"""mitmproxy as a ducktest service — a forward proxy with per-request behavior injection.
+"""mitmproxy service with per-request behavior injection.
 
-Runs as a local ``mitmdump`` subprocess in the pytest venv rather than a container: the value here is the
-Python addon (``mitm_addon.py``, loaded via ``-s``), which must import the same deps as the tests.
-Behaviors are selected per-request by the ``x-ducktest-proxy-setting`` header.
+Runs ``mitmdump`` as a local subprocess and loads ``mitm_addon.py`` via ``-s``. Behaviors are selected by
+the ``x-ducktest-proxy-setting`` header.
 
-Trust is rooted in the shared ``ca`` service — ``_spawn`` seeds mitm's confdir from that CA so every run
-signs against one anchor. ``depends_on=("ca",)`` both records the relation AND orders the boot
-(``provision_service`` resolves it recursively); ``_start`` still calls ``ensure_ca`` to READ the block,
-since a dependent is never handed its dependency's. The mitm block then carries the seeded cert-only
-anchor, so this service can adopt proxy routing and trust together.
+``depends_on=("ca",)`` orders CA provisioning before launch. ``_start`` reads the CA block with
+``ensure_ca(config)`` and seeds mitmproxy's confdir. ``mitm_env`` exports both proxy routing and trust.
 
-Runtime files live in ``.ducktest/mitm/``: the seeded CA, logs, and the pidfile. Process lifecycle —
-pidfile handle, leak sweep, reaping — is :mod:`._process`, shared with the other in-venv services.
+Runtime files live in ``.ducktest/mitm/``.
 """
 
 import os
@@ -42,8 +37,7 @@ def _port() -> int:
 
 
 def _mitmdump() -> str:
-    """The mitmdump binary, or an actionable install error. mitm runs as a SUBPROCESS, so what has to be
-    present is a binary on PATH — not an importable module (contrast ca.py's guarded imports)."""
+    """Return the mitmdump binary path, or raise an install hint."""
     exe = shutil.which("mitmdump")
     if exe is None:
         raise RuntimeError("mitmdump not found on PATH — install it: pip install duckdb-pytest-driver[mitm]")
@@ -51,11 +45,7 @@ def _mitmdump() -> str:
 
 
 def mitm_block(**overrides):
-    """Build mitm's block from an override map — one builder for boot AND attach (docs/SERVICES.md).
-
-    ``ca_cert_file`` derives from ``confdir`` (the seeded copy there), so overriding the confdir keeps
-    them consistent. An externally-run mitm passes ``endpoint=``/``ca_cert_file=`` explicitly.
-    """
+    """Build mitm's block for managed and attached instances."""
     port = int(overrides.get("port", _port()))
     confdir = overrides.get("confdir", "")
     endpoint = (overrides.get("endpoint") or f"http://127.0.0.1:{port}").rstrip("/")
@@ -64,30 +54,20 @@ def mitm_block(**overrides):
 
 
 def mitm_env(block):
-    """Proxy ROUTING env only — ``HTTP(S)_PROXY`` (read directly by libcurl) plus ``DUCKTEST_MITM_PROXY``
-    for a body to ``SET http_proxy``. The block also carries the seeded CA anchor, so trust is adopted
-    with the proxy routing.
-    """
+    """Environment for proxy routing and trust."""
     ep = block["endpoint"]
     return {"HTTP_PROXY": ep, "HTTPS_PROXY": ep, "DUCKTEST_MITM_PROXY": ep, **ca_env(block)}
 
 
 def mitm_init_sql(block, *, redact=False):
-    """Suite-wide baseline preamble (`--repl` and `auto_init_sql`): route through this proxy, and tag
-    each request with the running test so stateful behaviors isolate per test.
-
-    Behaviors themselves are a per-cell concern; a cell's `init_sql` merges after this and wins. Built
-    by `mitm_profile.proxy_init_sql` — one builder, since `http_extra_headers` is a single setting.
-    Nothing here is secret, so `redact` changes nothing.
-    """
+    """Suite-wide proxy preamble for ``--repl`` and ``auto_init_sql``."""
     from .mitm_profile import proxy_init_sql
 
     return proxy_init_sql(endpoint=block["endpoint"])
 
 
 def mitm_alive(block) -> bool:
-    """A TCP connect succeeds once mitmdump is accepting — enough to gate readiness and to fail an
-    ``--existing-service`` attach loud when nothing's there."""
+    """Liveness probe: TCP connect to the listen port."""
     host = "127.0.0.1"
     port = int(block.get("port") or _port())
     try:
@@ -101,23 +81,9 @@ def mitm_alive(block) -> bool:
 
 
 def _spawn(confdir, port, ca_pem=None, ca_cert=None, behavior_modules=()):
-    """Launch ``mitmdump`` as a forward proxy in ``confdir``, wait until it's accepting AND its CA exists,
-    return the block. Pure ``(confdir, port)`` — no pytest config — so it's unit-testable offline.
-
-    ``ca_pem``/``ca_cert`` are the shared CA's files (``ducktest-ca*``, ca.py), copied in under
-    mitmproxy's required names BEFORE launch so mitmdump adopts our CA instead of generating its own.
-    BOTH are copied: given an existing ``mitmproxy-ca.pem``, mitmdump does not re-emit the cert-only file
-    that readiness waits on. ``None`` (the config-free test path) => mitmdump generates a throwaway CA.
-
-    ``behavior_modules`` are paths registered via ``register_proxy_behaviors``; they reach the addon as
-    ``--set behavior_modules=…`` so the proxy process imports the SAME files the pytest side validated.
-    Without this the pytest side would accept a custom behavior name the proxy has never heard of, and
-    the addon would log-and-ignore it — a test that runs with no behavior applied and passes.
-    """
+    """Launch ``mitmdump`` and return its block."""
     exe = _mitmdump()
     if ca_pem:
-        # Named, not timed: two small copies, but a mis-seeded confdir surfaces as an opaque TLS failure,
-        # so the log should say which anchor this run is signing with.
         os.makedirs(confdir, exist_ok=True)
         with step(f"seeding mitmproxy CA from {os.path.dirname(ca_pem)}"):
             shutil.copyfile(ca_pem, os.path.join(confdir, _CA_PEM))
@@ -142,8 +108,7 @@ def _spawn(confdir, port, ca_pem=None, ca_cert=None, behavior_modules=()):
         PROC,
         confdir,
         cmd,
-        # Readiness is BOTH the listener and the CA file: mitmdump binds before it has written the cert
-        # a client needs to trust it.
+        # mitmdump binds before the cert-only CA file exists.
         ready=lambda: mitm_alive(block) and os.path.exists(block["ca_cert_file"]),
         timeout_s=_READY_TIMEOUT_S,
         where=f"127.0.0.1:{port}",
@@ -162,10 +127,7 @@ def _shutdown(confdir) -> None:
 def _start(config):
     from .mitm_profile import registered_behavior_modules
 
-    _mitmdump()  # check the binary BEFORE any CA work, so a missing extra reports the direct cause
-    # `depends_on=("ca",)` guarantees the CA is provisioned before this runs (provision_service resolves
-    # it recursively). The direct call stays because ordering is not delivery: a dependent is never
-    # handed its dependency's block, and `ensure_ca` is idempotent — so this reads it, it doesn't race.
+    _mitmdump()  # fail before CA work if mitmdump is missing
     ca = ensure_ca(config)
     return _spawn(
         scratch(config, "mitm"),

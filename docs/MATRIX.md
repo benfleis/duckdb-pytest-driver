@@ -77,9 +77,8 @@ changes extension loading (httpfs's `dynamic`) or skips tests *must* use `test_c
 `SET` for "load this extension dynamically." They compose: a cell picks whichever fits, and `init_sql`
 merges *after* any suite `auto_init_sql` (credentials/service secrets) into one snippet.
 
-That ordering is what lets a cell **override** a suite-wide default rather than just add to it — a
-later `SET` of the same setting wins. It is how a proxy-fault matrix is expressed, with no
-proxy-specific machinery in the driver at all:
+Because `init_sql` is merged last, a cell can override a suite-wide default with a later `SET`.
+That is enough to express a proxy-fault matrix without proxy-specific driver code:
 
 ```python
 from ducktest.resources.mitm_addon import fail_nth, latency

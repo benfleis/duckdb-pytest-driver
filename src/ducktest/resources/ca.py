@@ -1,19 +1,13 @@
-"""The shared certificate authority — the trust anchor every TLS service in a run signs against.
+"""Shared certificate authority for local TLS services.
 
-What must be shared is the CA, not a cert: each TLS server gets its own leaf signed by this anchor, and
-duckdb trusts the one ``ca_cert_file``, so every leaf is trusted.
+Each TLS server gets its own leaf certificate signed by this CA. Clients trust the cert-only
+``ca_cert_file``.
 
-It has no process — ``start`` generates, ``stop`` is a no-op, ``alive`` is "the cert file exists". It's a
-service only to get ``to_env``, which adopts ``ca_cert_file`` into ``os.environ`` pre-fork so a bare
-``.test`` inherits the trust settings. Generation is generate-once into the stable ``.ducktest/ca/``, so
-the anchor is trusted once and kept across runs.
+The service has no process: ``start`` generates the CA, ``stop`` is ``None``, and ``alive`` checks the
+cert file. ``to_env`` exports trust settings for bare ``.test`` files.
 
-``_generate_ca`` is config-free so mitm can seed its confdir from the CA before it boots: ``depends_on``
-(mitm -> ca) is declared but unresolved, so that direct call is what orders the two today.
-
-Files are named generically — ``ducktest-ca.pem`` (key+cert, what a proxy signs with) and
-``ducktest-ca-cert.pem`` (cert only, the trust anchor) — rather than after any one consumer; mitm renames
-its copies to ``mitmproxy-ca*``.
+Files are named by role: ``ducktest-ca.pem`` contains key + cert for signing, and
+``ducktest-ca-cert.pem`` is the trust anchor.
 """
 
 import datetime
@@ -37,7 +31,7 @@ else:
     _IMPORT_ERROR = None
 
 _BASENAME = "ducktest"
-_CA_PEM = f"{_BASENAME}-ca.pem"  # private key + cert — what a proxy SIGNS with
+_CA_PEM = f"{_BASENAME}-ca.pem"  # private key + cert for signing
 _CA_CERT = f"{_BASENAME}-ca-cert.pem"  # cert only — the anchor duckdb's `ca_cert_file` points at
 _KEY_SIZE = 2048
 _CA_DAYS = 3650
@@ -136,28 +130,23 @@ def _create_ca(cadir, block):
     )
     cert_pem = cert.public_bytes(serialization.Encoding.PEM)
     os.makedirs(cadir, exist_ok=True)
-    # Key and cert concatenated: that single file is what mitmproxy reads both halves out of when it
-    # adopts this CA as its own (mitmproxy.py seeds the confdir with it).
+    # mitmproxy expects key + cert concatenated in one PEM file.
     _write(block["ca_pem"], _key_pem(key) + cert_pem, private=True)
     _write(block["ca_cert_file"], cert_pem)
 
 
 def _generate_ca(cadir):
-    """Generate the CA into ``cadir`` unless it's already there. Config-free, so mitm's boot can call it
-    directly and the self-tests need no pytest config."""
+    """Generate the CA into ``cadir`` unless it already exists."""
     block = ca_block(dir=cadir)
     if not os.path.exists(block["ca_pem"]):
         _require_deps()
-        # Stepped only on the generate path: an RSA keygen is real work, and the log then distinguishes a
-        # first run from every later one reusing the anchor.
         with step(f"generating shared CA in {cadir}"):
             _create_ca(cadir, block)
     return block
 
 
 def ensure_ca(config):
-    """Provision the shared CA into ``.ducktest/ca/`` and return its block. The ``CA_SERVICE`` start hook,
-    and also called directly by mitm's ``_start`` — idempotent, so both callers are safe."""
+    """Provision the shared CA into ``.ducktest/ca/`` and return its block."""
     return _generate_ca(scratch(config, "ca"))
 
 
@@ -172,8 +161,6 @@ def _load_ca(block):
 def leaf_cert(ca_block, common_name, sans, dest_dir, *, basename="server"):
     """Mint a leaf cert + key signed by the shared CA into ``dest_dir``; return both paths.
 
-    A TLS **origin** needs a concrete cert up front, unlike a proxy that mints leaves per connection. The
-    leaf chains to the anchor ``ca_cert_file`` points at, so duckdb trusts it with no extra config.
     Returns ``{"certfile", "keyfile"}`` — feed straight to ``ssl.SSLContext.load_cert_chain``.
     """
     _require_deps()

@@ -1,6 +1,6 @@
 """Self-tests for suite-level matrix fan-out (RESOURCE-PLANNING.md §5 phase 9): a suite's
 ``matrix=`` elevates ``@requires_matrix``'s per-test cell fan-out to "every member of this suite
-runs across these cells", for BOTH ``.py`` (``pytest_generate_tests``) and ``.test`` (a
+runs across these cells", for both ``.py`` (``pytest_generate_tests``) and ``.test`` (a
 post-collection splice in ``pytest_collection_modifyitems``). Offline throughout: real inner pytest
 runs via ``pytester`` (subprocess, so hook registration + ordering is exercised for real), plus a
 stub unittest binary (mirrors ``test_collector.py``) for the ``.test`` side — no duckdb build, no
@@ -68,7 +68,7 @@ def test_suite_matrix_ignores_a_test_with_no_matrix_cell_fixture(pytester):
 
 
 def test_own_requires_matrix_wins_over_suite_matrix(pytester):
-    # explicit @requires_matrix wins outright: 2 items (its own storage axis), NOT 4 (2 suite cells
+    # explicit @requires_matrix wins outright: 2 items (its own storage axis), not 4 (2 suite cells
     # x 2 requires_matrix cells) -- see the plan's Composition question.
     _write(pytester, "test/conftest.py", _MATRIX_SUITE_CONFTEST)
     _write(pytester, "test/matrixed/test_explicit.py", _OWN_MATRIX_TEST)

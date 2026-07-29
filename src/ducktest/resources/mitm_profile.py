@@ -1,38 +1,26 @@
-"""Proxy profiles: which mitm behaviors a test's traffic runs under (the pytest-side half).
+"""Pytest-side proxy profile declaration and validation.
 
-``mitm_addon`` owns the behaviors and the wire grammar and runs inside mitmdump, where it may not
-import ducktest; this module owns the typed declaration, validation, and the preamble a test runs
-under. The dependency only ever points this way.
+``mitm_addon`` owns the behaviors and wire parser and runs inside mitmdump. This module owns typed
+profile construction, early validation, and the preamble SQL sent to duckdb.
 
-One grammar, not two: :meth:`Profile.from_str` calls the addon's own ``parse_profile`` rather than
-reimplementing it, so the two processes cannot disagree about the format.
-
-A profile reaches the binary as **preamble SQL** (:func:`proxy_init_sql`), run before each body via
-``--init-sqllogic``. Two routes, one builder:
+A profile reaches the binary as preamble SQL (:func:`proxy_init_sql`), run before each body via
+``--init-sqllogic``:
 
 - the mitm service's ``to_init_sql`` — the suite-wide baseline (proxy routing + the identity tag),
   picked up by any suite with ``auto_init_sql=True``.
-- a matrix cell's ``init_sql`` property, which adds behaviors and, running last, wins::
+- a matrix cell's ``init_sql`` property, which adds behaviors and runs last::
 
       {"id": "flaky", "properties": {"init_sql": proxy_init_sql(fail_nth(n=1))}}
 
-SQL rather than env or a secret: the identity tag has to differ **per test**, and only the binary
-knows which test is about to run — it substitutes ``{TEST_ID}`` per test case, so a single preamble
-shared by every file in a batched invocation still keys proxy state per test. (A secret is out
-anyway: duckdb selects only the best-matching one, so a service's S3 secret and these headers could
-not coexist.)
+The identity tag must differ per test. The binary substitutes ``{TEST_ID}`` per test case, so a single
+preamble shared by a batched invocation still keys proxy state per test.
 
 Driver ``.py`` tests have no route yet — ``run_paired`` doesn't pass ``--init-sqllogic``.
 
-A behavior is a class you instantiate, so Python resolves both the name and the keywords at import:
-``latencu(...)`` is a NameError, ``latency(msec=500)`` a TypeError. The signature is the schema —
-nothing here restates a default or maintains a param table.
+A behavior is a class you instantiate. Python resolves the name and keywords at import:
+``latencu(...)`` is a NameError, ``latency(msec=500)`` is a TypeError.
 
 The string form stays supported for a shared named profile: ``Profile.from_str("fail_nth;n=1")``.
-
-Unknown names and misspelled params raise where the profile is built, always before anything boots.
-The addon can only log-and-ignore an unknown name, which would run the test with nothing injected and
-pass.
 """
 
 import importlib.util
@@ -59,14 +47,12 @@ from .mitm_addon import (
 HEADERS_SETTING = "http_extra_headers"
 PROXY_SETTING = "http_proxy"
 
-# Substituted by the unittest binary PER TEST (`SQLLogicTestRunner::ReplaceKeywords`, from
+# Substituted by the unittest binary per test (`SQLLogicTestRunner::ReplaceKeywords`, from
 # `environment_variables["TEST_ID"]`), so one preamble shared by every file in a batched invocation
 # still keys proxy state per test. Left intact by the driver — the binary fills it in.
 TAG_PLACEHOLDER = "{TEST_ID}"
 
-# Module-level rather than config-scoped (the idiom elsewhere): validation runs while a conftest or
-# test module is being imported, and there is no config in scope there. A conftest's
-# `pytest_configure` runs before test modules are imported, so registering from one is visible in time.
+# Module-level because validation runs while conftests and test modules are imported.
 _REGISTERED_PATHS: list = []  # ordered — mitmdump is handed the same set, in the same order
 _REGISTERED_BEHAVIORS: dict = {}  # name -> class, merged into the validation set
 
@@ -260,7 +246,7 @@ def proxy_init_sql(*specs, endpoint=None) -> str:
 
           {"id": "flaky", "properties": {"init_sql": proxy_init_sql(fail_nth(n=1))}}
 
-      Cell SQL is merged AFTER the suite's (``plugin._init_sqllogic_arg_for_item``), so the cell's
+      Cell SQL is merged after the suite's (``plugin._init_sqllogic_arg_for_item``), so the cell's
       ``SET`` runs last and wins — the routing set by the baseline persists on the same connection.
 
     Behaviors are validated here, i.e. at conftest import, before anything boots.

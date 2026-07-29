@@ -17,11 +17,11 @@ import urllib.error
 import urllib.request
 
 from ..steps import step
-from ..tools.rclone import Remote, mkdir, write_conf
 from ..suites import service
+from ..tools.rclone import Remote, mkdir, write_conf
 from ._docker import docker as _docker
-from ._process import wait_until
 from ._images import ghcr_ref, register_image, served_image
+from ._process import wait_until
 
 # LOCAL dev credentials + fixed host ports, all env-overridable. Defaults match ice-fixture/ducklake.
 ACCESS_KEY = os.environ.get("DUCKTEST_MINIO_ACCESS_KEY", "admin")
@@ -29,8 +29,8 @@ SECRET_KEY = os.environ.get("DUCKTEST_MINIO_SECRET_KEY", "password")
 REGION = os.environ.get("DUCKTEST_MINIO_REGION", "us-east-1")
 DEFAULT_BUCKET = os.environ.get("DUCKTEST_MINIO_BUCKET", "ducktest")
 
-# Our OWN image, not a mirror: `images/minio/Dockerfile` layers `mc` into the server image and
-# `minio_mc` shells out to it, so a substitute via DUCKTEST_MINIO_IMAGE must also carry `mc`.
+# Driver-owned image: `images/minio/Dockerfile` layers `mc` into the server image.
+# A DUCKTEST_MINIO_IMAGE override must also carry `mc`.
 IMAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images", "minio")
 # Names both upstreams the Dockerfile bakes in; bump it whenever either ARG moves, or a rebuild
 # overwrites a published tag with different contents.
