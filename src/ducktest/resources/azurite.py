@@ -18,7 +18,8 @@ import urllib.request
 from ..steps import step
 from ..tools.rclone import Remote
 from ..suites import service
-from ._docker import docker as _docker, wait_until
+from ._docker import docker as _docker
+from ._process import wait_until
 from ._images import ghcr_ref, register_image, served_image
 
 # EXEMPTION (documented per code review, 2026-07-14) from AGENTS.md's "No secrets in files... use

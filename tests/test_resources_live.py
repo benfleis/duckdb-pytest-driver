@@ -109,3 +109,29 @@ def test_resource_full_lifecycle(res):
         svc.stop(None)  # managed teardown (docker rm -f)
 
     assert not _container_running(res.container), f"{svc.key}: container {res.container!r} still present after stop"
+
+
+def test_minio_mc_admin_helpers():
+    """Exercise the MinIO mc helper layer against the real managed container."""
+    block = None
+    try:
+        block = minio.MINIO_SERVICE.start(None)
+
+        minio.minio_alias_set(block)
+        minio.minio_user_add(block, "ducktest_user", "ducktest_user_password")
+        minio.minio_policy_attach(block, "readwrite", user="ducktest_user")
+        minio.minio_version_enable(block, block["bucket"])
+        minio.minio_anonymous_set(block, "public", block["bucket"])
+
+        user_info = minio.minio_mc(block, "admin", "user", "info", block["mc_alias"], "ducktest_user").stdout
+        anonymous_info = minio.minio_mc(block, "anonymous", "get", f"{block['mc_alias']}/{block['bucket']}").stdout
+        version_info = minio.minio_mc(block, "version", "info", f"{block['mc_alias']}/{block['bucket']}").stdout
+
+        assert "Status: enabled" in user_info
+        assert "PolicyName: readwrite" in user_info
+        assert "is `public`" in anonymous_info
+        assert "versioning is enabled" in version_info
+    finally:
+        minio.MINIO_SERVICE.stop(None)
+
+    assert not _container_running(minio.CONTAINER), f"minio: container {minio.CONTAINER!r} still present after stop"

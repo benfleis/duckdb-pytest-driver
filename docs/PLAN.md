@@ -174,19 +174,31 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
   resource-validation tier (which then validates the ghcr images, not upstream).
   **Mechanism BUILT 2026-07-17, reworked buildx-free 2026-07-18 (namespace-agnostic, `ghcr.io/benfleis`
   interim):** `ducktest.resources._images` centralizes it; each image declares `kind` ("mirror"|"build"),
-  `source`, `pin`, `platforms` via `register_image(...)` (azurite/minio are `mirror`). `ducktest
-  publish-images` uses ONLY core docker — **no buildx** (buildx isn't reliably present; it was in fact
-  missing on Ben's box). Two phases, both gated by `--push`:
+  `source`, `pin`, `platforms` via `register_image(...)`. `ducktest publish-images` uses ONLY core docker
+  for a `mirror` — **no buildx** (buildx isn't reliably present; it was in fact missing on Ben's box).
+  Two phases, both gated by `--push`:
     - per-arch push: a `mirror` copies EVERY platform from one machine (`docker pull --platform` fetches
-      any arch — we never RUN it, so no QEMU — then `tag`/`push` a `…:<pin>-<arch>` slice); a `build` does
-      native host-arch only (`docker build`), so run it once per arch (amd box + arm box).
+      any arch — we never RUN it, so no QEMU — then `tag`/`push` a `…:<pin>-<arch>` slice); a `build` did
+      native host-arch only (`docker build`), run once per arch — **superseded, see below**.
     - `--finalize`: stitch the per-arch slices into the multi-arch `…:<pin>` via `docker manifest
       create`/`push`.
+  **Revised for `build` kinds 2026-07-28:** minio became the first `build` image (below), and a build's
+  arches can NOT be assembled by `pull --platform`. So a `build` is now one
+  `docker buildx build --platform … --push`, which emits every arch and pushes its own manifest;
+  `--finalize` skips build kinds. buildx is therefore required only when a `build` image is registered —
+  the mirror path stays core-docker-only, and one box still publishes everything (no amd+arm matrix).
+  Cross-arch is cheap only while our Dockerfiles have no RUN steps; one that adds them wants native
+  runners per arch instead. `ducktest build-images` is the local counterpart: host-arch `docker build`
+  (multi-arch can't be `--load`ed), tagged as the SERVED ref so a local build and the published image are
+  interchangeable.
   This satisfies "must work by hand on an amd OR an arm box, no QEMU" (per Ben, native per-arch) and the
   "complexity absorbed by the tool, not scattered through CI/scripts" goal — CI becomes `login` + the two
   commands. **[a]+[b] done as tooling**, `kind="build"` first-class for future driver-owned build images.
-  Two env knobs, nothing hard-coded: `DUCKTEST_IMAGE_NS` (namespace; default `ghcr.io/benfleis` — Ben owns
-  it, no org buy-in/SSO to wait on) and `DUCKTEST_IMAGE_SOURCE` (`upstream` default -> resources still run
+  Two env knobs, nothing hard-coded: `DUCKTEST_IMAGE_NS` (namespace; fallback `_images.DEFAULT_IMAGE_NS`,
+  an interim personal namespace with no org buy-in/SSO to wait on — `ghcr.io/benfleis` originally,
+  `ghcr.io/hendriklambert` since 2026-07-28. That constant is the ONE place the string is written down:
+  the CLI help and the tests read it, so a migration is a one-line change plus a re-push)
+  and `DUCKTEST_IMAGE_SOURCE` (`upstream` default -> resources still run
   third-party so the live tier stays green; `ghcr` -> serve the published image). 12 offline tests; ghcr
   auth + push verified by hand (a buildx-free smoke `pull`/`tag`/`push` to `ghcr.io/benfleis` succeeded).
   **Remaining for [c] "ghcr exclusive":** ✓(1) DONE 2026-07-18 — published `--push` + `--finalize --push`
@@ -198,12 +210,29 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
   (decided 2026-07-18): ✓ TEST side DONE — `.github/workflows/test.yml` runs the offline suite + the
   `--run-docker` tier booting from the public ghcr images (no auth), gated by a new `ducktest pull-images`
   warm/fail-fast step. ✓ `publish-images.yml` DONE — manual
-  `workflow_dispatch`, logs in with the `GHCR_PAT` secret (owner benfleis; the free `GITHUB_TOKEN` can't
-  write a personal namespace) and runs the two publish commands on one runner (all mirrors). No auto-
-  triggers yet (manual publish only, by choice); amd+arm matrix deferred until a `build` image exists.
+  `workflow_dispatch` running the two publish commands on one runner. No auto-triggers yet (manual
+  publish only, by choice). The amd+arm matrix once deferred "until a `build` image exists" is not
+  needed: buildx covers every arch from one runner, so the workflow gained
+  `docker/setup-qemu-action` + `docker/setup-buildx-action` instead of a second job.
+  **Account-agnostic since 2026-07-28** (no login hardcoded in the workflow): `DUCKTEST_IMAGE_NS` is
+  derived per run as `ghcr.io/<github.repository_owner>` (lowercased — ghcr rejects mixed case), so a
+  fork publishes into its own namespace unedited; a `namespace` dispatch input overrides it. Auth is
+  `GHCR_PAT || GITHUB_TOKEN`: the free per-run `GITHUB_TOKEN` (with `packages: write`) can write
+  `ghcr.io/<repo owner>` for a personal namespace too, so a stored PAT is needed only to push somewhere
+  the repo owner ISN'T — e.g. `ghcr.io/duckdb` from a personal fork. Note new packages are created
+  **private**; each needs a one-time flip to public before anonymous `DUCKTEST_IMAGE_SOURCE=ghcr` pulls
+  work.
   So [c] CI automation is complete; only item (4) namespace migration remains. (4) later, migrate
   `DUCKTEST_IMAGE_NS` -> `ghcr.io/duckdb` (needs the org package path cleared — checks parked with Ben).
   Azure adoption consumes the azurite image; uc/ice consume minio — why this is centralized here.
+  **minio is driver-OWNED since 2026-07-28, not a mirror:** `resources/images/minio/Dockerfile` layers the
+  `mc` client into the MinIO server image, and `minio_mc` shells out to it for the admin operations
+  httpfs's S3 suite needs (second user, bucket versioning, anonymous policy). So there is no third-party
+  ref to fall back to — a substitute via `DUCKTEST_MINIO_IMAGE` must also carry `mc` — and `kind` is
+  `build`, pinned `RELEASE.<minio>-mc<mc>` to name both upstreams the Dockerfile bakes in. It supersedes
+  the published `:RELEASE.2025-09-07T16-13-09Z` mirror tag; **not yet pushed**, so `pull-images` and the
+  docker tier need `ducktest build-images` until it is (and the new package flipped public). azurite is
+  unchanged — still a `mirror`.
 
 ## v0-dev sprints (post-commit, near-term)
 

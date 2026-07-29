@@ -1,12 +1,14 @@
-"""Shared docker + readiness plumbing for the resource services (azurite, minio, …).
+"""Shared docker plumbing for the container-backed resource services (azurite, minio, …).
 
 The *mechanism* lives here (per ``resources/__init__.py``'s contract: generic mechanism shared, the
 instance stays config). A resource module supplies only its own values — image, ports, the ``alive``
-probe, the ready message — and calls these.
+probe, the ready message — and calls this.
+
+Readiness polling is NOT here: ``wait_until`` is generic (a container and a local subprocess both need
+it) and lives in :mod:`._process`, the layer with no dependencies of its own.
 """
 
 import subprocess
-import time
 
 
 def docker(*args, check=True):
@@ -19,14 +21,3 @@ def docker(*args, check=True):
         detail = " | ".join(tail[-3:]) if tail else f"exit {proc.returncode}"
         raise RuntimeError(f"docker {args[0]} failed (exit {proc.returncode}): {detail}")
     return proc
-
-
-def wait_until(probe, timeout_s, on_timeout):
-    """Poll ``probe()`` (a no-arg bool) every 0.3s until true or ``timeout_s`` elapses; on timeout raise
-    ``RuntimeError(on_timeout())`` (``on_timeout`` is a callable so the message is built only if needed)."""
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if probe():
-            return
-        time.sleep(0.3)
-    raise RuntimeError(on_timeout())

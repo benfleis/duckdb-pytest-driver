@@ -1,36 +1,59 @@
 name: publish-images
 
-# Manual only -- publish the resource emulator images to ghcr on demand (no auto triggers yet).
-# Requires the GHCR_PAT secret: a classic PAT with write:packages owned by the namespace account
-# (benfleis while DUCKTEST_IMAGE_NS=ghcr.io/benfleis). This mirrors the runbook a dev runs by hand.
+# Manual only, and account-agnostic: the target namespace defaults to ghcr.io/<this repo's owner>, so a
+# fork publishes into its own namespace with no edit to this file. Override per run with the `namespace`
+# input (e.g. to publish into an org namespace from a personal fork).
 on:
   workflow_dispatch:
+    inputs:
+      namespace:
+        description: "ghcr namespace to publish into (default: ghcr.io/<repo owner>)"
+        required: false
+        default: ""
 
 permissions:
-  contents: read   # least privilege; GHCR_PAT does the push, GITHUB_TOKEN needs nothing
+  contents: read
+  packages: write   # lets the free per-run GITHUB_TOKEN push into ghcr.io/<repo owner>
 
 jobs:
   publish:
-    # Owner + main only (mirrors publish-uc-image.yml): only benfleis, only from main, may
-    # dispatch a run that touches GHCR_PAT. workflow_dispatch never fires on a PR.
-    if: github.actor == 'benfleis'  # github.ref == 'refs/heads/main'
-    # Secret-scoping: once you create a protected `publish` environment (GHCR_PAT moved there as an
-    # ENVIRONMENT secret + required reviewer = you), this line gates every run behind your approval.
+    # The repo owner only. Dispatch already requires write access; this is the extra guard on the run
+    # that touches registry credentials. `environment: publish` is the real gate — add a required
+    # reviewer there (and hold GHCR_PAT as an environment secret) to approve every run by hand.
+    if: github.actor == github.repository_owner
     environment: publish
-    # Everything is a `mirror`, so ONE runner covers every arch: `docker pull --platform` fetches any
-    # arch without running it (no QEMU). Becomes an amd+arm matrix only when a `build` image is added.
+    # Any branch: workflow_dispatch runs the workflow file from the branch you pick, so a change to
+    # this file or a Dockerfile can be exercised before it lands on main.
+    #
+    # One runner covers every arch: a mirror copies each platform with `pull --platform`, a build emits
+    # all of them from one buildx call. QEMU is cheap because our Dockerfiles have no RUN steps; an
+    # image that adds them would want a native runner per arch instead.
     runs-on: ubuntu-latest
     env:
-      DOCKER_CLI_EXPERIMENTAL: enabled  # `docker manifest` (the --finalize step) is gated on some docker builds
+      DOCKER_CLI_EXPERIMENTAL: enabled  # some docker builds gate `docker manifest` on this
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+      - uses: docker/setup-qemu-action@v3    # before buildx: registers the binfmt handlers
+      - uses: docker/setup-buildx-action@v3
+      - name: Resolve namespace
+        # ghcr rejects mixed-case repository names, and owner logins are mixed-case, so lowercase it.
+        # Set as an env var (not a step output) because it IS the DUCKTEST_IMAGE_NS knob the CLI reads.
+        run: |
+          ns='${{ inputs.namespace }}'
+          [ -n "$ns" ] || ns="ghcr.io/${GITHUB_REPOSITORY_OWNER}"
+          echo "DUCKTEST_IMAGE_NS=$(echo "$ns" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
       - name: Log in to ghcr
-        # username = the PAT owner; changes with the namespace (-> duckdb on the item-4 migration).
-        run: echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u benfleis --password-stdin
-      - name: Publish per-arch slices
+        # GITHUB_TOKEN can write ghcr.io/<repo owner> (personal or org) on its own, so the default path
+        # needs no stored secret. GHCR_PAT — a classic PAT with write:packages owned by the namespace
+        # account — is only required to push somewhere the repo owner isn't, e.g. an org namespace.
+        # ghcr authenticates by the token, so the username only has to be a real account.
+        run: echo "${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Publish
         run: uv run ducktest publish-images --push
+      # A second call because --finalize selects the stitching phase instead of the push phase. Mirrors
+      # only; buildx already pushed the manifest for build kinds.
       - name: Finalize multi-arch manifests
         run: uv run ducktest publish-images --finalize --push

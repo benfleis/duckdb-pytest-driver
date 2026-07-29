@@ -8,6 +8,7 @@ Subcommands:
   teardown-service    Stop declared service(s) started out-of-session
                       (target with --keys K1,K2 or --all; pytest args go after a literal `--`).
   publish-images      Publish the resource images (mirror or build) into the ghcr namespace.
+  build-images        Build the build-kind images locally, tagged as the ref the resource runs.
   pull-images         Pre-pull the resources' served images (warm the cache / fail fast).
 
 The plugin (auto-registered via the pytest11 entry point) supplies every default it can at
@@ -161,21 +162,20 @@ def _service_cmd(args, flag):
 
 
 def _publish_images(args):
-    """Publish the `resources.*` images into the ghcr namespace using ONLY core docker (no buildx).
+    """Publish the `resources.*` images into the ghcr namespace. One machine covers every arch.
 
     Two phases, both gated by `--push` (default = print the plan, run nothing):
-      - default phase: publish this machine's per-arch slices as `…:<pin>-<arch>` tags. A `mirror` image
-        copies every platform from one machine (`docker pull --platform` fetches any arch — we never RUN
-        it, so no QEMU); a `build` image publishes only the host arch (native `docker build`), so run it
-        once on an amd box and once on an arm box.
-      - `--finalize`: stitch the per-arch tags into the multi-arch `…:<pin>` manifest (`docker manifest`).
+      - default: a `mirror` pushes per-arch `…:<pin>-<arch>` slices with core docker; a `build` runs one
+        `docker buildx build --platform … --push`, which pushes its own multi-arch manifest.
+      - `--finalize`: stitch a mirror's per-arch tags into the `…:<pin>` manifest. Builds are skipped.
 
-    `docker login ghcr.io -u <user>` (token with `write:packages`) first. The pull side is automatic — a
-    resource `docker run`s the ghcr ref once `DUCKTEST_IMAGE_SOURCE=ghcr`.
+    Needs `docker login ghcr.io -u <user>` (token with `write:packages`); buildx only when a `build`
+    image is registered. Pulling is automatic — a resource runs the ghcr ref under
+    `DUCKTEST_IMAGE_SOURCE=ghcr`.
     """
     # Import the resource modules so their register_image() calls populate the registry (single source).
     from .resources import azurite, minio  # noqa: F401
-    from .resources._images import IMAGE_NS, arch_of, ghcr_ref, host_arch, registry
+    from .resources._images import IMAGE_NS, arch_of, ghcr_ref, registry
 
     ns = (args.namespace or IMAGE_NS).rstrip("/")
     imgs = registry()
@@ -194,6 +194,10 @@ def _publish_images(args):
     if args.finalize:
         print("finalize -> multi-arch manifests in %s   (%s)" % (ns, "PUSH" if args.push else "dry run"))
         for name, e in imgs:
+            if e["kind"] == "build":
+                # No per-arch slices exist for a build, so `manifest create` would fail on missing tags.
+                print("  skip %s (build kind — buildx pushed its manifest directly)" % name)
+                continue
             target = ghcr_ref(name, e["pin"], ns=ns)
             archtags = ["%s-%s" % (target, arch_of(p)) for p in e["platforms"]]
             print("  %s  <-  %s" % (target, ", ".join(archtags)))
@@ -202,8 +206,8 @@ def _publish_images(args):
                 sys.stderr.write("✗ finalize failed for %s (are all per-arch slices pushed?)\n" % name)
                 rc = 1
     else:
-        arch = host_arch()
-        print("publish per-arch slices to %s   (host arch %s; %s)" % (ns, arch, "PUSH" if args.push else "dry run"))
+        # One machine publishes everything: mirrors via `pull --platform`, builds via one buildx call.
+        print("publish to %s   (%s)" % (ns, "PUSH" if args.push else "dry run"))
         for name, e in imgs:
             target = ghcr_ref(name, e["pin"], ns=ns)
             if e["kind"] == "mirror":
@@ -217,24 +221,52 @@ def _publish_images(args):
                     ):
                         sys.stderr.write("✗ mirror failed for %s [%s] (is `docker login ghcr.io` done?)\n" % (name, p))
                         rc = 1
-            else:  # build: native host arch only (no QEMU) — run on each arch's machine
-                p = "linux/%s" % arch
-                if p not in e["platforms"]:
-                    print(
-                        "  build %s: host arch %s not in %s — nothing to do on this machine" % (name, p, e["platforms"])
+            else:
+                # A build's arches can't be assembled by `pull --platform`, so this is the one place
+                # buildx is needed. Cross-arch is cheap only while our Dockerfiles have no RUN steps.
+                plats = ",".join(e["platforms"])
+                print("  build %s [%s] -> %s (multi-arch, pushed by buildx)" % (e["source"], plats, target))
+                if run(["docker", "buildx", "build", "--platform", plats, "--push", "-t", target, e["source"]]):
+                    sys.stderr.write(
+                        "✗ build failed for %s [%s] (is buildx + QEMU set up? `docker buildx create --use`)\n"
+                        % (name, plats)
                     )
-                    continue
-                at = "%s-%s" % (target, arch)
-                print("  build %s [%s] -> %s" % (e["source"], p, at))
-                if run(["docker", "build", "-t", at, e["source"]]) or run(["docker", "push", at]):
-                    sys.stderr.write("✗ build failed for %s [%s]\n" % (name, p))
                     rc = 1
         if not args.push:
             print("\nlog in (each machine):  docker login ghcr.io -u <user>   (token needs write:packages)")
-            print(
-                "push per arch:           ducktest publish-images --push        (mirrors: any one box; builds: amd + arm)"
-            )
-            print("then stitch, once:       ducktest publish-images --finalize --push")
+            print("push (any one box):      ducktest publish-images --push")
+            print("then stitch mirrors:     ducktest publish-images --finalize --push")
+    return rc
+
+
+def _build_images(args):
+    """Build the `build`-kind resource images locally. No login, no push; `mirror` kinds are skipped.
+
+    Tagged as the SERVED ref, so a local build and the published image are interchangeable: docker runs
+    the local image when it exists and pulls when it doesn't, with no env override either way. A stale
+    local build therefore shadows a newer published one — bump the pin when contents change.
+
+    Host arch only, and `docker build` rather than buildx: a multi-arch build cannot be loaded into the
+    local image store, only pushed.
+    """
+    from .resources import azurite, minio  # noqa: F401 — import populates the registry
+    from .resources._images import registry, served_image
+
+    imgs = [(n, e) for n, e in registry() if e["kind"] == "build"]
+    if not imgs:
+        print("no build-kind images registered (mirrors need no local build — see pull-images)")
+        return 0
+    print("build local images   (%s)" % ("dry run" if args.dry_run else "BUILD"))
+    rc = 0
+    for name, e in imgs:
+        tag = served_image(name, e["source"], e["pin"])
+        cmd = ["docker", "build", "-t", tag, e["source"]]
+        print("    $ " + " ".join(cmd))
+        if args.dry_run:
+            continue
+        if subprocess.run(cmd).returncode:
+            sys.stderr.write("✗ build failed for %s (%s)\n" % (name, e["source"]))
+            rc = 1
     return rc
 
 
@@ -297,13 +329,21 @@ def main(argv=None):
         action="store_true",
         help="stitch the per-arch tags into the multi-arch manifest (run after --push on every arch)",
     )
+    from .resources._images import DEFAULT_IMAGE_NS
+
     p_pub.add_argument(
         "--namespace",
         default=None,
         metavar="NS",
-        help="ghcr namespace (default: $DUCKTEST_IMAGE_NS or ghcr.io/benfleis)",
+        help=f"ghcr namespace (default: $DUCKTEST_IMAGE_NS or {DEFAULT_IMAGE_NS})",
     )
     p_pub.set_defaults(func=_publish_images)
+
+    p_build = sub.add_parser(
+        "build-images", help="build the build-kind resource images locally, tagged as the ref the resource runs"
+    )
+    p_build.add_argument("--dry-run", action="store_true", help="print the docker build plan, run nothing")
+    p_build.set_defaults(func=_build_images)
 
     p_pull = sub.add_parser(
         "pull-images", help="pre-pull the resources' served images (warm cache / fail fast before the docker tier)"

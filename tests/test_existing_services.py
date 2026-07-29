@@ -9,14 +9,23 @@ Three layers, all offline (no docker):
 
 import textwrap
 
+import pytest
+
 from ducktest.plugin import _norm_service_key, _parse_existing_services
 from ducktest.resources.azurite import ACCOUNT, azurite_alive, azurite_block, azurite_env
 from ducktest.resources.minio import (
     ACCESS_KEY,
+    CONTAINER,
     DEFAULT_BUCKET,
+    minio_alias_set,
+    minio_anonymous_set,
     minio_alive,
     minio_block,
     minio_env,
+    minio_mc,
+    minio_policy_attach,
+    minio_user_add,
+    minio_version_enable,
 )
 
 
@@ -131,6 +140,8 @@ def test_minio_block_defaults():
     assert b["url_style"] == "path"
     assert b["use_ssl"] is False
     assert b["bucket"] == DEFAULT_BUCKET
+    assert b["container"] == CONTAINER
+    assert b["mc_alias"] == "ducktest"
 
 
 def test_minio_block_endpoint_override_recomputes_s3_endpoint():
@@ -194,6 +205,61 @@ def test_minio_alive_probe(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", refused)
     assert minio_alive({"endpoint": "http://127.0.0.1:9000"}) is False
+
+
+def test_minio_mc_requires_container():
+    with pytest.raises(RuntimeError, match="container"):
+        minio_mc({}, "alias", "list")
+
+
+def test_minio_mc_is_the_single_docker_exec_point(monkeypatch):
+    calls = []
+    proc = object()
+
+    def fake_docker(*args, check=True):
+        calls.append((args, check))
+        return proc
+
+    monkeypatch.setattr("ducktest.resources.minio._docker", fake_docker)
+
+    got = minio_mc({"container": "minio-c"}, "admin", "user", "list", "ducktest", check=False)
+
+    assert got is proc
+    assert calls == [(("exec", "minio-c", "mc", "admin", "user", "list", "ducktest"), False)]
+
+
+def test_minio_mc_wrappers_all_route_through_minio_mc(monkeypatch):
+    calls = []
+    block = {
+        "container": "minio-c",
+        "mc_alias": "local",
+        "access_key": "admin",
+        "secret_key": "password",
+    }
+
+    def fake_minio_mc(block_arg, *args, check=True):
+        assert block_arg is block
+        calls.append(args)
+
+    monkeypatch.setattr("ducktest.resources.minio.minio_mc", fake_minio_mc)
+
+    minio_alias_set(block)
+    minio_user_add(block, "u", "p")
+    minio_policy_attach(block, "readwrite", user="u")
+    minio_version_enable(block, "bucket")
+    minio_anonymous_set(block, "public", "bucket")
+
+    assert calls == [
+        ("alias", "set", "local", "http://127.0.0.1:9000", "admin", "password"),
+        ("alias", "set", "local", "http://127.0.0.1:9000", "admin", "password"),
+        ("admin", "user", "add", "local", "u", "p"),
+        ("alias", "set", "local", "http://127.0.0.1:9000", "admin", "password"),
+        ("admin", "policy", "attach", "local", "readwrite", "--user", "u"),
+        ("alias", "set", "local", "http://127.0.0.1:9000", "admin", "password"),
+        ("version", "enable", "local/bucket"),
+        ("alias", "set", "local", "http://127.0.0.1:9000", "admin", "password"),
+        ("anonymous", "set", "public", "local/bucket"),
+    ]
 
 
 # --- 3. the attach path end-to-end (isolated pytest run, no docker) -----------------------
