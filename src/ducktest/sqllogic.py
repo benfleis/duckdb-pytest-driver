@@ -131,7 +131,7 @@ def _matrix_cell_temp_roots(item, base: dict) -> dict:
 
 def _cell_suffix(cell) -> str:
     """A stable string suffix for a matrix cell (a bare id string, a cell dict, or None — both
-    shapes occur: `.test` fan-out stamps a plain backend-id string, `.py`/`@requires_matrix` cells
+    shapes occur: `.test` fan-out stamps a plain cell-id string, `.py`/`@requires_matrix` cells
     are dicts), folded into a batch-id seed so two cells of the SAME test never collide on the same
     temp-dir path. `""` for None (today's behavior, unchanged for every non-matrix test)."""
     if not cell:

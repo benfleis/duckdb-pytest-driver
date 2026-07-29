@@ -186,7 +186,7 @@ class Suite:
       matrix      : tuple of cell dicts every member of this suite fans out across — the suite-level
                     counterpart of a per-test ``@requires_matrix`` (docs/RESOURCE-PLANNING.md §5 phase
                     9). Each cell is an OPEN, backend-interpreted dict, same spirit as a
-                    ``Requirement.properties`` -- the framework validates only that ``"backend"`` is
+                    ``Requirement.properties`` -- the framework validates only that ``"id"`` is
                     present (it's the id a `.test` sibling's name and a `.py` cell's ``pytest.param``
                     id are built from); everything else is for the backend's own conftest/provisioner
                     to read (e.g. via ``matrix_cell``, same spirit as ``requires.py``'s
@@ -361,7 +361,7 @@ def register_suite(
     :func:`credential` / :func:`service`. Phase 0 records only — no fetch, no selection,
     no hooks.
 
-    ``matrix`` is the suite-level fan-out: a list of cell dicts, each requiring a ``"backend"``
+    ``matrix`` is the suite-level fan-out: a list of cell dicts, each requiring an ``"id"``
     key (see :class:`Suite`). Fan-out itself (`.py` via ``pytest_generate_tests``, `.test` via a
     post-collection splice) is Phase-9 behavior, not performed here — this call only validates
     shape and holds the cells.
@@ -387,13 +387,12 @@ def register_suite(
             raise TypeError(f"register_suite: `services` must be service(...) descriptors, got {type(s).__name__}")
     cells = tuple(matrix)
     for cell in cells:
-        if not isinstance(cell, dict) or not cell.get("backend"):
+        if not isinstance(cell, dict) or not cell.get("id"):
             raise TypeError(
-                f"register_suite: each `matrix` cell must be a dict with a non-empty 'backend' key, got {cell!r}"
+                f"register_suite: each `matrix` cell must be a dict with a non-empty 'id' key, got {cell!r}"
             )
     if not isinstance(auto_init_sql, bool):
         raise TypeError("register_suite: `auto_init_sql` must be a bool")
-
     regs = getattr(config, _ATTR, None)
     if regs is None:
         regs = []

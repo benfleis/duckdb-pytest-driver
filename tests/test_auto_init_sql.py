@@ -97,13 +97,13 @@ def test_matrix_cell_env_none_for_non_matrix_item():
 
 
 def test_matrix_cell_env_none_when_cell_has_no_properties_key():
-    assert _matrix_cell_env(_FakeItem(matrix_cell={"backend": "azure-az"})) is None
+    assert _matrix_cell_env(_FakeItem(matrix_cell={"id": "azure-az"})) is None
 
 
 def test_matrix_cell_env_reads_plain_properties_only():
     # temp_dir_root/data_dir are claimed by _matrix_cell_temp_roots -- not echoed into env too.
     properties = {"AZURE_STORAGE_ACCOUNT": "acct", "temp_dir_root": "az://acct.blob.core.windows.net/w"}
-    assert _matrix_cell_env(_FakeItem(matrix_cell={"backend": "azure-az", "properties": properties})) == {
+    assert _matrix_cell_env(_FakeItem(matrix_cell={"id": "azure-az", "properties": properties})) == {
         "AZURE_STORAGE_ACCOUNT": "acct"
     }
 
@@ -116,7 +116,7 @@ def test_matrix_cell_temp_roots_unchanged_for_non_matrix_item():
 def test_matrix_cell_temp_roots_overlays_temp_dir_root_and_data_dir():
     base = {"root": "duckdb_unittest_tempdir", "session_id": "s1", "data_dir": None}
     properties = {"temp_dir_root": "az://acct.blob.core.windows.net/w", "data_dir": "az://acct.blob.core.windows.net/d"}
-    merged = _matrix_cell_temp_roots(_FakeItem(matrix_cell={"backend": "azure-az", "properties": properties}), base)
+    merged = _matrix_cell_temp_roots(_FakeItem(matrix_cell={"id": "azure-az", "properties": properties}), base)
     assert merged == {
         "root": "az://acct.blob.core.windows.net/w",
         "session_id": "s1",
@@ -132,22 +132,22 @@ def test_test_config_args_empty_for_non_matrix_item():
 
 
 def test_test_config_args_empty_when_cell_has_no_test_config():
-    assert _matrix_cell_test_config_args(_FakeItem(matrix_cell={"backend": "curl"}), "/repo") == []
+    assert _matrix_cell_test_config_args(_FakeItem(matrix_cell={"id": "curl"}), "/repo") == []
 
 
 def test_test_config_args_resolve_relative_path_against_working_dir():
-    item = _FakeItem(matrix_cell={"backend": "curl", "properties": {"test_config": "test/configs/httpfs_curl.json"}})
+    item = _FakeItem(matrix_cell={"id": "curl", "properties": {"test_config": "test/configs/httpfs_curl.json"}})
     assert _matrix_cell_test_config_args(item, "/repo") == ["--test-config", "/repo/test/configs/httpfs_curl.json"]
 
 
 def test_test_config_args_pass_absolute_path_through():
-    item = _FakeItem(matrix_cell={"backend": "curl", "properties": {"test_config": "/abs/x.json"}})
+    item = _FakeItem(matrix_cell={"id": "curl", "properties": {"test_config": "/abs/x.json"}})
     assert _matrix_cell_test_config_args(item, "/repo") == ["--test-config", "/abs/x.json"]
 
 
 def test_test_config_is_not_leaked_as_an_env_var():
     # test_config is a --test-config path, not an env var: a cell mixing it with a plain var -> env-only.
-    cell = {"backend": "curl", "properties": {"test_config": "test/configs/x.json", "S3_ENDPOINT": "minio:9000"}}
+    cell = {"id": "curl", "properties": {"test_config": "test/configs/x.json", "S3_ENDPOINT": "minio:9000"}}
     assert _matrix_cell_env(_FakeItem(matrix_cell=cell)) == {"S3_ENDPOINT": "minio:9000"}
 
 
@@ -159,11 +159,11 @@ def test_init_sql_none_for_non_matrix_item():
 
 
 def test_init_sql_none_when_cell_has_no_init_sql():
-    assert _matrix_cell_init_sql(_FakeItem(matrix_cell={"backend": "curl"})) is None
+    assert _matrix_cell_init_sql(_FakeItem(matrix_cell={"id": "curl"})) is None
 
 
 def test_init_sql_read_from_cell():
-    cell = {"backend": "curl", "properties": {"init_sql": "SET httpfs_client_implementation='curl';"}}
+    cell = {"id": "curl", "properties": {"init_sql": "SET httpfs_client_implementation='curl';"}}
     assert _matrix_cell_init_sql(_FakeItem(matrix_cell=cell)) == "SET httpfs_client_implementation='curl';"
 
 

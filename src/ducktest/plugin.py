@@ -1383,7 +1383,7 @@ def pytest_generate_tests(metafunc):
         return
     metafunc.parametrize(
         "matrix_cell",
-        [pytest.param(cell, id=cell["backend"]) for cell in suite.matrix],
+        [pytest.param(cell, id=cell["id"]) for cell in suite.matrix],
         indirect=True,
     )
 
@@ -1411,13 +1411,13 @@ def _expand_test_matrix(config, items, suites):
         for cell in suite.matrix:
             sibling = _new_item(
                 item.parent,
-                name=f"{item.name}[{cell['backend']}]",
+                name=f"{item.name}[{cell['id']}]",
                 test_name=item._test_name,
                 binary=item._binary,
                 working_dir=item._working_dir,
                 temp_roots=item._temp_roots,
             )
-            sibling._cell = cell["backend"]
+            sibling._cell = cell["id"]
             sibling._matrix_cell = cell  # full cell dict, for a backend conftest that wants more
             expanded.append(sibling)
     return expanded
@@ -1552,7 +1552,6 @@ def pytest_configure(config):
         "requires(source, access, properties, name): declare an external resource need; drives "
         "provisioning under --repl (see ducktest/requires.py).",
     )
-
     # Redirect an explicitly-named `.test` arg to its same-stem driver `.py` (the body is suppressed).
     rewritten = []
     for arg in config.args:

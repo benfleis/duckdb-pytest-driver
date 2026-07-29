@@ -163,16 +163,16 @@ def test_cell_suffix_none_is_empty_unchanged_default():
 
 
 def test_cell_suffix_bare_string_id():
-    # `.test` fan-out stamps `_cell` as a plain backend-id string (plugin.py's `_expand_test_matrix`).
+    # `.test` fan-out stamps `_cell` as a plain cell-id string (plugin.py's `_expand_test_matrix`).
     assert _cell_suffix("azurite-az") == "[azurite-az]"
 
 
 def test_cell_suffix_dict_is_deterministic_regardless_of_key_order():
     # `@requires_matrix`/`.py` suite fan-out hand `matrix_cell` a dict -- key order must not matter
     # (run_paired reads it fresh from a fixture each call; a stable seed needs sorted keys).
-    a = _cell_suffix({"backend": "azurite-az", "storage": "managed"})
-    b = _cell_suffix({"storage": "managed", "backend": "azurite-az"})
-    assert a == b == "[backend=azurite-az,storage=managed]"
+    a = _cell_suffix({"id": "azurite-az", "storage": "managed"})
+    b = _cell_suffix({"storage": "managed", "id": "azurite-az"})
+    assert a == b == "[id=azurite-az,storage=managed]"
 
 
 # -----------------------------------------------------------------------------
@@ -356,7 +356,7 @@ def test_matrix_cell_properties_override_temp_dir_root_data_dir_and_reach_env(cl
     base = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
     item = _FakeMatrixItem(
         {
-            "backend": "azure-az",
+            "id": "azure-az",
             "properties": {
                 "temp_dir_root": "az://acct.blob.core.windows.net/w",
                 "data_dir": "az://acct.blob.core.windows.net/d",
@@ -383,7 +383,7 @@ def test_two_matrix_cells_never_collide_on_temp_dir_root_or_data_dir(clean_env, 
     base = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
     az_item = _FakeMatrixItem(
         {
-            "backend": "azure-az",
+            "id": "azure-az",
             "properties": {
                 "temp_dir_root": "az://acct1.blob.core.windows.net/w",
                 "data_dir": "az://acct1.blob.core.windows.net/d",
@@ -392,7 +392,7 @@ def test_two_matrix_cells_never_collide_on_temp_dir_root_or_data_dir(clean_env, 
     )
     abfss_item = _FakeMatrixItem(
         {
-            "backend": "azure-abfss",
+            "id": "azure-abfss",
             "properties": {
                 "temp_dir_root": "abfss://acct2.dfs.core.windows.net/w",
                 "data_dir": "abfss://acct2.dfs.core.windows.net/d",

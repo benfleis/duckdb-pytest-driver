@@ -20,15 +20,16 @@ def pytest_configure(config):
     register_suite(
         config, "httpfs", path="test/sql", marker="httpfs", default=True,
         matrix=[
-            {"backend": name, "properties": {"test_config": f"test/configs/httpfs_{name}.json"}}
+            {"id": name, "properties": {"test_config": f"test/configs/httpfs_{name}.json"}}
             for name in ("curl", "httplib", "dynamic", "connection_caching")
         ],
     )
 ```
 
 Every body under `test/sql` now runs as `…[curl]`, `…[httplib]`, `…[dynamic]`,
-`…[connection_caching]`. A cell is a dict; `backend` (required, non-empty) is the cell id, and
-`properties` (optional) is what each cell needs (see [Cell properties](#cell-properties)).
+`…[connection_caching]`. A cell is a dict; `id` (required, non-empty) is the cell id — a plain label,
+with no meaning to the driver beyond naming the item — and `properties` (optional) is what each cell
+needs (see [Cell properties](#cell-properties)).
 
 ## 2. Per-test — `@requires_matrix(...)`
 
@@ -75,6 +76,21 @@ cell that changes only `SET`s (e.g. httpfs's curl / httplib client) can use `ini
 changes extension loading (httpfs's `dynamic`) or skips tests *must* use `test_config` — there's no
 `SET` for "load this extension dynamically." They compose: a cell picks whichever fits, and `init_sql`
 merges *after* any suite `auto_init_sql` (credentials/service secrets) into one snippet.
+
+That ordering is what lets a cell **override** a suite-wide default rather than just add to it — a
+later `SET` of the same setting wins. It is how a proxy-fault matrix is expressed, with no
+proxy-specific machinery in the driver at all:
+
+```python
+from ducktest.resources.mitm_addon import fail_nth, latency
+from ducktest.resources.mitm_profile import proxy_init_sql
+
+matrix=[
+    {"id": "clean"},                                                        # suite baseline only
+    {"id": "flaky", "properties": {"init_sql": proxy_init_sql(fail_nth(n=1))}},
+    {"id": "slow",  "properties": {"init_sql": proxy_init_sql(latency(ms=500))}},
+]
+```
 
 ### The `TEMP_DIR` / `DATA_DIR` name clash — use prefixed names
 

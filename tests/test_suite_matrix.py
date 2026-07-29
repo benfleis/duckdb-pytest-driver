@@ -27,14 +27,14 @@ _MATRIX_SUITE_CONFTEST = """
 
     def pytest_configure(config):
         register_suite(config, "matrixed", path="test/matrixed", matrix=[
-            {"backend": "azurite-az"},
-            {"backend": "azure-az"},
+            {"id": "azurite-az"},
+            {"id": "azure-az"},
         ])
 """
 
 _PLAIN_TEST = """
     def test_plain(matrix_cell):
-        assert matrix_cell["backend"] in ("azurite-az", "azure-az")
+        assert matrix_cell["id"] in ("azurite-az", "azure-az")
 """
 
 _OWN_MATRIX_TEST = """
