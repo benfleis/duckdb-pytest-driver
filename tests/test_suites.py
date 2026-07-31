@@ -13,13 +13,23 @@ from ducktest import (
     Suite,
     credential,
     get_suites,
+    get_provisioner,
+    register_provisioner,
     register_suite,
     service,
 )
+from ducktest.context import SessionContext, set_context
 
 
 class _Cfg:
     """Minimal stand-in for a pytest Config (an attribute bag)."""
+
+
+def _cfg_with_context(working_dir):
+    cfg = _Cfg()
+    cfg.stash = {}
+    set_context(cfg, SessionContext(working_dir=str(working_dir), run_id="test-run"))
+    return cfg
 
 
 def _load_creds(config):
@@ -105,6 +115,34 @@ def test_marker_defaults_to_name():
     by_name = {t.name: t for t in get_suites(cfg)}
     assert by_name["databricks"].marker == "databricks"  # defaulted
     assert by_name["smoke"].marker == "fast"  # explicit wins
+
+
+def test_suite_provisioner_registers_at_suite_path(tmp_path):
+    cfg = _cfg_with_context(tmp_path)
+    provisioner = object()
+
+    register_suite(cfg, "cloud", path="test/cloud", provisioner=provisioner)
+
+    assert get_suites(cfg)[0].path == "test/cloud"
+    assert get_provisioner(cfg, tmp_path / "test/cloud/case.py") is provisioner
+    assert get_provisioner(cfg, tmp_path / "test/local/case.py") is None
+
+
+def test_explicit_narrower_provisioner_overrides_suite_provisioner(tmp_path):
+    cfg = _cfg_with_context(tmp_path)
+    suite_provisioner = object()
+    nested_provisioner = object()
+
+    register_suite(cfg, "cloud", path="test/cloud", provisioner=suite_provisioner)
+    register_provisioner(cfg, nested_provisioner, scope=tmp_path / "test/cloud/special")
+
+    assert get_provisioner(cfg, tmp_path / "test/cloud/case.py") is suite_provisioner
+    assert get_provisioner(cfg, tmp_path / "test/cloud/special/case.py") is nested_provisioner
+
+
+def test_suite_provisioner_requires_path():
+    with pytest.raises(ValueError, match="provisioner.*path"):
+        register_suite(_Cfg(), "cloud", provisioner=object())
 
 
 def test_no_fetch_or_start_in_phase0():

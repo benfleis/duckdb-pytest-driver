@@ -171,10 +171,12 @@ a property axis, one item per cell):
 - `properties` is an **open, backend-interpreted** dict (e.g. `{"storage": "managed"}`) — the driver
   never reads it; your **provisioner** does.
 
-The `resources` fixture provisions those specs for a test (via the suite's `provisioner`), yields the
+The `resources` fixture provisions those specs for a test (via the suite's path-scoped `provisioner`), yields the
 provisioner's **bindings as `resources.env`**, and tears them down after. A driver just does
 `run_paired(request, env=resources.env)` and the body's `${…}` substitute to the provisioned table.
-`--repl` runs the same provisioner interactively for one selected test.
+`--repl` runs the same provisioner interactively for one selected test. Declaring
+`register_suite(..., path="test/backend", provisioner=...)` registers that provisioner for the suite path;
+`register_provisioner(...)` remains available for a narrower subtree override.
 
 **Table naming/addressing contract — a recommended convention, not (yet) a driver feature.** (Called the
 "identity contract" elsewhere in older notes — avoid that name going forward: it reads as
@@ -271,7 +273,8 @@ unpack to a TEMP_DIR instead of a table) are on the roadmap — see PLAN.md.
   calling `provision_service(...)`; a bare-`.test` suite instead binds it eager via
   `use_service(SVC, provision="eager", to_env=…, populate=…)` in `register_suite(services=[…])` (no
   fixture — the controller boots it and adopts its env up front). See § *Services*.
-- a **Provisioner** (`register_provisioner`) that turns `@requires` into tables + `resources.env`.
+- a **Provisioner** (`register_suite(..., path=..., provisioner=...)`) that turns `@requires` into tables +
+  `resources.env`; use `register_provisioner` only for a narrower subtree override.
 - your `.test` bodies and `.py` drivers.
 
 Everything else — selection, banner, credential lifecycle, container sharing, xdist coordination, the

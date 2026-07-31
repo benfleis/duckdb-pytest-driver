@@ -22,7 +22,7 @@ How `duckdb-pytest-driver` is built and where to extend it. Assumes you've read
 plugin.py     the pytest hooks + the harness (run_paired, find_binary); suites/store wiring
 suites.py      register_suite / credential / service / use_service + the frozen descriptors (declaration only)
 store.py      the process-shared store: SyncManager server + per-key state machine
-provision.py  register_provisioner / get_provisioner (registry, by test path) + base Provisioner/Bindings (the generic spec-loop a backend subclasses)
+provision.py  path-scoped provisioner registry (populated by register_suite or an explicit nested override) + base Provisioner/Bindings
 requires.py   @requires / @requires_matrix + Requirement (per-test table needs)
 fixtures.py   TableSpec SQL-definition model + instantiate via the duckdb CLI (the `resources` path)
 sqllogic.py   SqlLogicFile — collect a .test + run it through the unittest binary
