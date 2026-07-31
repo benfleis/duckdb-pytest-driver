@@ -71,7 +71,8 @@ session/batch/test identity and exposes the result as `{TEMP_DIR}`.
 - **Optional virtual-host routing** — `DUCKTEST_MINIO_DOMAIN=<bare-fqdn>` passes `MINIO_DOMAIN` to the
   container and uses `http://<domain>:<port>` as the public endpoint. The domain and its bucket
   subdomains must resolve to the host loopback; for network-enabled tests,
-  `127.0.0.1.nip.io` supplies that wildcard DNS behavior.
+  `127.0.0.1.nip.io` supplies that wildcard DNS behavior. Bucket hosts such as
+  `test-bucket.127.0.0.1.nip.io` then resolve to `127.0.0.1`, so no `/etc/hosts` entries are needed.
 - **Two failure points after `docker run`**: readiness and bucket creation. Both clean up the container
   before re-raising.
 
