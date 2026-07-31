@@ -44,7 +44,7 @@ this doc hangs off that.
   *just this default set* — there is **no built-in `smoke` marker** (auto-markers are the *suite* names);
   the standard vocabulary (`smoke/local/cloud/slow/all`) is a convention, and making it first-class is on
   the roadmap (PLAN.md § *Named test sets*).
-- The selection decision is derived from the CLI args and is identical on the controller and workers,
+- The selection decision is derived from collected items and is identical on the controller and workers,
   so "what runs" and "what gets provisioned" always agree.
 
 ## The paradigm shift (read this once)
@@ -59,46 +59,37 @@ Silent skips let "green" mean "didn't actually run." Making selection deliberate
 automatic + unprovisionable-fails is what makes automatic provisioning trustworthy. Expect failures
 where you used to see skips.
 
-## Two resource classes
+This is not yet fully enforced for suite services. Collect-first service provisioning is currently
+best-effort: its error is suppressed until a fixture calls `provision_service`. A bare `.test` has no
+fixture, so it may only fail later because the service environment is missing. Preserving the original
+provisioning error for that path remains pending.
 
-Resources ride on a suite and come in two shapes, distinguished by *when* they're provisioned:
+## Suite resources
 
-| | **credential** (class-1) | **service** (class-2) |
-|---|---|---|
-| when | **eager** — once, up front, on the controller | **`on_demand`** (default) — first worker to need it; or **`eager`** — up front on suite-selection (its `provision=` disposition) |
-| why | an `op`/biometric prompt must land at invocation | expensive → boot only if pulled; but a *bare `.test`* has no fixture to pull, so a bare-`.test` suite makes its service `eager` |
-| shared how | fetched once, broadcast to workers | one instance, shared across workers |
-| you write | `credential(fetch, validate, error, adopt, available, to_init_sql)` | `service(start, stop, fixture, attach, alive)`; suite policy via `use_service(provision, to_env, populate, to_init_sql)` |
-
-Both are carried between the controller and workers by **the store** (below).
+Suites declare credentials and services. Collect-first derives the reachable suites from pytest's final
+selection, including `-k`, then provisions every resource those suites need. Both resource types use
+the shared store for single-flight provisioning and controller/worker delivery.
 
 ### Credentials
 
-Declared with `credential(key, fetch=, validate=, error=, adopt=, available=, late_fetch=True,
-to_init_sql=)`. The resolution a worker applies before running a selected credentialed test:
+Declared with `credential(key, fetch=, validate=, error=, adopt=, available=, to_init_sql=)`.
 
-1. **up-front store hit** — if the suite was *predictably* selected (`-m`, path), the controller already
-   fetched (`fetch` is env-first, prompting only for gaps), validated, and published it; workers read it.
-   `adopt="env"` also merges it into `os.environ` so `${VAR}` in the body and any SDK see it.
-2. **`available()`** — a NON-interactive env check, so creds already in your env (a preset, or the `-k`
-   case up-front couldn't predict) pass with no prompt.
-3. **late fetch** (default on) — otherwise fetch now, **single-flighted through the store** so at most
-   ONE interactive prompt happens across all workers; on failure it's poison-pilled (all waiters fail
-   fast). `late_fetch=False` for strict "never prompt mid-run" CI.
-4. else **fail loud** with your `error()` message.
+For each credential needed by the final selection:
 
-The net: predictable selections prompt once at invocation; `-k` and preset-env still work; a genuinely
-missing credential fails clearly instead of skipping.
+1. `available()` may confirm that ambient credentials are already usable, avoiding a fetch.
+2. Otherwise `fetch(config)` runs through the store's single-flight path.
+3. `validate(value)` rejects an unusable value. The session aborts with `error()` or a default message.
+4. `adopt="env"` merges a mapping value into `os.environ` for workers and SQLLogic subprocesses.
+
+There is no per-test credential resolution. A selected test's credential is settled before execution.
 
 ### Services
 
-Declared with `service(key, start=, stop=, fixture=, attach=, alive=)`. Its session fixture calls
-`provision_service(config, SVC)`, which routes to one of two lifecycle stances — a test **cannot tell
-which ran**, the block shape is identical either way:
+Declared with `service(key, start=, stop=, fixture=, attach=, alive=, depends_on=, to_env=, populate=,
+to_init_sql=)`. `provision_service(config, service)` has two lifecycle stances with the same block shape:
 
-- **Managed** (default) — `start` routes through the store's single-flight: the **first** worker to pull
-  the fixture boots the service and publishes its block; the rest **block, then reuse** it. The
-  controller **stops it once** at session end. If `start` fails, every waiter fails fast (poison).
+- **Managed** — `start` and `populate` run through store single-flight. Workers reuse the published
+  block. The controller calls `stop` once at session end.
 - **Existing (external)** — the service is already running (started by you, or living on the host while
   pytest runs in a container); declare it via `--existing-service KEY[=URL|={json}]` (or an env var) and
   the run **attaches** instead of booting: `attach(overrides, config)` builds the block, `alive(block)`
@@ -107,19 +98,11 @@ which ran**, the block shape is identical either way:
   grammar, and the `ducktest provision-service`/`teardown-service` out-of-session commands that pair with
   it — bring a service up, hand you the exact attach line, leave it running for a later in-container run).
 
-An **`on_demand`** service (the default) is **demand-driven**: pulling its fixture is the signal it's
-needed (true even under `-k`), so there's no reachability gate — an unselected suite simply never pulls
-the fixture.
-
-**Disposition + env — for bare `.test` bodies.** A driverless `.test` pulls no fixture, so an
-`on_demand` service never boots for it and its connection env is never set. A suite fixes this by binding
-its service `provision="eager"` (via `use_service(SVC, provision="eager", to_env=…, populate=…)`): the
-controller boots it **on suite-selection**, pre-fork (same reachability gate credentials use — so an
-unrelated run doesn't boot it), runs **`populate(block, config)`** (structure + data, once — the
-store-scope analog of `instantiate`) and adopts **`to_env(block)`** into `os.environ` so the `.test`
-subprocess inherits the connection env. `populate` runs for *any* disposition; `to_env` is adopted by
-whichever process provisions the service. The `provision` vocabulary is `{eager, on_demand, per_test,
-never}` (`per_test`/`never` are named but not wired — fail loud). Full model: **docs/SERVICES.md**.
+A service with no `start` is always external and attaches with default overrides. `depends_on` orders
+startup and reverse-order teardown. `populate(block, config)` must be idempotent because attached
+services are populated too. `to_env(block)` is adopted wherever the block is provisioned, including for
+bare `.test` subprocesses. A fixture may call `provision_service` to consume the same block; it does not
+control whether the service is provisioned.
 
 A service/credential can also carry **`to_init_sql(block|value, *, redact=False) -> str`** — SQL fed
 into a `--repl` session's `-init` file (e.g. azurite's default connection secret), so a bare-`.test`,
@@ -138,21 +121,17 @@ its model explains the failure behavior above:
   caller claims PENDING and provisions; others block until SET (read it) or **FAILED** — the **poison
   pill**: they fail fast, no retry storm.
 
-That's why a failed credential/service fetch fails *all* selected tests cleanly rather than each worker
-re-attempting a doomed `op`/boot.
+Credentials and fixture-consumed managed services reuse a stored failure instead of retrying a doomed
+fetch or boot. Bare `.test` service failures are subject to the limitation above.
 
-## xdist model (why "up front" matters)
+## xdist model
 
-Under `-n`, pytest-xdist runs a **controller** + N **worker** subprocesses; the controller doesn't
-collect tests — workers do, after they're spawned. Consequences you can feel:
-
-- **Credentials are fetched on the controller, pre-fork**, so an interactive prompt lands once at
-  invocation — not N times, not minutes into a run. Workers inherit them via env + the store.
-- **`-k` isn't decidable before workers collect**, so a `-k`-selected credentialed test can't be
-  predicted up front — that's exactly why the worker-side backstop (`available()` → late-fetch → fail)
-  exists.
-- **Session scope = per-worker**, not per-invocation — which is why services coordinate through the
-  store (a shared singleton) rather than a plain session fixture.
+Under `-n`, pytest-xdist runs a controller and N workers. Ducktest performs an explicit controller-side
+collection before execution, builds a plan from the selected items, and provisions the plan's suite
+resources. Workers collect normally and consume the shared store. They also run the same idempotent
+provisioning pass for their selected suites, so environment adoption is process-local while fetches and
+managed starts remain single-flight. Pytest session scope is per worker; the store provides
+invocation-wide coordination.
 
 ## Provisioning per-test tables (`@requires`)
 
@@ -268,11 +247,10 @@ unpack to a TEMP_DIR instead of a table) are on the roadmap — see PLAN.md.
 ## Your integration surface, in one list
 
 - `register_suite(...)` × N in `test/conftest.py` — the only required wiring.
-- `credential(...)` + its 4 callables — for a live-creds suite.
-- `service(...)` — for a container/service suite. A `.py`-driven suite pairs it with a session fixture
-  calling `provision_service(...)`; a bare-`.test` suite instead binds it eager via
-  `use_service(SVC, provision="eager", to_env=…, populate=…)` in `register_suite(services=[…])` (no
-  fixture — the controller boots it and adopts its env up front). See § *Services*.
+- `credential(...)` — for a live-credentials suite.
+- `service(...)` — for a managed or attached service. Bind suite-specific `to_env`, `populate`,
+  `depends_on`, or `to_init_sql` behavior with `use_service(...)`. A fixture may call
+  `provision_service(...)` to consume its block. See § *Services*.
 - a **Provisioner** (`register_suite(..., path=..., provisioner=...)`) that turns `@requires` into tables +
   `resources.env`; use `register_provisioner` only for a narrower subtree override.
 - your `.test` bodies and `.py` drivers.

@@ -46,7 +46,6 @@ class Credential:
     error: Optional[Callable] = None
     adopt: Optional[str] = None
     available: Optional[Callable] = None
-    late_fetch: bool = True
     to_init_sql: Optional[Callable] = None
 
 
@@ -99,9 +98,7 @@ class Suite:
     auto_init_sql: bool = False
 
 
-def credential(
-    key, *, fetch, validate=None, error=None, adopt=None, available=None, late_fetch=True, to_init_sql=None
-) -> Credential:
+def credential(key, *, fetch, validate=None, error=None, adopt=None, available=None, to_init_sql=None) -> Credential:
     """Build a validated credential descriptor without fetching it."""
     if not key or not isinstance(key, str):
         raise ValueError("credential: `key` must be a non-empty string")
@@ -124,7 +121,6 @@ def credential(
         error=error,
         adopt=adopt,
         available=available,
-        late_fetch=bool(late_fetch),
         to_init_sql=to_init_sql,
     )
 

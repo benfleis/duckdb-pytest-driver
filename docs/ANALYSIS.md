@@ -17,7 +17,7 @@ From that one gap grew, independently:
 - `_suite_reachable`, a **from-args predictor**, that even **re-implements pytest's `-m` `Expression`
   engine** (`_markexpr_matches`) so predicted-selection and real-selection "agree by construction";
 - a reactive **`pytest_runtest_setup` credential backstop** (store → `available()` → single-flight
-  `late_fetch` → fail) to catch the `-k` case the predictor structurally can't see;
+  runtime fetch → fail) to catch the `-k` case the predictor structurally can't see;
 - the **eager vs on_demand disposition** fork — two different ways to get a service's env to a test,
   because a bare driverless `.test` pulls no fixture so its env must be adopted pre-fork;
 - the **two-plugin `_SuiteController` split** (one object `tryfirst` to set `numprocesses` before

@@ -26,17 +26,19 @@ the driver).
 - **Shared-state store** — a `multiprocessing.managers` carrier the controller starts pre-fork (workers
   connect via env); per-key **write-once/read-many state machine** (`pending → set | failed`, **poison
   pill** = waiters fail fast, no retry); spawn-safe (native socket, import-clean).
-- **Up-front credentials** — `credential(...)` fetched ONCE on the controller (prompt at invocation),
-  published to the store + env-adopted; a per-test **backstop** resolves store → `available()` (env,
-  non-interactive) → **single-flight late-fetch** (one prompt across workers; `late_fetch=` opt-out) →
-  **fail loud**. Paradigm shift: a *selected* test that can't provision FAILS, never skips.
-- **Lazy services** — `service(...)` provisioned first-need via the store's single-flight (shared across
-  workers), stopped once by the controller; retires the OSS filesystem lock + `reclaim_stale`.
+- **Collect-first resources** — final selection drives credentials and services. `available()` may
+  short-circuit a credential fetch; otherwise fetch/start uses store single-flight, workers adopt the
+  published environment, and credential failures abort before execution.
+- **Shared services** — managed services are provisioned for reachable suites, reused across workers,
+  and stopped once by the controller; attached services are validated and never stopped by ducktest.
 - **UC migrated** — creds + selection + the OSS container all on the driver (`test/conftest.py`
   `register_suite`s; the hand-rolled subtree machinery deleted).
 
 **Pending / to verify**
 
+- **Bare `.test` service failures** — collect-first currently suppresses service provisioning errors so
+  fixture consumers can report them during setup. Bare `.test` files have no fixture to do that; preserve
+  and report the original provisioning error before execution. _(pending)_
 - **Reported-unit flip** — a driver `.py` is still the reported unit; flip so the **body**
   (`.test`) is reported and the `.py` only contributes hooks. _(pending)_
 - **`--repl` python shell** — currently duckdb only; a python shell for pure-`.py` bodies is

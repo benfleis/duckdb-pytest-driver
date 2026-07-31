@@ -980,7 +980,7 @@ def _stop_services(config):
 def _fetch_or_read_credential(config, cred):
     """Fetch (or read from the store) a credential, validate it, and adopt it into the env.
 
-    Single-flighted through the store so a `-k`-selected run prompts at most once (the poison pill on
+    Single-flighted through the store so a selected run prompts at most once (the poison pill on
     the store makes an invalid fetch fail every waiter). ``available()`` short-circuits when the creds
     are already usable in the env (no fetch/op). An invalid credential aborts the session (UsageError).
     """

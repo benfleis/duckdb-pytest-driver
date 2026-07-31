@@ -84,8 +84,8 @@ controller knows only the invocation **args** (`-k`/`-m`/paths), not the resolve
 ### 2.2 What the old design did (and why it's a duality worth removing)
 - A from-args **predictor** (`_suite_reachable`) gated both selection and eager provisioning, even
   re-implementing pytest's `-m` `Expression` engine so the two "agree by construction."
-- A reactive **`pytest_runtest_setup` backstop** (store → env `available()` → single-flight
-  `late_fetch` → fail) covered the `-k` case the predictor structurally cannot see.
+- A reactive **`pytest_runtest_setup` backstop** (store → env `available()` → single-flight runtime
+  fetch → fail) covered the `-k` case the predictor structurally cannot see.
 - Env for bare `.test`s needed an **`eager` disposition** (pre-fork controller adoption) distinct
   from the **`on_demand`** fixture-pull path — two env-delivery mechanisms.
 - Ordering gymnastics: a **two-plugin** split so one object is `tryfirst` (set `numprocesses`
@@ -320,10 +320,10 @@ Python-native lane is opt-in (`configure --test-kinds`), never a silent default.
 - **Run the corpus (bare `.test`):** build duckdb, `ducktest configure`, `pytest` (or `uv run
   pytest`). Not `uvx pytest` (isolated env → `ModuleNotFoundError`).
 - **Add a suite (services + creds):** in `test/conftest.py`, `register_suite(marker="cloud",
-  credentials=[credential(...)], services=[use_service(MINIO_SERVICE, provision=..., to_env=...,
+  credentials=[credential(...)], services=[use_service(MINIO_SERVICE, to_env=...,
   populate=...)])`. Bodies under that tree auto-carry the `cloud` marker.
-- **Add a credential:** `credential(key, fetch=…, validate=…, available=…, late_fetch=…)`. Fetched
-  once on the controller pre-fork if a selected test needs it; `available()` rescues preset-env.
+- **Add a credential:** `credential(key, fetch=…, validate=…, available=…)`. Collect-first provisions
+  it when a selected test needs it; `available()` avoids fetching when ambient credentials are ready.
 - **`@requires` a table:** `@requires(source=TableSpec("t", ...), access="rw", name="t")` on a `.py`
   driver; the provisioner clones an isolated `rw` namespace per test (torn down after) or shares a
   session `ro` one; the body addresses `${CATALOG}.${SCHEMA}.${TABLE}`.

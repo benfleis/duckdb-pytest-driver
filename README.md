@@ -278,14 +278,14 @@ def token_error():                      # error: shown when creds are missing
 - `adopt="env"` merges the fetched dict into `os.environ` so the body's `${ICEBERG_REST_TOKEN}` and any
   SDK see it.
 - A test that's selected but can't be provisioned fails loud rather than skipping quietly.
-- A predictable selection (`-m rest`, a path) fetches up front. A `-k`-selected rest test falls back to
-  `available()`, then to a single-flighted late fetch (one prompt across workers, on by default).
+- Collect-first resolves the final selection, including `-k`. `available()` avoids a fetch when ambient
+  credentials are already usable; otherwise `fetch()` runs once through the shared store.
   (ARCHITECTURE.md § *Credentials*.)
 
 ### 4. A docker service (the REST catalog container)
 
-Provisioned lazily, on first need, shared across all workers, stopped once by the controller. Write a
-start/stop pair plus a session fixture that routes through the store:
+Provisioned during collect-first when a selected suite needs it, shared across all workers, and stopped
+once by the controller. A fixture may consume the same service block:
 
 ```python
 # iceberg_test/rest.py
@@ -302,17 +302,15 @@ REST_SERVICE = service("iceberg-rest", start=_start, stop=_stop, fixture="iceber
 
 @pytest.fixture(scope="session")
 def iceberg_rest(request):
-    block = provision_service(request.config, REST_SERVICE)   # first worker boots; rest share
+    block = provision_service(request.config, REST_SERVICE)   # reads the shared service block
     return types.SimpleNamespace(**block)                     # tests read .uri / .port
 ```
 
-The first worker to pull `iceberg_rest` boots the container; the rest wait and reuse it. If the boot
-fails, every waiter fails fast, with no retry. (ARCHITECTURE.md § *Services*.)
-
-A `.test` file with no `.py` driver never pulls this fixture, so nothing would boot the service for it.
-For a suite of bare `.test` bodies, bind the service eager instead, and ducktest boots it up front on
-suite-selection and puts its connection details in the environment for the `.test` subprocess to read.
-See ARCHITECTURE.md § *Services* and docs/SERVICES.md.
+The collect-first plan provisions the service even for a bare `.test` with no fixture. Store
+single-flight ensures one managed instance; `to_env` publishes connection details to test subprocesses.
+A fixture consumer receives a stored startup failure without retrying the boot. For a bare `.test`, the
+original provisioning error is currently suppressed and the test may instead fail because its service
+environment is missing. See ARCHITECTURE.md § *Services* and docs/SERVICES.md.
 
 ### 5. A Python-driven test (provision a table, run the body, assert)
 
@@ -364,14 +362,13 @@ The `${CATALOG}/${SCHEMA}/${TABLE}` names the body substitutes are a convention 
 pytest                     # local/smoke: iceberg_local only; rest deselected + banner; no creds
 pytest -m rest             # rest suite: token fetched up front (one prompt), container boots once
 pytest test/rest           # same, by path
-pytest -k roundtrip        # -k can't be predicted → token via available()/late-fetch, else fails loud
+pytest -k roundtrip        # collect-first resolves -k; required resources provision up front
 ```
 
 ### What you didn't have to write
 
 You wrote two `register_suite` calls, four credential callables, a start/stop pair with a fixture, a
 provisioner, and the tests. Everything else came from ducktest: selection and marking, the smoke
-default and its banner, fetching credentials once and broadcasting them to workers (with the backstop
-and late fetch), the container's start-lock, sharing, and teardown, and the xdist coordination holding
-it together. For how those work, read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
-[docs/INTERNALS.md](docs/INTERNALS.md).
+default and its banner, collect-first resource planning, single-flight provisioning, service sharing
+and teardown, and xdist coordination. For how those work, read
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/INTERNALS.md](docs/INTERNALS.md).

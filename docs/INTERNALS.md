@@ -29,38 +29,28 @@ sqllogic.py   SqlLogicFile — collect a .test + run it through the unittest bin
 sqldef.py     generic multi-statement SQL helpers   steps.py  step() narration   mnemonic.py  tokens
 ```
 
-## Hook map + ordering (the tricky part)
-
-Selection, credentials, and services are spread across several hooks with **deliberate ordering**.
-The ordering is the thing most likely to bite an extender:
+## Hook map + ordering
 
 | hook | where it runs | what it does | ordering |
 |---|---|---|---|
-| `pytest_load_initial_conftests` | controller | **registers `_SuiteController`** as a plugin | must register here so its `trylast` joins normal ordering |
+| `pytest_load_initial_conftests` | controller | registers the collect-first `Controller` | before `pytest_configure` |
 | `pytest_configure` (module) | controller + workers | working dir, markers, forces `-n0` for `--repl`/`--steps` | **`tryfirst`** — must set `numprocesses` before xdist reads it |
-| `_SuiteController.pytest_configure` | controller only | start the **store** (pre-fork) + eager-fetch credentials + eager-provision services (`_provision_eager_services`) | **`trylast`** — runs *after* the repo's `test/conftest.py` has `register_suite`'d |
-| `pytest_collection_modifyitems` (in `_SuiteController`) | workers (+ `-n0` controller) | **auto-marker + default-scan deselect** | **`hookwrapper`** — pre-yield runs before pytest's builtin `-m`/`-k` deselection |
-| `pytest_collection_modifyitems` (module) | workers | dedup + xdist_group **batching** | plain (yield phase) |
+| `Controller.pytest_configure` | controller | starts the store after consumer suite registration | **`trylast`** |
+| `Controller.pytest_collection` | controller | performs collect-first, builds/emits the plan, reconciles, provisions reachable resources | **`tryfirst`** |
+| `pytest_collection_modifyitems` | controller + workers | auto-marker, default deselection, matrix expansion, dedup, batching | **`hookwrapper`** — pre-yield state must exist before pytest/xdist selection hooks |
+| `pytest_collection_modifyitems` | workers | provisions resources for the worker's selected suites and adopts their environment | post-yield, after final selection |
 | `pytest_report_header` | controller | the **suite banner** (always) + `-v` tool trace | banner ungated |
-| `pytest_runtest_setup` | the executing process | the credential **backstop** (store → available → late-fetch → fail) | — |
 | `pytest_configure_node` | controller | broadcast the **run-id** to each worker via `workerinput` | at worker spawn |
 | `pytest_sessionfinish` | controller | **stop services** then shut the store down; drop the run temp dir | — |
 
-**Why `_SuiteController` is a separate plugin object:** the suite logic needs `trylast` (run after the
-consumer conftest registers suites), but the module-level `pytest_configure` needs `tryfirst` (set
-`numprocesses` first). One module can't have both, so the suite logic lives on a second plugin object
-registered in `pytest_load_initial_conftests` — registering *there* (pre-configure) is what lets its
-`trylast` hook join the normal ordering and fire after conftests. (Registering mid-`configure` is too
-late — verified.)
+`Controller` is a separate plugin object because its `pytest_configure` must run `trylast`, after the
+consumer conftest registers suites, while module-level `pytest_configure` must run `tryfirst` to adjust
+xdist options. Registering it from `pytest_load_initial_conftests` places both hooks in normal ordering.
 
 **Why the collection auto-marker is a hookwrapper:** pytest's builtin `-m`/`-k` deselection is itself a
 plain `pytest_collection_modifyitems`. A hookwrapper's pre-yield runs before every plain impl, so the
 suite markers exist *before* `-m <suite>` filters — that's what makes `-m rest` select markerless `.test`
 bodies.
-
-**LIFO note:** the repo's `test/conftest.py` is registered *after* the entry-point plugin, and pluggy
-runs same-suite hooks last-registered-first, so the consumer's `register_suite` already ran by the time
-`_SuiteController` (trylast) reads suites — the `trylast` is belt-and-suspenders on top of that.
 
 ## The store (`store.py`)
 
@@ -82,25 +72,20 @@ runs same-suite hooks last-registered-first, so the consumer's `register_suite` 
 
 ## Resolution flows, in code
 
-- **Eager creds** — `_SuiteController.pytest_configure` → `_fetch_credentials`: for each `_suite_reachable`
-  suite's creds, `fetch` → `validate` (else `pytest.UsageError`, red/exit-4, pre-fork) → `store.put` +
-  `os.environ.update` when `adopt=="env"`.
-- **Backstop** — `pytest_runtest_setup`: for a selected item in a credentialed suite, `store.copy` →
-  `available()` → `copy_or_provision(late_fetch)` → `pytest.fail(pytrace=False)`. `_late_fetch` validates
-  and raises `ProvisionFailed` on bad creds (poisoning the key).
-- **Services** — `provision_service` routes by stance: `--existing-service` → `_attach_service` (build
-  block + `alive` probe + `populate`, no store, no teardown); else the store single-flight
-  `copy_or_provision(key, _boot_and_populate)` (`start` **then** `populate`, once — `populate` is
-  disposition-independent, it mutates the shared service). Every provisioning process then adopts
-  `svc.to_env(block)` into `os.environ`. **Eager** services (`provision="eager"`) are triggered up front
-  by `_provision_eager_services` (`_SuiteController.pytest_configure`, per `_suite_reachable` suite,
-  deduped by key) so a bare `.test` — which pulls no fixture — still gets the service booted + its env
-  adopted pre-fork; `on_demand` (default) provisions on first fixture-pull. `per_test`/`never` fail loud.
-  `_stop_services` (sessionfinish) stops each started service once (store-presence == started, deduped by
-  key), before `mgr.shutdown()`.
-- **Selection** — `_suite_reachable(config, suite)` is the single from-args gate (bare+default /
-  path-intersect / `-m` via pytest's `Expression`); `_default_scan_deselect` and the banner reuse it, so
-  the deselect decision and the eager-fetch decision agree.
+- **Plan** — `Controller.pytest_collection` calls `session.perform_collect()`, then `_build_plan` derives
+  reachable suites and resource keys from the selected items. This includes `-k`; no selection predictor
+  or per-test resource path exists.
+- **Credentials** — `provision_reachable` calls `_fetch_or_read_credential` once per reachable key.
+  `available()` may return early; otherwise `store.copy_or_provision` runs `fetch`, then `validate` and
+  `adopt="env"`. Workers repeat the pass after their final collection to adopt environment locally;
+  store single-flight prevents another fetch.
+- **Services** — `provision_reachable` calls `provision_service`. Managed services use
+  `copy_or_provision(key, _boot_and_populate)`; existing and start-less services use `_attach_service`
+  and are not stored or stopped. `depends_on` provisions dependencies first. `to_env` is adopted in each
+  provisioning process. `_stop_services` stops stored managed services in reverse dependency order.
+- **Selection** — `_reachable_suites(config, items)` uses actual selected item membership plus default
+  suites for a bare invocation. `pytest_collection_modifyitems` applies suite markers and default
+  deselection before pytest's selection hooks, then workers provision from the surviving items.
 
 ## Collection pipeline
 
@@ -113,9 +98,8 @@ an `xdist_group` marker (with `--dist=loadgroup`) so a batch runs on one worker.
 
 ## Extending
 
-- **A new resource class** — add a descriptor to `suites.py`, thread it through `register_suite`, and
-  wire its lifecycle into `_SuiteController` / `pytest_runtest_setup` / `_stop_services`. Reuse the store
-  (`copy_or_provision` for lazy/single-flight, `put`/`copy` for eager).
+- **A new resource class** — add a descriptor to `suites.py`, include it in `Plan`, and handle it from
+  `provision_reachable` and teardown. Reuse `copy_or_provision` for invocation-wide single-flight state.
 - **A new test lane** (`.sql`, `.py`-only) — extend `pytest_collect_file`'s gate + the `has_driver` /
   `is_driver` pairing; see the `# PLANNED` markers in `plugin.py` and PLAN.md.
 - **A shared `resources` library** — ready-made `service()`/`credential()` descriptors (minio/azurite/
