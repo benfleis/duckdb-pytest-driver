@@ -76,6 +76,15 @@ _INIT_SQL_PROPERTY_KEY = "init_sql"
 # Property names claimed by a dedicated mechanism, so never routed into env vars / temp roots.
 _CLAIMED_PROPERTY_KEYS = frozenset({_TEST_CONFIG_PROPERTY_KEY, _INIT_SQL_PROPERTY_KEY})
 
+# Names owned by the unittest runner and rejected by its --env-passthrough option.
+_ENV_PASSTHROUGH_RESERVED = frozenset(
+    """
+    BASE_TEST_NAME BUILD_DIR BUILD_DIRECTORY CATALOG_DIR DATA_DIR LOCAL_DATA_DIR LOCAL_TEMP_DIR
+    RUN_ID TEMP_DIR TEMP_DIR_ABSOLUTE TEMP_DIR_ROOT TEST_DIR TEST_ID TEST_NAME TEST_NAME__NO_SLASH
+    TEST_UUID UUID WORKING_DIR WORKING_DIRECTORY
+    """.split()
+)
+
 
 def _split_matrix_cell_properties(properties: dict):
     """Split a cell's `properties` dict into `(env, temp_roots)` -- the ONE place that decides which
@@ -89,6 +98,54 @@ def _split_matrix_cell_properties(properties: dict):
         dest = _TEMP_ROOTS_PROPERTY_KEYS.get(key)
         (temp_roots if dest else env)[dest or key] = value
     return env, temp_roots
+
+
+def _resolve_matrix_properties(
+    base_temp_roots: dict,
+    matrix_cell: dict = None,
+    *,
+    ambient_env: dict = None,
+    supplied_env: dict = None,
+):
+    """Assemble one subprocess's roots and environment, then resolve late-bound references.
+
+    Precedence is ambient/static service env, explicitly supplied env, then matrix properties.
+    References resolve only after those layers are assembled, so a matrix override remains final.
+    """
+    from .suites import EnvRef
+
+    cell = matrix_cell or {}
+    properties = (cell.get("properties") if cell else None) or {}
+    matrix_env, root_overrides = _split_matrix_cell_properties(properties)
+    values = dict(os.environ if ambient_env is None else ambient_env)
+    values.update(supplied_env or {})
+    values.update(matrix_env)
+    cell_id = cell.get("id", "<none>")
+
+    def resolve(name, value, chain):
+        if not isinstance(value, EnvRef):
+            return str(value)
+        if value.name in chain:
+            cycle = " -> ".join((*chain, value.name))
+            raise pytest.UsageError(f"environment reference cycle in matrix cell {cell_id!r}: {cycle}")
+        if value.name not in values:
+            property_name = chain[0]
+            raise pytest.UsageError(
+                f"matrix cell {cell_id!r} property {property_name!r} references missing "
+                f"environment variable {value.name!r}"
+            )
+        return resolve(value.name, values[value.name], (*chain, value.name))
+
+    resolved_env = {}
+    for name, value in {**(supplied_env or {}), **matrix_env}.items():
+        resolved_env[name] = resolve(name, value, (name,))
+
+    roots = dict(base_temp_roots)
+    for name, value in root_overrides.items():
+        if value is not None:
+            roots[name] = resolve(name, value, (name,))
+
+    return roots, resolved_env
 
 
 def _matrix_cell_init_sql(item):
@@ -246,13 +303,18 @@ class SqlLogicItem(pytest.Item):
     def _run_single(self):
         from .plugin import _init_sqllogic_arg_for_item
 
+        batch_id = item_batch_id(self)
+        temp_roots, env = _resolve_matrix_properties(
+            self._temp_roots,
+            getattr(self, "_matrix_cell", None),
+        )
         result = _invoke(
             self._binary,
             [self._test_name],
             self._working_dir,
-            _matrix_cell_temp_roots(self, self._temp_roots),
-            batch_id=item_batch_id(self),
-            env=_matrix_cell_env(self),
+            temp_roots,
+            batch_id=batch_id,
+            env=env,
             extra_args=[
                 *_matrix_cell_test_config_args(self, self._working_dir),
                 *_init_sqllogic_arg_for_item(self.config, self),
@@ -268,13 +330,17 @@ class SqlLogicItem(pytest.Item):
             if self._batch_id not in _batch_cache:
                 from .plugin import _init_sqllogic_arg_for_item
 
+                temp_roots, env = _resolve_matrix_properties(
+                    self._temp_roots,
+                    getattr(self, "_matrix_cell", None),
+                )
                 _batch_cache[self._batch_id] = _execute_batch(
                     self._batch_test_names,
                     self._binary,
                     self._working_dir,
-                    _matrix_cell_temp_roots(self, self._temp_roots),
+                    temp_roots,
                     batch_id=item_batch_id(self),
-                    env=_matrix_cell_env(self),
+                    env=env,
                     extra_args=[
                         *_matrix_cell_test_config_args(self, self._working_dir),
                         *_init_sqllogic_arg_for_item(self.config, self),
@@ -397,6 +463,12 @@ def _compose_root(root, session_id, batch_id) -> str:
     return "/".join((str(root).rstrip("/"), str(session_id), str(batch_id)))
 
 
+def _env_passthrough_args(env) -> list:
+    """CLI args registering caller-owned env names for SQLLogic ``{NAME}`` substitution."""
+    names = sorted(name for name in (env or {}) if name.upper() not in _ENV_PASSTHROUGH_RESERVED)
+    return [token for name in names for token in ("--env-passthrough", name)]
+
+
 def _invoke(
     binary: str,
     args: list,
@@ -409,7 +481,7 @@ def _invoke(
     # Opt into the binary's per-test event stream on every invocation (single + batch). Requires the
     # C++ --emit-test-events flag to be built into the binary, else Catch2 errors on the unknown arg.
     # extra_args (the --unittest-args passthrough) follow, before the test name / -f selectors.
-    args = ["--emit-test-events", *(extra_args or []), *args]
+    args = [*_env_passthrough_args(env), "--emit-test-events", *(extra_args or []), *args]
     run_env = dict(os.environ)
     if temp_roots:
         # SPEC §11.4: compose the per-batch run-root and pass it as the ONE --temp-dir-root string
@@ -432,9 +504,9 @@ def _invoke(
             temp_args += ["--local-data-dir", str(temp_roots["local_data_dir"])]
         args = [*temp_args, *args]
     # env (e.g. provisioned UC_TEST_CATALOG/SCHEMA) is merged over the ambient env so
-    # the body's ${...} substitution resolves to the provisioned values.
+    # the body's {...} substitution resolves to the provisioned values.
     if env:
-        run_env.update(env)
+        run_env.update({key: str(value) for key, value in env.items()})
     try:
         proc = subprocess.run(
             [binary] + args,

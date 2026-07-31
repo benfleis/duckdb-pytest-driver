@@ -38,14 +38,25 @@ def test_block_and_env_shapes():
     assert attached["use_ssl"] is True
 
     env = hs.http_env(http)
-    assert env["PYTHON_HTTP_SERVER_URL"] == "http://127.0.0.1:12345"
-    assert env["PYTHON_HTTP_SERVER_DIR"] == "/tmp/www"
+    assert env["HTTP_DATA_URL"] == "http://127.0.0.1:12345/data"
+    assert env["HTTP_DATA_DIR"] == "/tmp/www/data"
+    assert env["HTTP_TEMP_URL_ROOT"] == "http://127.0.0.1:12345/temp"
+    assert env["HTTP_TEMP_DIR_ROOT"] == "/tmp/www/temp"
     assert "CURL_CA_BUNDLE" not in env
-    assert "PYTHON_HTTP_SERVER_DIR" not in hs.http_env(hs.http_block(port=1))  # no docroot -> no dir var
+    assert not any(name.startswith("PYTHON_HTTP_SERVER") for name in env)
 
     tls_env = hs.http_env(https)
-    assert tls_env["PYTHON_HTTP_SERVER_URL"] == "https://127.0.0.1:443"
+    assert tls_env["HTTP_DATA_URL"] == "https://127.0.0.1:443/data"
     assert tls_env["CURL_CA_BUNDLE"] == tls_env["DUCKTEST_CA_CERT"] == "/tmp/ca.pem"
+
+
+def test_attached_http_service_without_docroot_only_exports_url_roots():
+    block = hs.http_block(endpoint="http://example.test:8080")
+    env = hs.http_env(block)
+    assert env["HTTP_DATA_URL"] == "http://example.test:8080/data"
+    assert env["HTTP_TEMP_URL_ROOT"] == "http://example.test:8080/temp"
+    assert "HTTP_DATA_DIR" not in env
+    assert "HTTP_TEMP_DIR_ROOT" not in env
 
 
 @pytest.mark.parametrize(

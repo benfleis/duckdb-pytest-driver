@@ -198,6 +198,8 @@ def test_minio_env_maps_block_to_s3_client_vars():
     assert env["S3_REGION"] == b["region"]
     assert env["S3_URL_STYLE"] == "path"
     assert env["S3_USE_SSL"] == "0"  # False -> "0", not "False"/backwards
+    assert env["S3_DATA_URI"] == f"s3://{b['bucket']}/data"
+    assert env["S3_TEMP_URI_ROOT"] == f"s3://{b['bucket']}/temp"
 
 
 def test_minio_alive_probe(monkeypatch):

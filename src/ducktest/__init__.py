@@ -41,6 +41,8 @@ from .suites import (  # noqa: F401  (test-suite declaration API + registry; Pha
     Suite,
     Credential,
     Service,
+    EnvRef,
+    env_ref,
 )
 from .fixtures import (  # noqa: F401  (the table-spec lane: schema + seed instantiated via duckdb)
     TableSpec,
@@ -92,6 +94,8 @@ __all__ = [
     "Suite",
     "Credential",
     "Service",
+    "EnvRef",
+    "env_ref",
     "TableSpec",
     "register_instantiator",
     "get_instantiator",

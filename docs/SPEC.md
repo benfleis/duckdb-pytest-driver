@@ -488,6 +488,14 @@ cell is fixed at collect+decorate time (`_expand_test_matrix`), strictly before 
 mints `<batch-id>` in the plan phase, so a cell can only ever declare the root, never the batch- or
 test-id-qualified path. See `_matrix_cell_temp_roots`/`_matrix_cell_env` for the merge.
 
+Plain environment properties may use `env_ref("NAME")` for values that do not exist until a service
+has attached or started. Resolution occurs immediately before the subprocess, after ambient
+service/credential env and explicit caller env, then explicit matrix properties. This makes the
+matrix cell the final precedence layer while allowing aliases such as
+`"REMOTE_DATA_URI": env_ref("HTTP_DATA_URL")`. A missing source variable or reference cycle is a
+clear usage error naming the matrix cell and property. Every injected name is also
+forwarded through the unittest binary's `--env-passthrough` option for `{NAME}` substitution.
+
 ### 11.5 Execution — local (binary, as-it-goes) vs remote (driver, one sweep)
 - **Local = entirely the binary, incrementally.** `DestroyTestTempDir` sweeps each passing `<test-id>/`;
   `DestroyTempDir` sweeps a passing `<batch-id>/` run-root; `ReclaimLevels` prunes empty this-run-created

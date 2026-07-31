@@ -23,6 +23,7 @@ CREATE SECRET (TYPE S3, KEY_ID …, SECRET …, ENDPOINT '127.0.0.1:9000', URL_S
 | `url_style` | `path` | conservative default; a configured domain accepts path and vhost requests |
 | `use_ssl` | `False` | fixed: http |
 | `bucket` | `ducktest` | |
+| `data_prefix` / `temp_prefix` | `data` / `temp` | stable and writable object prefixes |
 | `container` | `ducktest-minio` | the `docker exec` target for `mc` |
 | `mc_alias` | `ducktest` | alias name `mc` uses inside the container |
 
@@ -41,9 +42,13 @@ on `:9000`, ice-nessie `minioadmin`/`minioadmin` on `:9002`. Override via `use_s
 | `AWS_REGION` | `S3_REGION` |
 | `AWS_ENDPOINT_URL` (scheme'd) | `S3_ENDPOINT` (host:port) |
 | | `S3_URL_STYLE`, `S3_USE_SSL` |
+| | `S3_DATA_URI` (stable `s3://<bucket>/data`) |
+| | `S3_TEMP_URI_ROOT` (stable `s3://<bucket>/temp`) |
 
 The AWS names are what glue/boto/pyarrow read; the `S3_*` names are what a body substitutes into
 `SET s3_*` / `CREATE SECRET`. A suite layers its own on top via `to_env`.
+Map `S3_TEMP_URI_ROOT` to the matrix's `temp_dir_root`; the unittest binary appends
+session/batch/test identity and exposes the result as `{TEMP_DIR}`.
 
 ## Boot
 

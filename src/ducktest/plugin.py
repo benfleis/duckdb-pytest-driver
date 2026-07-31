@@ -46,6 +46,7 @@ from .sqllogic import (
     _new_item,
     _parse_result,
     _raise_for_result,
+    _resolve_matrix_properties,
     _test_batch_id,
     resolve_unittest_args,
 )
@@ -1627,7 +1628,7 @@ def run_paired(request, *, env=None):
 
     Call from the driver's test function once initialization has run. Raises SqlLogicFailure on failure
     and pytest.skip on a skipped test. Pass ``env`` (e.g. a provisioning fixture's ``bindings.env``) to
-    inject vars the body substitutes via ``${...}`` (merged over os.environ).
+    inject vars the body substitutes via ``{...}`` (merged over os.environ).
 
     The run's originated TEMP/DATA roots (SPEC §11.2) are attached automatically — this invocation
     shares the run's `<root>/<session-id>` and composes its own `<batch-id>` from the body name (+ its
@@ -1640,6 +1641,12 @@ def run_paired(request, *, env=None):
     test_path = _stem_path(request.path, ".test")
     test_name = os.path.relpath(test_path, working_dir)
     cell = request.getfixturevalue("matrix_cell")
+    batch_id = _test_batch_id(test_name + _cell_suffix(cell))
+    temp_roots, resolved_env = _resolve_matrix_properties(
+        _temp_roots(request.config),
+        cell,
+        supplied_env=env,
+    )
     with step(f"running {test_name}"):
         _raise_for_result(
             _parse_result(
@@ -1647,9 +1654,9 @@ def run_paired(request, *, env=None):
                     binary,
                     [test_name],
                     working_dir,
-                    _temp_roots(request.config),
-                    batch_id=_test_batch_id(test_name + _cell_suffix(cell)),
-                    env=env,
+                    temp_roots,
+                    batch_id=batch_id,
+                    env=resolved_env,
                     extra_args=resolve_unittest_args(request.config),
                 )
             ),

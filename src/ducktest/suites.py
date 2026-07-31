@@ -43,6 +43,20 @@ _ATTR = "_duckdb_suites"
 
 
 @dataclass(frozen=True)
+class EnvRef:
+    """A late-bound reference to another subprocess environment variable."""
+
+    name: str
+
+
+def env_ref(name: str) -> EnvRef:
+    """Reference an environment value that will exist only when a test invocation is prepared."""
+    if not isinstance(name, str) or not name:
+        raise ValueError("env_ref: `name` must be a non-empty string")
+    return EnvRef(name)
+
+
+@dataclass(frozen=True)
 class Credential:
     """A class-1 credential descriptor — fetched once, up front, on the controller.
 

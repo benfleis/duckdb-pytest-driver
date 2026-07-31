@@ -65,8 +65,14 @@ unrelated selection (a databricks-only run) does **not** eagerly boot azurite.
 **`attach` × `eager` compose:** an `--existing-service`-attached eager service **adopts `to_env` and runs
 `populate` (idempotent)** but does **not** boot or tear down — env-yes / boot-no / seed-idempotent.
 
-**Binding policy to a shared descriptor — `use_service`.** `provision`/`to_env`/`populate` are *suite
-policy*, but `AZURITE_SERVICE` is a **shared** descriptor (reused by azure/delta/uc). So bind, don't bake:
+Writable isolation belongs to the unittest binary. A service's `to_env` exports stable DATA and TEMP
+roots; matrix properties route those through `data_dir`/`local_data_dir` and
+`temp_dir_root`/`local_temp_dir_root`. The binary then derives its canonical `{DATA_DIR}`,
+`{LOCAL_DATA_DIR}`, `{TEMP_DIR}`, and `{LOCAL_TEMP_DIR}` values, including session, batch, and test
+identity plus cleanup policy.
+
+**Binding policy to a shared descriptor — `use_service`.** `to_env`/`populate` are *suite policy*, but
+`AZURITE_SERVICE` is a **shared** descriptor (reused by azure/delta/uc). So bind, don't bake:
 
 ```python
 from ducktest import use_service, register_suite

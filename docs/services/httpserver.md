@@ -1,20 +1,27 @@
-# `httpserver` — the static-file origin
+# `httpserver` — the file origin
 
 `ducktest.resources.httpserver` · key `httpserver` · fixture `httpserver` · **in-venv subprocess**
 
-Managed equivalent of httpfs's `python3 -m http.server` fixture. It exports
-`PYTHON_HTTP_SERVER_URL` and `PYTHON_HTTP_SERVER_DIR`.
+Managed equivalent of `python3 -m http.server`, with stable shared read data and a distinct writable
+location for every SQLLogic subprocess.
 
-## The write-back pattern
+## Data and temp
 
-The served docroot and `PYTHON_HTTP_SERVER_DIR` are the same directory:
+Populate stable read data once under the block's `data_dir`. The service exports matching stable
+URL/local roots, and a suite maps them into the unittest binary's DATA/TEMP properties:
 
-```sql
-COPY (SELECT 42 AS a) TO '${PYTHON_HTTP_SERVER_DIR}/x.csv';
-SELECT * FROM '${PYTHON_HTTP_SERVER_URL}/x.csv';
+```python
+{
+    "data_dir": env_ref("HTTP_DATA_URL"),
+    "local_data_dir": env_ref("HTTP_DATA_DIR"),
+    "temp_dir_root": env_ref("HTTP_TEMP_URL_ROOT"),
+    "local_temp_dir_root": env_ref("HTTP_TEMP_DIR_ROOT"),
+}
 ```
 
-Each boot resets the docroot.
+The binary appends the same session/batch/test suffix to both TEMP roots. A body writes
+`{LOCAL_TEMP_DIR}/x.csv` and reads the exact file through `{TEMP_DIR}/x.csv`. Each boot resets the
+whole docroot.
 
 ## Block
 
@@ -22,7 +29,9 @@ Each boot resets the docroot.
 |---|---|
 | `port` | listen port (default `18008`) |
 | `endpoint` | `http(s)://127.0.0.1:<port>` |
-| `docroot` | served root and writable dir |
+| `docroot` | served root |
+| `data_dir` / `data_url` | stable shared read location |
+| `temp_dir_root` / `temp_url_root` | parents for isolated writable locations |
 | `use_ssl` | whether the origin speaks TLS |
 | `ca_cert_file` | HTTPS only: the CA anchor used by the minted leaf |
 
@@ -33,11 +42,14 @@ endpoint is built from `use_ssl`.
 
 | var | value |
 |---|---|
-| `PYTHON_HTTP_SERVER_URL` | `endpoint` |
-| `PYTHON_HTTP_SERVER_DIR` | `docroot` (omitted if unset) |
+| `HTTP_DATA_URL` | stable `<endpoint>/data` |
+| `HTTP_DATA_DIR` | matching stable `<docroot>/data` |
+| `HTTP_TEMP_URL_ROOT` | stable `<endpoint>/temp` root |
+| `HTTP_TEMP_DIR_ROOT` | matching stable `<docroot>/temp` root |
 
 HTTPS trust is included by this service when `use_ssl` is enabled. Plain HTTP does not provision or
-require the CA.
+require the CA. Local root variables are omitted when an attached origin has no `docroot`; an
+endpoint alone cannot establish the local-to-URL mapping.
 
 ## HTTP vs HTTPS
 

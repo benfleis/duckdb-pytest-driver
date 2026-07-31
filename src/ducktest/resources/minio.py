@@ -18,7 +18,7 @@ import urllib.request
 
 from ..steps import step
 from ..suites import service
-from ..tools.rclone import Remote, mkdir, write_conf
+from ..tools.rclone import Remote, mkdir, object_prefix, write_conf
 from ._docker import docker as _docker
 from ._images import ghcr_ref, register_image, served_image
 from ._process import wait_until
@@ -77,6 +77,8 @@ def minio_block(**overrides):
         "url_style": "path",  # conservative default; a configured domain also accepts vhost requests
         "use_ssl": False,  # http, not https
         "bucket": overrides.get("bucket", DEFAULT_BUCKET),
+        "data_prefix": overrides.get("data_prefix", "data").strip("/"),
+        "temp_prefix": overrides.get("temp_prefix", "temp").strip("/"),
         "container": overrides.get("container", CONTAINER),
         "mc_alias": overrides.get("mc_alias", "ducktest"),
     }
@@ -101,6 +103,8 @@ def minio_env(block):
         "S3_REGION": block["region"],
         "S3_URL_STYLE": block["url_style"],
         "S3_USE_SSL": "1" if block["use_ssl"] else "0",
+        "S3_DATA_URI": f"s3://{object_prefix(block['bucket'], block['data_prefix'], access='ro')}",
+        "S3_TEMP_URI_ROOT": f"s3://{object_prefix(block['bucket'], block['temp_prefix'], access='ro')}",
     }
 
 
@@ -272,6 +276,7 @@ MINIO_SERVICE = service(
     attach=lambda overrides, config: minio_block(**overrides),
     alive=minio_alive,
     fixture="minio",
+    to_env=minio_env,
     to_init_sql=minio_init_sql,
 )
 

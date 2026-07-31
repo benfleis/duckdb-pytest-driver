@@ -1,7 +1,4 @@
-"""HTTP(S) static-file origin for httpfs tests.
-
-The service exports ``PYTHON_HTTP_SERVER_URL`` and ``PYTHON_HTTP_SERVER_DIR``. The directory is both the
-served docroot and the write target used by ``COPY`` tests.
+"""HTTP(S) file origin with stable DATA/TEMP roots for the unittest binary.
 
 HTTP uses ``python -m http.server``. HTTPS uses ``_tls_server.py`` with a leaf certificate minted from the
 shared CA. Plain HTTP does not provision the CA.
@@ -43,20 +40,30 @@ def http_block(**overrides):
     else:
         use_ssl = bool(overrides.get("use_ssl", _use_ssl()))
         endpoint = f"{'https' if use_ssl else 'http'}://127.0.0.1:{port}"
+    docroot = overrides.get("docroot", "")
     return {
         "port": port,
         "endpoint": endpoint,
-        "docroot": overrides.get("docroot", ""),
+        "docroot": docroot,
+        "data_dir": overrides.get("data_dir") or (os.path.join(docroot, "data") if docroot else ""),
+        "data_url": (overrides.get("data_url") or f"{endpoint}/data").rstrip("/"),
+        "temp_dir_root": overrides.get("temp_dir_root") or (os.path.join(docroot, "temp") if docroot else ""),
+        "temp_url_root": (overrides.get("temp_url_root") or f"{endpoint}/temp").rstrip("/"),
         "use_ssl": use_ssl,
         "ca_cert_file": overrides.get("ca_cert_file", ""),
     }
 
 
 def http_env(block):
-    """Environment needed by httpfs tests."""
-    env = {"PYTHON_HTTP_SERVER_URL": block["endpoint"]}
-    if block.get("docroot"):
-        env["PYTHON_HTTP_SERVER_DIR"] = block["docroot"]
+    """Stable DATA and TEMP roots shared by every invocation using this origin."""
+    env = {
+        "HTTP_DATA_URL": block["data_url"],
+        "HTTP_TEMP_URL_ROOT": block["temp_url_root"],
+    }
+    if block.get("data_dir"):
+        env["HTTP_DATA_DIR"] = block["data_dir"]
+    if block.get("temp_dir_root"):
+        env["HTTP_TEMP_DIR_ROOT"] = block["temp_dir_root"]
     if block.get("use_ssl"):
         env.update(ca_env(block))
     return env
@@ -79,7 +86,8 @@ def _reset_docroot(docroot) -> None:
     """Clean the served/write directory before each boot."""
     if os.path.isdir(docroot):
         shutil.rmtree(docroot)
-    os.makedirs(docroot, exist_ok=True)
+    os.makedirs(os.path.join(docroot, "data"), exist_ok=True)
+    os.makedirs(os.path.join(docroot, "temp"), exist_ok=True)
 
 
 def _spawn(control_dir, docroot, port, use_ssl=False, certfile=None, keyfile=None, ca_cert_file=""):
