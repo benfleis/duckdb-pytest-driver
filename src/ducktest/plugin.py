@@ -174,13 +174,21 @@ def register_options(parser):
         "each value is shlex-split. Generic passthrough for binary flags the driver does not model.",
     )
     parser.addoption(
-        "--temp-dir-base",
+        "--temp-dir-root",
         default=None,
         metavar="ROOT",
         help="This run's `<root>` (may be local OR remote, e.g. s3://…). `_invoke` composes the per-"
-        "invocation --temp-dir-base = <root>/<session-id>/<batch-id> from it; the binary appends the "
+        "invocation --temp-dir-root = <root>/<session-id>/<batch-id> from it; the binary appends the "
         "<test-id> leaf and owns LOCAL create/sweep. The driver sweeps only a REMOTE <root>, once at "
         "session end (SPEC §11.5). Default: the binary's own `duckdb_unittest_tempdir`.",
+    )
+    parser.addoption(
+        "--local-temp-dir-root",
+        default=None,
+        metavar="ROOT",
+        help="Local-FS counterpart of a remote --temp-dir-root. `_invoke` composes the same "
+        "<session-id>/<batch-id> levels and passes it as --local-temp-dir-root; the binary appends "
+        "the test-id leaf. Unset delegates LOCAL_TEMP_DIR selection to the binary.",
     )
     parser.addoption(
         "--data-dir",
@@ -189,6 +197,13 @@ def register_options(parser):
         help="Read-only root for test input data, passed to the binary as --data-dir (DATA_DIR). A plain "
         "input path — never composed with session-id/batch-id, never swept. Default: the binary's "
         "working_dir/data.",
+    )
+    parser.addoption(
+        "--local-data-dir",
+        default=None,
+        metavar="DIR",
+        help="Local-FS counterpart of a remote --data-dir, passed through as --local-data-dir without "
+        "session or batch composition. Unset delegates LOCAL_DATA_DIR selection to the binary.",
     )
     parser.addoption(
         "--temp-dir-destroy",
@@ -505,7 +520,7 @@ def _run_id(config):
 # `root` + `session-id` (the run mnemonic, via `_run_id` — broadcast to every xdist
 # worker so the whole run shares ONE identity) plus an optional read-only DATA dir.
 # It does NOT compose any full path here: `_invoke` composes the ONE per-invocation
-# --temp-dir-base = <root>/<session-id>/<batch-id> (SPEC §11.4). The BINARY appends
+# --temp-dir-root = <root>/<session-id>/<batch-id> (SPEC §11.4). The BINARY appends
 # the <test-id> leaf, derives LOCAL_*, and owns local create/sweep — the driver never
 # composes LOCAL_*, never sets a TEMP_DIR env var. The mnemonic session-id is what
 # makes the run's dirs one shared, sweepable set across workers (not pid-tagged).
@@ -524,12 +539,12 @@ def _is_remote_root(value):
 
 
 def _root(config):
-    """This run's `<root>` — the outer base under which `_invoke` composes `<root>/<session-id>/
-    <batch-id>` (SPEC §11.2). The explicit `--temp-dir-base` (may be local OR remote, e.g. s3://…),
+    """This run's `<root>` — the outer root under which `_invoke` composes `<root>/<session-id>/
+    <batch-id>` (SPEC §11.2). The explicit `--temp-dir-root` (may be local OR remote, e.g. s3://…),
     else the binary's own default temp-dir name (`duckdb_unittest_tempdir`, resolved by the binary
     relative to its working dir)."""
-    base = config.getoption("--temp-dir-base", default=None)
-    return base if base else "duckdb_unittest_tempdir"
+    root = config.getoption("--temp-dir-root", default=None)
+    return root if root else "duckdb_unittest_tempdir"
 
 
 def _temp_roots(config):
@@ -537,14 +552,16 @@ def _temp_roots(config):
 
     The driver originates only `root` + `session_id` (the run mnemonic, via `_run_id` — broadcast to
     every xdist worker so the whole run shares ONE identity) plus an optional read-only DATA dir. NO
-    full-path composition here and NO LOCAL_*: `_invoke` composes the per-invocation --temp-dir-base =
-    `<root>/<session-id>/<batch-id>`, and the BINARY appends the `<test-id>` leaf + derives LOCAL_*.
+    full-path composition here: `_invoke` composes the per-invocation --temp-dir-root and optional
+    --local-temp-dir-root as `<root>/<session-id>/<batch-id>`, and the BINARY appends the `<test-id>` leaf.
 
     Returns the driver's bookkeeping dict:
-      * `root`       → the outer base; also the REMOTE sweeper's `<root>` (it sweeps `<root>/<session-id>/`);
+      * `root`       → the outer root; also the REMOTE sweeper's `<root>` (it sweeps `<root>/<session-id>/`);
       * `session_id` → the run mnemonic, the `<session-id>` level (date-sortable; the age-sweep sorts on it);
       * `data_dir`   → --data-dir when set, else None (the binary defaults to working_dir/data) — a plain
                        read-only path, never composed with the session-id/batch-id, never swept;
+      * `local_temp_dir_root` → optional local mirror root, composed per invocation like `root`;
+      * `local_data_dir` → optional local mirror of DATA, passed through without composition;
       * `destroy`    → the --temp-dir-destroy disposition, passed through to gate the binary's LOCAL sweep.
     """
     cached = getattr(config, "_sqllogic_temp_roots", None)
@@ -554,6 +571,8 @@ def _temp_roots(config):
         "root": _root(config),
         "session_id": _run_id(config),
         "data_dir": config.getoption("--data-dir", default=None),
+        "local_temp_dir_root": config.getoption("--local-temp-dir-root", default=None),
+        "local_data_dir": config.getoption("--local-data-dir", default=None),
         "destroy": config.getoption("--temp-dir-destroy", default="on-success"),
     }
     config._sqllogic_temp_roots = roots
@@ -1584,7 +1603,7 @@ def pytest_sessionfinish(session, exitstatus):
         return  # this is a worker
     _teardown_store(config)
     # REMOTE sweeping (SPEC §11.5), controller-only + once: the driver does NOTHING local (the binary owns
-    # LOCAL create/sweep, as-it-goes — it received --temp-dir-base/--temp-dir-run-id/--temp-dir-destroy).
+    # LOCAL create/sweep, as-it-goes — it received --temp-dir-root/--temp-dir-run-id/--temp-dir-destroy).
     # Here it applies the one session-end remote sweep (keep-on-failure by keep-list) then the best-effort
     # age-sweep backstop. Both no-op when <root> is local / no sweeper is registered. A run that never
     # reaches sessionfinish does no sweep — the age-sweep is the eventual backstop (SPEC §11.5).

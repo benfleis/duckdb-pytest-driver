@@ -62,8 +62,10 @@ conftest — decides how each key is delivered:
 | --- | --- | --- |
 | `test_config` | `--test-config <path>` (resolved against the working dir) | a duckdb test-config JSON: `on_init` SQL + `statically_loaded_extensions` + `skip_tests` |
 | `init_sql` | merged into the item's `--init-sqllogic` preamble | inline SQL a cell runs before the body (e.g. `SET x='y';`) — the lighter alternative to `test_config` for a pure-`SET` cell |
-| `temp_dir_root` | `--temp-dir-base` prefix | the cell's scratch/write root (e.g. a per-backend `az://…`) |
+| `temp_dir_root` | `--temp-dir-root` prefix | the cell's scratch/write root (e.g. a per-backend `az://…`) |
+| `local_temp_dir_root` | `--local-temp-dir-root` prefix | the local-FS mirror of a remote temp root |
 | `data_dir` | `--data-dir` | the cell's read-data root |
+| `local_data_dir` | `--local-data-dir` | the local-FS mirror of a remote data root |
 | *anything else* | a literal **env var** in the body's environment | `${VAR}` a `.test` body reads (e.g. `AZ_STORAGE_ACCOUNT`, `S3_ENDPOINT`) |
 
 `test_config` is the lever for a run-config sweep (httpfs): the JSON already encodes the `SET`

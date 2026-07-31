@@ -101,8 +101,14 @@ def test_matrix_cell_env_none_when_cell_has_no_properties_key():
 
 
 def test_matrix_cell_env_reads_plain_properties_only():
-    # temp_dir_root/data_dir are claimed by _matrix_cell_temp_roots -- not echoed into env too.
-    properties = {"AZURE_STORAGE_ACCOUNT": "acct", "temp_dir_root": "az://acct.blob.core.windows.net/w"}
+    # Directory properties are claimed by _matrix_cell_temp_roots -- not echoed into env too.
+    properties = {
+        "AZURE_STORAGE_ACCOUNT": "acct",
+        "temp_dir_root": "az://acct.blob.core.windows.net/w",
+        "local_temp_dir_root": "/tmp/az-w",
+        "data_dir": "az://acct.blob.core.windows.net/d",
+        "local_data_dir": "/data",
+    }
     assert _matrix_cell_env(_FakeItem(matrix_cell={"id": "azure-az", "properties": properties})) == {
         "AZURE_STORAGE_ACCOUNT": "acct"
     }
@@ -113,14 +119,27 @@ def test_matrix_cell_temp_roots_unchanged_for_non_matrix_item():
     assert _matrix_cell_temp_roots(_FakeItem(), base) is base
 
 
-def test_matrix_cell_temp_roots_overlays_temp_dir_root_and_data_dir():
-    base = {"root": "duckdb_unittest_tempdir", "session_id": "s1", "data_dir": None}
-    properties = {"temp_dir_root": "az://acct.blob.core.windows.net/w", "data_dir": "az://acct.blob.core.windows.net/d"}
+def test_matrix_cell_temp_roots_overlays_remote_and_local_temp_data_dirs():
+    base = {
+        "root": "duckdb_unittest_tempdir",
+        "session_id": "s1",
+        "local_temp_dir_root": None,
+        "data_dir": None,
+        "local_data_dir": None,
+    }
+    properties = {
+        "temp_dir_root": "az://acct.blob.core.windows.net/w",
+        "local_temp_dir_root": "/tmp/az-w",
+        "data_dir": "az://acct.blob.core.windows.net/d",
+        "local_data_dir": "/data",
+    }
     merged = _matrix_cell_temp_roots(_FakeItem(matrix_cell={"id": "azure-az", "properties": properties}), base)
     assert merged == {
         "root": "az://acct.blob.core.windows.net/w",
         "session_id": "s1",
+        "local_temp_dir_root": "/tmp/az-w",
         "data_dir": "az://acct.blob.core.windows.net/d",
+        "local_data_dir": "/data",
     }
 
 

@@ -409,16 +409,16 @@ This object-store instantiator is the piece that plugs into the base `Provisione
     container's data dir to the host `TEMP_DIR` (azurite's `-l /data`, minio's data dir), or a
     configurable prefix. Not hard, but design the service images for it NOW so the storage-root model
     isn't blocked later.
-  - **`TEMP_DIR` vs `LOCAL_TEMP_DIR` (a duckdb-CORE change — see *C++ queued*).** When `TEMP_DIR` is
-    non-local (a remote/mounted path backing azurite/minio/…), core must ALSO allocate a `LOCAL_TEMP_DIR`
+  - **`TEMP_DIR` vs `LOCAL_TEMP_DIR` (provided by DuckDB PR #24158).** When `TEMP_DIR` is
+    non-local (a remote/mounted path backing azurite/minio/…), core also allocates a `LOCAL_TEMP_DIR`
     on the local FS, with the SAME token/cleanup policies; when `TEMP_DIR` is local, the two coincide.
     Why: RW DuckDB **database** operations need real local-filesystem guarantees (file locking, mmap,
     atomic rename, fsync) that object/network storage doesn't provide — many db tests simply cannot run
     RW on non-local disk, and faking it drops exactly the durability/locking guarantees they assume. So a
     test keeps its under-test artifacts on remote `TEMP_DIR` while DuckDB's own scratch (and any local db)
-    uses `LOCAL_TEMP_DIR`. The env-var contract (core-owned, duckdb `test/README.md`) grows
-    `LOCAL_TEMP_DIR`; the driver/provisioner sets `TEMP_DIR` (possibly remote) and core derives the local
-    sibling. Already prototyped by hand; formalize + land in core.
+    uses `LOCAL_TEMP_DIR`. The env-var contract is core-owned in duckdb's `test/README.md`; the driver
+    supplies `--temp-dir-root` and optionally `--local-temp-dir-root`, and core derives the per-test
+    values.
 - **Seed reuse** — standardize the OSS seed on the convention table `id_name (id INT, name
 STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provisioning stays
   one shape. (The checkpoint port reuses `id_name`.)
@@ -659,7 +659,7 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
     `identity.py` lives in UC not the driver).
 - **Min duckdb (unittest) version contract** _[real, mechanism TBD]_ — the driver assumes unittest flags
   (`--emit-test-events`, `--temp-dir-*`, `--select-tag`); a stale binary errors `Unrecognised token:
-  --temp-dir-base`. A standalone release needs a pinned/probed floor (probe `unittest --version`/features
+  --temp-dir-root`. A standalone release needs a pinned/probed floor (probe `unittest --version`/features
   or a documented minimum). _(from EXTRACT_DRIVER_PLAN)_
 - **Versioning scheme** _[decided 2026-07-14]_ — see *Pre-0.1 release gates* above: `0.0.1` pushed to the
   real `duckdb`-org repo as-is, iterate publicly, `0.1.0` once hardened against Iceberg + others. Still
@@ -670,15 +670,15 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
   (shared/exclusive == ro/rw) generalizes the same triple. (Also separable: an absolute
   `$TMP/duckdb-test-temp` default base.) _(from DISPOSITIONS)_
 
-## C++ queued (the opt-in runner changes)
+## C++ status and queued changes
 
-- **`LOCAL_TEMP_DIR` alongside `TEMP_DIR`** _[core, prototyped by hand]_ — when `TEMP_DIR` is non-local
+- **`LOCAL_TEMP_DIR` alongside `TEMP_DIR`** _[core, DuckDB PR #24158]_ — when `TEMP_DIR` is non-local
   (remote/mounted backing storage), core allocates a local-FS `LOCAL_TEMP_DIR` with the same
   token/cleanup policies; when `TEMP_DIR` is local, they coincide. RW DuckDB **database** operations need
   local-FS guarantees (locking, mmap, atomic rename, fsync) object/network storage can't give, so a test
   can hold its under-test artifacts on remote `TEMP_DIR` while duckdb's own scratch uses `LOCAL_TEMP_DIR`.
-  Env-var contract addition (duckdb `test/README.md`). Full rationale in the *Roadmap* item "`TEMP_DIR`
-  is the home for `rw` artifact storage".
+  The env-var contract lives in duckdb's `test/README.md`. Full rationale is in the *Roadmap* item
+  "`TEMP_DIR` is the home for `rw` artifact storage".
 - **per-test OUTCOME emit (`--emit-on-test`, its own flag)** — successor to the skip markers /
   the abandoned per-file statement histogram. Emit ONE line per Catch test-case (= per `.test`
   for sqllogic, + each C++ `TEST_CASE`): `[TEST_RESULT] <name> :: pass|fail|skip|partial[ :: <reason>]`.

@@ -405,16 +405,6 @@ coordination primitive that can't actually coordinate them.
    pytest (that reinvents the predictor we deleted). A fresh `execv` of pytest is warranted only if an
    *outer* script wants a clean per-mode invocation; internally, test/reassert share the binary and
    run/repl is a CLI subprocess.
-6. **`--temp-dir-base` naming/env-parity** (raised 2026-07-25, the az suite-matrix work). `--data-dir`
-   has a `DUCKDB_TEST_DATA_DIR` env fallback (`test_config.cpp`'s generic `DUCKDB_TEST_*` option
-   loop); `--temp-dir-base` doesn't — it's parsed directly in `unittest.cpp`'s argv loop, CLI-only.
-   Also, `root` (§11.2's own term for the same thing) reads better than `base` for what's a *prefix*
-   two more levels get appended onto. **Leaning:** fix both upstream (env fallback + a `root`-named
-   flag, `--temp-dir-base` kept as a deprecated alias) rather than carry the asymmetry indefinitely —
-   low blast radius, and it removes the CLI-arg-only reason `_matrix_cell_temp_roots` (§11.4) has to
-   thread this as an argv token instead of plain env. Until it lands: `sqllogic.py`'s `_invoke` has a
-   `TODO` at the `--temp-dir-base` assignment; update both there and here together.
-
 ## 11. TEMP / DATA storage — dir structure + lifecycle (authoritative)
 
 **This section is the authority for the driver's TEMP/DATA behavior.** The binary's composition,
@@ -426,9 +416,9 @@ follows pins the **driver ↔ binary division** exactly.
 ### 11.1 Two axes, NOT symmetric
 - **TEMP** — write scratch. Managed, per-batch, swept. Structure + lifecycle below.
 - **DATA** — read-only input (fixtures). A plain path: `--data-dir` (default `working_dir/data`),
-  `LOCAL_DATA_DIR = IsRemoteFile(DATA_DIR) ? working_dir/data : DATA_DIR`. **No base, no id, no per-test,
-  no create/sweep, no sweeper.** The only write to a remote DATA root is out-of-band fixture
-  *provisioning*, never test execution.
+  `LOCAL_DATA_DIR = IsRemoteFile(DATA_DIR) ? working_dir/data : DATA_DIR`, unless explicitly set with
+  `--local-data-dir`. **No root, no id, no per-test, no create/sweep, no sweeper.** The only write to a
+  remote DATA root is out-of-band fixture *provisioning*, never test execution.
 
 **Litmus: if it's swept, it's TEMP; DATA is never swept.**
 
@@ -438,7 +428,7 @@ unconditionally copies the binary's *entire* `test_env` map (which always has `D
 set — override or the local-scratch default, never absent) into a fresh test's substitution scope
 *before* the body parses. `require-env DATA_DIR`/`require-env TEMP_DIR` then always hits
 `sqllogic_test_runner.cpp`'s "already defined" guard — **regardless of whether `--data-dir`/
-`--temp-dir-base` was set**; the override changes what the names *resolve to*, not whether
+`--temp-dir-root` was set**; the override changes what the names *resolve to*, not whether
 `require-env` against them is legal. The fix for a `.test` file that needs these values is to use
 `{DATA_DIR}`/`{TEMP_DIR}` substitution directly and drop the `require-env` gate for those two names
 specifically (it's dead weight — they're never actually absent, so the gate can only ever fail, not
@@ -446,7 +436,7 @@ skip). Any *other* env var name is unaffected and `require-env`s normally.
 
 ### 11.2 TEMP directory structure
 ```
-<root>/            outer base (default duckdb_unittest_tempdir, or a caller-set root)
+<root>/            outer root (default duckdb_unittest_tempdir, or a caller-set root)
   └─ <session-id>/    one pytest-driver session  (rendered as a date-sortable mnemonic — only the
        │           age-sweep cares that it sorts by date; structurally it's just an id)
        └─ <batch-id>/   one unittest invocation (a batch)
@@ -455,13 +445,13 @@ skip). Any *other* env var name is unaffected and `require-env`s normally.
 
 ### 11.3 Who creates / sweeps each level, and how it reaches the binary
 `created by` / `swept by` = the **process** (driver vs binary); the middle column is the **pass-down**
-mechanism (the ambiguity that bit us — it is `--temp-dir-base`, one composed string, not `--temp-dir`).
+mechanism (the ambiguity that bit us — it is `--temp-dir-root`, one composed string, not `--temp-dir`).
 
 | Level | Created by | How it reaches the binary | Swept by |
 |---|---|---|---|
-| `<root>/` | pre-exists (neither) | inside `--temp-dir-base` | **never** (`ReclaimLevels` empty-check halts here) |
-| `<session-id>/` | binary *(local, as an ancestor)* · test-on-write *(remote)* | inside `--temp-dir-base` | binary iff empty *(local; the last batch out)* · **driver** session-net, all-success *(remote)* |
-| `<batch-id>/` (run-root) | binary `PrepareTempDir` *(local)* · test-on-write *(remote)* | **`--temp-dir-base = <root>/<session-id>/<batch-id>`** + `--temp-dir-run-id off` | binary `DestroyTempDir` *(local; recursive; `--temp-dir-destroy`×success)* · *(remote: none — subsumed by the `<session-id>` session net; no per-batch driver hook)* |
+| `<root>/` | pre-exists (neither) | inside `--temp-dir-root` | **never** (`ReclaimLevels` empty-check halts here) |
+| `<session-id>/` | binary *(local, as an ancestor)* · test-on-write *(remote)* | inside `--temp-dir-root` | binary iff empty *(local; the last batch out)* · **driver** session-net, all-success *(remote)* |
+| `<batch-id>/` (run-root) | binary `PrepareTempDir` *(local)* · test-on-write *(remote)* | **`--temp-dir-root = <root>/<session-id>/<batch-id>`** + `--temp-dir-run-id off` | binary `DestroyTempDir` *(local; recursive; `--temp-dir-destroy`×success)* · *(remote: none — subsumed by the `<session-id>` session net; no per-batch driver hook)* |
 | `<test-id>/` | binary runner (per test) | **not passed** — the binary derives it from the test name | binary `DestroyTestTempDir` *(local; per-test success)* · **driver** session sweep, kept iff failed *(remote)* |
 
 **One policy, two executors.** The rule is uniform: **sweep every *successful* `test-id/`; a `batch-id/`
@@ -471,24 +461,28 @@ driver applies it *once at session completion* with a single rclone sweep (§11.
 just gets the free incremental optimization, remote doesn't.
 
 ### 11.4 Governing flags (per invocation; not dir levels)
-- **`--temp-dir-base = <root>/<session-id>/<batch-id>`** — the full per-batch run-root; the ONE composed
+- **`--temp-dir-root = <root>/<session-id>/<batch-id>`** — the full per-batch run-root; the ONE composed
   string. NOT `--temp-dir` exact; NOT a `TEMP_DIR`/`LOCAL_*`/`DATA_DIR` env var (the binary
   composes/derives them and would overwrite a driver-set `TEMP_DIR`).
-- **`--temp-dir-run-id off`** — run-id is redundant: the base already carries the per-batch identity, so
-  no `/$RUN_ID` level is appended (`ResolveRunIdRoot` returns `$BASE`).
+- **`--local-temp-dir-root = <local-root>/<session-id>/<batch-id>`** — optional local-FS counterpart
+  of a remote temp root. The binary appends the same test-id leaf and exposes it as `LOCAL_TEMP_DIR`.
+- **`--temp-dir-run-id off`** — run-id is redundant: each root already carries the per-batch identity,
+  so no additional `/$RUN_ID` level is appended.
 - **`--temp-dir-destroy {never|on-success|always}`** — gates the binary's **local** sweep only.
 - **`--data-dir <dir>`** — only when overriding the read-only DATA axis; no lifecycle.
+- **`--local-data-dir <dir>`** — optional local-FS counterpart of DATA; passed without composition.
 
 **Matrix-cell overrides of `root`/`data_dir`** (the az suite-matrix work, 2026-07-25). `_temp_roots
 (config)` is cached once per `config` — session-wide, not cell-aware — but a suite-level `matrix=`
 cell (two cells of the same `.test` file needing *different* remote roots, e.g. `az://` vs `abfss://`
-against different storage accounts) can't share one `--temp-dir-base`/`--data-dir`. A cell declares
+against different storage accounts) can't share one `--temp-dir-root`/`--data-dir`. A cell declares
 its need as a flat `"properties"` dict — e.g. `{"temp_dir_root": "az://acct.blob.../w", "data_dir":
 "az://acct.blob.../d"}` — same spirit as `requires.py`'s `Requirement.properties`: the conftest says
 *what* it needs; `sqllogic.py`'s `_split_matrix_cell_properties` is the ONE place that decides which
-property names route into `temp_roots` (`temp_dir_root` → `root`, `data_dir` → `data_dir` — both
-then flow through the composition above) versus passing straight through as a literal env var (any
-other key). A conftest never picks CLI-arg-vs-env-var itself. `temp_dir_root` is deliberately not
+property names route into `temp_roots` (`temp_dir_root`, `local_temp_dir_root`, `data_dir`, and
+`local_data_dir`) versus passing straight through as a literal env var (any other key). Temp roots
+flow through the composition above; data dirs do not. A conftest never picks CLI-arg-vs-env-var
+itself. `temp_dir_root` is deliberately not
 named `TEMP_DIR`/`temp_dir` — it's the *prefix* `<root>` in §11.2's tree, not the composed value; a
 cell is fixed at collect+decorate time (`_expand_test_matrix`), strictly before `assign_batches`
 mints `<batch-id>` in the plan phase, so a cell can only ever declare the root, never the batch- or
@@ -528,9 +522,10 @@ test-id-qualified path. See `_matrix_cell_temp_roots`/`_matrix_cell_env` for the
   locally; the remote keep-list is its analog.)
 - **Concurrency safety.** Distinct `<batch-id>` per invocation + the empty-ancestor stop-check ⇒
   concurrent batches never stomp the shared `<session-id>/`. (The earlier shared-run-root hazard is gone.)
-- **One resolver of record.** The binary derives `LOCAL_*`; the driver never re-derives per-invocation
-  and never sets `LOCAL_*`.
-- **Remote clamp.** For a remote base the binary creates/sweeps NOTHING — the test writes, the driver sweeps.
+- **One resolver of record.** The binary derives the final per-test `LOCAL_*` values. The driver may
+  supply local roots, but never sets `LOCAL_TEMP_DIR` or `LOCAL_DATA_DIR` itself.
+- **Remote clamp.** For a remote root the binary creates/sweeps nothing remotely. Its local mirror
+  remains under the binary's normal local lifecycle.
 - **Keep-on-failure by construction.** Only *failed* `test-id/` dirs are kept; their non-empty ancestors
   survive with them (empty ancestors prune). No coarse "keep the whole session on any failure" — you keep
   exactly what failed. The age-sweep is the eventual backstop, so kept-forever never happens.
@@ -538,16 +533,11 @@ test-id-qualified path. See `_matrix_cell_temp_roots`/`_matrix_cell_env` for the
 This **deletes `reclaim_physical` and the old LIFO ordering** — a remote sweep is a prefix delete, so it
 is order-independent. `on_cleanup` (per-`.test` SQL at test end) stays as a body-level affordance.
 
-### 11.7 Core track (NOT the driver's job)
-The binary honoring `LOCAL_TEMP_DIR` for its own spill/db is the **core** PR (`local-temp-dir` branch).
-The driver introduces only: compose `<root>/<session-id>/<batch-id>` → `--temp-dir-base` (+
-`--temp-dir-run-id off`, `--temp-dir-destroy`, optional `--data-dir`) → the remote TEMP sweeper. It never
-re-derives `LOCAL_*`, never sweeps local, never touches DATA.
-
-**Follow-up (core; deferred — bundled with the `TEMP_DIR`/`TEST_DIR` cleanup pass):** because the driver
-now *always* passes `--temp-dir-run-id off` and bakes `<session-id>/<batch-id>` into `--temp-dir-base`,
-the binary's **run-id flag machinery is dead** — `--run-id`, `--temp-dir-run-id`, and
-`RUN_ID`/`ResolveRunIdRoot` no longer serve any caller and can be removed.
+### 11.7 Core contract
+DuckDB PR #24158 supplies `--temp-dir-root`, `--local-temp-dir-root`, `--local-data-dir`,
+`LOCAL_TEMP_DIR`, `LOCAL_DATA_DIR`, and the local/remote lifecycle behavior. The driver composes the
+session and batch prefixes, passes those roots to the binary, and owns only the remote session sweep.
+It never re-derives per-test `LOCAL_*`, never sweeps local, and never sweeps DATA.
 
 ### 11.8 Test-kind neutrality — the pure-Python lane (intent, wire later)
 The policy in §11.3–§11.6 is **executor-agnostic**. Which process runs the *local* create/sweep depends on
