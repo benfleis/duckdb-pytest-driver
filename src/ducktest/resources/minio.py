@@ -213,72 +213,142 @@ def minio_anonymous_set(block, policy, bucket):
     return minio_mc(block, "anonymous", "set", policy, f"{block['mc_alias']}/{bucket}")
 
 
-def _start(config):
-    """Managed boot: run the image on the fixed host ports, wait for ready, pre-create the bucket.
+def _start_managed(config, block, *, image, console_port, ready_timeout_s, tmpfs_size):
+    """Managed boot: run the image on configured host ports, wait for ready, pre-create the bucket.
 
     ``docker rm -f`` first, so a container leaked by an interrupted run can't wedge the port. On any
-    failure after ``docker run``, tear the half-booted container down before re-raising: ``_start``
+    failure after ``docker run``, tear the half-booted container down before re-raising: startup
     raises before the block reaches the store, and ``_stop_services`` only stops services that got
     that far.
     """
-    with step(f"starting MinIO ({IMAGE})"):
-        _docker("rm", "-f", CONTAINER, check=False)  # force-remove any leftover
-        domain_env = ("-e", f"MINIO_DOMAIN={DOMAIN}") if DOMAIN else ()
+    container = block["container"]
+    with step(f"starting MinIO ({image})"):
+        _docker("rm", "-f", container, check=False)  # force-remove any leftover
+        domain_env = ("-e", f"MINIO_DOMAIN={block['domain']}") if block["domain"] else ()
         _docker(
             "run",
             "-d",
             "--name",
-            CONTAINER,
+            container,
             "-p",
-            f"{S3_PORT}:9000",
+            f"{block['port']}:9000",
             "-p",
-            f"{CONSOLE_PORT}:9001",
+            f"{console_port}:9001",
             "-e",
-            f"MINIO_ROOT_USER={ACCESS_KEY}",
+            f"MINIO_ROOT_USER={block['access_key']}",
             "-e",
-            f"MINIO_ROOT_PASSWORD={SECRET_KEY}",
+            f"MINIO_ROOT_PASSWORD={block['secret_key']}",
             *domain_env,
             "--tmpfs",
-            f"/data:size={TMPFS_SIZE}",  # see TMPFS_SIZE
-            IMAGE,
+            f"/data:size={tmpfs_size}",  # see TMPFS_SIZE
+            image,
             "server",
             "/data",
             "--console-address",
             ":9001",
         )
         try:
-            block = minio_block()
             wait_until(
                 lambda: minio_alive(block),
-                _READY_TIMEOUT_S,
+                ready_timeout_s,
                 lambda: (
-                    f"MinIO container {CONTAINER!r} did not become ready on "
-                    f"{block.get('endpoint')} after {_READY_TIMEOUT_S}s (image {IMAGE})."
+                    f"MinIO container {container!r} did not become ready on "
+                    f"{block.get('endpoint')} after {ready_timeout_s}s (image {image})."
                 ),
             )
             _ensure_bucket(block)
         except Exception:
-            _docker("rm", "-f", CONTAINER, check=False)  # don't leak a half-booted container
+            _docker("rm", "-f", container, check=False)  # don't leak a half-booted container
             raise
     return block
 
 
-def _stop(config):
+def _stop_managed(config, container):
     """Managed teardown (controller, once): ``rm -f`` = stop + remove."""
     with step("stopping MinIO"):
-        _docker("rm", "-f", CONTAINER, check=False)
+        _docker("rm", "-f", container, check=False)
 
 
-MINIO_SERVICE = service(
-    "minio",
-    start=_start,
-    stop=_stop,
-    attach=lambda overrides, config: minio_block(**overrides),
-    alive=minio_alive,
+def _start(config):
+    """Start the default module-configured MinIO instance."""
+    return _start_managed(
+        config,
+        minio_block(),
+        image=IMAGE,
+        console_port=CONSOLE_PORT,
+        ready_timeout_s=_READY_TIMEOUT_S,
+        tmpfs_size=TMPFS_SIZE,
+    )
+
+
+def _stop(config):
+    """Stop the default module-configured MinIO instance."""
+    _stop_managed(config, CONTAINER)
+
+
+def minio_service(
+    key="minio",
+    *,
+    access_key=ACCESS_KEY,
+    secret_key=SECRET_KEY,
+    region=REGION,
+    bucket=DEFAULT_BUCKET,
+    domain=DOMAIN,
+    s3_port=S3_PORT,
+    console_port=CONSOLE_PORT,
+    image=IMAGE,
+    container=CONTAINER,
+    ready_timeout_s=_READY_TIMEOUT_S,
+    tmpfs_size=TMPFS_SIZE,
+    data_prefix="data",
+    temp_prefix="temp",
+    mc_alias="ducktest",
     fixture="minio",
-    to_env=minio_env,
-    to_init_sql=minio_init_sql,
-)
+):
+    """Build a managed MinIO service with explicit per-instance configuration."""
+    defaults = {
+        "access_key": access_key,
+        "secret_key": secret_key,
+        "region": region,
+        "bucket": bucket,
+        "domain": domain,
+        "port": int(s3_port),
+        "container": container,
+        "data_prefix": data_prefix,
+        "temp_prefix": temp_prefix,
+        "mc_alias": mc_alias,
+    }
+    minio_block(**defaults)  # validate configuration when the service is declared
+
+    def start(config):
+        return _start_managed(
+            config,
+            minio_block(**defaults),
+            image=image,
+            console_port=int(console_port),
+            ready_timeout_s=int(ready_timeout_s),
+            tmpfs_size=tmpfs_size,
+        )
+
+    def stop(config):
+        _stop_managed(config, container)
+
+    def attach(overrides, config):
+        return minio_block(**{**defaults, **overrides})
+
+    return service(
+        key,
+        start=start,
+        stop=stop,
+        attach=attach,
+        alive=minio_alive,
+        fixture=fixture,
+        to_env=minio_env,
+        to_init_sql=minio_init_sql,
+    )
+
+
+MINIO_SERVICE = minio_service()
 
 
 def minio_rclone(block=None):

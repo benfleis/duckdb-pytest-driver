@@ -170,6 +170,56 @@ def test_minio_managed_start_passes_domain_to_container(monkeypatch):
     assert block["endpoint"] == "http://127.0.0.1.nip.io:9000"
 
 
+def test_minio_service_configures_managed_and_attached_instances(monkeypatch):
+    calls = []
+    monkeypatch.setattr(minio, "_docker", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(minio, "wait_until", lambda *args: None)
+    monkeypatch.setattr(minio, "_ensure_bucket", lambda block: None)
+
+    svc = minio.minio_service(
+        "httpfs-minio",
+        access_key="httpfs-user",
+        secret_key="httpfs-password",
+        region="eu-west-1",
+        bucket="test-bucket",
+        domain="127.0.0.1.nip.io",
+        s3_port=19000,
+        console_port=19001,
+        image="example/minio:test",
+        container="httpfs-minio",
+        tmpfs_size="3g",
+        data_prefix="fixtures",
+        temp_prefix="scratch",
+    )
+
+    block = svc.start(None)
+    run_args = next(args for args, _ in calls if args[0] == "run")
+    assert svc.key == "httpfs-minio"
+    assert block == svc.attach({}, None)
+    assert block["endpoint"] == "http://127.0.0.1.nip.io:19000"
+    assert block["access_key"] == "httpfs-user"
+    assert block["region"] == "eu-west-1"
+    assert block["bucket"] == "test-bucket"
+    assert block["data_prefix"] == "fixtures"
+    assert block["temp_prefix"] == "scratch"
+    assert "httpfs-minio" in run_args
+    assert "19000:9000" in run_args
+    assert "19001:9001" in run_args
+    assert "MINIO_ROOT_USER=httpfs-user" in run_args
+    assert "MINIO_ROOT_PASSWORD=httpfs-password" in run_args
+    assert "MINIO_DOMAIN=127.0.0.1.nip.io" in run_args
+    assert "/data:size=3g" in run_args
+    assert "example/minio:test" in run_args
+
+    attached = svc.attach({"endpoint": "http://existing:9000", "bucket": "existing-bucket"}, None)
+    assert attached["endpoint"] == "http://existing:9000"
+    assert attached["bucket"] == "existing-bucket"
+    assert attached["access_key"] == "httpfs-user"
+
+    svc.stop(None)
+    assert calls[-1][0] == ("rm", "-f", "httpfs-minio")
+
+
 def test_minio_block_endpoint_override_recomputes_s3_endpoint():
     b = minio_block(endpoint="http://host.docker.internal:9000/")
     assert b["endpoint"] == "http://host.docker.internal:9000"  # trailing slash stripped

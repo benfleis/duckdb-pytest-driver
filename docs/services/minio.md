@@ -28,8 +28,19 @@ CREATE SECRET (TYPE S3, KEY_ID …, SECRET …, ENDPOINT '127.0.0.1:9000', URL_S
 | `mc_alias` | `ducktest` | alias name `mc` uses inside the container |
 
 Auth varies per consumer, so everything is parameterized: ice-fixture and ducklake use `admin`/`password`
-on `:9000`, ice-nessie `minioadmin`/`minioadmin` on `:9002`. Override via `use_service(MINIO_SERVICE, …)`,
-`--existing-service minio={json}`, or the `DUCKTEST_MINIO_*` env.
+on `:9000`, ice-nessie `minioadmin`/`minioadmin` on `:9002`. Use `minio_service(...)` for an explicitly
+configured managed instance, `--existing-service minio={json}` for attach-time overrides, or the
+`DUCKTEST_MINIO_*` env for the default `MINIO_SERVICE`.
+
+```python
+HTTPFS_MINIO = minio_service(
+    access_key="minio_duckdb_user",
+    secret_key="minio_duckdb_user_password",
+    region="eu-west-1",
+    bucket="test-bucket",
+    domain="127.0.0.1.nip.io",
+)
+```
 
 > These are local emulator credentials, not secrets.
 
@@ -126,5 +137,5 @@ The httpfs corpus was built against a bespoke compose stack. Unmet by the defaul
 (`test-bucket` with **versioning**, `test-bucket-2`, `test-bucket-public` with an anonymous policy).
 
 The `mc` helpers cover the second user, versioning, and anonymous policy. Bucket layout belongs in a
-suite's `populate`. The suite can enable virtual-host coverage with
-`DUCKTEST_MINIO_DOMAIN=127.0.0.1.nip.io`.
+suite's `populate`. The suite can configure the primary instance and virtual-host coverage directly
+with `minio_service(...)`.
