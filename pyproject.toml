@@ -44,7 +44,7 @@ mitm = ["mitmproxy>=11; python_version >= '3.12'", "cryptography>=42"]
 # mitmproxy: the mitm-service self-test boots a real `mitmdump` subprocess (offline — no docker, no
 # network), so `uv run pytest` exercises it. Same 3.12 marker as the `[mitm]` extra above, so the dev
 # env resolves on the 3.9 floor (the dep drops out; the test skips) and installs mitm on 3.12+.
-dev = ["pytest-xdist", "mitmproxy>=11; python_version >= '3.12'"]
+dev = ["pytest-xdist", "ruff", "mitmproxy>=11; python_version >= '3.12'"]
 
 [project.urls]
 Homepage = "https://github.com/duckdb/duckdb"
@@ -74,3 +74,6 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 120
 format.quote-style = "preserve"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

@@ -13,6 +13,8 @@ central artifact is the **`.test` (SQLLogic) file**; Python is thin glue, never 
 Three test lanes:
 - **`.test` alone** — collected and run through the binary. Zero Python. (Always on — the plugin's own
   collect hook.)
+- **`.test_slow` / `.test_coverage`** — collected with `--slow`, marked `slow`, and run one test per
+  binary invocation.
 - **`.py` driver + same-stem `.test`** — the `.py` is collected; it provisions/decorates, calls
   `run_paired(request, env=…)` to run the body through the binary, and may add its own assertions.
 - **`.py` Python-native** — an ordinary pytest test (own assertions, no SQLLogic). Enabled by
@@ -21,7 +23,7 @@ Three test lanes:
   set it — see PLAN.md). All suite / credential / `@requires` machinery applies unchanged — it keys on
   the pytest *item*, not on the file being a `.test`.
 
-(`.sql`, `.test_slow/_coverage`, and the C++ `TEST_CASE` lane are still planned — see PLAN.md.)
+(`.sql` and the C++ `TEST_CASE` lane are still planned — see PLAN.md.)
 
 `ducktest configure` writes the `pytest.ini` a plugin can't inject (`testpaths`, `-n auto`,
 `--import-mode=importlib`). After that, bare `pytest` runs the suite. The plugin auto-registers via a

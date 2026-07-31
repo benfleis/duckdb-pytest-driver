@@ -104,11 +104,12 @@ runs same-suite hooks last-registered-first, so the consumer's `register_suite` 
 
 ## Collection pipeline
 
-`pytest_collect_file` (`plugin.py`) → for a `.test`: if it `has_driver` (same-stem `.py`) it's
-suppressed (the driver runs it); else it becomes a `SqlLogicFile` that runs it through the binary. A
-`.py` driver `is_driver` (same-stem `.test`) and is collected as a normal module; `run_paired` finds
-its sibling `.test` and invokes the binary. Batching groups adjacent same-binary/same-workdir
-`SqlLogicItem`s under an `xdist_group` marker (with `--dist=loadgroup`) so a batch runs on one worker.
+`pytest_collect_file` (`plugin.py`) collects `.test` bodies by default and adds `.test_slow` and
+`.test_coverage` with `--slow`. Slow/coverage items receive the `slow` marker before pytest applies
+`-m` and run in one-test batches. For a `.test`, a same-stem `.py` suppresses the body and
+`run_paired` invokes it through the driver. Slow paired drivers are not supported; an adjacent `.py`
+does not suppress a slow body. Batching groups adjacent same-binary/same-workdir `SqlLogicItem`s under
+an `xdist_group` marker (with `--dist=loadgroup`) so a batch runs on one worker.
 
 ## Extending
 

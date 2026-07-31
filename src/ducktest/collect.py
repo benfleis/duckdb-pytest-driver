@@ -51,6 +51,10 @@ def is_body(path: str, *, slow: bool = False) -> bool:
     return path.endswith(sfx)
 
 
+def is_slow_body(path: str) -> bool:
+    return path.endswith(_SLOW_SUFFIXES)
+
+
 # --- listing the binary's registered set ------------------------------------------------------
 
 

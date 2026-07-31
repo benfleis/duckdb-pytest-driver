@@ -173,14 +173,17 @@ pytest -m databricks         # a suite by its marker (the driver auto-applies su
 pytest test/rest             # a path — directory or single file
 pytest -k roundtrip          # substring / boolean-expr match on test names
 pytest -n 8                  # parallelism (-n auto is the default from `ducktest configure`; -n0 serializes)
+pytest --slow                # also collect .test_slow and .test_coverage bodies
+pytest --slow -m slow        # run only those slow/coverage bodies
 pytest -m 'databricks and not slow' -k attach -n 8   # combine freely
 ```
 
 Bare `pytest` runs the default set, the union of the suites marked `default=True`, which serves as
 your smoke run. There's no built-in `smoke` marker; the driver auto-applies markers named after your
-suites, like `databricks`. The wider vocabulary of `smoke`, `local`, `cloud`, `slow`, and `all` is a
-convention you opt into through how you name suites and mark tests. Making `-m smoke` work directly is
-on the roadmap (PLAN.md § *Named test sets*).
+suites, like `databricks`. The driver marks `.test_slow` and `.test_coverage` bodies as `slow` when
+they are enabled with `--slow`. The wider vocabulary of `smoke`, `local`, `cloud`, and `all` is a
+convention you opt into through suite names and marks. Making `-m smoke` work directly is on the
+roadmap (PLAN.md § *Named test sets*).
 
 ---
 

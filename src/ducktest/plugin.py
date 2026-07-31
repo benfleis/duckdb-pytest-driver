@@ -32,7 +32,7 @@ import warnings
 import pytest
 
 from . import store
-from .collect import assign_batches, has_driver, is_driver  # noqa: F401 (re-exported: role model)
+from .collect import assign_batches, has_driver, is_body, is_driver, is_slow_body  # noqa: F401
 from .context import SessionContext, get_context, set_context
 from .fixtures import duckdb_shell_for
 from .mnemonic import run_id as _make_run_id
@@ -101,6 +101,12 @@ def pytest_addoption(parser):
 
 
 def register_options(parser):
+    parser.addoption(
+        "--slow",
+        action="store_true",
+        default=False,
+        help="Collect .test_slow and .test_coverage SQLLogic tests in addition to .test files.",
+    )
     parser.addoption(
         "--build",
         default="auto",
@@ -482,7 +488,7 @@ def pytest_ignore_collect(collection_path, config):
 
 
 def pytest_collect_file(parent, file_path):
-    """Collect `.test` bodies and same-stem `.py` drivers under the test root (role/member model)."""
+    """Collect enabled SQLLogic bodies and same-stem `.py` drivers under the test root."""
     config = parent.config
     working_dir = _working_dir(config)
     test_root = _test_root(config)
@@ -492,9 +498,9 @@ def pytest_collect_file(parent, file_path):
         if is_driver(str(file_path)):
             return pytest.Module.from_parent(parent, path=file_path)
         return None
-    if file_path.suffix != ".test":
+    if not is_body(str(file_path), slow=config.getoption("--slow")):
         return None
-    if has_driver(str(file_path)):
+    if not is_slow_body(str(file_path)) and has_driver(str(file_path)):
         return None  # runs only via its same-stem driver
     binary = find_binary(config, working_dir)
     return SqlLogicFile.from_parent(parent, path=file_path, binary=binary, working_dir=working_dir)
@@ -1572,6 +1578,10 @@ def pytest_configure(config):
         "requires(source, access, properties, name): declare an external resource need; drives "
         "provisioning under --repl (see ducktest/requires.py).",
     )
+    config.addinivalue_line(
+        "markers",
+        "slow: SQLLogic body collected from a .test_slow or .test_coverage file.",
+    )
     # Redirect an explicitly-named `.test` arg to its same-stem driver `.py` (the body is suppressed).
     rewritten = []
     for arg in config.args:
@@ -1881,6 +1891,11 @@ def pytest_collection_modifyitems(session, config, items):
         # <suite>` deselection reads markers, which must exist before this hookwrapper yields).
         items[:] = _expand_test_matrix(config, items, suites)
         _apply_suite_markers(config, items, suites)
+
+    for item in items:
+        if is_slow_body(getattr(item, "_test_name", "")):
+            item._slow = True
+            item.add_marker("slow")
 
     # Dedupe by nodeid, then batch — both pre-yield: assign_batches' xdist_group marker must exist before
     # xdist's plain pytest_collection_modifyitems (remote.py) appends the `@group` nodeid suffix that

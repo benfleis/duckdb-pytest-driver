@@ -66,13 +66,9 @@ the driver).
     consumer incantation (`uv run --group <grp> pytest`? a documented `test` group? plain venv?).
 - `${TEST_DIR_BASE}` substitutes empty in a `.test` (env-refresh timing); `__TEST_DIR__`
   (live) works — pick a live token / general var-injection channel. _(open)_
-- **`.test_slow` files are silently ignored** — the collector matches the suffix `.test`
-  exactly (`pytest_collect_file`: `file_path.suffix != ".test"`), so `_slow`-tagged bodies
-  (`*.test_slow`, e.g. `tpch.test_slow`, `tpcds.test_slow`) are never collected or run.
-  Intentional for now (keeps the slow TPC suites out of the default run), but needs fixing:
-  recognize `*.test_slow` as a body too, gated behind an opt-in (a `--slow` flag and/or a
-  `slow` marker so they run only when asked). _(known gap)_; additionally need to
-  design/handle tags like slow
+- **Slow/coverage collection landed.** `--slow` adds `.test_slow` and `.test_coverage` bodies,
+  marks them `slow` before marker selection, and isolates each in a one-test batch. Paired drivers
+  remain `.test`-only.
 
 ## Pre-0.1 release gates (decided 2026-07-14)
 
@@ -81,8 +77,7 @@ the driver).
 what "some real hardening" means concretely; treat this list, not vibes, as the 0.1.0 gate.
 
 - Everything in **v0-dev sprints** below (collection trust is explicitly the "100% trust" blocker).
-- **Reported-unit flip** and **`.test_slow`/`.test_coverage` silently ignored** (Status snapshot /
-  PLAN.md:59-65) — both are silent-wrongness risks, not nice-to-haves.
+- **Reported-unit flip** remains a silent-wrongness risk. Slow/coverage collection has landed.
 - **Resource-planning unification** (design proposal, validated against real code, ready to implement —
   **`docs/RESOURCE-PLANNING.md`**, rewritten as a tight PRD 2026-07-24). One canonical per-item key
   (`build, run_setting, backend, access, cell`), computed once in a new "decorate" step; batching,
@@ -242,9 +237,8 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
    `unittest -l` as a second gather source: ship **verify** (diff FS vs binary, hard-error on
    divergence) first, evolve to **authoritative** (collect from `binary ∪ FS`, dedup by name).
    Requires resolving the binary once at `pytest_configure` (see the fail-fast bug below).
-2. **Slow/coverage + segmentation** _(part of the trust sprint)_. Recognize `.test_slow`/
-   `.test_coverage` as bodies behind `--slow`/`slow` marker; slow tests are batch-1 → the
-   batch-ordering / segmentation work lands here.
+2. **Slow/coverage + segmentation** _(landed)_. `.test_slow`/`.test_coverage` are behind `--slow`,
+   marked `slow` before `-m` selection, and assigned one-test batches.
 3. **Dual-scoping guard**. `testpaths` (ini, what pytest walks) vs `test_root` (plugin, what it
    accepts) can silently diverge → under/over-collection. Validate/derive at `pytest_configure`,
    error on mismatch. (FS-side half of #1.)
