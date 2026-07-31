@@ -11,7 +11,9 @@ URL_STYLE 'path', USE_SSL 0)`` (or the ``SET s3_*`` equivalents). Unlike Azure B
 auto-create a bucket, so the managed boot pre-creates the default one. See ``docs/SERVICES.md``.
 """
 
+import json
 import os
+import re
 import tempfile
 import urllib.error
 import urllib.request
@@ -211,6 +213,31 @@ def minio_anonymous_set(block, policy, bucket):
     """Set anonymous bucket access, e.g. ``policy='public'``."""
     minio_alias_set(block)
     return minio_mc(block, "anonymous", "set", policy, f"{block['mc_alias']}/{bucket}")
+
+
+def minio_presigned_url(block, object_path, *, bucket=None, expire="24h"):
+    """Create a presigned download URL for an object through ``mc share download``."""
+    minio_alias_set(block)
+    bucket = bucket or block["bucket"]
+    target = f"{block['mc_alias']}/{bucket}/{object_path.lstrip('/')}"
+    result = minio_mc(block, "share", "download", "--json", "--expire", expire, target)
+
+    for line in reversed(result.stdout.splitlines()):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key in ("share", "url"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                return value
+
+    match = re.search(r"https?://\S+", result.stdout)
+    if match:
+        return match.group(0)
+    raise RuntimeError(f"mc did not return a presigned URL for {object_path!r}: {result.stdout.strip()}")
 
 
 def _start_managed(config, block, *, image, console_port, ready_timeout_s, tmpfs_size):

@@ -90,6 +90,7 @@ The image carries the `mc` client, so admin operations run via `docker exec`.
 | `minio_policy_attach(block, policy, *, user)` | attach a canned policy |
 | `minio_version_enable(block, bucket)` | enable bucket versioning |
 | `minio_anonymous_set(block, policy, bucket)` | anonymous access, e.g. `policy='public'` |
+| `minio_presigned_url(block, object_path, *, bucket=None, expire="24h")` | create a presigned object download URL |
 
 Attached services must pass a `container` override whose image contains `mc`.
 

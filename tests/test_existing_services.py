@@ -8,6 +8,7 @@ Three layers, all offline (no docker):
 """
 
 import textwrap
+from types import SimpleNamespace
 
 import pytest
 
@@ -218,6 +219,42 @@ def test_minio_service_configures_managed_and_attached_instances(monkeypatch):
 
     svc.stop(None)
     assert calls[-1][0] == ("rm", "-f", "httpfs-minio")
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        ('["noise"]\n{"status":"success","share":"http://minio/object?token=one"}\n', "http://minio/object?token=one"),
+        ('{"url":"https://minio/object?token=two"}\n', "https://minio/object?token=two"),
+        ("Share: http://minio/object?token=three\n", "http://minio/object?token=three"),
+    ],
+)
+def test_minio_presigned_url_parses_mc_output(monkeypatch, stdout, expected):
+    calls = []
+    block = minio_block(bucket="default-bucket")
+    monkeypatch.setattr(minio, "minio_alias_set", lambda value: calls.append(("alias", value)))
+    monkeypatch.setattr(
+        minio,
+        "minio_mc",
+        lambda value, *args: calls.append(("mc", value, args)) or SimpleNamespace(stdout=stdout),
+    )
+
+    assert minio.minio_presigned_url(block, "/path/file.parquet", bucket="other-bucket", expire="2h") == expected
+    assert calls[0] == ("alias", block)
+    assert calls[1] == (
+        "mc",
+        block,
+        ("share", "download", "--json", "--expire", "2h", "ducktest/other-bucket/path/file.parquet"),
+    )
+
+
+def test_minio_presigned_url_rejects_output_without_url(monkeypatch):
+    block = minio_block()
+    monkeypatch.setattr(minio, "minio_alias_set", lambda value: None)
+    monkeypatch.setattr(minio, "minio_mc", lambda value, *args: SimpleNamespace(stdout='{"status":"error"}\n'))
+
+    with pytest.raises(RuntimeError, match="mc did not return a presigned URL for 'missing.parquet'"):
+        minio.minio_presigned_url(block, "missing.parquet")
 
 
 def test_minio_block_endpoint_override_recomputes_s3_endpoint():
