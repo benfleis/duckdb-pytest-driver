@@ -1,24 +1,33 @@
-# Matrix — one `.test` body, N cells
+# Matrix testing
 
-Run the same test body across a set of **cells** — different backends (azurite vs cloud), different
-run configs (curl vs httplib client), different storage/commit types. Each cell becomes its own
-pytest item, with per-cell environment and, where it applies, a per-cell duckdb `--test-config`.
+Ducktest has two matrix mechanisms:
 
-There are two entry points; pick by scope.
+- `register_suite(matrix=...)` varies the SQLLogic invocation for a suite.
+- `@requires_matrix(...)` varies a Python driver's provisioned resource.
 
-## 1. Suite-wide — `register_suite(matrix=...)`
+They both produce parametrized pytest items, but their `properties` have different meanings.
 
-Every `.test` (and `.py`) in the suite fans across the cells. This is the right tool when a whole
-directory of tests should run under each config/backend — e.g. httpfs's curl / httplib / dynamic /
-connection-caching configs, or azure's azurite vs cloud.
+## Suite matrix
+
+A suite matrix cell has a required `id` and optional invocation `properties`:
 
 ```python
-# test/conftest.py
+{"id": "curl", "properties": {"test_config": "test/configs/httpfs_curl.json"}}
+```
+
+The cell ID appears in the pytest item name.
+
+Use `register_suite(matrix=...)` when every SQLLogic body in a suite uses the same configurations:
+
+```python
 from ducktest import register_suite
+
 
 def pytest_configure(config):
     register_suite(
-        config, "httpfs", path="test/sql", marker="httpfs", default=True,
+        config,
+        "httpfs",
+        path="test/sql",
         matrix=[
             {"id": name, "properties": {"test_config": f"test/configs/httpfs_{name}.json"}}
             for name in ("curl", "httplib", "dynamic", "connection_caching")
@@ -26,89 +35,102 @@ def pytest_configure(config):
     )
 ```
 
-Every body under `test/sql` now runs as `…[curl]`, `…[httplib]`, `…[dynamic]`,
-`…[connection_caching]`. A cell is a dict; `id` (required, non-empty) is the cell id — a plain label,
-with no meaning to the driver beyond naming the item — and `properties` (optional) is what each cell
-needs (see [Cell properties](#cell-properties)).
+A collected `.test` body under `test/sql` produces four pytest items. Slow and coverage bodies do
+the same when enabled with `--slow`.
 
-## 2. Per-test — `@requires_matrix(...)`
-
-One body fans; the rest of the suite doesn't. This is for a body whose *provisioning* varies (UC's
-managed vs plain table), not a suite-wide config sweep.
+Python tests opt into the suite matrix by requesting `matrix_cell` or `resources`:
 
 ```python
-from ducktest import requires_matrix, TableSpec, run_paired
+def test_client(matrix_cell):
+    assert matrix_cell["id"] in {"curl", "httplib", "dynamic", "connection_caching"}
+```
 
-@requires_matrix(source=TableSpec("id_name").Seed(None), access="rw",
-                 properties={"commit": ["cmt", "plain"]})
+A Python test that requests neither fixture runs once. This avoids multiplying unrelated setup or
+assertion tests merely because they share the suite directory.
+
+## Per-test matrix
+
+Use `@requires_matrix` when one Python driver needs its own provisioning matrix:
+
+```python
+from ducktest import TableSpec, requires_matrix, run_paired
+
+
+@requires_matrix(
+    source=TableSpec("id_name").Seed(None),
+    access="rw",
+    properties={"commit": ["cmt", "plain"]},
+)
 def test_rw(request, resources):
     run_paired(request, env=resources.env)
 ```
-→ `test_rw[cmt]`, `test_rw[plain]`, each with its own `@requires` cell.
 
-### Composition (per-test wins outright)
+This creates one pytest item per generated requirement cell. Each key in `properties` is an axis;
+the example produces `{"commit": "cmt"}` and `{"commit": "plain"}`. The resulting dictionary is
+stored in the cell's `Requirement.properties` for the provisioner to interpret. These are not suite
+invocation properties.
 
-If a test carries its own `@requires_matrix`, it **replaces** the suite matrix for that test — it is
-not multiplied. This is deliberate: the test author declares the *exact* cell set they want, which
-can be a **subset** of the suite (this body only runs one backend) or a **superset** (it adds an
-extra cell). Auto-multiplying couldn't express the subtractive case.
+`resources` provisions the cell and pulls in `matrix_cell` transitively.
 
-## Cell properties
+If a test has `@requires_matrix` and belongs to a suite with `matrix=`, the test's own matrix wins.
+The two matrices are not multiplied.
 
-A cell's `properties` dict is homogeneous, backend-declared vocabulary. The driver — not the
-conftest — decides how each key is delivered:
+## Suite cell properties
 
-| property | delivered as | for |
-| --- | --- | --- |
-| `test_config` | `--test-config <path>` (resolved against the working dir) | a duckdb test-config JSON: `on_init` SQL + `statically_loaded_extensions` + `skip_tests` |
-| `init_sql` | merged into the item's `--init-sqllogic` preamble | inline SQL a cell runs before the body (e.g. `SET x='y';`) — the lighter alternative to `test_config` for a pure-`SET` cell |
-| `temp_dir_root` | `--temp-dir-root` prefix | the cell's scratch/write root (e.g. a per-backend `az://…`) |
-| `local_temp_dir_root` | `--local-temp-dir-root` prefix | the local-FS mirror of a remote temp root |
-| `data_dir` | `--data-dir` | the cell's read-data root |
-| `local_data_dir` | `--local-data-dir` | the local-FS mirror of a remote data root |
-| *anything else* | a literal **env var** in the body's environment | `${VAR}` a `.test` body reads (e.g. `AZ_STORAGE_ACCOUNT`, `S3_ENDPOINT`) |
+The driver handles these suite-cell property names when it invokes the SQLLogic binary. Bare `.test`
+items and Python drivers using `run_paired` use the same routing.
 
-`test_config` is the lever for a run-config sweep (httpfs): the JSON already encodes the `SET`
-preamble, the extension-loading mode, and per-config skips — so you reuse your existing
-`--test-config` files wholesale, no re-expression in Python.
+| Property | Delivery |
+| --- | --- |
+| `test_config` | `--test-config <path>`; relative paths use the DuckDB working directory |
+| `init_sql` | Included in the generated `--init-sqllogic` file |
+| `temp_dir_root` | Prefix for `--temp-dir-root` |
+| `local_temp_dir_root` | Prefix for `--local-temp-dir-root` |
+| `data_dir` | `--data-dir` |
+| `local_data_dir` | `--local-data-dir` |
+| Any other key | Environment variable passed to the subprocess |
 
-**`init_sql` vs `test_config`.** `init_sql` covers *only* the preamble SQL. `test_config` also carries
-the **loading mode** (`statically_loaded_extensions`) and **per-config skips** (`skip_tests`). So a
-cell that changes only `SET`s (e.g. httpfs's curl / httplib client) can use `init_sql`; a cell that
-changes extension loading (httpfs's `dynamic`) or skips tests *must* use `test_config` — there's no
-`SET` for "load this extension dynamically." They compose: a cell picks whichever fits, and `init_sql`
-merges *after* any suite `auto_init_sql` (credentials/service secrets) into one snippet.
+Temporary roots are invocation-specific. The driver appends the session and batch IDs to
+`temp_dir_root` and `local_temp_dir_root`, so different cells do not share writable paths. Data
+directories are passed through unchanged.
 
-Because `init_sql` is merged last, a cell can override a suite-wide default with a later `SET`.
-That is enough to express a proxy-fault matrix without proxy-specific driver code:
+### Environment references
+
+Use `env_ref` when a cell property depends on an environment value supplied by a service or
+credential:
 
 ```python
-from ducktest.resources.mitm_addon import fail_nth, latency
-from ducktest.resources.mitm_profile import proxy_init_sql
+from ducktest import env_ref
 
-matrix=[
-    {"id": "clean"},                                                        # suite baseline only
-    {"id": "flaky", "properties": {"init_sql": proxy_init_sql(fail_nth(n=1))}},
-    {"id": "slow",  "properties": {"init_sql": proxy_init_sql(latency(ms=500))}},
-]
+
+{"id": "s3", "properties": {"REMOTE_DATA_URI": env_ref("S3_DATA_URI")}}
 ```
 
-### The `TEMP_DIR` / `DATA_DIR` name clash — use prefixed names
+References are resolved immediately before the subprocess starts. Precedence is:
 
-duckdb's C++ test harness **permanently registers** `TEMP_DIR` and `DATA_DIR` for its own local
-scratch/data paths. A `.test` file's `require-env TEMP_DIR` against an already-registered name
-hard-fails at parse time (`"Environment variable 'TEMP_DIR' has already been defined"`). So a
-backend's remote-path env vars must use their **own** names — `AZ_DATA_DIR`, `S3_DATA_DIR`, etc. — not
-the bare `DATA_DIR`/`TEMP_DIR`. (The `temp_dir_root`/`data_dir` *properties* above are fine — those
-become CLI args, not env vars.)
+1. Ambient and adopted service or credential environment
+2. The `env=` argument passed to `run_paired`
+3. Matrix-cell properties
+4. Reference resolution
 
-## Out of scope here
+Matrix properties therefore have final value precedence. A missing reference or reference cycle is
+a pytest usage error that names the cell and property.
 
-Two adjacent design areas are catalog/imperative concerns and don't touch filesystem or config
-matrices:
+### Init SQL and test configs
 
-- **Cell-schema granularity** (per-run vs per-test schema names) — only relevant to catalog-backed
-  cells (UC/Databricks), where each cell provisions a SQL schema. Filesystem/config matrices have no
-  schema. Current behavior is per-test; see PLAN.md.
-- **`Context`** (the `initialize`/`run`/`finalize` imperative-hook object) — declarative `.test`
-  bodies never see it. Not specified yet; see PLAN.md.
+`init_sql` is for SQL that must run before the body, such as a `SET` statement. For suites with
+`auto_init_sql=True`, service and credential SQL is emitted first and the cell SQL follows. Both are
+written to one `--init-sqllogic` file, so cell SQL can override an earlier suite setting.
+
+Use `test_config` when the existing DuckDB JSON config is authoritative. It can define `on_init`,
+`statically_loaded_extensions`, and `skip_tests`; those cannot all be represented by `init_sql`.
+Both properties may be used in one cell.
+
+## Reserved environment names
+
+The DuckDB test runner owns names such as `TEMP_DIR` and `DATA_DIR`. Do not use them as matrix
+environment properties or in `require-env`. Use backend-specific names such as `S3_TEMP_URI` and
+`AZ_DATA_URI`.
+
+The lowercase `temp_dir_root` and `data_dir` matrix properties are not environment variables. They
+map to command-line options and are safe to use.

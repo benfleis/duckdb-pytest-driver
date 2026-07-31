@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import threading
 import warnings
+from typing import Optional
 
 import pytest
 
@@ -38,16 +39,9 @@ def _test_batch_id(test_name: str) -> str:
     return "test-" + hashlib.sha1(test_name.encode()).hexdigest()[:10]
 
 
-def _matrix_cell_properties(item) -> dict:
-    """The single per-cell `properties` dict a matrix-fanned `.test` item's cell carries, if any
-    (`plugin.py`'s `_expand_test_matrix` stamps `_matrix_cell` with the suite's cell dict verbatim).
-    Homogeneous, backend-declared vocabulary -- same spirit as `requires.py`'s `Requirement.properties`:
-    a cell says WHAT it needs (`temp_dir_root`, `data_dir`, or any plain env var name); which of
-    those becomes a temp/data directory CLI arg vs a literal env var is THIS module's
-    call (`_split_matrix_cell_properties`), never the conftest's. `{}` for a non-matrix item or a
-    cell with no `properties` key."""
-    cell = getattr(item, "_matrix_cell", None)
-    return (cell.get("properties") if cell else None) or {}
+def _matrix_cell_properties(matrix_cell: Optional[dict] = None) -> dict:
+    """Return a matrix cell's backend-declared property vocabulary, or `{}` without a cell."""
+    return (matrix_cell.get("properties") if matrix_cell else None) or {}
 
 
 # Property names this module claims and routes into `temp_roots` (temp/data directory CLI args)
@@ -102,7 +96,7 @@ def _split_matrix_cell_properties(properties: dict):
 
 def _resolve_matrix_properties(
     base_temp_roots: dict,
-    matrix_cell: dict = None,
+    matrix_cell: Optional[dict] = None,
     *,
     ambient_env: dict = None,
     supplied_env: dict = None,
@@ -157,45 +151,39 @@ def _resolve_matrix_properties(
     return roots, resolved_env
 
 
-def _matrix_cell_init_sql(item):
-    """A matrix cell's `init_sql` property -- inline preamble SQL merged into the item's
-    `--init-sqllogic` snippet ahead of the body -- or `None` for a non-matrix item / a cell without
-    one. Merged (not a second `--init-sqllogic`) by `plugin._init_sqllogic_arg_for_item`."""
-    return _matrix_cell_properties(item).get(_INIT_SQL_PROPERTY_KEY) or None
+def _matrix_cell_init_sql(matrix_cell: Optional[dict] = None):
+    """A matrix cell's `init_sql` property -- inline preamble SQL merged into the invocation's
+    `--init-sqllogic` snippet ahead of the body -- or `None` without a matrix cell or `init_sql`.
+    Merged (not a second `--init-sqllogic`) by `plugin._init_sqllogic_arg_for_item`."""
+    return _matrix_cell_properties(matrix_cell).get(_INIT_SQL_PROPERTY_KEY) or None
 
 
-def _matrix_cell_test_config_args(item, working_dir) -> list:
+def _matrix_cell_test_config_args(matrix_cell: Optional[dict], working_dir) -> list:
     """`["--test-config", <path>]` when a matrix cell declares a `test_config` property (a duckdb
     test-config JSON: its `on_init` SQL, `statically_loaded_extensions`, `skip_tests`); `[]` for a
-    non-matrix item or a cell without one. Path resolves relative to `working_dir`. Reusing duckdb's
+    missing cell or property. Path resolves relative to `working_dir`. Reusing duckdb's
     native `--test-config` lets a consumer matrix over its existing config JSONs (see docs/MATRIX.md)."""
-    path = _matrix_cell_properties(item).get(_TEST_CONFIG_PROPERTY_KEY)
+    path = _matrix_cell_properties(matrix_cell).get(_TEST_CONFIG_PROPERTY_KEY)
     if not path:
         return []
     return ["--test-config", path if os.path.isabs(path) else os.path.join(working_dir, path)]
 
 
-def _matrix_cell_env(item) -> dict:
-    """The per-invocation env override for a matrix-fanned `.test` item, from its cell's
-    `properties` (entries not claimed as temp/data directories or init/config properties) -- e.g.
-    two cells of the same file
-    needing DIFFERENT values can't both mutate the shared `os.environ` (the up-front `to_env`/adopt
-    model is invocation-wide, not cell-aware); `_invoke`'s own `env=` already layers per-subprocess-
-    call, which is exactly cell-scoped. `None` for a non-matrix item or a cell with no plain-env
-    properties (today's behavior, unchanged)."""
-    env, _ = _split_matrix_cell_properties(_matrix_cell_properties(item))
+def _matrix_cell_env(matrix_cell: Optional[dict] = None) -> dict:
+    """Return a cell's plain environment properties, excluding claimed config and root keys."""
+    env, _ = _split_matrix_cell_properties(_matrix_cell_properties(matrix_cell))
     return env or None
 
 
-def _matrix_cell_temp_roots(item, base: dict) -> dict:
-    """`base` (the run-wide `_temp_roots(config)`), with a matrix cell's temp/data directory properties
+def _matrix_cell_temp_roots(matrix_cell: Optional[dict], base: dict) -> dict:
+    """`base` (the run-wide `_temp_roots(config)`), with a matrix cell's temp/data directory
     properties overlaid as the corresponding temp/data roots -- same rationale as `_matrix_cell_env`
     (`--temp-dir-root`/`--data-dir` are already remote-capable, SPEC §11.2/§11.3, but
     `_temp_roots` is cached once per `config`, not cell-aware): two cells of the same file needing
     DIFFERENT remote roots (e.g. `az://` vs `abfss://`, different storage accounts) can't share one
-    temp/data arguments. `session_id`/`destroy` stay run-wide. `base` is unchanged for a non-matrix
-    item or a cell with no directory properties."""
-    _, override = _split_matrix_cell_properties(_matrix_cell_properties(item))
+    temp/data arguments. `session_id`/`destroy` stay run-wide. `base` is unchanged without a cell or
+    directory properties."""
+    _, override = _split_matrix_cell_properties(_matrix_cell_properties(matrix_cell))
     if not override:
         return base
     return {**base, **{k: v for k, v in override.items() if v is not None}}
@@ -313,9 +301,10 @@ class SqlLogicItem(pytest.Item):
         from .plugin import _init_sqllogic_arg_for_item
 
         batch_id = item_batch_id(self)
+        matrix_cell = getattr(self, "_matrix_cell", None)
         temp_roots, env = _resolve_matrix_properties(
             self._temp_roots,
-            getattr(self, "_matrix_cell", None),
+            matrix_cell,
         )
         result = _invoke(
             self._binary,
@@ -325,8 +314,8 @@ class SqlLogicItem(pytest.Item):
             batch_id=batch_id,
             env=env,
             extra_args=[
-                *_matrix_cell_test_config_args(self, self._working_dir),
-                *_init_sqllogic_arg_for_item(self.config, self),
+                *_matrix_cell_test_config_args(matrix_cell, self._working_dir),
+                *_init_sqllogic_arg_for_item(self.config, self, matrix_cell=matrix_cell),
                 *resolve_unittest_args(self.config),
             ],
         )
@@ -339,9 +328,10 @@ class SqlLogicItem(pytest.Item):
             if self._batch_id not in _batch_cache:
                 from .plugin import _init_sqllogic_arg_for_item
 
+                matrix_cell = getattr(self, "_matrix_cell", None)
                 temp_roots, env = _resolve_matrix_properties(
                     self._temp_roots,
-                    getattr(self, "_matrix_cell", None),
+                    matrix_cell,
                 )
                 _batch_cache[self._batch_id] = _execute_batch(
                     self._batch_test_names,
@@ -351,8 +341,8 @@ class SqlLogicItem(pytest.Item):
                     batch_id=item_batch_id(self),
                     env=env,
                     extra_args=[
-                        *_matrix_cell_test_config_args(self, self._working_dir),
-                        *_init_sqllogic_arg_for_item(self.config, self),
+                        *_matrix_cell_test_config_args(matrix_cell, self._working_dir),
+                        *_init_sqllogic_arg_for_item(self.config, self, matrix_cell=matrix_cell),
                         *resolve_unittest_args(self.config),
                     ],
                 )

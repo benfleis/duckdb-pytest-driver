@@ -43,6 +43,7 @@ from .sqllogic import (
     SqlLogicItem,
     _cell_suffix,
     _invoke,
+    _matrix_cell_test_config_args,
     _new_item,
     _parse_result,
     _raise_for_result,
@@ -1235,8 +1236,8 @@ def _write_init_sqllogic_snippet(sql_text: str) -> str:
 _init_sqllogic_paths: dict = {}  # (id(config), suite.name) -> temp .test path, or "" (nothing to inject)
 
 
-def _init_sqllogic_arg_for_item(config, item) -> list:
-    """`["--init-sqllogic", path]` for a `.test` item that needs preamble SQL injected: its suite's
+def _init_sqllogic_arg_for_item(config, item, *, matrix_cell=None) -> list:
+    """`["--init-sqllogic", path]` for an invocation that needs preamble SQL: its pytest item's suite
     `auto_init_sql=True` credential/service SQL, and/or a matrix cell's own `init_sql` property —
     merged into ONE snippet (never two `--init-sqllogic` args). `[]` when there's nothing to inject.
 
@@ -1246,7 +1247,7 @@ def _init_sqllogic_arg_for_item(config, item) -> list:
     """
     from .sqllogic import _matrix_cell_init_sql
 
-    cell_sql = _matrix_cell_init_sql(item)
+    cell_sql = _matrix_cell_init_sql(matrix_cell)
     suite = next(
         (s for s in get_suites(config) if s.auto_init_sql and _item_in_suite(config, item, s)), None
     )
@@ -1667,7 +1668,11 @@ def run_paired(request, *, env=None):
                     temp_roots,
                     batch_id=batch_id,
                     env=resolved_env,
-                    extra_args=resolve_unittest_args(request.config),
+                    extra_args=[
+                        *_matrix_cell_test_config_args(cell, working_dir),
+                        *_init_sqllogic_arg_for_item(request.config, request.node, matrix_cell=cell),
+                        *resolve_unittest_args(request.config),
+                    ],
                 )
             ),
             test_file=str(test_path),

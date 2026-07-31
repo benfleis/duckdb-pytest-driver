@@ -10,6 +10,7 @@ a matrix cell's `properties` reaching it too) is proven against a stub binary, m
 `test_collector.py`.
 """
 
+import json
 import stat
 import textwrap
 
@@ -86,18 +87,12 @@ def test_write_init_sqllogic_snippet_emits_no_statement_ok_when_only_requires(tm
 # --- _matrix_cell_env / _matrix_cell_temp_roots (pure) ------------------------------------------
 
 
-class _FakeItem:
-    def __init__(self, matrix_cell=None):
-        if matrix_cell is not None:
-            self._matrix_cell = matrix_cell
-
-
 def test_matrix_cell_env_none_for_non_matrix_item():
-    assert _matrix_cell_env(_FakeItem()) is None
+    assert _matrix_cell_env() is None
 
 
 def test_matrix_cell_env_none_when_cell_has_no_properties_key():
-    assert _matrix_cell_env(_FakeItem(matrix_cell={"id": "azure-az"})) is None
+    assert _matrix_cell_env({"id": "azure-az"}) is None
 
 
 def test_matrix_cell_env_reads_plain_properties_only():
@@ -109,14 +104,14 @@ def test_matrix_cell_env_reads_plain_properties_only():
         "data_dir": "az://acct.blob.core.windows.net/d",
         "local_data_dir": "/data",
     }
-    assert _matrix_cell_env(_FakeItem(matrix_cell={"id": "azure-az", "properties": properties})) == {
+    assert _matrix_cell_env({"id": "azure-az", "properties": properties}) == {
         "AZURE_STORAGE_ACCOUNT": "acct"
     }
 
 
 def test_matrix_cell_temp_roots_unchanged_for_non_matrix_item():
     base = {"root": "duckdb_unittest_tempdir", "session_id": "s1"}
-    assert _matrix_cell_temp_roots(_FakeItem(), base) is base
+    assert _matrix_cell_temp_roots(None, base) is base
 
 
 def test_matrix_cell_temp_roots_overlays_remote_and_local_temp_data_dirs():
@@ -133,7 +128,7 @@ def test_matrix_cell_temp_roots_overlays_remote_and_local_temp_data_dirs():
         "data_dir": "az://acct.blob.core.windows.net/d",
         "local_data_dir": "/data",
     }
-    merged = _matrix_cell_temp_roots(_FakeItem(matrix_cell={"id": "azure-az", "properties": properties}), base)
+    merged = _matrix_cell_temp_roots({"id": "azure-az", "properties": properties}, base)
     assert merged == {
         "root": "az://acct.blob.core.windows.net/w",
         "session_id": "s1",
@@ -147,49 +142,49 @@ def test_matrix_cell_temp_roots_overlays_remote_and_local_temp_data_dirs():
 
 
 def test_test_config_args_empty_for_non_matrix_item():
-    assert _matrix_cell_test_config_args(_FakeItem(), "/repo") == []
+    assert _matrix_cell_test_config_args(None, "/repo") == []
 
 
 def test_test_config_args_empty_when_cell_has_no_test_config():
-    assert _matrix_cell_test_config_args(_FakeItem(matrix_cell={"id": "curl"}), "/repo") == []
+    assert _matrix_cell_test_config_args({"id": "curl"}, "/repo") == []
 
 
 def test_test_config_args_resolve_relative_path_against_working_dir():
-    item = _FakeItem(matrix_cell={"id": "curl", "properties": {"test_config": "test/configs/httpfs_curl.json"}})
-    assert _matrix_cell_test_config_args(item, "/repo") == ["--test-config", "/repo/test/configs/httpfs_curl.json"]
+    cell = {"id": "curl", "properties": {"test_config": "test/configs/httpfs_curl.json"}}
+    assert _matrix_cell_test_config_args(cell, "/repo") == ["--test-config", "/repo/test/configs/httpfs_curl.json"]
 
 
 def test_test_config_args_pass_absolute_path_through():
-    item = _FakeItem(matrix_cell={"id": "curl", "properties": {"test_config": "/abs/x.json"}})
-    assert _matrix_cell_test_config_args(item, "/repo") == ["--test-config", "/abs/x.json"]
+    cell = {"id": "curl", "properties": {"test_config": "/abs/x.json"}}
+    assert _matrix_cell_test_config_args(cell, "/repo") == ["--test-config", "/abs/x.json"]
 
 
 def test_test_config_is_not_leaked_as_an_env_var():
     # test_config is a --test-config path, not an env var: a cell mixing it with a plain var -> env-only.
     cell = {"id": "curl", "properties": {"test_config": "test/configs/x.json", "S3_ENDPOINT": "minio:9000"}}
-    assert _matrix_cell_env(_FakeItem(matrix_cell=cell)) == {"S3_ENDPOINT": "minio:9000"}
+    assert _matrix_cell_env(cell) == {"S3_ENDPOINT": "minio:9000"}
 
 
 # --- _matrix_cell_init_sql (pure) ---------------------------------------------------------------
 
 
 def test_init_sql_none_for_non_matrix_item():
-    assert _matrix_cell_init_sql(_FakeItem()) is None
+    assert _matrix_cell_init_sql() is None
 
 
 def test_init_sql_none_when_cell_has_no_init_sql():
-    assert _matrix_cell_init_sql(_FakeItem(matrix_cell={"id": "curl"})) is None
+    assert _matrix_cell_init_sql({"id": "curl"}) is None
 
 
 def test_init_sql_read_from_cell():
     cell = {"id": "curl", "properties": {"init_sql": "SET httpfs_client_implementation='curl';"}}
-    assert _matrix_cell_init_sql(_FakeItem(matrix_cell=cell)) == "SET httpfs_client_implementation='curl';"
+    assert _matrix_cell_init_sql(cell) == "SET httpfs_client_implementation='curl';"
 
 
 def test_init_sql_and_test_config_are_not_leaked_as_env_vars():
     # both are claimed by their own mechanisms; a cell mixing them with a plain var -> env-only.
     cell = {"properties": {"init_sql": "SET a=1;", "test_config": "c.json", "S3_ENDPOINT": "minio:9000"}}
-    assert _matrix_cell_env(_FakeItem(matrix_cell=cell)) == {"S3_ENDPOINT": "minio:9000"}
+    assert _matrix_cell_env(cell) == {"S3_ENDPOINT": "minio:9000"}
 
 
 # --- _suite_init_sql (live pytest run, no duckdb binary; mirrors test_repl_init_sql.py) ---------
@@ -343,6 +338,110 @@ def test_bare_test_item_outside_auto_init_sql_suite_gets_no_flag(pytester):
     stub = _stub_binary(pytester)
     result = pytester.runpytest_subprocess("--unittest-binary", str(stub), "-p", "no:cacheprovider")
     result.assert_outcomes(passed=1)
+
+
+def test_run_paired_routes_matrix_config_and_composed_init_sql(pytester, monkeypatch):
+    log = pytester.path / "paired-invocations.jsonl"
+    monkeypatch.setenv("INVOCATION_LOG", str(log))
+    _write(
+        pytester,
+        "test/conftest.py",
+        """
+        from ducktest import credential, register_suite
+
+        def _fetch(config):
+            return {"OK": True}
+
+        def _credential_sql(value, *, redact=False):
+            return "SET suite_setting='suite';\\n"
+
+        def pytest_configure(config):
+            register_suite(
+                config,
+                "paired",
+                path="test/paired",
+                auto_init_sql=True,
+                credentials=[credential("cred", fetch=_fetch, to_init_sql=_credential_sql)],
+                matrix=[
+                    {"id": "a", "properties": {
+                        "CELL": "a",
+                        "test_config": "test/configs/a.json",
+                        "init_sql": "SET cell_setting='a';",
+                    }},
+                    {"id": "b", "properties": {
+                        "CELL": "b",
+                        "test_config": "test/configs/b.json",
+                        "init_sql": "SET cell_setting='b';",
+                    }},
+                ],
+            )
+        """,
+    )
+    _write(
+        pytester,
+        "test/paired/answer.py",
+        """
+        from ducktest import run_paired
+
+        def test_answer(request, matrix_cell):
+            run_paired(request)
+        """,
+    )
+    _write(pytester, "test/paired/answer.test", "query I\nSELECT 42;\n----\n42\n")
+    _write(pytester, "test/configs/a.json", "{}")
+    _write(pytester, "test/configs/b.json", "{}")
+    stub = pytester.path / "stub_unittest"
+    stub.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import json, os, sys
+
+            if "-l" in sys.argv[1:]:
+                sys.exit(0)
+
+            def option(name):
+                if name not in sys.argv:
+                    return None
+                return sys.argv[sys.argv.index(name) + 1]
+
+            init_path = option("--init-sqllogic")
+            passthrough = [
+                sys.argv[index + 1]
+                for index, arg in enumerate(sys.argv[:-1])
+                if arg == "--env-passthrough"
+            ]
+            record = {
+                "cell": os.environ["CELL"],
+                "test_config": option("--test-config"),
+                "init_sql": open(init_path).read() if init_path else None,
+                "passthrough": passthrough,
+            }
+            with open(os.environ["INVOCATION_LOG"], "a") as handle:
+                handle.write(json.dumps(record) + "\\n")
+
+            name = next(arg for arg in sys.argv[1:] if arg.endswith(".test"))
+            event = {"event": "end", "name": name, "status": "ok",
+                     "passes": 1, "fails": 0, "skip-mode": 0}
+            sys.stderr.write("[TEST_EVENT] " + json.dumps(event) + "\\n")
+            """
+        )
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    result = pytester.runpytest_subprocess(
+        "--unittest-binary", str(stub), "-p", "no:cacheprovider", "test/paired"
+    )
+
+    result.assert_outcomes(passed=2)
+    records = [json.loads(line) for line in log.read_text().splitlines()]
+    assert {record["cell"] for record in records} == {"a", "b"}
+    for record in records:
+        assert record["test_config"] == str(pytester.path / f"test/configs/{record['cell']}.json")
+        assert record["passthrough"] == ["CELL"]
+        assert record["init_sql"].index("SET suite_setting='suite';") < record["init_sql"].index(
+            f"SET cell_setting='{record['cell']}';"
+        )
 
 
 def test_auto_init_sql_and_plain_suite_items_never_share_a_batch():
