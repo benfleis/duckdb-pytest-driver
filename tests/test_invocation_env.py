@@ -34,6 +34,21 @@ def test_env_ref_resolves_static_service_roots_with_matrix_precedence():
     assert roots["local_temp_dir_root"] == "/srv/temp"
 
 
+def test_env_ref_can_passthrough_a_same_named_service_variable():
+    cell = {
+        "id": "s3",
+        "properties": {"S3_ACCESS_KEY_ID": env_ref("S3_ACCESS_KEY_ID")},
+    }
+    _, env = _resolve_matrix_properties(
+        {"root": "/default", "session_id": "session-1"},
+        cell,
+        ambient_env={"S3_ACCESS_KEY_ID": "service-key"},
+        supplied_env={"S3_ACCESS_KEY_ID": "caller-key"},
+    )
+
+    assert env["S3_ACCESS_KEY_ID"] == "caller-key"
+
+
 def test_env_ref_missing_variable_names_property_and_matrix_cell():
     cell = {"id": "s3", "properties": {"REMOTE_DATA_URI": env_ref("S3_DATA_URI")}}
     with pytest.raises(

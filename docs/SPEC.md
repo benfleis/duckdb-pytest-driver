@@ -492,8 +492,10 @@ Plain environment properties may use `env_ref("NAME")` for values that do not ex
 has attached or started. Resolution occurs immediately before the subprocess, after ambient
 service/credential env and explicit caller env, then explicit matrix properties. This makes the
 matrix cell the final precedence layer while allowing aliases such as
-`"REMOTE_DATA_URI": env_ref("HTTP_DATA_URL")`. A missing source variable or reference cycle is a
-clear usage error naming the matrix cell and property. Every injected name is also
+`"REMOTE_DATA_URI": env_ref("HTTP_DATA_URL")`. An identity reference such as
+`"S3_ACCESS_KEY_ID": env_ref("S3_ACCESS_KEY_ID")` captures the same-named value from the preceding
+caller/service layer so it can be explicitly passed through without renaming it. A missing source
+variable or reference cycle is a clear usage error naming the matrix cell and property. Every injected name is also
 forwarded through the unittest binary's `--env-passthrough` option for `{NAME}` substitution.
 
 ### 11.5 Execution — local (binary, as-it-goes) vs remote (driver, one sweep)

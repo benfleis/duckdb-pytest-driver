@@ -117,14 +117,23 @@ def _resolve_matrix_properties(
     cell = matrix_cell or {}
     properties = (cell.get("properties") if cell else None) or {}
     matrix_env, root_overrides = _split_matrix_cell_properties(properties)
-    values = dict(os.environ if ambient_env is None else ambient_env)
-    values.update(supplied_env or {})
+    lower_precedence_values = dict(os.environ if ambient_env is None else ambient_env)
+    lower_precedence_values.update(supplied_env or {})
+    values = dict(lower_precedence_values)
     values.update(matrix_env)
     cell_id = cell.get("id", "<none>")
 
     def resolve(name, value, chain):
         if not isinstance(value, EnvRef):
             return str(value)
+        if value.name == name:
+            if name not in lower_precedence_values:
+                property_name = chain[0]
+                raise pytest.UsageError(
+                    f"matrix cell {cell_id!r} property {property_name!r} references missing "
+                    f"environment variable {name!r}"
+                )
+            return str(lower_precedence_values[name])
         if value.name in chain:
             cycle = " -> ".join((*chain, value.name))
             raise pytest.UsageError(f"environment reference cycle in matrix cell {cell_id!r}: {cycle}")
