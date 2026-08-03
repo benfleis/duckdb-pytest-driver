@@ -869,9 +869,9 @@ def provision_service(config, svc, *, _visiting=()):
     (``pytest.UsageError``) instead of recursing forever; ``_visiting`` is the internal
     cycle-detection breadcrumb — never pass it yourself.
 
-    Adopts ``to_env`` into THIS process's ``os.environ`` (how a test — even a bare ``.test`` — gets a
-    service's connection env). Returns the block; a test cannot tell which stance ran (identical shape).
-    Idempotent: called both up front (from the collect-first plan) and on a fixture pull.
+    Adopts ``to_env`` into this process and SQLLogic substitution. Returns the block; a test cannot tell
+    which stance ran (identical shape). Idempotent: called both up front (from the collect-first plan)
+    and on a fixture pull.
     """
     if svc.depends_on:
         if svc.key in _visiting:

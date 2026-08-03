@@ -82,7 +82,8 @@ bodies.
 - **Services** — `provision_reachable` calls `provision_service`. Managed services use
   `copy_or_provision(key, _boot_and_populate)`; existing and start-less services use `_attach_service`
   and are not stored or stopped. `depends_on` provisions dependencies first. `to_env` is adopted in each
-  provisioning process. `_stop_services` stops stored managed services in reverse dependency order.
+  provisioning process and registered for SQLLogic substitution. `_stop_services` stops stored managed
+  services in reverse dependency order.
 - **Selection** — `_reachable_suites(config, items)` uses actual selected item membership plus default
   suites for a bare invocation. `pytest_collection_modifyitems` applies suite markers and default
   deselection before pytest's selection hooks, then workers provision from the surviving items.

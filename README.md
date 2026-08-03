@@ -307,7 +307,8 @@ def iceberg_rest(request):
 ```
 
 The collect-first plan provisions the service even for a bare `.test` with no fixture. Store
-single-flight ensures one managed instance; `to_env` publishes connection details to test subprocesses.
+single-flight ensures one managed instance; `to_env` publishes connection details to test subprocesses
+and SQLLogic substitution.
 A fixture consumer receives a stored startup failure without retrying the boot. For a bare `.test`, the
 original provisioning error is currently suppressed and the test may instead fail because its service
 environment is missing. See ARCHITECTURE.md § *Services* and docs/SERVICES.md.

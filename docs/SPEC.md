@@ -432,7 +432,7 @@ set — override or the local-scratch default, never absent) into a fresh test's
 `require-env` against them is legal. The fix for a `.test` file that needs these values is to use
 `{DATA_DIR}`/`{TEMP_DIR}` substitution directly and drop the `require-env` gate for those two names
 specifically (it's dead weight — they're never actually absent, so the gate can only ever fail, not
-skip). Any *other* env var name is unaffected and `require-env`s normally.
+skip). Other names follow the normal binding rules in §11.4.
 
 ### 11.2 TEMP directory structure
 ```

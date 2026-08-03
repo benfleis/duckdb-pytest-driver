@@ -6,10 +6,10 @@ Two things live here:
    the shipped `plugin.py`). Attach-or-boot: if the service key is in `--existing-service`, ATTACH
    (build the block, probe `alive`, populate idempotently) and never enter the store or tear it down;
    else MANAGED (single-flight boot via the store). Either way `to_env(block)` is merged into the
-   caller's environment. A test cannot tell which stance ran — identical block shape (the block/derive
-   builder contract in the resource modules guarantees that). Because the collect-first controller
-   calls this UP FRONT for every service the plan needs, there is no eager/on_demand disposition fork:
-   provisioning has one entry and one timing.
+   caller's environment and SQLLogic substitution. A test cannot tell which stance ran — identical
+   block shape (the block/derive builder contract in the resource modules guarantees that). Because the
+   collect-first controller calls this UP FRONT for every service the plan needs, there is no
+   eager/on_demand disposition fork: provisioning has one entry and one timing.
 
 2. **`Provisioner` base + registry** — the generic per-`@requires` access-policy loop (rw -> isolated
    namespace instantiated + tracked for teardown; ro -> shared target instantiated once per session).
