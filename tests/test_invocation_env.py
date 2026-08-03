@@ -113,6 +113,7 @@ def test_static_service_roots_and_matrix_refs_reach_each_subprocess(pytester, mo
                 return {
                     "SERVICE_DATA_URI": block["endpoint"] + "/data",
                     "SERVICE_TEMP_URI_ROOT": block["endpoint"] + "/temp",
+                    "SERVICE_ONLY_VALUE": block["endpoint"] + "/service-only",
                 }
 
             def pytest_configure(config):
@@ -160,6 +161,7 @@ def test_static_service_roots_and_matrix_refs_reach_each_subprocess(pytester, mo
                 "data_arg": option("--data-dir"),
                 "temp_root": option("--temp-dir-root"),
                 "cell": os.environ["MATRIX_SEEN"],
+                "service_only": os.environ["SERVICE_ONLY_VALUE"],
                 "passthrough": sorted(passthrough),
             }
             with open(os.environ["INVOCATION_LOG"], "a") as f:
@@ -185,8 +187,16 @@ def test_static_service_roots_and_matrix_refs_reach_each_subprocess(pytester, mo
     assert {record["cell"] for record in records} == {"http", "s3"}
     endpoint = "svc://attached" if attached else "svc://managed"
     assert {record["data"] for record in records} == {endpoint + "/data"}
+    assert {record["service_only"] for record in records} == {endpoint + "/service-only"}
     assert {record["data_arg"] for record in records} == {endpoint + "/data"}
     assert len({record["temp_root"] for record in records}) == 2
     for record in records:
         assert record["temp_root"].startswith(endpoint + "/temp/")
-        assert set(record["passthrough"]) == {"MATRIX_SEEN", "REMOTE_DATA_URI"}
+        assert {
+            "MATRIX_SEEN",
+            "REMOTE_DATA_URI",
+            "SERVICE_DATA_URI",
+            "SERVICE_ONLY_VALUE",
+            "SERVICE_TEMP_URI_ROOT",
+        } <= set(record["passthrough"])
+        assert "DATA_DIR" not in record["passthrough"]

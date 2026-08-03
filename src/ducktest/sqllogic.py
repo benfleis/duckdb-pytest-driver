@@ -463,7 +463,7 @@ def _compose_root(root, session_id, batch_id) -> str:
 
 
 def _env_passthrough_args(env) -> list:
-    """CLI args registering caller-owned env names for SQLLogic ``{NAME}`` substitution."""
+    """Register subprocess environment names for SQLLogic ``{NAME}`` substitution."""
     names = sorted(name for name in (env or {}) if name.upper() not in _ENV_PASSTHROUGH_RESERVED)
     return [token for name in names for token in ("--env-passthrough", name)]
 
@@ -477,11 +477,13 @@ def _invoke(
     env: dict = None,
     extra_args: list = None,
 ) -> dict:
-    # Opt into the binary's per-test event stream on every invocation (single + batch). Requires the
-    # C++ --emit-test-events flag to be built into the binary, else Catch2 errors on the unknown arg.
-    # extra_args (the --unittest-args passthrough) follow, before the test name / -f selectors.
-    args = [*_env_passthrough_args(env), "--emit-test-events", *(extra_args or []), *args]
     run_env = dict(os.environ)
+    if env:
+        run_env.update({key: str(value) for key, value in env.items()})
+
+    # Register the final environment for {...} substitution. Runner-owned names are excluded.
+    # User-supplied unittest arguments follow driver arguments and precede test selectors.
+    args = [*_env_passthrough_args(run_env), "--emit-test-events", *(extra_args or []), *args]
     if temp_roots:
         # SPEC §11.4: compose the per-batch run-root and pass it as the ONE --temp-dir-root string
         # (<root>/<session-id>/<batch-id>) — NOT --temp-dir EXACT, and NOT a TEMP_DIR/LOCAL_*/DATA_DIR
@@ -502,10 +504,6 @@ def _invoke(
         if temp_roots.get("local_data_dir"):
             temp_args += ["--local-data-dir", str(temp_roots["local_data_dir"])]
         args = [*temp_args, *args]
-    # env (e.g. provisioned UC_TEST_CATALOG/SCHEMA) is merged over the ambient env so
-    # the body's {...} substitution resolves to the provisioned values.
-    if env:
-        run_env.update({key: str(value) for key, value in env.items()})
     try:
         proc = subprocess.run(
             [binary] + args,

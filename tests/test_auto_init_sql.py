@@ -438,7 +438,7 @@ def test_run_paired_routes_matrix_config_and_composed_init_sql(pytester, monkeyp
     assert {record["cell"] for record in records} == {"a", "b"}
     for record in records:
         assert record["test_config"] == str(pytester.path / f"test/configs/{record['cell']}.json")
-        assert record["passthrough"] == ["CELL"]
+        assert "CELL" in record["passthrough"]
         assert record["init_sql"].index("SET suite_setting='suite';") < record["init_sql"].index(
             f"SET cell_setting='{record['cell']}';"
         )

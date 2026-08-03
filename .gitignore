@@ -32,3 +32,6 @@ CLAUDE.local.md
 # (.agents/ itself IS tracked; only these local carve-outs are ignored.)
 AGENTS.local.md
 .agents/skills-local/
+
+# Personal working notes.
+next.md
