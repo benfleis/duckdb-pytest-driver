@@ -49,7 +49,7 @@ deduplicated by service key.
 | `alive(block)` | cheap reachability probe |
 | `depends_on` | service keys that must start first |
 | `fixture` | optional session-fixture name |
-| `to_env(block)` | environment adopted by the pytest process and SQLLogic subprocesses |
+| `to_env(block)` | environment adopted by pytest and registered for SQLLogic substitution |
 | `populate(block, config)` | idempotent structure and data setup |
 | `to_init_sql(block, redact=False)` | SQL used by `--repl` and `auto_init_sql` suites |
 

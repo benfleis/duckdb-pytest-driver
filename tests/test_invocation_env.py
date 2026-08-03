@@ -85,10 +85,11 @@ def test_runner_owned_environment_names_are_not_passed_through():
     _, env = _resolve_matrix_properties(
         {"root": "/default", "session_id": "session-1"},
         None,
-        ambient_env={},
+        ambient_env={"AMBIENT_ONLY": "ambient"},
         supplied_env={"DATA_DIR": "/caller/data", "CUSTOM_DATA_DIR": "/caller/custom"},
     )
     assert env["DATA_DIR"] == "/caller/data"
+    assert "AMBIENT_ONLY" not in env
     assert _env_passthrough_args(env) == ["--env-passthrough", "CUSTOM_DATA_DIR"]
 
 
@@ -101,7 +102,7 @@ def test_static_service_roots_and_matrix_refs_reach_each_subprocess(pytester, mo
     conftest.write_text(
         textwrap.dedent(
             """
-            from ducktest import env_ref, register_suite, service
+            from ducktest import credential, env_ref, register_suite, service
 
             def _start(config):
                 return {"endpoint": "svc://managed"}
@@ -116,8 +117,13 @@ def test_static_service_roots_and_matrix_refs_reach_each_subprocess(pytester, mo
                     "SERVICE_ONLY_VALUE": block["endpoint"] + "/service-only",
                 }
 
+            def _fetch_credential(config):
+                return {"CREDENTIAL_ONLY_VALUE": "credential-value"}
+
             def pytest_configure(config):
-                register_suite(config, "remote", path="test/remote", services=[
+                register_suite(config, "remote", path="test/remote", credentials=[
+                    credential("remote-credential", fetch=_fetch_credential, adopt="env")
+                ], services=[
                     service("remote-service", start=_start, attach=_attach, alive=lambda block: True,
                             to_env=_to_env)
                 ], matrix=[
@@ -162,6 +168,7 @@ def test_static_service_roots_and_matrix_refs_reach_each_subprocess(pytester, mo
                 "temp_root": option("--temp-dir-root"),
                 "cell": os.environ["MATRIX_SEEN"],
                 "service_only": os.environ["SERVICE_ONLY_VALUE"],
+                "credential_only": os.environ["CREDENTIAL_ONLY_VALUE"],
                 "passthrough": sorted(passthrough),
             }
             with open(os.environ["INVOCATION_LOG"], "a") as f:
@@ -188,6 +195,7 @@ def test_static_service_roots_and_matrix_refs_reach_each_subprocess(pytester, mo
     endpoint = "svc://attached" if attached else "svc://managed"
     assert {record["data"] for record in records} == {endpoint + "/data"}
     assert {record["service_only"] for record in records} == {endpoint + "/service-only"}
+    assert {record["credential_only"] for record in records} == {"credential-value"}
     assert {record["data_arg"] for record in records} == {endpoint + "/data"}
     assert len({record["temp_root"] for record in records}) == 2
     for record in records:
@@ -195,8 +203,10 @@ def test_static_service_roots_and_matrix_refs_reach_each_subprocess(pytester, mo
         assert {
             "MATRIX_SEEN",
             "REMOTE_DATA_URI",
+            "CREDENTIAL_ONLY_VALUE",
             "SERVICE_DATA_URI",
             "SERVICE_ONLY_VALUE",
             "SERVICE_TEMP_URI_ROOT",
         } <= set(record["passthrough"])
         assert "DATA_DIR" not in record["passthrough"]
+        assert "INVOCATION_LOG" not in record["passthrough"]

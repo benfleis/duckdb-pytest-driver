@@ -113,8 +113,10 @@ References are resolved immediately before the subprocess starts. Precedence is:
 3. Matrix-cell properties
 4. Reference resolution
 
-Ducktest registers every non-reserved subprocess environment variable for SQLLogic `{NAME}`
-substitution. Users do not configure `--env-passthrough`.
+Ducktest registers adopted service and credential values, `run_paired(env=...)` values, and matrix
+environment properties for SQLLogic `{NAME}` substitution. Other ambient variables remain in the
+subprocess environment; use `env_ref`, `require-env`, or `test-env` when a test needs one. Users do
+not configure `--env-passthrough`.
 
 Matrix properties therefore have final value precedence. A missing reference or reference cycle is
 a pytest usage error that names the cell and property.

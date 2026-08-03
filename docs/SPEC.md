@@ -491,8 +491,9 @@ test-id-qualified path. See `_matrix_cell_temp_roots`/`_matrix_cell_env` for the
 Use `env_ref("NAME")` when a matrix property depends on service or credential environment. References
 resolve immediately before invocation, after ambient environment, caller `env`, and matrix properties;
 matrix properties retain final precedence. Missing references and cycles are usage errors. Ducktest
-registers every non-reserved subprocess environment variable with the unittest binary for `{NAME}`
-substitution.
+registers adopted service and credential values, caller `env`, and matrix environment properties with
+the unittest binary for `{NAME}` substitution. Other ambient variables require `env_ref`, `require-env`,
+or `test-env`.
 
 ### 11.5 Execution — local (binary, as-it-goes) vs remote (driver, one sweep)
 - **Local = entirely the binary, incrementally.** `DestroyTestTempDir` sweeps each passing `<test-id>/`;

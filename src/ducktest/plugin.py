@@ -841,6 +841,13 @@ def _resolve_service(config, key):
     return None
 
 
+def _adopt_env(config, values):
+    """Publish service or credential values and retain them as SQLLogic bindings."""
+    adopted = {key: str(value) for key, value in values.items()}
+    os.environ.update(adopted)
+    get_context(config).adopted_env.update(adopted)
+
+
 def provision_service(config, svc, *, _visiting=()):
     """Provision a class-2 service — the ONE routing point (docs/SPEC.md §3.6). Attach-or-boot:
 
@@ -891,7 +898,7 @@ def provision_service(config, svc, *, _visiting=()):
         else:
             block = store.copy_or_provision(handle, svc.key, lambda: _boot_and_populate(config, svc))
     if svc.to_env is not None:
-        os.environ.update({k: str(v) for k, v in svc.to_env(block).items()})
+        _adopt_env(config, svc.to_env(block))
     return block
 
 
@@ -994,7 +1001,7 @@ def _fetch_or_read_credential(config, cred):
     if cred.validate is not None and not cred.validate(block):
         raise pytest.UsageError(cred.error() if cred.error else f"{cred.key}: required credential unavailable")
     if cred.adopt == "env":
-        os.environ.update({k: str(v) for k, v in block.items()})
+        _adopt_env(config, block)
 
 
 def _read_provisioned_credential(config, cred):
@@ -1653,10 +1660,12 @@ def run_paired(request, *, env=None):
     test_name = os.path.relpath(test_path, working_dir)
     cell = request.getfixturevalue("matrix_cell")
     batch_id = _test_batch_id(test_name + _cell_suffix(cell))
+    supplied_env = dict(get_context(request.config).adopted_env)
+    supplied_env.update(env or {})
     temp_roots, resolved_env = _resolve_matrix_properties(
         _temp_roots(request.config),
         cell,
-        supplied_env=env,
+        supplied_env=supplied_env,
     )
     with step(f"running {test_name}"):
         _raise_for_result(

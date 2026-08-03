@@ -33,7 +33,7 @@ class Credential:
 
     ``fetch(config)`` returns the credential value. ``available()`` can avoid fetching when ambient
     credentials are already usable. ``validate(value)`` and ``error()`` control failure reporting;
-    ``adopt="env"`` merges a mapping value into the process environment.
+    ``adopt="env"`` publishes a mapping to the process environment and SQLLogic substitution.
 
     ``to_init_sql(value, *, redact=False)`` supplies REPL and optional bare-test initialization SQL.
     If ``available()`` short-circuits before a value is stored, initialization SQL is omitted. Prefix
@@ -59,8 +59,8 @@ class Service:
     instances. ``depends_on`` controls startup order.
 
     ``populate(block, config)`` initializes shared state and must be idempotent because it also runs for
-    attached services. ``to_env(block)`` publishes process environment. ``to_init_sql(block, *,
-    redact=False)`` supplies REPL and optional bare-test initialization SQL.
+    attached services. ``to_env(block)`` publishes values to the process environment and SQLLogic
+    substitution. ``to_init_sql(block, *, redact=False)`` supplies REPL and optional bare-test SQL.
     """
 
     key: str

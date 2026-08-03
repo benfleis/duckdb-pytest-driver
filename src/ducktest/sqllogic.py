@@ -20,6 +20,9 @@ from typing import Optional
 
 import pytest
 
+from .context import get_context
+from .suites import EnvRef
+
 
 # ---------------------------------------------------------------------------
 # <batch-id>: the per-invocation temp run-root segment (SPEC §11.2 / §11.4).
@@ -106,8 +109,6 @@ def _resolve_matrix_properties(
     Precedence is ambient/static service env, explicitly supplied env, then matrix properties.
     References resolve only after those layers are assembled, so a matrix override remains final.
     """
-    from .suites import EnvRef
-
     cell = matrix_cell or {}
     properties = (cell.get("properties") if cell else None) or {}
     matrix_env, root_overrides = _split_matrix_cell_properties(properties)
@@ -156,6 +157,12 @@ def _matrix_cell_init_sql(matrix_cell: Optional[dict] = None):
     `--init-sqllogic` snippet ahead of the body -- or `None` without a matrix cell or `init_sql`.
     Merged (not a second `--init-sqllogic`) by `plugin._init_sqllogic_arg_for_item`."""
     return _matrix_cell_properties(matrix_cell).get(_INIT_SQL_PROPERTY_KEY) or None
+
+
+def _item_init_sqllogic_args(config, item, matrix_cell) -> list:
+    from .plugin import _init_sqllogic_arg_for_item  # plugin imports this module
+
+    return _init_sqllogic_arg_for_item(config, item, matrix_cell=matrix_cell)
 
 
 def _matrix_cell_test_config_args(matrix_cell: Optional[dict], working_dir) -> list:
@@ -298,13 +305,12 @@ class SqlLogicItem(pytest.Item):
     # -- single-test path (batch_size == 1) ----------------------------------
 
     def _run_single(self):
-        from .plugin import _init_sqllogic_arg_for_item
-
         batch_id = item_batch_id(self)
         matrix_cell = getattr(self, "_matrix_cell", None)
         temp_roots, env = _resolve_matrix_properties(
             self._temp_roots,
             matrix_cell,
+            supplied_env=get_context(self.config).adopted_env,
         )
         result = _invoke(
             self._binary,
@@ -315,7 +321,7 @@ class SqlLogicItem(pytest.Item):
             env=env,
             extra_args=[
                 *_matrix_cell_test_config_args(matrix_cell, self._working_dir),
-                *_init_sqllogic_arg_for_item(self.config, self, matrix_cell=matrix_cell),
+                *_item_init_sqllogic_args(self.config, self, matrix_cell),
                 *resolve_unittest_args(self.config),
             ],
         )
@@ -326,12 +332,11 @@ class SqlLogicItem(pytest.Item):
     def _run_batched(self):
         with _batch_cache_lock:
             if self._batch_id not in _batch_cache:
-                from .plugin import _init_sqllogic_arg_for_item
-
                 matrix_cell = getattr(self, "_matrix_cell", None)
                 temp_roots, env = _resolve_matrix_properties(
                     self._temp_roots,
                     matrix_cell,
+                    supplied_env=get_context(self.config).adopted_env,
                 )
                 _batch_cache[self._batch_id] = _execute_batch(
                     self._batch_test_names,
@@ -342,7 +347,7 @@ class SqlLogicItem(pytest.Item):
                     env=env,
                     extra_args=[
                         *_matrix_cell_test_config_args(matrix_cell, self._working_dir),
-                        *_init_sqllogic_arg_for_item(self.config, self, matrix_cell=matrix_cell),
+                        *_item_init_sqllogic_args(self.config, self, matrix_cell),
                         *resolve_unittest_args(self.config),
                     ],
                 )
@@ -481,9 +486,9 @@ def _invoke(
     if env:
         run_env.update({key: str(value) for key, value in env.items()})
 
-    # Register the final environment for {...} substitution. Runner-owned names are excluded.
+    # Register ducktest-owned bindings for {...} substitution. Runner-owned names are excluded.
     # User-supplied unittest arguments follow driver arguments and precede test selectors.
-    args = [*_env_passthrough_args(run_env), "--emit-test-events", *(extra_args or []), *args]
+    args = [*_env_passthrough_args(env), "--emit-test-events", *(extra_args or []), *args]
     if temp_roots:
         # SPEC §11.4: compose the per-batch run-root and pass it as the ONE --temp-dir-root string
         # (<root>/<session-id>/<batch-id>) — NOT --temp-dir EXACT, and NOT a TEMP_DIR/LOCAL_*/DATA_DIR

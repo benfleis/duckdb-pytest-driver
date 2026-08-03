@@ -193,6 +193,7 @@ class SessionContext:
     plan: Optional[Plan] = None  # set by the controller's SCAN phase
     temp_sweeper: Any = None  # REMOTE-storage sweeper (sweep/list) a backend registers; None => no-op
     failed_nodeids: set = field(default_factory=set)  # controller-collected failed node-ids (§11.5 keep-list)
+    adopted_env: dict[str, str] = field(default_factory=dict)  # service/credential SQLLogic bindings
 
     # convenience passthroughs so callers read `ctx.suite(...)` not `ctx.registry.suites[...]`
     def suite(self, name: str) -> Any:
