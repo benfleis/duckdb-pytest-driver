@@ -23,10 +23,13 @@ Changes since `dev/v0.3`.
   variables and reference cycles fail with the matrix cell and property in the error.
 - Suite matrix properties can set `test_config`, `init_sql`, `temp_dir_root`, `local_temp_dir_root`,
   `data_dir`, and `local_data_dir`. Other properties become invocation environment variables.
+- `run_paired(init_sql=...)` lets a paired driver supply its own preamble SQL, composed after suite
+  and matrix-cell init SQL.
 - `--slow` collects `.test_slow` and `.test_coverage` files. These tests receive the `slow` marker and
   run as one SQLLogic body per subprocess.
 - Shared CA, HTTP/HTTPS server, and mitmproxy services. Mitmproxy profiles support `latency`, `status`,
-  `fail_nth`, and `require_auth` behavior.
+  `fail_nth`, and credential-validating `require_auth` behavior, delivered via httpfs's
+  `extra_http_headers` setting (composed with `map_concat`, not replaced).
 - Configurable MinIO services, virtual-host domains, `mc` administration helpers, and presigned URLs.
 - `ducktest.workspace.scratch()` provides a stable `.ducktest` directory for driver-managed service
   state.
