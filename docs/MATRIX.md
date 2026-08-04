@@ -121,6 +121,10 @@ not configure `--env-passthrough`.
 Matrix properties therefore have final value precedence. A missing reference or reference cycle is
 a pytest usage error that names the cell and property.
 
+References resolve before the binary picks the per-test `TEST_ID` leaf, so they can't alias an
+already-isolated key. A test needing the same key under another URI form (`s3a://`, virtual-host
+HTTP, …) does that rewrite in the body instead, e.g. `replace('{TEMP_DIR}/...', 's3://', 's3a://')`.
+
 ### Init SQL and test configs
 
 `init_sql` is for SQL that must run before the body, such as a `SET` statement. For suites with
