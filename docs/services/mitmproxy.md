@@ -137,7 +137,7 @@ Behavior exceptions are logged and ignored. Unknown names warn and are skipped.
 | **1 — dispatcher end-to-end** | done (`tests/test_proxy_behaviors.py`) — real mitmdump + throwaway origin + a client through the proxy, on loopback, headers set **manually** |
 | **2 — profile → delivery** | done. Delivery is preamble SQL via `--init-sqllogic`: `proxy_init_sql()` emits `SET http_proxy` + `SET extra_http_headers`. `{TEST_ID}` is substituted by the binary per test. |
 | **2b — suite and matrix routes** | done. `to_init_sql` gives a suite the baseline routing/tag under `auto_init_sql=True`; a matrix cell's `init_sql` property adds behaviors and wins because it is merged last. |
-| **3 — driver `.py` route** | planned. `run_paired` does not pass `--init-sqllogic`, so a driver test cannot select a profile. |
+| **3 — driver `.py` route** | done (`tests/test_auto_init_sql.py`). `run_paired(request, init_sql=proxy_init_sql(...))` composes after suite/matrix init SQL and wins. |
 
 ## Install
 

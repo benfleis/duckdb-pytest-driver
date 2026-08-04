@@ -1243,14 +1243,16 @@ def _write_init_sqllogic_snippet(sql_text: str) -> str:
 _init_sqllogic_paths: dict = {}  # (id(config), suite.name) -> temp .test path, or "" (nothing to inject)
 
 
-def _init_sqllogic_arg_for_item(config, item, *, matrix_cell=None) -> list:
+def _init_sqllogic_arg_for_item(config, item, *, matrix_cell=None, driver_sql=None) -> list:
     """`["--init-sqllogic", path]` for an invocation that needs preamble SQL: its pytest item's suite
-    `auto_init_sql=True` credential/service SQL, and/or a matrix cell's own `init_sql` property —
-    merged into ONE snippet (never two `--init-sqllogic` args). `[]` when there's nothing to inject.
+    `auto_init_sql=True` credential/service SQL, a matrix cell's own `init_sql` property, and/or
+    caller-supplied `driver_sql` (`run_paired(init_sql=...)`) — merged into ONE snippet in that order
+    (never two `--init-sqllogic` args), so `driver_sql` has final precedence. `[]` when there's
+    nothing to inject.
 
-    Memoized per `(config, suite, cell_sql)` for this worker — `_suite_init_sql` reads back already-
-    provisioned resources, so recomputing the identical string per test is wasted work; the cell's SQL
-    is part of the key so distinct cells of the same file don't share a snippet.
+    Memoized per `(config, suite, cell_sql, driver_sql)` for this worker — `_suite_init_sql` reads
+    back already-provisioned resources, so recomputing the identical string per test is wasted work;
+    the cell's and driver's SQL are part of the key so distinct cells/callers don't share a snippet.
     """
     from .sqllogic import _matrix_cell_init_sql
 
@@ -1258,12 +1260,12 @@ def _init_sqllogic_arg_for_item(config, item, *, matrix_cell=None) -> list:
     suite = next(
         (s for s in get_suites(config) if s.auto_init_sql and _item_in_suite(config, item, s)), None
     )
-    if suite is None and not cell_sql:
+    if suite is None and not cell_sql and not driver_sql:
         return []
-    key = (id(config), suite.name if suite else None, cell_sql or "")
+    key = (id(config), suite.name if suite else None, cell_sql or "", driver_sql or "")
     path = _init_sqllogic_paths.get(key)
     if path is None:
-        parts = [p for p in (_suite_init_sql(config, suite) if suite else "", cell_sql) if p]
+        parts = [p for p in (_suite_init_sql(config, suite) if suite else "", cell_sql, driver_sql) if p]
         sql = "\n\n".join(parts)
         path = _write_init_sqllogic_snippet(sql) if sql else ""
         _init_sqllogic_paths[key] = path
@@ -1641,12 +1643,14 @@ def _stem_path(path, suffix):
     return os.path.splitext(str(path))[0] + suffix
 
 
-def run_paired(request, *, env=None):
+def run_paired(request, *, env=None, init_sql=None):
     """Drive the calling driver `.py`'s same-stem body (`.test`) through the binary.
 
     Call from the driver's test function once initialization has run. Raises SqlLogicFailure on failure
     and pytest.skip on a skipped test. Pass ``env`` (e.g. a provisioning fixture's ``bindings.env``) to
-    inject vars the body substitutes via ``{...}`` (merged over os.environ).
+    inject vars the body substitutes via ``{...}`` (merged over os.environ). Pass ``init_sql`` (e.g.
+    ``proxy_init_sql(require_auth(...))``) for preamble SQL specific to this driver, composed after
+    suite and matrix-cell init SQL, so it has final precedence.
 
     The run's originated TEMP/DATA roots (SPEC §11.2) are attached automatically — this invocation
     shares the run's `<root>/<session-id>` and composes its own `<batch-id>` from the body name (+ its
@@ -1679,7 +1683,9 @@ def run_paired(request, *, env=None):
                     env=resolved_env,
                     extra_args=[
                         *_matrix_cell_test_config_args(cell, working_dir),
-                        *_init_sqllogic_arg_for_item(request.config, request.node, matrix_cell=cell),
+                        *_init_sqllogic_arg_for_item(
+                            request.config, request.node, matrix_cell=cell, driver_sql=init_sql
+                        ),
                         *resolve_unittest_args(request.config),
                     ],
                 )

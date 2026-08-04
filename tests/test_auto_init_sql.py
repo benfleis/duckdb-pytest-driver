@@ -444,6 +444,101 @@ def test_run_paired_routes_matrix_config_and_composed_init_sql(pytester, monkeyp
         )
 
 
+def test_run_paired_init_sql_wins_and_does_not_leak_across_drivers(pytester, monkeypatch):
+    """`run_paired(init_sql=...)` composes after suite init SQL and has final precedence, and two
+    paired drivers in the same suite with different `init_sql` don't share a cached snippet (the
+    `driver_sql` piece of `_init_sqllogic_arg_for_item`'s memo key)."""
+    log = pytester.path / "paired-invocations.jsonl"
+    monkeypatch.setenv("INVOCATION_LOG", str(log))
+    _write(
+        pytester,
+        "test/conftest.py",
+        """
+        from ducktest import credential, register_suite
+
+        def _fetch(config):
+            return {"OK": True}
+
+        def _credential_sql(value, *, redact=False):
+            return "SET suite_setting='suite';\\n"
+
+        def pytest_configure(config):
+            register_suite(
+                config,
+                "paired",
+                path="test/paired",
+                auto_init_sql=True,
+                credentials=[credential("cred", fetch=_fetch, to_init_sql=_credential_sql)],
+            )
+        """,
+    )
+    _write(
+        pytester,
+        "test/paired/one.py",
+        """
+        from ducktest import run_paired
+
+        def test_one(request):
+            run_paired(request, init_sql="SET driver_setting='one';")
+        """,
+    )
+    _write(pytester, "test/paired/one.test", "query I\nSELECT 1;\n----\n1\n")
+    _write(
+        pytester,
+        "test/paired/two.py",
+        """
+        from ducktest import run_paired
+
+        def test_two(request):
+            run_paired(request, init_sql="SET driver_setting='two';")
+        """,
+    )
+    _write(pytester, "test/paired/two.test", "query I\nSELECT 2;\n----\n2\n")
+    stub = pytester.path / "stub_unittest"
+    stub.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import json, os, sys
+
+            if "-l" in sys.argv[1:]:
+                sys.exit(0)
+
+            def option(name):
+                if name not in sys.argv:
+                    return None
+                return sys.argv[sys.argv.index(name) + 1]
+
+            init_path = option("--init-sqllogic")
+            # The --init-sqllogic snippet is itself a *.test file -- exclude it, or it can be picked
+            # up as the test name when it happens to sort ahead of the real one in argv.
+            name = next(arg for arg in sys.argv[1:] if arg.endswith(".test") and arg != init_path)
+            record = {"name": name, "init_sql": open(init_path).read() if init_path else None}
+            with open(os.environ["INVOCATION_LOG"], "a") as handle:
+                handle.write(json.dumps(record) + "\\n")
+
+            event = {"event": "end", "name": name, "status": "ok",
+                     "passes": 1, "fails": 0, "skip-mode": 0}
+            sys.stderr.write("[TEST_EVENT] " + json.dumps(event) + "\\n")
+            """
+        )
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    result = pytester.runpytest_subprocess(
+        "--unittest-binary", str(stub), "-p", "no:cacheprovider", "test/paired"
+    )
+
+    result.assert_outcomes(passed=2)
+    records = {json.loads(line)["name"]: json.loads(line)["init_sql"] for line in log.read_text().splitlines()}
+    assert set(records) == {"test/paired/one.test", "test/paired/two.test"}
+    one, two = records["test/paired/one.test"], records["test/paired/two.test"]
+    assert one.index("SET suite_setting='suite';") < one.index("SET driver_setting='one';")
+    assert "driver_setting='two'" not in one  # no leakage between distinct driver_sql callers
+    assert two.index("SET suite_setting='suite';") < two.index("SET driver_setting='two';")
+    assert "driver_setting='one'" not in two
+
+
 def test_auto_init_sql_and_plain_suite_items_never_share_a_batch():
     """The actual bug (found live, 2026-07-25, the az azurite/azurite_auth split): with nothing but
     (build, working_dir, cell) as batch affinity, an auto_init_sql suite's item and a plain suite's
