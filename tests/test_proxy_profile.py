@@ -160,6 +160,27 @@ def test_declared_params_are_accepted():
     assert as_profile(fail_nth(n=1, status=503)).to_str() == "fail_nth;n=1;status=503"
 
 
+# --- require_auth credentials ----------------------------------------------------------------------
+
+
+def test_require_auth_with_credentials_round_trips():
+    b = require_auth(username="alice", password="s3cret")
+    assert b.to_str() == "require_auth;username=alice;password=s3cret"
+    assert Profile.from_str(b.to_str()).behaviors[0] == b
+
+
+def test_require_auth_bare_still_omits_credentials_from_the_wire():
+    # Unset creds must not appear as the literal string "None" on the wire.
+    assert require_auth().to_str() == "require_auth"
+
+
+def test_require_auth_rejects_one_sided_credentials():
+    with pytest.raises(ValueError, match="username and password must be set together"):
+        require_auth(username="alice")
+    with pytest.raises(ValueError, match="username and password must be set together"):
+        require_auth(password="s3cret")
+
+
 # --- wire-format safety ---------------------------------------------------------------------------
 
 

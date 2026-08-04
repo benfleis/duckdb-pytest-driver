@@ -8,6 +8,7 @@ pass-through with no header, ``status`` short-circuit (origin untouched), ``late
 per-tag state + recovery, a multi-behavior fold, and that a non-fault behavior (``require_auth``) works.
 """
 
+import base64
 import http.server
 import shutil
 import socket
@@ -61,12 +62,18 @@ def stack(tmp_path):
 
 
 def _get(proxy, url, *, tag="t", setting=None, auth=False):
-    """GET ``url`` THROUGH ``proxy`` with the ducktest headers; return (status, elapsed_seconds)."""
+    """GET ``url`` THROUGH ``proxy`` with the ducktest headers; return (status, elapsed_seconds).
+
+    ``auth=True`` sends fixed placeholder creds (any-credentials-pass tests); ``auth=(user, pass)``
+    sends specific ones (credential-validation tests).
+    """
     headers = {mitm_header_tag(): tag}
     if setting is not None:
         headers[mitm_header_setting()] = setting
     if auth:
-        headers["Proxy-Authorization"] = "Basic Zm9vOmJhcg=="
+        user, password = ("foo", "bar") if auth is True else auth
+        token = base64.b64encode(f"{user}:{password}".encode()).decode()
+        headers["Proxy-Authorization"] = f"Basic {token}"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy}))
     req = urllib.request.Request(url, headers=headers)
     t0 = time.perf_counter()
@@ -182,3 +189,14 @@ def test_require_auth_non_fault_behavior(stack):
     assert stack.origin.hits == 0
     allowed, _ = _get(stack.proxy, stack.url, setting="require_auth", auth=True)
     assert allowed == 200  # with Proxy-Authorization present, it passes through
+
+
+def test_require_auth_validates_credentials(stack):
+    setting = "require_auth;username=alice;password=s3cret"
+    no_header, _ = _get(stack.proxy, stack.url, setting=setting)
+    assert no_header == 407
+    wrong_creds, _ = _get(stack.proxy, stack.url, setting=setting, auth=("mallory", "wrong"))
+    assert wrong_creds == 407  # present but incorrect — still denied, unlike the presence-only case
+    assert stack.origin.hits == 0
+    right_creds, _ = _get(stack.proxy, stack.url, setting=setting, auth=("alice", "s3cret"))
+    assert right_creds == 200

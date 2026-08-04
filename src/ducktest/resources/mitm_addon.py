@@ -14,6 +14,7 @@ the wire name, e.g. ``proxy_init_sql(fail_nth(n=1), latency(ms=500))``.
 """
 
 import asyncio
+import base64
 import inspect
 import logging
 import random
@@ -162,15 +163,49 @@ class fail_nth(ProxyBehavior):
 
 
 class require_auth(ProxyBehavior):
-    """Demand proxy auth; return 407 unless the request presents ``Proxy-Authorization``."""
+    """Demand proxy auth; return 407 unless the request presents ``Proxy-Authorization``.
+
+    Bare, it only checks presence — any credentials pass. Set both ``username`` and ``password`` to
+    require an exact match; a missing, malformed, or mismatched header 407s instead.
+    """
+
+    def __init__(self, username=None, password=None):
+        if (username is None) != (password is None):
+            raise ValueError("require_auth: username and password must be set together")
+        self.username = username
+        self.password = password
+
+    def params(self) -> dict:
+        # Unset creds are omitted rather than emitted as the literal string "None", so a bare
+        # `require_auth` still round-trips to exactly "require_auth" (presence-only) on the wire.
+        out = {}
+        if self.username is not None:
+            out["username"] = str(self.username)
+            out["password"] = str(self.password)
+        return out
 
     def __call__(self, flow, ctx):
         from mitmproxy import http  # deferred: keeps this module stdlib-importable (see module docstring)
 
-        if ctx.phase == "request" and HEADER_AUTH not in flow.request.headers:
+        if ctx.phase == "request" and not self._authorized(flow.request.headers.get(HEADER_AUTH)):
             flow.response = http.Response.make(
                 407, b"proxy auth required", {"Proxy-Authenticate": 'Basic realm="ducktest"'}
             )
+
+    def _authorized(self, header) -> bool:
+        if header is None:
+            return False
+        if self.username is None:
+            return True  # presence-only
+        scheme, _, encoded = header.partition(" ")
+        if scheme.lower() != "basic" or not encoded:
+            return False
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return False
+        user, sep, password = decoded.partition(":")
+        return sep != "" and user == self.username and password == self.password
 
 
 BEHAVIORS = {

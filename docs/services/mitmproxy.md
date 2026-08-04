@@ -77,9 +77,9 @@ rest of the request-phase chain.
 | `latency` | `ms=200` | delay the response (response phase, async) |
 | `status` | `code=503` | short-circuit with a status; upstream is never hit |
 | `fail_nth` | `n=1`, `status=503` | fail the first *n* requests **per tag**, then recover — exercises retry logic |
-| `require_auth` | — | 407 unless `Proxy-Authorization` is present |
+| `require_auth` | `username=`, `password=` (optional, both or neither) | bare: 407 unless `Proxy-Authorization` is present; with both set: 407 unless the decoded Basic credentials match |
 
-`require_auth` models proxy authentication.
+`require_auth` models proxy authentication. Credential values may not contain `,`/`;`/`=` (`_check_token`).
 
 ### Writing a behavior
 
