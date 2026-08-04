@@ -24,7 +24,6 @@ The string form stays supported for a shared named profile: ``Profile.from_str("
 """
 
 import importlib.util
-import json
 import os
 import sys
 from dataclasses import dataclass
@@ -41,10 +40,8 @@ from .mitm_addon import (
     parse_profile,
 )
 
-# httpfs extension options (`httpfs_extension.cpp`). `http_extra_headers` is a JSON object merged into
-# every request's headers; a secret's own EXTRA_HTTP_HEADERS still wins per key. Both need httpfs
-# loaded, hence the `require` line the preamble opens with.
-HEADERS_SETTING = "http_extra_headers"
+# httpfs's MAP(VARCHAR, VARCHAR) setting (http_settings.cpp); needs httpfs loaded first.
+HEADERS_SETTING = "extra_http_headers"
 PROXY_SETTING = "http_proxy"
 
 # Substituted by the unittest binary per test (`SQLLogicTestRunner::ReplaceKeywords`, from
@@ -236,9 +233,7 @@ def _coerce(spec) -> list:
 def proxy_init_sql(*specs, endpoint=None) -> str:
     """Preamble SQL selecting ``specs``' behaviors for the body that runs after it.
 
-    The one builder for both routes, because ``http_extra_headers`` is a single JSON-object setting:
-    two ``SET`` statements would clobber rather than merge, so tag and profile must be emitted
-    together.
+    The one builder for both routes:
 
     - The mitm service's ``to_init_sql`` calls it with ``endpoint=`` for the suite-wide baseline
       (routing + tag, no behaviors).
@@ -249,14 +244,18 @@ def proxy_init_sql(*specs, endpoint=None) -> str:
       Cell SQL is merged after the suite's (``plugin._init_sqllogic_arg_for_item``), so the cell's
       ``SET`` runs last and wins — the routing set by the baseline persists on the same connection.
 
+    ``extra_http_headers`` is composed with ``map_concat(current_setting(...), ...)`` rather than
+    replaced, so a header set elsewhere on the same connection is never dropped.
+
     Behaviors are validated here, i.e. at conftest import, before anything boots.
     """
     headers = as_profile(*specs).to_headers(TAG_PLACEHOLDER)
     lines = ["require httpfs", ""]  # the settings below are httpfs's, so it must be loaded first
     if endpoint:
         lines.append(f"SET {PROXY_SETTING} = {sql_literal(endpoint)};")
-    payload = json.dumps({k: v for k, v in headers.items() if v})  # drop the empty setting header
-    lines.append(f"SET {HEADERS_SETTING} = {sql_literal(payload)};")
+    entries = ", ".join(f"{sql_literal(k)}: {sql_literal(v)}" for k, v in headers.items() if v)
+    current = f"current_setting({sql_literal(HEADERS_SETTING)})"
+    lines.append(f"SET {HEADERS_SETTING} = map_concat({current}, MAP {{{entries}}});")
     return "\n".join(lines) + "\n"
 
 

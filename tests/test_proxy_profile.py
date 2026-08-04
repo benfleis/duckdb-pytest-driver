@@ -13,7 +13,6 @@ Covers the properties the design rests on:
 """
 
 import importlib
-import json
 import re
 import subprocess
 import sys
@@ -274,24 +273,24 @@ def test_statefulness_is_declared():
 
 
 def _headers(sql):
-    """The JSON object out of a rendered `SET http_extra_headers = '...';` statement."""
-    payload = re.search(r"SET http_extra_headers = '(.*)';", sql).group(1)
-    return json.loads(payload.replace("''", "'"))
+    """The header dict out of a rendered `SET extra_http_headers = map_concat(..., MAP {...});`."""
+    body = re.search(r"MAP \{(.*)\}\);", sql).group(1)
+    pairs = re.findall(r"'((?:[^']|'')*)':\s*'((?:[^']|'')*)'", body)
+    return {k.replace("''", "'"): v.replace("''", "'") for k, v in pairs}
 
 
 def test_baseline_preamble_routes_and_tags():
     sql = proxy_init_sql(endpoint="http://127.0.0.1:18080")
     assert sql.startswith("require httpfs\n\n")  # the settings are httpfs's
     assert "SET http_proxy = 'http://127.0.0.1:18080';" in sql
+    assert "map_concat(current_setting('extra_http_headers')" in sql  # composed, not replaced
     # No behaviors selected, so no setting header at all rather than an empty one.
     assert _headers(sql) == {mitm_addon.HEADER_TAG: TAG_PLACEHOLDER}
 
 
 def test_cell_preamble_carries_tag_and_profile_in_ONE_statement():
-    # `http_extra_headers` is a single JSON setting: two SETs would clobber, not merge, so the tag
-    # cannot be emitted separately from the behaviors.
     sql = proxy_init_sql(fail_nth(n=1), latency(ms=500))
-    assert sql.count("SET http_extra_headers") == 1
+    assert sql.count("SET extra_http_headers") == 1
     assert _headers(sql) == {
         mitm_addon.HEADER_SETTING: "fail_nth;n=1;status=503, latency;ms=500",
         mitm_addon.HEADER_TAG: TAG_PLACEHOLDER,

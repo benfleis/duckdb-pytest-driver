@@ -59,8 +59,8 @@ Loaded into mitmdump via `-s`, by file path.
 
 ### Selection headers
 
-duckdb carries these via the `http_extra_headers` setting, written by `proxy_init_sql` into the
-`--init-sqllogic` preamble.
+duckdb carries these via the `extra_http_headers` setting, written by `proxy_init_sql` into the
+`--init-sqllogic` preamble. Composed with `map_concat(current_setting(...), ...)`, not replaced.
 
 | header | |
 |---|---|
@@ -135,7 +135,7 @@ Behavior exceptions are logged and ignored. Unknown names warn and are skipped.
 |---|---|
 | **0 — plumbing + CA trust** | done (`tests/test_mitmproxy.py`) |
 | **1 — dispatcher end-to-end** | done (`tests/test_proxy_behaviors.py`) — real mitmdump + throwaway origin + a client through the proxy, on loopback, headers set **manually** |
-| **2 — profile → delivery** | done. Delivery is preamble SQL via `--init-sqllogic`: `proxy_init_sql()` emits `SET http_proxy` + `SET http_extra_headers`. `{TEST_ID}` is substituted by the binary per test. |
+| **2 — profile → delivery** | done. Delivery is preamble SQL via `--init-sqllogic`: `proxy_init_sql()` emits `SET http_proxy` + `SET extra_http_headers`. `{TEST_ID}` is substituted by the binary per test. |
 | **2b — suite and matrix routes** | done. `to_init_sql` gives a suite the baseline routing/tag under `auto_init_sql=True`; a matrix cell's `init_sql` property adds behaviors and wins because it is merged last. |
 | **3 — driver `.py` route** | planned. `run_paired` does not pass `--init-sqllogic`, so a driver test cannot select a profile. |
 
