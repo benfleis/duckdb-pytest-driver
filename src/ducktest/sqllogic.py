@@ -20,7 +20,6 @@ from typing import Optional
 
 import pytest
 
-from .context import get_context
 from .suites import EnvRef
 
 
@@ -305,12 +304,14 @@ class SqlLogicItem(pytest.Item):
     # -- single-test path (batch_size == 1) ----------------------------------
 
     def _run_single(self):
+        from .plugin import _item_env  # plugin imports this module
+
         batch_id = item_batch_id(self)
         matrix_cell = getattr(self, "_matrix_cell", None)
         temp_roots, env = _resolve_matrix_properties(
             self._temp_roots,
             matrix_cell,
-            supplied_env=get_context(self.config).adopted_env,
+            supplied_env=_item_env(self.config, self),
         )
         result = _invoke(
             self._binary,
@@ -330,13 +331,15 @@ class SqlLogicItem(pytest.Item):
     # -- batch path (batch_size > 1) -----------------------------------------
 
     def _run_batched(self):
+        from .plugin import _item_env  # plugin imports this module
+
         with _batch_cache_lock:
             if self._batch_id not in _batch_cache:
                 matrix_cell = getattr(self, "_matrix_cell", None)
                 temp_roots, env = _resolve_matrix_properties(
                     self._temp_roots,
                     matrix_cell,
-                    supplied_env=get_context(self.config).adopted_env,
+                    supplied_env=_item_env(self.config, self),
                 )
                 _batch_cache[self._batch_id] = _execute_batch(
                     self._batch_test_names,

@@ -8,6 +8,12 @@ from ducktest import env_ref
 from ducktest.sqllogic import _env_passthrough_args, _resolve_matrix_properties
 
 
+def _write(pytester, name, body):
+    p = pytester.path / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(textwrap.dedent(body))
+
+
 def test_env_ref_resolves_static_service_roots_with_matrix_precedence():
     cell = {
         "id": "http",
@@ -210,3 +216,56 @@ def test_static_service_roots_and_matrix_refs_reach_each_subprocess(pytester, mo
         } <= set(record["passthrough"])
         assert "DATA_DIR" not in record["passthrough"]
         assert "INVOCATION_LOG" not in record["passthrough"]
+
+
+def test_service_env_from_one_suite_never_leaks_into_another(pytester, monkeypatch):
+    """Suite `a`'s service publishes an env var; suite `b`, reachable in the same session, must never
+    see it in its own subprocess -- collect-first provisions both up front in one worker process, but
+    delivery must stay scoped per invocation."""
+    log = pytester.path / "invocations.jsonl"
+    monkeypatch.setenv("INVOCATION_LOG", str(log))
+    _write(
+        pytester,
+        "test/conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def pytest_configure(config):
+            register_suite(config, "a", path="test/a", services=[
+                service("leaky", start=lambda c: {"endpoint": "svc://a"},
+                        to_env=lambda b: {"LEAKY_VAR": "leaked"})])
+            register_suite(config, "b", path="test/b")
+        """,
+    )
+    _write(pytester, "test/a/one.test", "query I\nSELECT 1;\n----\n1\n")
+    _write(pytester, "test/b/two.test", "query I\nSELECT 2;\n----\n2\n")
+    stub = pytester.path / "stub_unittest"
+    stub.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import json, os, sys
+
+            if "-l" in sys.argv[1:]:
+                sys.exit(0)
+
+            name = next(a for a in sys.argv[1:] if a.endswith(".test"))
+            record = {"name": name, "has_leaky": "LEAKY_VAR" in os.environ}
+            with open(os.environ["INVOCATION_LOG"], "a") as f:
+                f.write(json.dumps(record) + "\\n")
+
+            event = {"event": "end", "name": name, "status": "ok",
+                     "passes": 1, "fails": 0, "skip-mode": 0}
+            sys.stderr.write("[TEST_EVENT] " + json.dumps(event) + "\\n")
+            """
+        )
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    result = pytester.runpytest_subprocess(
+        "-n", "0", "--unittest-binary", str(stub), "-p", "no:cacheprovider"
+    )
+    result.assert_outcomes(passed=2)
+    records = {json.loads(line)["name"]: json.loads(line)["has_leaky"] for line in log.read_text().splitlines()}
+    assert records["test/a/one.test"] is True
+    assert records["test/b/two.test"] is False

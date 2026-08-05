@@ -186,50 +186,28 @@ def assign_batches(items: list, *, batch_size: int) -> int:
 
 
 def _batch_key(item) -> Optional[tuple]:
-    """The affinity key: same binary + same working dir + same matrix cell batch together.
-    None = not a SqlLogic item.
+    """Same binary + working dir + matrix cell + suite(s) batch together. None = not a SqlLogic item.
 
-    A projection of the canonical per-item `Key` (`decorate.py`), reading the item's `_cell` stamp
-    (set by the suite-matrix `.test` fan-out, `plugin.py`) if any — `None` for a non-matrix item,
-    unchanged from before. `cell` MUST be a batch-affinity component: two cells of the same file can
-    never share one subprocess invocation regardless of policy — Catch2's registered test identity
-    IS the file path, so one invocation can't report two independently-attributed outcomes for what
-    Catch2 considers a single test. Different files sharing a cell still batch together (same env).
+    `cell` alone isn't enough: two suites can share a cell (httpfs's `s3`/`proxy` both use `S3_CELL`)
+    while declaring different services, and a batch is one subprocess with one resolved env/init-SQL —
+    so suite identity has to be part of the key too (`_item_suite_names`).
     """
     key = decorate(item, cell=getattr(item, "_cell", None))
     if key is None:
         return None
-    return (key.build, key.run_setting, key.cell, _init_sqllogic_batch_component(item))
+    return (key.build, key.run_setting, key.cell, _item_suite_names(item))
 
 
-def _init_sqllogic_batch_component(item) -> tuple:
-    """Which `auto_init_sql=True` suite (if any) `item` resolves to, as a hashable 0-or-1-tuple,
-    folded into `_batch_key` so two items resolving to DIFFERENT suites -- or one resolving to a
-    suite and one to none -- can NEVER share a batch/subprocess. `--init-sqllogic` is a whole-
-    PROCESS flag, not per-test-name: two `.test` files from different suites (one `auto_init_sql=
-    True`, one not) sharing a batch purely by (build, working_dir, cell) affinity would let
-    whichever suite's injection got resolved for the batch's representative item apply to EVERY
-    test name in that shared subprocess -- silently leaking one suite's secrets/extensions into
-    another's tests. Found live (2026-07-25): a `local`-suite `.test` (auto_init_sql) batched with a
-    `local_auth`-suite `.test` (deliberately not) left the latter with an unexpectedly-present secret.
-
-    Deliberately CHEAP -- suite membership only (`_item_in_suite`), never the actual resolved SQL
-    (`_suite_init_sql`/`_init_sqllogic_arg_for_item`): batching runs during collection
-    (`assign_batches`, from `pytest_collection_modifyitems`), before credentials are provisioned --
-    calling the credential-fetching path this early silently starved the FIRST self-test that caught
-    this (the store/context aren't ready yet at collection time), rather than erroring loud. Two
-    items resolving to the SAME suite always get the SAME eventual injection when actually invoked
-    later, so suite identity alone is sufficient for batch-affinity purposes.
-
-    `()` (no distinction) for a fake/minimal item with no real `.config` (existing `_batch_key`
-    self-tests use plain stand-ins) -- real `SqlLogicItem`s always have one.
+def _item_suite_names(item) -> tuple:
+    """Every suite `item` belongs to, sorted. Two items in different suites (or one in a suite, one in
+    none) must never share a batch: whichever suite's env/injected SQL resolved for the batch's
+    representative item would silently apply to every test name sharing its subprocess. Cheap by
+    necessity — batching runs before provisioning. `()` for an item with no real `.config` (fake test
+    stand-ins).
     """
     config = getattr(item, "config", None)
     if config is None:
         return ()
-    from .plugin import _item_in_suite  # lazy: plugin imports collect, avoid import cycle
-    from .suites import get_suites
+    from .plugin import _item_suites  # lazy: plugin imports collect, avoid import cycle
 
-    suites = [s for s in get_suites(config) if s.auto_init_sql]
-    suite = next((s for s in suites if _item_in_suite(config, item, s)), None)
-    return (suite.name,) if suite is not None else ()
+    return tuple(sorted(s.name for s in _item_suites(config, item)))

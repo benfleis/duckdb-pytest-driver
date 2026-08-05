@@ -54,7 +54,7 @@ _CONFTEST = """
             f.write("p\\n")
 
     def pytest_configure(config):
-        register_suite(config, "s", default=True, services=[
+        register_suite(config, "s", path=".", default=True, services=[
             service("svc", start=None, attach=_attach, to_env=_to_env, populate=_populate, fixture="svc_fx")])
 """
 
@@ -69,14 +69,16 @@ def test_no_existing_service_declared_still_attaches_never_boots(pytester, monke
         pytester,
         "test_inner.py",
         """
-        import os
-        def test_env_from_attach():
-            assert os.environ["SVC_ENDPOINT"] == "svc://external-default"
+        from ducktest.plugin import _item_env
+        def test_env_from_attach(request):
+            assert _item_env(request.config, request.node)["SVC_ENDPOINT"] == "svc://external-default"
         """,
     )
     result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider")
     result.assert_outcomes(passed=1)
-    assert pop.read_text().count("p") == 1  # populate still runs (idempotent), no boot needed
+    # populate runs on every attach (no store/single-flight for it, by design): once from collect-first,
+    # once from this test's own _item_env call -- idempotent by contract either way.
+    assert pop.read_text().count("p") == 2
 
 
 def test_existing_service_override_still_just_attaches(pytester, monkeypatch):
@@ -87,9 +89,9 @@ def test_existing_service_override_still_just_attaches(pytester, monkeypatch):
         pytester,
         "test_inner.py",
         """
-        import os
-        def test_env_from_attach():
-            assert os.environ["SVC_ENDPOINT"] == "svc://overridden"
+        from ducktest.plugin import _item_env
+        def test_env_from_attach(request):
+            assert _item_env(request.config, request.node)["SVC_ENDPOINT"] == "svc://overridden"
         """,
     )
     result = pytester.runpytest_subprocess(

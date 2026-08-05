@@ -86,7 +86,7 @@ _CONFTEST = """
         return {"endpoint": overrides.get("endpoint", "svc://default")}
 
     def pytest_configure(config):
-        register_suite(config, "s", default=True, services=[
+        register_suite(config, "s", path=".", default=True, services=[
             service("svc", start=_start, populate=_populate, to_env=_to_env, attach=_attach)])
 """
 
@@ -101,10 +101,10 @@ def test_up_front_boots_once_adopts_env_populates_once(pytester, monkeypatch):
         pytester,
         "test_inner.py",
         """
-        import os
-        def test_env_adopted():
-            # the up-front service's to_env is adopted from the store on the worker (SPEC 3.7)
-            assert os.environ["SVC_ENDPOINT"] == "svc://up"
+        from ducktest.plugin import _item_env
+        def test_env_adopted(request):
+            # the up-front service's to_env resolves for an item belonging to its suite (SPEC 3.7)
+            assert _item_env(request.config, request.node)["SVC_ENDPOINT"] == "svc://up"
         """,
     )
     result = pytester.runpytest_subprocess("-n", "2", "-p", "no:cacheprovider")
@@ -123,9 +123,10 @@ def test_up_front_with_attach_adopts_env_without_booting(pytester, monkeypatch):
         pytester,
         "test_inner.py",
         """
-        import os
-        def test_env_from_attach():
-            assert os.environ["SVC_ENDPOINT"] == "svc://external"  # env from the attached endpoint
+        from ducktest.plugin import _item_env
+        def test_env_from_attach(request):
+            # env from the attached endpoint
+            assert _item_env(request.config, request.node)["SVC_ENDPOINT"] == "svc://external"
         """,
     )
     result = pytester.runpytest_subprocess(
@@ -133,7 +134,9 @@ def test_up_front_with_attach_adopts_env_without_booting(pytester, monkeypatch):
     )
     result.assert_outcomes(passed=1)
     assert not boot.exists()  # attach => never booted
-    assert pop.read_text().count("p") == 1  # populate still runs (idempotent) against the attached one
+    # populate runs on every attach (no store/single-flight for it, by design) -- collect-first triggers
+    # it once, this test's own _item_env call triggers it again; idempotent by contract either way.
+    assert pop.read_text().count("p") == 2
 
 
 def test_populate_runs_exactly_once(pytester, monkeypatch):
@@ -170,8 +173,8 @@ def test_populate_runs_exactly_once(pytester, monkeypatch):
 
 
 def test_to_env_adopted_on_fixture_pull(pytester):
-    # MIGRATED (was test_on_demand_to_env_adopted_on_fixture_pull): a worker that provisions the service
-    # (fixture pull) adopts its to_env into that worker's os.environ. No disposition.
+    # a worker that provisions the service (fixture pull) can resolve its to_env, scoped to items
+    # belonging to the declaring suite -- not a global os.environ mutation.
     _write(
         pytester,
         "conftest.py",
@@ -180,7 +183,7 @@ def test_to_env_adopted_on_fixture_pull(pytester):
         from ducktest import register_suite, service, get_suites, provision_service
 
         def pytest_configure(config):
-            register_suite(config, "s", default=True, services=[
+            register_suite(config, "s", path=".", default=True, services=[
                 service("svc", start=lambda c: {"endpoint": "svc://up"},
                         to_env=lambda b: {"SVC_ENV": b["endpoint"]}, fixture="svc_fx")])
 
@@ -194,9 +197,9 @@ def test_to_env_adopted_on_fixture_pull(pytester):
         pytester,
         "test_inner.py",
         """
-        import os
-        def test_env_adopted_worker_side(svc_fx):
-            assert os.environ["SVC_ENV"] == "svc://up"
+        from ducktest.plugin import _item_env
+        def test_env_adopted_worker_side(request, svc_fx):
+            assert _item_env(request.config, request.node)["SVC_ENV"] == "svc://up"
         """,
     )
     result = pytester.runpytest_subprocess("-n", "2", "-p", "no:cacheprovider")

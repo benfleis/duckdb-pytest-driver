@@ -45,20 +45,23 @@ _CRED_CONFTEST = """
 
 
 def test_credential_fetched_once_up_front_and_reaches_worker(pytester, monkeypatch):
+    """`test/dbx/*` items genuinely belong to the `dbx` suite (path membership) -- unlike a root-level
+    test, which would no longer see this credential at all now that adoption is suite-scoped, not
+    global (a root-level test happening to see it on a bare `default=True` run was exactly the leak
+    this scoping removes)."""
     log = pytester.path / "fetch.log"
     monkeypatch.setenv("FETCH_LOG", str(log))
     _write(pytester, "conftest.py", _CRED_CONFTEST)
     _write(
         pytester,
-        "test_inner.py",
+        "test/dbx/test_inner.py",
         """
-        import os
-
         from ducktest import get_store, store as S
+        from ducktest.plugin import _item_env
 
 
         def _check(request):
-            assert os.environ.get("DBX_TOKEN") == "TOK"        # adopt="env" reached the worker
+            assert _item_env(request.config, request.node)["DBX_TOKEN"] == "TOK"  # scoped to the suite
             st = get_store(request.config)
             assert S.copy(st, "dbx_creds") == {"DBX_TOKEN": "TOK"}  # block readable on the worker
 

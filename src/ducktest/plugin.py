@@ -841,13 +841,6 @@ def _resolve_service(config, key):
     return None
 
 
-def _adopt_env(config, values):
-    """Publish service or credential values and retain them as SQLLogic bindings."""
-    adopted = {key: str(value) for key, value in values.items()}
-    os.environ.update(adopted)
-    get_context(config).adopted_env.update(adopted)
-
-
 def provision_service(config, svc, *, _visiting=()):
     """Provision a class-2 service — the ONE routing point (docs/SPEC.md §3.6). Attach-or-boot:
 
@@ -869,9 +862,9 @@ def provision_service(config, svc, *, _visiting=()):
     (``pytest.UsageError``) instead of recursing forever; ``_visiting`` is the internal
     cycle-detection breadcrumb — never pass it yourself.
 
-    Adopts ``to_env`` into this process and SQLLogic substitution. Returns the block; a test cannot tell
-    which stance ran (identical shape). Idempotent: called both up front (from the collect-first plan)
-    and on a fixture pull.
+    Returns the block; a test cannot tell which stance ran (identical shape). Idempotent: called both
+    up front (from the collect-first plan) and on a fixture pull — `svc.to_env(block)` is read fresh
+    by `_item_env`, not adopted here.
     """
     if svc.depends_on:
         if svc.key in _visiting:
@@ -897,8 +890,6 @@ def provision_service(config, svc, *, _visiting=()):
             block = _boot_and_populate(config, svc)  # no store (nothing declared): local boot
         else:
             block = store.copy_or_provision(handle, svc.key, lambda: _boot_and_populate(config, svc))
-    if svc.to_env is not None:
-        _adopt_env(config, svc.to_env(block))
     return block
 
 
@@ -985,7 +976,8 @@ def _stop_services(config):
 
 
 def _fetch_or_read_credential(config, cred):
-    """Fetch (or read from the store) a credential, validate it, and adopt it into the env.
+    """Fetch (or read from the store) a credential and validate it. Cached for
+    `_read_provisioned_credential`/`_item_env` to read back later — not adopted anywhere here.
 
     Single-flighted through the store so a selected run prompts at most once (the poison pill on
     the store makes an invalid fetch fail every waiter). ``available()`` short-circuits when the creds
@@ -1000,8 +992,6 @@ def _fetch_or_read_credential(config, cred):
         block = cred.fetch(config)
     if cred.validate is not None and not cred.validate(block):
         raise pytest.UsageError(cred.error() if cred.error else f"{cred.key}: required credential unavailable")
-    if cred.adopt == "env":
-        _adopt_env(config, block)
 
 
 def _read_provisioned_credential(config, cred):
@@ -1257,9 +1247,7 @@ def _init_sqllogic_arg_for_item(config, item, *, matrix_cell=None, driver_sql=No
     from .sqllogic import _matrix_cell_init_sql
 
     cell_sql = _matrix_cell_init_sql(matrix_cell)
-    suite = next(
-        (s for s in get_suites(config) if s.auto_init_sql and _item_in_suite(config, item, s)), None
-    )
+    suite = next((s for s in _item_suites(config, item) if s.auto_init_sql), None)
     if suite is None and not cell_sql and not driver_sql:
         return []
     key = (id(config), suite.name if suite else None, cell_sql or "", driver_sql or "")
@@ -1374,6 +1362,12 @@ def _item_in_suite(config, item, suite):
     if suite.marker and item.get_closest_marker(suite.marker) is not None:
         return True
     return _item_in_suite_path(config, item, suite)
+
+
+def _item_suites(config, item):
+    """Every suite ``item`` belongs to. The one canonical suite-membership computation — batching
+    (`collect._item_suite_names`), service provisioning, and env resolution all derive from this."""
+    return [s for s in get_suites(config) if _item_in_suite(config, item, s)]
 
 
 # ---------------------------------------------------------------------------
@@ -1646,14 +1640,30 @@ def _stem_path(path, suffix):
 def _item_services(config, item):
     """Every distinct `Service` (dedup by key) declared by a suite `item` belongs to."""
     seen, out = set(), []
-    for suite in get_suites(config):
-        if not _item_in_suite(config, item, suite):
-            continue
+    for suite in _item_suites(config, item):
         for svc in suite.services:
             if svc.key not in seen:
                 seen.add(svc.key)
                 out.append(svc)
     return out
+
+
+def _item_env(config, item):
+    """On-demand env for `item`'s own suite(s): each suite's `adopt="env"` credential values and
+    services' `to_env(block)`. Idempotent — reads already-provisioned values, no new fetch or boot;
+    nothing global gets mutated."""
+    env = {}
+    for suite in _item_suites(config, item):
+        for cred in suite.credentials:
+            if cred.adopt != "env":
+                continue
+            value = _read_provisioned_credential(config, cred)
+            if value is not None:
+                env.update({k: str(v) for k, v in value.items()})
+        for svc in suite.services:
+            if svc.to_env is not None:
+                env.update({k: str(v) for k, v in svc.to_env(provision_service(config, svc)).items()})
+    return env
 
 
 def run_paired(request, *, env=None, init_sql=None):
@@ -1682,7 +1692,7 @@ def run_paired(request, *, env=None, init_sql=None):
     batch_id = _test_batch_id(test_name + _cell_suffix(cell))
     for svc in _item_services(request.config, request.node):
         provision_service(request.config, svc)
-    supplied_env = dict(get_context(request.config).adopted_env)
+    supplied_env = _item_env(request.config, request.node)
     supplied_env.update(env or {})
     temp_roots, resolved_env = _resolve_matrix_properties(
         _temp_roots(request.config),

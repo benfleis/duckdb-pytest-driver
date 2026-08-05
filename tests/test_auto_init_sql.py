@@ -601,3 +601,46 @@ def test_auto_init_sql_and_plain_suite_items_never_share_a_batch():
     plain_item = _FakeItem("/fake/root/test/plain/answer.test", "test/plain/answer.test")
     assign_batches([core_item, plain_item], batch_size=10)
     assert core_item._batch_id != plain_item._batch_id, "auto_init_sql and plain suite items shared a batch"
+
+
+def test_suites_sharing_a_matrix_cell_never_share_a_batch_either():
+    """Neither suite here is `auto_init_sql` -- httpfs's `s3` and `proxy` suites both use the same
+    `S3_CELL` object while `proxy` alone declares a mitmproxy service; without suite identity in the
+    batch key, cell-affinity alone would batch them and leak `proxy`'s service env into `s3`'s tests."""
+    import pathlib
+
+    from ducktest.collect import assign_batches
+    from ducktest.suites import register_suite
+
+    class _FakeConfig:
+        rootpath = pathlib.Path("/fake/root")
+
+        def getoption(self, name, default=None):
+            return default
+
+        def getini(self, name):
+            return None
+
+    config = _FakeConfig()
+    register_suite(config, "s3", path="test/s3")
+    register_suite(config, "proxy", path="test/proxy")
+
+    class _FakeItem:
+        def __init__(self, path, test_name, cell):
+            self.config = config
+            self.path = pathlib.Path(path)
+            self._binary = "/fake/root/build/debug/test/unittest"
+            self._working_dir = "/fake/root"
+            self._test_name = test_name
+            self._cell = cell
+
+        def add_marker(self, marker):
+            pass
+
+        def get_closest_marker(self, name):
+            return None
+
+    s3_item = _FakeItem("/fake/root/test/s3/one.test", "test/s3/one.test", "s3")
+    proxy_item = _FakeItem("/fake/root/test/proxy/two.test", "test/proxy/two.test", "s3")
+    assign_batches([s3_item, proxy_item], batch_size=10)
+    assert s3_item._batch_id != proxy_item._batch_id, "different suites sharing a cell shared a batch"
