@@ -539,6 +539,74 @@ def test_run_paired_init_sql_wins_and_does_not_leak_across_drivers(pytester, mon
     assert "driver_setting='one'" not in two
 
 
+def test_run_paired_isolates_two_functions_driving_the_same_body(pytester, monkeypatch):
+    """Two DIFFERENT test functions in one driver, both bare `run_paired(request)` calls against the
+    identical same-stem body: `test_name` (the file) and `cell` (none, here) alone would collide on
+    the same `--temp-dir-root` -- the pytest node name has to be part of the batch-id seed too."""
+    log = pytester.path / "paired-invocations.jsonl"
+    monkeypatch.setenv("INVOCATION_LOG", str(log))
+    _write(
+        pytester,
+        "test/conftest.py",
+        """
+        from ducktest import register_suite
+
+        def pytest_configure(config):
+            register_suite(config, "paired", path="test/paired")
+        """,
+    )
+    _write(
+        pytester,
+        "test/paired/answer.py",
+        """
+        from ducktest import run_paired
+
+        def test_one(request):
+            run_paired(request)
+
+        def test_two(request):
+            run_paired(request)
+        """,
+    )
+    _write(pytester, "test/paired/answer.test", "query I\nSELECT 42;\n----\n42\n")
+    stub = pytester.path / "stub_unittest"
+    stub.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import json, os, sys
+
+            if "-l" in sys.argv[1:]:
+                sys.exit(0)
+
+            def option(name):
+                if name not in sys.argv:
+                    return None
+                return sys.argv[sys.argv.index(name) + 1]
+
+            record = {"pid": os.getpid(), "temp_dir_root": option("--temp-dir-root")}
+            with open(os.environ["INVOCATION_LOG"], "a") as handle:
+                handle.write(json.dumps(record) + "\\n")
+
+            name = next(arg for arg in sys.argv[1:] if arg.endswith(".test"))
+            event = {"event": "end", "name": name, "status": "ok",
+                     "passes": 1, "fails": 0, "skip-mode": 0}
+            sys.stderr.write("[TEST_EVENT] " + json.dumps(event) + "\\n")
+            """
+        )
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    result = pytester.runpytest_subprocess(
+        "--unittest-binary", str(stub), "-n", "0", "-p", "no:cacheprovider", "test/paired"
+    )
+
+    result.assert_outcomes(passed=2)
+    roots = [json.loads(line)["temp_dir_root"] for line in log.read_text().splitlines()]
+    assert len(roots) == 2
+    assert roots[0] != roots[1]
+
+
 def test_auto_init_sql_and_plain_suite_items_never_share_a_batch():
     """The actual bug (found live, 2026-07-25, the az azurite/azurite_auth split): with nothing but
     (build, working_dir, cell) as batch affinity, an auto_init_sql suite's item and a plain suite's

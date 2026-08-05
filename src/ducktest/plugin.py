@@ -1679,17 +1679,17 @@ def run_paired(request, *, env=None, init_sql=None):
     best-effort pre-warm, a failure here isn't swallowed.
 
     The run's originated TEMP/DATA roots (SPEC §11.2) are attached automatically — this invocation
-    shares the run's `<root>/<session-id>` and composes its own `<batch-id>` from the body name (+ its
-    matrix cell, if any — a `@requires_matrix`/suite-`matrix=`-parametrized paired driver calls
-    `run_paired` once per cell, all with the identical body name; folding the cell in keeps each
-    cell's temp-dir path distinct), never re-derived here.
+    shares the run's `<root>/<session-id>` and composes its own `<batch-id>` from the body name, its
+    matrix cell (if any — a `@requires_matrix`/suite-`matrix=`-parametrized paired driver calls
+    `run_paired` once per cell, all with the identical body name), and the pytest node name, so two
+    test functions driving the same body never collide on the same temp-dir path either.
     """
     working_dir = request.config.sqllogic_working_dir
     binary = find_binary(request.config, working_dir)
     test_path = _stem_path(request.path, ".test")
     test_name = os.path.relpath(test_path, working_dir)
     cell = request.getfixturevalue("matrix_cell")
-    batch_id = _test_batch_id(test_name + _cell_suffix(cell))
+    batch_id = _test_batch_id(f"{test_name}{_cell_suffix(cell)}::{request.node.name}")
     for svc in _item_services(request.config, request.node):
         provision_service(request.config, svc)
     supplied_env = _item_env(request.config, request.node)

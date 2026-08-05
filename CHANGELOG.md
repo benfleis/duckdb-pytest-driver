@@ -50,6 +50,9 @@ Changes since `dev/v0.3`.
   variables remain available through SQLLogic `require-env` and `test-env`.
 - `run_paired` now provisions its item's suite services itself, so a swallowed collect-first failure
   surfaces loud instead of a paired driver silently running without the service's env.
+- `run_paired`'s temp-dir root now folds in the pytest node name, not just the body name and matrix
+  cell. Two test functions in one driver calling `run_paired` against the same body no longer collide
+  on the same `--temp-dir-root`.
 - Batch affinity now considers full suite membership, not just `auto_init_sql`. Two suites sharing a
   matrix cell but declaring different resources no longer share a subprocess invocation.
 - Suite provisioners are selected by path, allowing a shared provisioner with narrower overrides.
