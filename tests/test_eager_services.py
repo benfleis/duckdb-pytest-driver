@@ -8,6 +8,7 @@ service a SELECTED test needs UP FRONT (from the plan) on the controller; worker
 the store. `to_env`/`populate` stay (WHAT/HOW env + seed, not WHEN); there is no disposition to choose.
 """
 
+import stat
 import textwrap
 
 from ducktest import Service, service, use_service
@@ -205,6 +206,61 @@ def test_to_env_adopted_on_fixture_pull(pytester):
 # REMOVED (was test_provision_never_pulled_without_attach_fails_loud): the `provision='never'`
 # disposition is deleted. A service with no boot capability is simply expressed as an
 # `--existing-service`-only attach target; there is no separate "never" stance to fail loud on.
+
+
+def test_run_paired_surfaces_a_swallowed_service_failure(pytester):
+    """Collect-first provisioning is best-effort (`provision_reachable`'s `_on_service` swallows a
+    boot failure so it can be re-surfaced by a fixture pull). A paired driver with no service-consuming
+    fixture — just `request`/`matrix_cell`, e.g. a bare profile selector — had no such pull point, so
+    the failure went unsurfaced and the body just silently ran without the service's env. `run_paired`
+    now (re-)provisions its item's suite services itself, so this must fail loud instead."""
+    _write(
+        pytester,
+        "test/conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def _start(config):
+            raise RuntimeError("boom: service infra unavailable")
+
+        def pytest_configure(config):
+            register_suite(config, "s", path="test/s",
+                services=[service("svc", start=_start, to_env=lambda b: {"SVC_ENV": "x"})])
+        """,
+    )
+    _write(
+        pytester,
+        "test/s/one.py",
+        """
+        from ducktest import run_paired
+
+        def test_one(request, matrix_cell):
+            run_paired(request)
+        """,
+    )
+    _write(pytester, "test/s/one.test", "query I\nSELECT 1;\n----\n1\n")
+    # A stub that always PASSES -- so without the fix this test would wrongly show `passed=1`
+    # (the silent-miss bug), proving `run_paired` blocks the invocation rather than the stub itself.
+    stub = pytester.path / "stub_unittest"
+    stub.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import json, sys
+            if "-l" in sys.argv[1:]:
+                sys.exit(0)
+            name = next(a for a in sys.argv[1:] if a.endswith(".test"))
+            event = {"event": "end", "name": name, "status": "ok", "passes": 1, "fails": 0, "skip-mode": 0}
+            sys.stderr.write("[TEST_EVENT] " + json.dumps(event) + "\\n")
+            """
+        )
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    result = pytester.runpytest_subprocess(
+        "--unittest-binary", str(stub), "-n", "0", "-p", "no:cacheprovider", "test/s"
+    )
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*boom: service infra unavailable*"])
 
 
 def test_shared_service_across_suites_boots_and_stops_once(pytester, monkeypatch):

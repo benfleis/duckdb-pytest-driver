@@ -37,8 +37,10 @@ the driver).
 **Pending / to verify**
 
 - **Bare `.test` service failures** — collect-first currently suppresses service provisioning errors so
-  fixture consumers can report them during setup. Bare `.test` files have no fixture to do that; preserve
-  and report the original provisioning error before execution. _(pending)_
+  fixture consumers can report them during setup. **`run_paired` now provisions its item's suite
+  services itself** (`tests/test_eager_services.py`), so a paired `.py` driver re-surfaces the error even
+  with no service fixture. A true bare `.test` (no `.py` at all) still has no pull point. _(pending, bare
+  `.test` only)_
 - **Reported-unit flip** — a driver `.py` is still the reported unit; flip so the **body**
   (`.test`) is reported and the `.py` only contributes hooks. _(pending)_
 - **`--repl` python shell** — currently duckdb only; a python shell for pure-`.py` bodies is

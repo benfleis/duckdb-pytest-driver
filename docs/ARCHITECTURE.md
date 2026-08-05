@@ -59,10 +59,11 @@ Silent skips let "green" mean "didn't actually run." Making selection deliberate
 automatic + unprovisionable-fails is what makes automatic provisioning trustworthy. Expect failures
 where you used to see skips.
 
-This is not yet fully enforced for suite services. Collect-first service provisioning is currently
-best-effort: its error is suppressed until a fixture calls `provision_service`. A bare `.test` has no
-fixture, so it may only fail later because the service environment is missing. Preserving the original
-provisioning error for that path remains pending.
+This is not fully enforced for suite services yet. Collect-first service provisioning is best-effort:
+its error is suppressed until a fixture calls `provision_service`. `run_paired` now does this itself
+for its item's suite services, so a paired driver re-surfaces the original error even with no
+service-consuming fixture. A true bare `.test` (no `.py` at all) still has no such pull point, so it
+may only fail later because the service environment is missing.
 
 ## Suite resources
 

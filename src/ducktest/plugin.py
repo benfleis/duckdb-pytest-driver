@@ -1643,6 +1643,19 @@ def _stem_path(path, suffix):
     return os.path.splitext(str(path))[0] + suffix
 
 
+def _item_services(config, item):
+    """Every distinct `Service` (dedup by key) declared by a suite `item` belongs to."""
+    seen, out = set(), []
+    for suite in get_suites(config):
+        if not _item_in_suite(config, item, suite):
+            continue
+        for svc in suite.services:
+            if svc.key not in seen:
+                seen.add(svc.key)
+                out.append(svc)
+    return out
+
+
 def run_paired(request, *, env=None, init_sql=None):
     """Drive the calling driver `.py`'s same-stem body (`.test`) through the binary.
 
@@ -1651,6 +1664,9 @@ def run_paired(request, *, env=None, init_sql=None):
     inject vars the body substitutes via ``{...}`` (merged over os.environ). Pass ``init_sql`` (e.g.
     ``proxy_init_sql(require_auth(...))``) for preamble SQL specific to this driver, composed after
     suite and matrix-cell init SQL, so it has final precedence.
+
+    Also (re-)provisions this item's suite services — idempotent, and unlike collect-first's
+    best-effort pre-warm, a failure here isn't swallowed.
 
     The run's originated TEMP/DATA roots (SPEC §11.2) are attached automatically — this invocation
     shares the run's `<root>/<session-id>` and composes its own `<batch-id>` from the body name (+ its
@@ -1664,6 +1680,8 @@ def run_paired(request, *, env=None, init_sql=None):
     test_name = os.path.relpath(test_path, working_dir)
     cell = request.getfixturevalue("matrix_cell")
     batch_id = _test_batch_id(test_name + _cell_suffix(cell))
+    for svc in _item_services(request.config, request.node):
+        provision_service(request.config, svc)
     supplied_env = dict(get_context(request.config).adopted_env)
     supplied_env.update(env or {})
     temp_roots, resolved_env = _resolve_matrix_properties(

@@ -45,6 +45,8 @@ Changes since `dev/v0.3`.
 - SQLLogic substitution receives only driver-owned environment bindings: service values, adopted
   credentials, matrix properties, and values passed to `run_paired(env=...)`. Other process environment
   variables remain available through SQLLogic `require-env` and `test-env`.
+- `run_paired` now provisions its item's suite services itself, so a swallowed collect-first failure
+  surfaces loud instead of a paired driver silently running without the service's env.
 - Suite provisioners are selected by path, allowing a shared provisioner with narrower overrides.
 - Build-kind resource images are built once for multi-platform publication and mirrored during release
   finalization.
