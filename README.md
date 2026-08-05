@@ -275,8 +275,8 @@ def token_error():                      # error: shown when creds are missing
     return "Iceberg REST creds unavailable — set ICEBERG_REST_URI/TOKEN or run the env script."
 ```
 
-- `adopt="env"` merges the fetched dict into `os.environ` so the body's `${ICEBERG_REST_TOKEN}` and any
-  SDK see it.
+- `adopt="env"` makes the fetched dict available to the credential's own suite — the body's
+  `${ICEBERG_REST_TOKEN}` substitutes, scoped to that suite; it is not a global `os.environ` merge.
 - A test that's selected but can't be provisioned fails loud rather than skipping quietly.
 - Collect-first resolves the final selection, including `-k`. `available()` avoids a fetch when ambient
   credentials are already usable; otherwise `fetch()` runs once through the shared store.

@@ -16,6 +16,9 @@ Changes since `dev/v0.3`.
   `--local-data-dir`, and `--env-passthrough`.
 - A custom `DUCKTEST_MINIO_IMAGE` must contain the `mc` client. MinIO administration and presigned URL
   generation run `mc` inside the service container.
+- Adopted service (`to_env`) and credential (`adopt="env"`) values are no longer merged into the real
+  `os.environ`. They resolve on demand, scoped to the invoking item's own suite — consume them via
+  SQLLogic substitution, `run_paired`'s `env=`, or a suite-declared fixture, not bare `os.environ`.
 
 ### Added
 
@@ -47,6 +50,8 @@ Changes since `dev/v0.3`.
   variables remain available through SQLLogic `require-env` and `test-env`.
 - `run_paired` now provisions its item's suite services itself, so a swallowed collect-first failure
   surfaces loud instead of a paired driver silently running without the service's env.
+- Batch affinity now considers full suite membership, not just `auto_init_sql`. Two suites sharing a
+  matrix cell but declaring different resources no longer share a subprocess invocation.
 - Suite provisioners are selected by path, allowing a shared provisioner with narrower overrides.
 - Build-kind resource images are built once for multi-platform publication and mirrored during release
   finalization.

@@ -80,7 +80,8 @@ For each credential needed by the final selection:
 1. `available()` may confirm that ambient credentials are already usable, avoiding a fetch.
 2. Otherwise `fetch(config)` runs through the store's single-flight path.
 3. `validate(value)` rejects an unusable value. The session aborts with `error()` or a default message.
-4. `adopt="env"` publishes a mapping to workers and SQLLogic substitution.
+4. `adopt="env"` makes the fetched value resolvable, on demand, for items belonging to the
+   credential's own suite — SQLLogic substitution there, not a global `os.environ` merge.
 
 There is no per-test credential resolution. A selected test's credential is settled before execution.
 
@@ -101,9 +102,11 @@ to_init_sql=)`. `provision_service(config, service)` has two lifecycle stances w
 
 A service with no `start` is always external and attaches with default overrides. `depends_on` orders
 startup and reverse-order teardown. `populate(block, config)` must be idempotent because attached
-services are populated too. `to_env(block)` is adopted wherever the block is provisioned and registered
-for SQLLogic substitution, including for bare `.test` subprocesses. A fixture may call
-`provision_service` to consume the same block; it does not control whether the service is provisioned.
+services are populated too. `to_env(block)` resolves on demand, scoped to whichever item's own suite
+declares the service, and is registered for that item's SQLLogic substitution — including for bare
+`.test` subprocesses. It is not a global `os.environ` merge: a different suite's item never sees it.
+A fixture may call `provision_service` to consume the same block; it does not control whether the
+service is provisioned.
 
 A service/credential can also carry **`to_init_sql(block|value, *, redact=False) -> str`** — SQL fed
 into a `--repl` session's `-init` file (e.g. azurite's default connection secret), so a bare-`.test`,

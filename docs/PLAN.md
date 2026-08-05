@@ -113,7 +113,8 @@ what "some real hardening" means concretely; treat this list, not vibes, as the 
   `.py` driver has no fixture to pull, so lazily-provisioned services never boot for it and its connection
   env is never set — the collector invokes the `unittest` binary directly, no Python involved. **Built:**
   `Service` gained `provision={eager,on_demand,per_test,never}` (only `eager`/`on_demand` wired;
-  `per_test`/`never` named + fail-loud), `to_env(block)->dict` (env merged into `os.environ`), and
+  `per_test`/`never` named + fail-loud), `to_env(block)->dict` (now resolved on demand, scoped per
+  suite — see `_item_env`, `plugin.py`; no longer a global `os.environ` merge), and
   `populate(block,config)` (structure+data, run once, must be idempotent); `use_service(base, provision=,
   to_env=, populate=)` binds a **shared** descriptor (e.g. `AZURITE_SERVICE`) to a suite's policy without
   mutating it. `_provision_eager_services` (`plugin.py`, in `_SuiteController.pytest_configure` right after
