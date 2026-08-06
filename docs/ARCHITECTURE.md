@@ -68,8 +68,10 @@ may only fail later because the service environment is missing.
 ## Suite resources
 
 Suites declare credentials and services. Collect-first derives the reachable suites from pytest's final
-selection, including `-k`, then provisions every resource those suites need. Both resource types use
-the shared store for single-flight provisioning and controller/worker delivery.
+selection, including `-k`, then provisions every credential those suites need and every service the
+selection's resolved matrix cells actually need — a cell's `services=` key narrows the suite's declared
+set (`docs/MATRIX.md`); absent, a cell needs all of them. Both resource types use the shared store for
+single-flight provisioning and controller/worker delivery.
 
 ### Credentials
 
@@ -90,8 +92,11 @@ There is no per-test credential resolution. A selected test's credential is sett
 Declared with `service(key, start=, stop=, fixture=, attach=, alive=, depends_on=, to_env=, populate=,
 to_init_sql=)`. `provision_service(config, service)` has two lifecycle stances with the same block shape:
 
-- **Managed** — `start` and `populate` run through store single-flight. Workers reuse the published
-  block. The controller calls `stop` once at session end.
+- **Managed** — `start` single-flights through the store: exactly one boot for the whole run. Workers
+  reuse the published block. `populate` single-flights separately, scoped per DECLARING suite rather
+  than per key — a key shared across suites via `use_service(..., populate=...)` runs each suite's
+  own `populate` once, cumulatively, against the one booted resource. The controller calls `stop`
+  once at session end.
 - **Existing (external)** — the service is already running (started by you, or living on the host while
   pytest runs in a container); declare it via `--existing-service KEY[=URL|={json}]` (or an env var) and
   the run **attaches** instead of booting: `attach(overrides, config)` builds the block, `alive(block)`
@@ -101,8 +106,10 @@ to_init_sql=)`. `provision_service(config, service)` has two lifecycle stances w
   it — bring a service up, hand you the exact attach line, leave it running for a later in-container run).
 
 A service with no `start` is always external and attaches with default overrides. `depends_on` orders
-startup and reverse-order teardown. `populate(block, config)` must be idempotent because attached
-services are populated too. `to_env(block)` resolves on demand, scoped to whichever item's own suite
+startup and reverse-order teardown. `populate(block, config)` must be idempotent regardless of path —
+attached services are populated on every attach, and a managed service's populate can run once per
+suite that binds it, not just once globally. `to_env(block)` resolves on demand, scoped to whichever
+item's own suite
 declares the service, and is registered for that item's SQLLogic substitution — including for bare
 `.test` subprocesses. It is not a global `os.environ` merge: a different suite's item never sees it.
 A fixture may call `provision_service` to consume the same block; it does not control whether the

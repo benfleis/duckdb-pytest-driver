@@ -110,7 +110,7 @@ def test_up_front_boots_once_adopts_env_populates_once(pytester, monkeypatch):
     result = pytester.runpytest_subprocess("-n", "2", "-p", "no:cacheprovider")
     result.assert_outcomes(passed=1)
     assert boot.read_text().count("b") == 1  # booted exactly once (store single-flight)
-    assert pop.read_text().count("p") == 1  # populated exactly once
+    assert pop.read_text().count("p") == 1  # populated exactly once (store single-flight, per suite)
 
 
 def test_up_front_with_attach_adopts_env_without_booting(pytester, monkeypatch):
@@ -296,8 +296,148 @@ def test_shared_service_across_suites_boots_and_stops_once(pytester, monkeypatch
             register_suite(config, "b", path="b", default=True, services=[use_service(_BASE)])
         """,
     )
-    _write(pytester, "test_inner.py", "def test_a():\n    assert True\n")
+    # one item per suite -- each genuinely needs the service via its OWN suite, proving the
+    # dedup is real cross-suite sharing and not an artifact of a single item needing it once
+    _write(pytester, "a/test_a.py", "def test_a():\n    assert True\n")
+    _write(pytester, "b/test_b.py", "def test_b():\n    assert True\n")
     result = pytester.runpytest_subprocess("-n", "2", "-p", "no:cacheprovider")
-    result.assert_outcomes(passed=1)
+    result.assert_outcomes(passed=2)
     assert boot.read_text().count("b") == 1  # shared service booted once (store single-flight)
     assert stop.read_text().count("s") == 1  # stopped ONCE, not once per binding suite (the fix)
+
+
+# --- cell-narrowed reachability (RESOURCE-PLANNING.md phase 10) ---------------------------
+
+
+def test_cell_narrowing_preserves_the_needed_suites_service_policy(pytester, monkeypatch):
+    """A shared service key needed only by suite B must use B's suite-specific descriptor. Suite A's
+    selected cell explicitly excludes the service, so its ``populate`` policy must remain inert."""
+    population = pytester.path / "population.log"
+    monkeypatch.setenv("POPULATION_LOG", str(population))
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        import os
+        from ducktest import register_suite, service, use_service
+
+        BASE = service("shared", start=lambda c: {"endpoint": "svc://shared"})
+
+        def _populate(name):
+            def populate(block, config):
+                with open(os.environ["POPULATION_LOG"], "a") as f:
+                    f.write(name + "\\n")
+            return populate
+
+        def pytest_configure(config):
+            register_suite(config, "a", path="a",
+                services=[use_service(BASE, populate=_populate("a"))],
+                matrix=[{"id": "without-shared", "services": []}])
+            register_suite(config, "b", path="b",
+                services=[use_service(BASE, populate=_populate("b"))],
+                matrix=[{"id": "with-shared", "services": ["shared"]}])
+        """,
+    )
+    _write(pytester, "a/test_a.py", "def test_a(matrix_cell):\n    pass\n")
+    _write(pytester, "b/test_b.py", "def test_b(matrix_cell):\n    pass\n")
+    result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=2)
+    assert population.read_text() == "b\n"
+
+
+def test_cell_narrowing_lets_both_suites_populate_a_genuinely_shared_key(pytester, monkeypatch):
+    """Unlike the case above, BOTH suites' selected cells genuinely need the shared key -- this is
+    the deliberate design point (RESOURCE-PLANNING.md phase 10): populate is per-suite, not a single
+    global winner, so both suites' policy applies, cumulatively, exactly once each -- coordinated
+    through the store even across the controller and multiple workers (`-n 2`)."""
+    population = pytester.path / "population.log"
+    monkeypatch.setenv("POPULATION_LOG", str(population))
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        import os
+        from ducktest import register_suite, service, use_service
+
+        BASE = service("shared", start=lambda c: {"endpoint": "svc://shared"})
+
+        def _populate(name):
+            def populate(block, config):
+                with open(os.environ["POPULATION_LOG"], "a") as f:
+                    f.write(name + "\\n")
+            return populate
+
+        def pytest_configure(config):
+            register_suite(config, "a", path="a",
+                services=[use_service(BASE, populate=_populate("a"))],
+                matrix=[{"id": "with-shared", "services": ["shared"]}])
+            register_suite(config, "b", path="b",
+                services=[use_service(BASE, populate=_populate("b"))],
+                matrix=[{"id": "with-shared", "services": ["shared"]}])
+        """,
+    )
+    _write(pytester, "a/test_a.py", "def test_a(matrix_cell):\n    pass\n")
+    _write(pytester, "b/test_b.py", "def test_b(matrix_cell):\n    pass\n")
+    result = pytester.runpytest_subprocess("-n", "2", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=2)
+    lines = population.read_text().splitlines()
+    assert sorted(lines) == ["a", "b"]  # each suite's own populate ran, exactly once each
+
+
+_NARROWED_CELL_CONFTEST = """
+    import os
+    from ducktest import register_suite, service
+
+    def _good_start(config):
+        with open(os.environ["BOOT_LOG"], "a") as f: f.write("good\\n")
+        return {"endpoint": "svc://good"}
+
+    def _bad_start(config):
+        raise RuntimeError("boom: bad service should never be attempted")
+
+    def pytest_configure(config):
+        register_suite(config, "s", path=".", default=True,
+            services=[
+                service("good_svc", start=_good_start, to_env=lambda b: {"E": b["endpoint"]}),
+                service("bad_svc", start=_bad_start, to_env=lambda b: {"E": b["endpoint"]}),
+            ],
+            matrix=[
+                {"id": "good", "services": ["good_svc"]},
+                {"id": "bad", "services": ["bad_svc"]},
+            ])
+"""
+
+_NARROWED_CELL_TEST = """
+    # pull the cell's own env eagerly (not just assert matrix_cell) so a swallowed collect-first
+    # failure re-surfaces here (same reasoning as run_paired's own re-provisioning)
+    from ducktest.plugin import _item_env
+
+    def test_plain(request, matrix_cell):
+        _item_env(request.config, request.node)
+"""
+
+
+def test_selecting_one_cell_never_boots_the_other_cells_service(pytester, monkeypatch):
+    """The motivating case: a suite's two cells need DIFFERENT services (`good_svc`/`bad_svc`).
+    Selecting only the `good` cell must never even attempt `bad_svc` -- not "attempt and swallow",
+    genuinely never call its `start`. `-n0` so the controller's own up-front provisioning
+    (`_build_plan`/`provision_reachable`) is the only pass, not masked by worker-side narrowing."""
+    boot = pytester.path / "boot.log"
+    monkeypatch.setenv("BOOT_LOG", str(boot))
+    _write(pytester, "conftest.py", _NARROWED_CELL_CONFTEST)
+    _write(pytester, "test_inner.py", _NARROWED_CELL_TEST)
+    result = pytester.runpytest_subprocess("-n", "0", "-k", "good", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1, deselected=1)
+    assert boot.read_text().count("good") == 1
+    assert "boom" not in result.stdout.str()
+
+
+def test_selecting_the_other_cell_still_fails_loud_for_its_own_service(pytester, monkeypatch):
+    # positive control: narrowing must not also swallow a genuinely-needed failure.
+    boot = pytester.path / "boot.log"
+    monkeypatch.setenv("BOOT_LOG", str(boot))
+    _write(pytester, "conftest.py", _NARROWED_CELL_CONFTEST)
+    _write(pytester, "test_inner.py", _NARROWED_CELL_TEST)
+    result = pytester.runpytest_subprocess("-n", "0", "-k", "bad", "-p", "no:cacheprovider")
+    result.stdout.fnmatch_lines(["*boom: bad service should never be attempted*"])
+    assert not boot.exists()  # good_svc, not needed by the selected cell, never attempted either

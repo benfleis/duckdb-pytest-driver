@@ -216,8 +216,10 @@ def register_suite(
 
     Matrix cells must be dictionaries with a non-empty ``id``; an optional ``marks`` (list/tuple of
     marker names) is stamped on every item that cell fans out to, so ``-m`` can select a cell across
-    every suite that has one, not just by ``id`` substring. Registration validates descriptors but
-    does not fetch credentials, start services, or provision test resources.
+    every suite that has one, not just by ``id`` substring. An optional ``services`` (list/tuple of
+    keys from this suite's own ``services=``) narrows which of the suite's services that cell needs;
+    absent, a cell needs all of them (today's behavior). Registration validates descriptors but does
+    not fetch credentials, start services, or provision test resources.
     """
     if not name or not isinstance(name, str):
         raise ValueError("register_suite: `name` must be a non-empty string")
@@ -243,6 +245,22 @@ def register_suite(
                 f"register_suite: matrix cell {cell['id']!r} 'marks' must be a list/tuple of non-empty "
                 f"strings, got {marks!r}"
             )
+        cell_services = cell.get("services")
+        if cell_services is not None:
+            if not isinstance(cell_services, (list, tuple)) or not all(
+                isinstance(s, str) and s for s in cell_services
+            ):
+                raise TypeError(
+                    f"register_suite: matrix cell {cell['id']!r} 'services' must be a list/tuple of "
+                    f"non-empty strings, got {cell_services!r}"
+                )
+            declared = {s.key for s in svcs}
+            unknown = [s for s in cell_services if s not in declared]
+            if unknown:
+                raise TypeError(
+                    f"register_suite: matrix cell {cell['id']!r} 'services' references undeclared "
+                    f"service key(s) {unknown!r} (suite {name!r} declares {sorted(declared)!r})"
+                )
     if not isinstance(auto_init_sql, bool):
         raise TypeError("register_suite: `auto_init_sql` must be a bool")
     if provisioner is not None and not path:

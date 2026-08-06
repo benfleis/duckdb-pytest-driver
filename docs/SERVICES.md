@@ -50,7 +50,7 @@ deduplicated by service key.
 | `depends_on` | service keys that must start first |
 | `fixture` | optional session-fixture name |
 | `to_env(block)` | environment resolved for items belonging to the declaring suite, and registered for SQLLogic substitution there |
-| `populate(block, config)` | idempotent structure and data setup |
+| `populate(block, config)` | idempotent structure and data setup, once per declaring suite |
 | `to_init_sql(block, redact=False)` | SQL used by `--repl` and `auto_init_sql` suites |
 
 `start=None` declares an external service with no managed lifecycle. It always attaches with default
@@ -82,10 +82,19 @@ Derived fields must be recomputed from overrides. Do not export a mutable defaul
 ## Managed And Existing Services
 
 Managed services use `start`, share one stored block across workers, and run `stop` once on the
-controller. `start` and `populate` run under the same single-flight operation.
+controller. `start` single-flights globally through the store: exactly one boot for the whole run,
+regardless of how many suites bind the key.
 
-Existing services use `attach`, run `alive`, and run `populate`. They are not stored or stopped.
-`populate` must therefore be idempotent.
+`populate` single-flights separately, and is scoped per DECLARING SUITE rather than per key: a
+service shared across suites via `use_service(..., populate=...)` runs each binding suite's own
+`populate` exactly once across the whole run (coordinated through the store, not just locally),
+cumulatively, against the one booted resource. Suites that diverge in `populate` for a shared key
+must not conflict with each other (or must be idempotent against each other) — an incompatible setup
+belongs in a separate service, not a shared key.
+
+Existing services use `attach`, run `alive`, and run `populate`. They are not stored or single-flighted
+at all — every caller re-attaches and re-populates. `populate` must therefore be idempotent regardless
+of path (managed or existing).
 
 Declare an existing service with any of these forms:
 
@@ -106,6 +115,9 @@ Entry grammar:
 
 Precedence is CLI, then `DUCKTEST_EXISTING_SERVICE_<KEY>`, then `DUCKTEST_EXISTING_SERVICES`.
 Keys are normalized across dashes, underscores, and case.
+
+An override for a service outside the current selection's need-set (a matrix cell's `services=`
+narrowed it out — `docs/MATRIX.md`) is inert: no attach or `alive` probe is attempted, not an error.
 
 ## Suite Policy
 

@@ -73,17 +73,23 @@ bodies.
 ## Resolution flows, in code
 
 - **Plan** — `Controller.pytest_collection` calls `session.perform_collect()`, then `_build_plan` derives
-  reachable suites and resource keys from the selected items. This includes `-k`; no selection predictor
-  or per-test resource path exists.
+  reachable suites, suite-wide credential keys, and item-driven service keys (`_needed_service_keys`,
+  cell-narrowed via `ItemResolution`) from the selected items. This includes `-k`; no selection
+  predictor or per-test resource path exists.
 - **Credentials** — `provision_reachable` calls `_fetch_or_read_credential` once per reachable key.
   `available()` may return early; otherwise `store.copy_or_provision` runs `fetch`, then `validate` and
   `adopt="env"`. Workers repeat the pass after their final collection to adopt environment locally;
-  store single-flight prevents another fetch.
-- **Services** — `provision_reachable` calls `provision_service`. Managed services use
-  `copy_or_provision(key, _boot_and_populate)`; existing and start-less services use `_attach_service`
-  and are not stored or stopped. `depends_on` provisions dependencies first. `to_env` is adopted in each
-  provisioning process and registered for SQLLogic substitution. `_stop_services` stops stored managed
-  services in reverse dependency order.
+  store single-flight prevents another fetch. Always suite-wide, never cell-narrowed.
+- **Services** — `provision_reachable` calls `provision_service`, optionally narrowed to
+  `_needed_services(config, items)` (a value-deduped set of the exact `Service` objects selected items
+  resolved, not a suite-order rescan — two suites can resolve different descriptors for one shared key).
+  Managed services single-flight `start` via `copy_or_provision(key, ...)`, then `populate` SEPARATELY
+  via its own `copy_or_provision`, keyed per declaring suite (`_owning_suite_name`) rather than per
+  service key — a shared key runs each binding suite's own `populate` once, not once globally. Existing
+  and start-less services use `_attach_service` and are not stored or stopped; `populate` there runs
+  ungated on every call. `depends_on` provisions dependencies first, recursively, regardless of
+  narrowing. `to_env` is adopted in each provisioning process and registered for SQLLogic substitution.
+  `_stop_services` stops stored managed services in reverse dependency order.
 - **Selection** — `_reachable_suites(config, items)` uses actual selected item membership plus default
   suites for a bare invocation. `pytest_collection_modifyitems` applies suite markers and default
   deselection before pytest's selection hooks, then workers provision from the surviving items.

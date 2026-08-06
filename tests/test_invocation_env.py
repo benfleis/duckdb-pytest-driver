@@ -269,3 +269,64 @@ def test_service_env_from_one_suite_never_leaks_into_another(pytester, monkeypat
     records = {json.loads(line)["name"]: json.loads(line)["has_leaky"] for line in log.read_text().splitlines()}
     assert records["test/a/one.test"] is True
     assert records["test/b/two.test"] is False
+
+
+def test_service_env_from_one_cell_never_leaks_into_a_sibling_cell(pytester, monkeypatch):
+    """The within-suite analog of the leak test above: ONE suite, two matrix cells narrowed to
+    DIFFERENT services (`services=` on the cell). Cell A's subprocess must never see cell B's
+    service env, and vice versa -- proves narrowing, not just suite-wide scoping."""
+    log = pytester.path / "invocations.jsonl"
+    monkeypatch.setenv("INVOCATION_LOG", str(log))
+    _write(
+        pytester,
+        "test/conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def pytest_configure(config):
+            register_suite(config, "s", path="test/s",
+                services=[
+                    service("svc_a", start=lambda c: {"endpoint": "svc://a"},
+                            to_env=lambda b: {"CELL_A_VAR": "a"}),
+                    service("svc_b", start=lambda c: {"endpoint": "svc://b"},
+                            to_env=lambda b: {"CELL_B_VAR": "b"}),
+                ],
+                matrix=[
+                    {"id": "cell-a", "services": ["svc_a"]},
+                    {"id": "cell-b", "services": ["svc_b"]},
+                ])
+        """,
+    )
+    _write(pytester, "test/s/answer.test", "query I\nSELECT 42;\n----\n42\n")
+    stub = pytester.path / "stub_unittest"
+    stub.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import json, os, sys
+
+            if "-l" in sys.argv[1:]:
+                sys.exit(0)
+
+            name = next(a for a in sys.argv[1:] if a.endswith(".test"))
+            record = {"has_a": "CELL_A_VAR" in os.environ, "has_b": "CELL_B_VAR" in os.environ}
+            with open(os.environ["INVOCATION_LOG"], "a") as f:
+                f.write(json.dumps(record) + "\\n")
+
+            event = {"event": "end", "name": name, "status": "ok",
+                     "passes": 1, "fails": 0, "skip-mode": 0}
+            sys.stderr.write("[TEST_EVENT] " + json.dumps(event) + "\\n")
+            """
+        )
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    result = pytester.runpytest_subprocess(
+        "-n", "0", "--unittest-binary", str(stub), "-p", "no:cacheprovider"
+    )
+    result.assert_outcomes(passed=2)
+    records = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(records) == 2
+    # neither invocation ever sees both, and each var shows up in exactly one invocation
+    assert all(not (r["has_a"] and r["has_b"]) for r in records)
+    assert sorted((r["has_a"], r["has_b"]) for r in records) == [(False, True), (True, False)]

@@ -7,6 +7,8 @@ from an inner test body instead of going through `--repl`'s interactive shell la
 
 import textwrap
 
+import pytest
+
 
 def _write(pytester, name, body):
     p = pytester.path / name
@@ -35,7 +37,7 @@ def test_service_and_credential_contribute_init_sql(pytester):
             return f"-- cred secret token={token}\\n"
 
         def pytest_configure(config):
-            register_suite(config, "s", default=True,
+            register_suite(config, "s", path=".", default=True,
                 services=[service("svc", start=_start, to_init_sql=_svc_init_sql)],
                 credentials=[credential("cred", fetch=_fetch, adopt="env", to_init_sql=_cred_init_sql)])
         """,
@@ -61,6 +63,38 @@ def test_service_and_credential_contribute_init_sql(pytester):
     result.assert_outcomes(passed=2)
 
 
+@pytest.mark.xfail(
+    reason="parked -- see next.md 'Pathless default suite services (--repl)'", strict=True
+)
+def test_pathless_default_suite_service_still_contributes_init_sql(pytester):
+    """A pathless default suite is reachable on a bare run. Cell-aware service narrowing must not
+    turn that existing suite form into an empty service need-set."""
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def pytest_configure(config):
+            register_suite(config, "global", default=True,
+                services=[service("svc", start=lambda c: {"endpoint": "svc://up"},
+                                  to_init_sql=lambda b, *, redact=False: "-- pathless service\\n")])
+        """,
+    )
+    _write(
+        pytester,
+        "test_inner.py",
+        """
+        from ducktest.plugin import _repl_resource_init_sql
+
+        def test_gather(request):
+            assert "pathless service" in _repl_resource_init_sql(request.config, request.session)
+        """,
+    )
+    result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1)
+
+
 def test_service_provision_failure_fails_loud(pytester):
     """Unlike provision_reachable's best-effort service loop, a service needed for --repl init SQL that
     fails to (re-)provision must raise -- not silently give an unexplained bare shell."""
@@ -77,7 +111,7 @@ def test_service_provision_failure_fails_loud(pytester):
             return "-- unreachable\\n"
 
         def pytest_configure(config):
-            register_suite(config, "s", default=True,
+            register_suite(config, "s", path=".", default=True,
                 services=[service("svc", start=_start, to_init_sql=_init_sql)])
         """,
     )
@@ -105,7 +139,7 @@ def test_service_without_to_init_sql_contributes_nothing(pytester):
         from ducktest import register_suite, service
 
         def pytest_configure(config):
-            register_suite(config, "s", default=True,
+            register_suite(config, "s", path=".", default=True,
                 services=[service("svc", start=lambda config: {"endpoint": "svc://up"})])
         """,
     )
@@ -140,7 +174,7 @@ def test_require_line_becomes_a_load_statement_not_a_bare_directive(pytester):
             return "require azure\\n\\nCREATE OR REPLACE SECRET s1 (TYPE AZURE, CONNECTION_STRING 'x');\\n"
 
         def pytest_configure(config):
-            register_suite(config, "s", default=True,
+            register_suite(config, "s", path=".", default=True,
                 services=[service("svc", start=lambda config: {"endpoint": "svc://up"}, to_init_sql=_init_sql)])
         """,
     )
@@ -195,3 +229,80 @@ def test_shared_service_across_suites_contributes_once(pytester):
     )
     result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider")
     result.assert_outcomes(passed=2)
+
+
+def test_repl_gather_narrows_to_the_resolved_cells_services(pytester):
+    """A suite with two matrix cells narrowed to DIFFERENT services -- `--repl` init SQL gathered
+    for a session selecting only one cell must never touch the other cell's service at all (not
+    even a swallowed best-effort attempt), the `--repl` analog of collect-first's narrowing."""
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def _bad_start(config):
+            raise RuntimeError("boom: bad service should never be attempted")
+
+        def pytest_configure(config):
+            register_suite(config, "s", path=".", default=True,
+                services=[
+                    service("good_svc", start=lambda c: {"endpoint": "svc://good"},
+                            to_init_sql=lambda b, *, redact=False: "-- good secret\\n"),
+                    service("bad_svc", start=_bad_start,
+                            to_init_sql=lambda b, *, redact=False: "-- bad secret\\n"),
+                ],
+                matrix=[
+                    {"id": "good", "services": ["good_svc"]},
+                    {"id": "bad", "services": ["bad_svc"]},
+                ])
+        """,
+    )
+    _write(
+        pytester,
+        "test_inner.py",
+        """
+        from ducktest.plugin import _repl_resource_init_sql
+
+        def test_gather(request, matrix_cell):
+            sql = _repl_resource_init_sql(request.config, request.session)
+            assert "good secret" in sql
+            assert "bad secret" not in sql
+        """,
+    )
+    result = pytester.runpytest_subprocess("-n", "0", "-k", "good", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1, deselected=1)
+
+
+def test_repl_gather_still_fails_loud_for_the_selected_cells_own_service(pytester):
+    # positive control: narrowing must not also swallow a genuinely-needed failure.
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def _bad_start(config):
+            raise RuntimeError("docker not found")
+
+        def pytest_configure(config):
+            register_suite(config, "s", path=".", default=True,
+                services=[service("svc", start=_bad_start,
+                                   to_init_sql=lambda b, *, redact=False: "-- unreachable\\n")],
+                matrix=[{"id": "bad", "services": ["svc"]}])
+        """,
+    )
+    _write(
+        pytester,
+        "test_inner.py",
+        """
+        import pytest
+        from ducktest.plugin import _repl_resource_init_sql
+
+        def test_gather(request, matrix_cell):
+            with pytest.raises(pytest.UsageError, match="svc.*docker not found"):
+                _repl_resource_init_sql(request.config, request.session)
+        """,
+    )
+    result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1)

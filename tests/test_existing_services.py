@@ -456,6 +456,53 @@ def test_existing_service_dead_probe_fails_loud(pytester, monkeypatch):
     result.stdout.fnmatch_lines(["*declared as running at svc://dead*nothing is responding*"])
 
 
+def test_existing_service_for_an_unneeded_cell_is_inert(pytester, monkeypatch):
+    """`--existing-service` targets a service the SELECTED matrix cell never needs (`services=`
+    narrowing, RESOURCE-PLANNING.md phase 10) -- collect-first's up-front walk must never even
+    attempt the attach/alive probe for it. Logging inside the probe (not just outcome) proves
+    "never attempted", distinct from "attempted and best-effort swallowed"."""
+    probe_log = pytester.path / "probe.log"
+    monkeypatch.setenv("PROBE_LOG", str(probe_log))
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        import os
+        from ducktest import register_suite, service
+
+        def _good_start(config):
+            return {"endpoint": "svc://good"}
+
+        def _dead_attach(overrides, config):
+            with open(os.environ["PROBE_LOG"], "a") as f:
+                f.write("attach\\n")
+            return {"endpoint": overrides.get("endpoint", "svc://default")}
+
+        def _dead_alive(block):
+            with open(os.environ["PROBE_LOG"], "a") as f:
+                f.write("alive\\n")
+            return True
+
+        def pytest_configure(config):
+            register_suite(config, "s", path=".", default=True,
+                services=[
+                    service("good_svc", start=_good_start),
+                    service("dead_svc", attach=_dead_attach, alive=_dead_alive),
+                ],
+                matrix=[
+                    {"id": "good", "services": ["good_svc"]},
+                    {"id": "dead", "services": ["dead_svc"]},
+                ])
+        """,
+    )
+    _write(pytester, "test_inner.py", "def test_plain(matrix_cell):\n    pass\n")
+    result = pytester.runpytest_subprocess(
+        "-n", "0", "-k", "good", "--existing-service", "dead_svc=svc://external", "-p", "no:cacheprovider"
+    )
+    result.assert_outcomes(passed=1, deselected=1)
+    assert not probe_log.exists()  # dead_svc's attach/alive probe never even attempted
+
+
 def test_existing_service_via_env_var(pytester, monkeypatch):
     boot_log = pytester.path / "boot.log"
     monkeypatch.setenv("BOOT_LOG", str(boot_log))

@@ -28,12 +28,15 @@ import subprocess
 import sys
 import tempfile
 import warnings
+from dataclasses import dataclass
+from typing import Optional
 
 import pytest
 
 from . import store
 from .collect import assign_batches, has_driver, is_body, is_driver, is_slow_body  # noqa: F401
 from .context import SessionContext, get_context, set_context
+from .decorate import Key, decorate
 from .fixtures import duckdb_shell_for
 from .mnemonic import run_id as _make_run_id
 from .steps import step
@@ -637,15 +640,22 @@ def pytest_configure_node(node):
 
 class _StoreHandle:
     """The controller's live store: the SyncManager (owns the server process), a cached proxy, and the
-    address/authkey published to the env pre-fork so workers connect. Held on `ctx.store`."""
+    address/authkey published to the env pre-fork so workers connect. Held on `ctx.store`.
 
-    __slots__ = ("mgr", "proxy", "address", "authkey")
+    `prior_env`: the controller-only snapshot of `store.ADDR_ENV`/`KEY_ENV` from BEFORE
+    `_ensure_store_started` overwrote them (value, or None if unset) -- so `_teardown_store` can
+    restore exactly what was there, including restoring "unset", instead of blindly deleting. A
+    worker's handle (`get_store`) never publishes anything, so it has nothing to restore; defaults
+    to empty."""
 
-    def __init__(self, mgr, proxy, address, authkey):
+    __slots__ = ("mgr", "proxy", "address", "authkey", "prior_env")
+
+    def __init__(self, mgr, proxy, address, authkey, prior_env=None):
         self.mgr = mgr
         self.proxy = proxy
         self.address = address
         self.authkey = authkey
+        self.prior_env = prior_env or {}
 
 
 def _any_suite_has_resources(config):
@@ -682,14 +692,19 @@ def _ensure_store_started(config):
         return ctx.store
     if not _any_suite_has_resources(config):
         return None
+    prior_env = {k: os.environ.get(k) for k in (store.ADDR_ENV, store.KEY_ENV)}
     mgr, address, authkey = store.start_server()
-    ctx.store = _StoreHandle(mgr, mgr.store(), address, authkey)
+    ctx.store = _StoreHandle(mgr, mgr.store(), address, authkey, prior_env)
     os.environ.update(store.to_env(address, authkey))  # pre-fork: workers inherit + connect lazily
     return ctx.store
 
 
 def _teardown_store(config):
-    """Controller, at sessionfinish: stop started services, then shut the store manager down (idempotent)."""
+    """Controller, at sessionfinish: stop started services, shut the store manager down (idempotent),
+    and restore `_ensure_store_started`'s `os.environ.update` to whatever was there before (including
+    restoring "unset") -- otherwise an in-process pytest run (`pytester.inline_run`/`inline_genitems`,
+    used by some of THIS package's own offline self-tests) leaks the store address into, or destroys
+    an outer run's own value in, the real environment of whatever process ran it."""
     ctx = get_context(config)
     if ctx.store is None:
         return
@@ -698,6 +713,11 @@ def _teardown_store(config):
         ctx.store.mgr.shutdown()
     except Exception:
         pass  # already down / never fully started — teardown must not raise at session end
+    for k, v in ctx.store.prior_env.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
     ctx.store = None
 
 
@@ -825,11 +845,15 @@ def _run_populate(config, svc, block):
             svc.populate(block, config)
 
 
-def _boot_and_populate(config, svc):
-    """The store single-flight factory: ``start`` then ``populate``, both exactly once (first-worker-wins)."""
-    block = _service_block(svc, svc.start(config))
-    _run_populate(config, svc, block)
-    return block
+def _owning_suite_name(config, svc):
+    """The single suite that declares this EXACT `Service` object (identity, within this process),
+    or None if zero or more than one do. Suite registration is deterministic — the same
+    `pytest_configure` runs in every process — so the resulting NAME is stable across processes even
+    though `svc`'s own object identity is process-local. Used only to scope populate's per-suite
+    single-flight key (`provision_service`); a service shared by identity across suites (no
+    `use_service` divergence — the same callable either way) falls back to one combined key."""
+    owners = [s.name for s in get_suites(config) if any(svc is candidate for candidate in s.services)]
+    return owners[0] if len(owners) == 1 else None
 
 
 def _resolve_service(config, key):
@@ -851,9 +875,15 @@ def provision_service(config, svc, *, _visiting=()):
       straight to ``attach()`` with all-defaults overrides UNCONDITIONALLY, same as a declared
       ``--existing-service`` with no override. No store, no teardown, no boot attempt (there's
       nothing to boot).
-    - **managed** (default, ``start`` given): single-flight boot via the store — the first caller
-      runs ``start`` + ``populate`` under the per-key lock and publishes the block; concurrent
-      callers read it.
+    - **managed** (default, ``start`` given): single-flight BOOT via the store — the first caller
+      runs ``start`` under the per-key lock and publishes the block; concurrent callers read it.
+      ``populate`` single-flights SEPARATELY, through the store too, but keyed per OWNING SUITE
+      (``_owning_suite_name``) rather than per service key — so it runs exactly once *per suite*
+      across the whole distributed run (every process, not just this one), not once globally. A key
+      shared across suites via ``use_service(..., populate=...)`` therefore gets each binding
+      suite's own populate, cumulatively, against the one booted resource — diverging suites'
+      populate must not conflict (or must be idempotent against each other); an incompatible setup
+      belongs in a separate service, not a shared key.
 
     ``depends_on`` (RESOURCE-PLANNING.md phase 6, subsumes ``docs/PLAN.md``'s Iceberg
     ``rest``→``minio`` case): before any of the above, every key in ``svc.depends_on`` is
@@ -887,9 +917,12 @@ def provision_service(config, svc, *, _visiting=()):
     else:
         handle = get_store(config)
         if handle is None:
-            block = _boot_and_populate(config, svc)  # no store (nothing declared): local boot
+            block = _service_block(svc, svc.start(config))  # no store (nothing declared): local boot
+            _run_populate(config, svc, block)
         else:
-            block = store.copy_or_provision(handle, svc.key, lambda: _boot_and_populate(config, svc))
+            block = store.copy_or_provision(handle, svc.key, lambda: _service_block(svc, svc.start(config)))
+            populate_key = f"populate:{svc.key}:{_owning_suite_name(config, svc) or ''}"
+            store.copy_or_provision(handle, populate_key, lambda: _run_populate(config, svc, block))
     return block
 
 
@@ -1024,15 +1057,43 @@ def emit_plan(config, plan):
             f.write(payload + "\n")
 
 
-def _for_each_reachable_resource(config, reachable_suite_names, *, on_credential, on_service):
-    """The shared gather: walk every reachable suite's credentials/services, each exactly ONCE
-    (dedup by key — a shared service/credential is ONE resource), calling `on_credential(cred)` /
-    `on_service(svc)`. `provision_reachable` and `_repl_resource_init_sql` were two structurally
-    near-identical copies of this loop (RESOURCE-PLANNING.md §1, problem 3); this is the one they
-    both drive, differing only in what a callback does with the resource.
+def _needed_services(config, items) -> frozenset:
+    """Every distinct `Service` object (dedup by VALUE, not by key) some item's resolution actually
+    needs. Two suites can legitimately resolve DIFFERENT descriptors for the same shared key
+    (diverging `use_service(..., populate=...)` policy) — both belong here as separate members;
+    `provision_service`'s per-descriptor populate (not a single global run) means each contributes
+    its own seeding independently. Structurally identical descriptors for a shared key (the common
+    case, `use_service(BASE)` with no override) collapse to one member, same as today.
+
+    Does NOT transitively expand a service's `depends_on` — `provision_service`'s own recursion
+    already guarantees a dependency boots regardless of whether it appears here. Pre-existing
+    property, unaffected by this narrowing.
+    """
+    needed = set()
+    for item in items:
+        needed.update(_item_resolution(config, item).services)
+    return frozenset(needed)
+
+
+def _needed_service_keys(config, items) -> frozenset:
+    """The key set `_needed_services` resolves to — `Plan.needed_services`' JSON-facing shape."""
+    return frozenset(svc.key for svc in _needed_services(config, items))
+
+
+def _for_each_reachable_resource(config, reachable_suite_names, *, on_credential, on_service, needed_services=None):
+    """The shared gather: walk every reachable suite's credentials, each exactly ONCE (dedup by key
+    — a shared credential is ONE resource), calling `on_credential(cred)`. `provision_reachable` and
+    `_repl_resource_init_sql` were two structurally near-identical copies of this loop
+    (RESOURCE-PLANNING.md §1, problem 3); this is the one they both drive.
+
+    `needed_services`, when given (`_needed_services`), REPLACES the service walk with its members
+    directly — the exact, cell-resolved `Service` objects items need, not a suite-order rescan (a
+    suite-order rescan can pick the WRONG suite's descriptor for a key shared across suites with
+    diverging `use_service` policy). `None` (default) visits every reachable suite's full declared
+    set, today's exact behavior. Credentials are always suite-wide, untouched by this narrowing.
     """
     suites = {t.name: t for t in get_suites(config)}
-    seen_creds, seen_svcs = set(), set()
+    seen_creds = set()
     for name in sorted(reachable_suite_names):
         suite = suites.get(name)
         if suite is None:
@@ -1042,6 +1103,15 @@ def _for_each_reachable_resource(config, reachable_suite_names, *, on_credential
                 continue
             seen_creds.add(cred.key)
             on_credential(cred)
+    if needed_services is not None:
+        for svc in needed_services:
+            on_service(svc)
+        return
+    seen_svcs = set()
+    for name in sorted(reachable_suite_names):
+        suite = suites.get(name)
+        if suite is None:
+            continue
         for svc in suite.services:
             if svc.key in seen_svcs:
                 continue
@@ -1049,10 +1119,15 @@ def _for_each_reachable_resource(config, reachable_suite_names, *, on_credential
             on_service(svc)
 
 
-def provision_reachable(config, reachable_suite_names):
+def provision_reachable(config, reachable_suite_names, *, needed_services=None):
     """Provision everything the reachable suites need: fetch their credentials, provision their
-    services, adopt env. Dedup by key (a shared service/credential is ONE resource). The single
-    up-front execute path; workers run it too (from their own selection), coordinated by the store.
+    services, adopt env. Dedup by key for credentials (a shared credential is ONE resource); services
+    dedup by value (see `_needed_services`). The single up-front execute path; workers run it too
+    (from their own selection), coordinated by the store.
+
+    `needed_services` narrows the service set to what the selected items actually need
+    (`_needed_services`) — an unneeded cell's service is never even attempted, not just best-effort
+    swallowed. `None` provisions every reachable suite's full declared set.
     """
 
     def _on_service(svc):
@@ -1072,6 +1147,7 @@ def provision_reachable(config, reachable_suite_names):
         reachable_suite_names,
         on_credential=lambda cred: _fetch_or_read_credential(config, cred),
         on_service=_on_service,
+        needed_services=needed_services,
     )
 
 
@@ -1132,7 +1208,11 @@ def _repl_resource_init_sql(config, session, *, redact=False) -> str:
         parts.append(svc.to_init_sql(block, redact=redact))
 
     _for_each_reachable_resource(
-        config, _reachable_suites(config, session.items), on_credential=_on_credential, on_service=_on_service
+        config,
+        _reachable_suites(config, session.items),
+        on_credential=_on_credential,
+        on_service=_on_service,
+        needed_services=_needed_services(config, session.items),
     )
     # A to_init_sql MAY prepend "require <ext>\n\n" (see _extract_requires) -- but this string is
     # written verbatim into a real `duckdb -init` file (_launch_shell), which has no `require`
@@ -1153,11 +1233,14 @@ def _repl_resource_init_sql(config, session, *, redact=False) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _suite_init_sql(config, suite) -> str:
+def _suite_init_sql(config, suite, *, services=None) -> str:
     """Aggregate `suite`'s OWN credentials'/services' `to_init_sql` output (never redacted — this
     feeds a real subprocess, not a preview). Same "read back what provision_reachable already
     provisioned up front" spirit as `_repl_resource_init_sql`, just scoped to one suite instead of
     every reachable one — `auto_init_sql` opts in per suite, not per invocation.
+
+    `services` overrides `suite.services` (the caller's cell-narrowed set, `ItemResolution`);
+    omitted, this is `suite.services` unchanged.
 
     Best-effort per service (unlike `_repl_resource_init_sql`'s fail-loud `--repl` path): a service
     that fails to reprovision here just contributes nothing, since there's no interactive user to
@@ -1170,7 +1253,7 @@ def _suite_init_sql(config, suite) -> str:
         value = _read_provisioned_credential(config, cred)
         if value is not None:
             parts.append(cred.to_init_sql(value, redact=False))
-    for svc in suite.services:
+    for svc in services if services is not None else suite.services:
         if svc.to_init_sql is None:
             continue
         try:
@@ -1230,30 +1313,37 @@ def _write_init_sqllogic_snippet(sql_text: str) -> str:
     return path
 
 
-_init_sqllogic_paths: dict = {}  # (id(config), suite.name) -> temp .test path, or "" (nothing to inject)
+_init_sqllogic_paths: dict = {}  # (id(config), suite.name, cell_id, cell_sql, driver_sql) -> temp .test path, or ""
 
 
 def _init_sqllogic_arg_for_item(config, item, *, matrix_cell=None, driver_sql=None) -> list:
     """`["--init-sqllogic", path]` for an invocation that needs preamble SQL: its pytest item's suite
-    `auto_init_sql=True` credential/service SQL, a matrix cell's own `init_sql` property, and/or
-    caller-supplied `driver_sql` (`run_paired(init_sql=...)`) — merged into ONE snippet in that order
-    (never two `--init-sqllogic` args), so `driver_sql` has final precedence. `[]` when there's
-    nothing to inject.
+    `auto_init_sql=True` credential/service SQL (cell-narrowed, `ItemResolution`), a matrix cell's own
+    `init_sql` property, and/or caller-supplied `driver_sql` (`run_paired(init_sql=...)`) — merged
+    into ONE snippet in that order (never two `--init-sqllogic` args), so `driver_sql` has final
+    precedence. `[]` when there's nothing to inject.
 
-    Memoized per `(config, suite, cell_sql, driver_sql)` for this worker — `_suite_init_sql` reads
-    back already-provisioned resources, so recomputing the identical string per test is wasted work;
-    the cell's and driver's SQL are part of the key so distinct cells/callers don't share a snippet.
+    Memoized per `(config, suite, cell_id, cell_sql, driver_sql)` for this worker — `_suite_init_sql`
+    reads back already-provisioned resources, so recomputing the identical string per test is wasted
+    work. `cell_id` is part of the key (not just `cell_sql`) because two cells of the same suite can
+    share identical `init_sql` while narrowing to different services.
     """
     from .sqllogic import _matrix_cell_init_sql
 
     cell_sql = _matrix_cell_init_sql(matrix_cell)
-    suite = next((s for s in _item_suites(config, item) if s.auto_init_sql), None)
+    resolution = _item_resolution(config, item)
+    suite = next((s for s in resolution.suites if s.auto_init_sql), None)
     if suite is None and not cell_sql and not driver_sql:
         return []
-    key = (id(config), suite.name if suite else None, cell_sql or "", driver_sql or "")
+    cell_id = matrix_cell.get("id") if matrix_cell else None
+    key = (id(config), suite.name if suite else None, cell_id, cell_sql or "", driver_sql or "")
     path = _init_sqllogic_paths.get(key)
     if path is None:
-        parts = [p for p in (_suite_init_sql(config, suite) if suite else "", cell_sql, driver_sql) if p]
+        narrowed = None
+        if suite is not None:
+            allowed = {s.key for s in resolution.services}
+            narrowed = tuple(s for s in suite.services if s.key in allowed)
+        parts = [p for p in (_suite_init_sql(config, suite, services=narrowed) if suite else "", cell_sql, driver_sql) if p]
         sql = "\n\n".join(parts)
         path = _write_init_sqllogic_snippet(sql) if sql else ""
         _init_sqllogic_paths[key] = path
@@ -1364,10 +1454,93 @@ def _item_in_suite(config, item, suite):
     return _item_in_suite_path(config, item, suite)
 
 
+@dataclass(frozen=True)
+class ItemResolution:
+    """item's one canonical resolution: every suite it belongs to, its resolved matrix cell (if
+    any), the cell-narrowed service set, and decorate()'s Key. Computed once, memoized on the item
+    itself — every per-item helper becomes a thin read off this instead of an independently
+    invented walk (RESOURCE-PLANNING.md P4).
+
+    `has_own_matrix` is True iff `cell` came from the item's OWN `@requires_matrix` parametrize
+    rather than its suite's `matrix=` fan-out (the two are mutually exclusive — explicit wins, see
+    `_has_own_matrix_parametrize`). Kept explicit rather than folded into `cell is None`: a `.py`
+    item can have a real, non-None `cell` that must still never narrow suite services, since its
+    properties are opaque per-test axis data, not a suite cell (docs/MATRIX.md)."""
+
+    suites: tuple
+    cell: Optional[dict]
+    has_own_matrix: bool
+    services: tuple
+    key: Optional[Key]
+
+
+def _item_cell(item):
+    """item's resolved matrix cell dict, post-collection, or None. Unifies `.test` (_matrix_cell
+    stamp) and `.py` (indirect-parametrize callspec.params["matrix_cell"], via the existing
+    _item_params — no fixture evaluation needed). A pure read: does not distinguish a suite-owned
+    cell from the item's own `@requires_matrix` cell — see `has_own_matrix`."""
+    cell = getattr(item, "_matrix_cell", None)
+    if cell is not None:
+        return cell
+    return _item_params(item).get("matrix_cell")
+
+
+def _item_has_own_matrix_parametrize(item) -> bool:
+    """True iff item's `matrix_cell` fixture value came from its OWN `@requires_matrix` parametrize,
+    not its suite's `matrix=` fan-out — the same signal `_has_own_matrix_parametrize` checks at
+    metafunc/collection time (mutually exclusive, explicit wins), re-checked here post-collection
+    since a resolved item doesn't otherwise record which mechanism produced its `matrix_cell`.
+    False for a minimal fake item with no `iter_markers` (e.g. a batching self-test's stand-in)."""
+    iter_markers = getattr(item, "iter_markers", None)
+    if iter_markers is None:
+        return False
+    for mark in iter_markers(name="parametrize"):
+        if mark.args and mark.args[0] == "matrix_cell":
+            return True
+    return False
+
+
+def _cell_narrowed_services(suites, cell, has_own_matrix):
+    """``suites``' declared services, deduped by key. If ``cell`` is a genuine SUITE matrix cell
+    (``has_own_matrix`` False) naming a `services` subset, the declaring suite (the first of
+    ``suites`` with a `matrix=`) narrows to that subset; every other suite ``item`` belongs to still
+    contributes its full service tuple. `cell=None`, `has_own_matrix=True` (an item's own
+    `@requires_matrix` cell — opaque, never narrows even if it happens to carry a `services` key of
+    unrelated meaning), or a cell with no `services` key, is today's exact behavior: every suite's
+    full set, unchanged."""
+    declaring = next((s for s in suites if s.matrix), None) if cell is not None and not has_own_matrix else None
+    narrow_keys = set(cell["services"]) if declaring is not None and cell.get("services") is not None else None
+    seen, out = set(), []
+    for suite in suites:
+        candidates = suite.services
+        if suite is declaring and narrow_keys is not None:
+            candidates = [s for s in candidates if s.key in narrow_keys]
+        for svc in candidates:
+            if svc.key not in seen:
+                seen.add(svc.key)
+                out.append(svc)
+    return out
+
+
+def _item_resolution(config, item) -> ItemResolution:
+    cached = getattr(item, "_resolution", None)
+    if cached is not None:
+        return cached
+    suites = tuple(s for s in get_suites(config) if _item_in_suite(config, item, s))
+    cell = _item_cell(item)
+    has_own_matrix = _item_has_own_matrix_parametrize(item)
+    services = tuple(_cell_narrowed_services(suites, cell, has_own_matrix))
+    key = decorate(item, cell=getattr(item, "_cell", None))
+    resolution = ItemResolution(suites=suites, cell=cell, has_own_matrix=has_own_matrix, services=services, key=key)
+    item._resolution = resolution
+    return resolution
+
+
 def _item_suites(config, item):
     """Every suite ``item`` belongs to. The one canonical suite-membership computation — batching
-    (`collect._item_suite_names`), service provisioning, and env resolution all derive from this."""
-    return [s for s in get_suites(config) if _item_in_suite(config, item, s)]
+    (`collect._batch_key`), service provisioning, and env resolution all derive from this
+    (`ItemResolution`, RESOURCE-PLANNING.md P4)."""
+    return list(_item_resolution(config, item).suites)
 
 
 # ---------------------------------------------------------------------------
@@ -1646,31 +1819,27 @@ def _stem_path(path, suffix):
 
 
 def _item_services(config, item):
-    """Every distinct `Service` (dedup by key) declared by a suite `item` belongs to."""
-    seen, out = set(), []
-    for suite in _item_suites(config, item):
-        for svc in suite.services:
-            if svc.key not in seen:
-                seen.add(svc.key)
-                out.append(svc)
-    return out
+    """Every distinct `Service` (dedup by key) `item` needs, cell-narrowed to its resolved matrix
+    cell's `services=` when the cell declares one (`ItemResolution`)."""
+    return list(_item_resolution(config, item).services)
 
 
 def _item_env(config, item):
-    """On-demand env for `item`'s own suite(s): each suite's `adopt="env"` credential values and
-    services' `to_env(block)`. Idempotent — reads already-provisioned values, no new fetch or boot;
-    nothing global gets mutated."""
+    """On-demand env for `item`'s own suite(s): each suite's `adopt="env"` credential values (suite-
+    wide) and services' `to_env(block)` (cell-narrowed). Idempotent — reads already-provisioned
+    values, no new fetch or boot; nothing global gets mutated."""
+    resolution = _item_resolution(config, item)
     env = {}
-    for suite in _item_suites(config, item):
+    for suite in resolution.suites:
         for cred in suite.credentials:
             if cred.adopt != "env":
                 continue
             value = _read_provisioned_credential(config, cred)
             if value is not None:
                 env.update({k: str(v) for k, v in value.items()})
-        for svc in suite.services:
-            if svc.to_env is not None:
-                env.update({k: str(v) for k, v in svc.to_env(provision_service(config, svc)).items()})
+    for svc in resolution.services:
+        if svc.to_env is not None:
+            env.update({k: str(v) for k, v in svc.to_env(provision_service(config, svc)).items()})
     return env
 
 
@@ -2001,7 +2170,9 @@ def pytest_collection_modifyitems(session, config, items):
     # (creds + services), single-flighted so the controller's up-front boot/fetch isn't duplicated. The
     # controller itself provisions from the collect-first Plan (see controller.py), so gate on worker.
     if getattr(config, "workerinput", None) is not None and suites:
-        provision_reachable(config, _reachable_suites(config, items))
+        provision_reachable(
+            config, _reachable_suites(config, items), needed_services=_needed_services(config, items)
+        )
 
 
 # ---------------------------------------------------------------------------

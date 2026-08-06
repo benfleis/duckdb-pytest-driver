@@ -23,6 +23,14 @@ not just one cell by name:
 {"id": "aws", "marks": ["real_cloud"], "properties": {"data_dir": env_ref("AWS_S3_DATA_URI")}}
 ```
 
+An optional `services` list narrows which of the suite's own `services=` this cell needs — an
+unlisted service is never provisioned (or attached) for an item resolved to this cell. Omitted, a
+cell needs every service the suite declares (today's default):
+
+```python
+{"id": "aws-real", "services": ["s3_real"]}  # never boots the suite's minio, only s3_real
+```
+
 Use `register_suite(matrix=...)` when every SQLLogic body in a suite uses the same configurations:
 
 ```python
@@ -54,6 +62,10 @@ def test_client(matrix_cell):
 A Python test that requests neither fixture runs once. This avoids multiplying unrelated setup or
 assertion tests merely because they share the suite directory.
 
+A paired driver opts in the same way: `run_paired` reads back the item's already-resolved
+`matrix_cell` value, so belonging to a matrix suite (with no `@requires_matrix` of its own) fans the
+driver out one item per suite cell, each calling `run_paired` once with its own cell.
+
 ## Per-test matrix
 
 Use `@requires_matrix` when one Python driver needs its own provisioning matrix:
@@ -79,7 +91,9 @@ invocation properties.
 `resources` provisions the cell and pulls in `matrix_cell` transitively.
 
 If a test has `@requires_matrix` and belongs to a suite with `matrix=`, the test's own matrix wins.
-The two matrices are not multiplied.
+The two matrices are not multiplied. The test's own `properties` are opaque provisioner input, even
+when a key happens to be named `services` — only a cell from the suite's own `matrix=` can narrow
+the suite's service set.
 
 ## Suite cell properties
 

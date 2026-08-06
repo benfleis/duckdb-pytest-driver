@@ -17,6 +17,51 @@ def _write(pytester, name, body):
     (pytester.path / name).write_text(textwrap.dedent(body))
 
 
+def test_store_teardown_restores_preexisting_environment(monkeypatch, tmp_path):
+    import os
+
+    from ducktest import service
+    from ducktest import store as store_module
+    from ducktest.context import SessionContext, set_context
+    from ducktest.plugin import _ensure_store_started, _teardown_store
+    from ducktest.suites import Suite
+
+    class _Proxy:
+        def get(self, key):
+            return None
+
+    class _Manager:
+        def __init__(self):
+            self.proxy = _Proxy()
+            self.shutdown_called = False
+
+        def store(self):
+            return self.proxy
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+    class _Config:
+        def __init__(self):
+            self.stash = {}
+
+    manager = _Manager()
+    config = _Config()
+    config._duckdb_suites = [Suite("s", services=(service("svc", start=lambda c: {}),))]
+    set_context(config, SessionContext(working_dir=str(tmp_path), run_id="test-run"))
+    monkeypatch.setattr(store_module, "start_server", lambda: (manager, "inner-address", b"inner-key"))
+    monkeypatch.setenv(store_module.ADDR_ENV, "outer-address")
+    monkeypatch.setenv(store_module.KEY_ENV, "outer-key")
+
+    _ensure_store_started(config)
+    assert store_module.from_env()[0] == "inner-address"
+    _teardown_store(config)
+
+    assert manager.shutdown_called
+    assert os.environ.get(store_module.ADDR_ENV) == "outer-address"
+    assert os.environ.get(store_module.KEY_ENV) == "outer-key"
+
+
 def test_worker_sees_store_when_a_suite_declares_a_service(pytester):
     # A suite with a service => the store must start on the controller and reach workers.
     _write(

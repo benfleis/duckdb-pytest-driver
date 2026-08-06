@@ -24,8 +24,6 @@ import subprocess
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from .decorate import decorate
-
 # --- the member/role model (roles are not file types) -----------------------------------------
 
 _BODY_SUFFIXES = (".test",)  # `.test_slow`/`.test_coverage` recognized separately, behind --slow
@@ -190,24 +188,19 @@ def _batch_key(item) -> Optional[tuple]:
 
     `cell` alone isn't enough: two suites can share a cell (httpfs's `s3`/`proxy` both use `S3_CELL`)
     while declaring different services, and a batch is one subprocess with one resolved env/init-SQL —
-    so suite identity has to be part of the key too (`_item_suite_names`).
-    """
-    key = decorate(item, cell=getattr(item, "_cell", None))
-    if key is None:
-        return None
-    return (key.build, key.run_setting, key.cell, _item_suite_names(item))
-
-
-def _item_suite_names(item) -> tuple:
-    """Every suite `item` belongs to, sorted. Two items in different suites (or one in a suite, one in
-    none) must never share a batch: whichever suite's env/injected SQL resolved for the batch's
-    representative item would silently apply to every test name sharing its subprocess. Cheap by
-    necessity — batching runs before provisioning. `()` for an item with no real `.config` (fake test
-    stand-ins).
+    so suite identity has to be part of the key too. A pure projection of `ItemResolution`
+    (RESOURCE-PLANNING.md P4) — suite membership and the canonical `Key` are computed once there, just
+    read here.
     """
     config = getattr(item, "config", None)
-    if config is None:
-        return ()
-    from .plugin import _item_suites  # lazy: plugin imports collect, avoid import cycle
+    from .plugin import _item_resolution  # lazy: plugin imports collect, avoid import cycle
 
-    return tuple(sorted(s.name for s in _item_suites(config, item)))
+    resolution = _item_resolution(config, item)
+    if resolution.key is None:
+        return None
+    return (
+        resolution.key.build,
+        resolution.key.run_setting,
+        resolution.key.cell,
+        tuple(sorted(s.name for s in resolution.suites)),
+    )

@@ -323,6 +323,40 @@ def test_bare_test_item_in_auto_init_sql_suite_gets_init_sqllogic_flag(pytester)
     assert "CREATE SECRET az1 (TYPE AZURE, PROVIDER CREDENTIAL_CHAIN)" in open(snippet_path).read()
 
 
+def test_auto_init_sql_narrows_to_the_resolved_cells_services(pytester):
+    """Two matrix cells of one auto_init_sql suite each narrow to a DIFFERENT service. Cell A's
+    --init-sqllogic snippet must contain only its own service's SQL, never cell B's -- the
+    auto_init_sql analog of the env-leak tests above, but for the injected SQL snippet."""
+    _write(
+        pytester,
+        "test/conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def pytest_configure(config):
+            register_suite(config, "s", path="test/s", auto_init_sql=True,
+                services=[
+                    service("svc_a", start=lambda c: {"endpoint": "svc://a"},
+                            to_init_sql=lambda b, *, redact=False: "-- cell-a secret\\n"),
+                    service("svc_b", start=lambda c: {"endpoint": "svc://b"},
+                            to_init_sql=lambda b, *, redact=False: "-- cell-b secret\\n"),
+                ],
+                matrix=[
+                    {"id": "cell-a", "services": ["svc_a"]},
+                    {"id": "cell-b", "services": ["svc_b"]},
+                ])
+        """,
+    )
+    _write(pytester, "test/s/answer.test", "query I\nSELECT 42;\n----\n42\n")
+    stub = _stub_binary(pytester)
+    result = pytester.runpytest_subprocess("-n", "0", "--unittest-binary", str(stub), "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=2)
+    lines = (pytester.path / "argv.log").read_text().splitlines()
+    assert len(lines) == 2
+    snippets = [open(ln.split("--init-sqllogic", 1)[1].split()[0]).read() for ln in lines]
+    assert sorted(snippets) == ["statement ok\n-- cell-a secret\n", "statement ok\n-- cell-b secret\n"]
+
+
 def test_bare_test_item_outside_auto_init_sql_suite_gets_no_flag(pytester):
     _write(
         pytester,

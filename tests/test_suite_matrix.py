@@ -78,6 +78,39 @@ def test_own_requires_matrix_wins_over_suite_matrix(pytester):
     result.stdout.fnmatch_lines(["*test_explicit*x*", "*test_explicit*y*"])
 
 
+def test_own_requires_matrix_services_property_does_not_narrow_suite_services(pytester):
+    """A per-test matrix's properties are opaque provisioner input, even when one happens to be
+    named ``services``. Only cells originating from ``register_suite(matrix=...)`` may narrow the
+    suite's service set."""
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def pytest_configure(config):
+            register_suite(config, "matrixed", path=".",
+                services=[service("suite_svc", start=lambda c: {"ok": True})],
+                matrix=[{"id": "suite-cell", "services": ["suite_svc"]}])
+        """,
+    )
+    _write(
+        pytester,
+        "test_explicit.py",
+        """
+        from ducktest import TableSpec, requires_matrix
+        from ducktest.plugin import _item_services
+
+        @requires_matrix(source=TableSpec("id_name").Seed(None), access="rw",
+                         properties={"services": ["managed", "external"]})
+        def test_explicit(request, matrix_cell):
+            assert [svc.key for svc in _item_services(request.config, request.node)] == ["suite_svc"]
+        """,
+    )
+    result = _run(pytester, "test_explicit.py")
+    result.assert_outcomes(passed=2)
+
+
 # --- .test fan-out ---------------------------------------------------------------------------
 
 # Same stub-binary technique as test_collector.py: mimics --emit-test-events for whatever names
@@ -187,6 +220,46 @@ def test_register_suite_rejects_bad_marks():
         register_suite(_Cfg(), "s", matrix=[{"id": "x", "marks": "not-a-list"}])
     with pytest.raises(TypeError, match="marks"):
         register_suite(_Cfg(), "s", matrix=[{"id": "x", "marks": [""]}])
+
+
+# --- cell services: narrows which of the suite's declared services a cell needs ------------
+
+
+def test_register_suite_rejects_bad_cell_services():
+    import pytest
+
+    from ducktest.suites import register_suite, service
+
+    class _Cfg:
+        def getoption(self, name, default=None):
+            return default
+
+        def getini(self, name):
+            return None
+
+    svc = service("minio")
+    with pytest.raises(TypeError, match="services"):
+        register_suite(_Cfg(), "s", services=[svc], matrix=[{"id": "x", "services": "not-a-list"}])
+    with pytest.raises(TypeError, match="services"):
+        register_suite(_Cfg(), "s", services=[svc], matrix=[{"id": "x", "services": [""]}])
+    with pytest.raises(TypeError, match="undeclared"):
+        register_suite(_Cfg(), "s", services=[svc], matrix=[{"id": "x", "services": ["nope"]}])
+
+
+def test_register_suite_accepts_empty_cell_services_list():
+    # {"services": []} is a real declaration ("this cell needs none of the suite's services"),
+    # not treated as absent -- distinct from omitting the key entirely.
+    from ducktest.suites import register_suite, service
+
+    class _Cfg:
+        def getoption(self, name, default=None):
+            return default
+
+        def getini(self, name):
+            return None
+
+    svc = service("minio")
+    register_suite(_Cfg(), "s", services=[svc], matrix=[{"id": "x", "services": []}])
 
 
 _MARKED_MATRIX_CONFTEST = """

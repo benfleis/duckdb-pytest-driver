@@ -5,11 +5,18 @@ Pure-logic: no duckdb binary, no docker, no xdist. Proves the new modules import
 """
 
 import os
+import textwrap
 
 import pytest
 
 from ducktest import collect
 from ducktest.context import Plan, Registry, SessionContext
+
+
+def _write(pytester, name, body):
+    p = pytester.path / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(textwrap.dedent(body))
 
 
 # --- binary-authoritative collection: verify mode refuses false-green -------------------------
@@ -114,3 +121,40 @@ def test_plan_as_dict_is_json_able_sorted_and_surfaces_divergence():
     assert d["needed_services"] == ["minio"] and d["needed_credentials"] == ["onepw"]
     assert d["collection"]["divergence"] == ["slow/big.test_slow"]  # the false-green name is visible
     json.dumps(d)  # round-trips cleanly
+
+
+# --- Controller._build_plan: needed_services is cell-narrowed, item-driven (RESOURCE-PLANNING.md P4) --
+
+
+def test_build_plan_needed_services_reflects_only_the_selected_cell(pytester):
+    """Offline, in-process (real Config + real Items via `inline_genitems`, no subprocess): a suite
+    with two matrix cells narrowed to DIFFERENT services -- selecting only one cell must derive
+    `needed_services` as just that cell's service, not the suite's full declared set."""
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def pytest_configure(config):
+            register_suite(config, "s", path=".", default=True,
+                services=[service("good_svc", start=lambda c: {"e": "g"}),
+                          service("bad_svc", start=lambda c: {"e": "b"})],
+                matrix=[
+                    {"id": "good", "services": ["good_svc"]},
+                    {"id": "bad", "services": ["bad_svc"]},
+                ])
+        """,
+    )
+    _write(pytester, "test_inner.py", "def test_plain(matrix_cell):\n    pass\n")
+    # inline_genitems collects via `pytest_itemcollected`, fired before `-k` deselection runs, so
+    # emulate the real post-selection list `_build_plan` actually gets (what a worker/controller
+    # would see after `-k`) by filtering here instead.
+    all_items, _ = pytester.inline_genitems()
+    items = [it for it in all_items if it.name == "test_plain[good]"]
+    assert len(items) == 1
+
+    from ducktest.controller import Controller
+
+    plan = Controller()._build_plan(items[0].config, items)
+    assert plan.needed_services == frozenset({"good_svc"})

@@ -86,7 +86,11 @@ class Controller:
 
         plugin.emit_plan(config, plan)  # --emit-plan: dump the scan/plan JSON BEFORE reconcile can abort
         plugin.reconcile_or_die(config, plan)  # verify mode: hard-error on false-green divergence
-        plugin.provision_reachable(config, plan.reachable_suites)  # fetch creds + boot services, up front
+        # fetch creds + boot services, up front -- services narrowed to what the plan's cells actually
+        # need. Recomputed here (not read off `plan.needed_services`, which is JSON-facing keys only,
+        # not `Service` objects) since provisioning needs the actual resolved descriptors.
+        needed_services = plugin._needed_services(config, items)
+        plugin.provision_reachable(config, plan.reachable_suites, needed_services=needed_services)
 
         # Serial (`-n0`): WE collected — short-circuit so pytest's default `pytest_collection` doesn't
         # collect (and deselect) a second time. Under xdist: return None so xdist's `pytest_collection`
@@ -108,17 +112,18 @@ class Controller:
 
     def _build_plan(self, config: pytest.Config, items: list) -> Plan:
         """From the REAL selected items, derive reachable suites + needed creds/services + the reconcile
-        provenance + the node-id→batch-id map. Membership comes from what `-m`/`-k` actually selected."""
+        provenance + the node-id→batch-id map. Membership comes from what `-m`/`-k` actually selected.
+        Credentials stay suite-wide; services are cell-narrowed to what the selected items actually
+        need (`_needed_service_keys`), not every reachable suite's full declared set."""
         from . import plugin
         from .sqllogic import item_batch_id
 
         reachable = plugin._reachable_suites(config, items)
         suites = {t.name: t for t in plugin.get_suites(config)}
-        creds, svcs = set(), set()
+        creds = set()
         for name in reachable:
-            suite = suites[name]
-            creds.update(c.key for c in suite.credentials)
-            svcs.update(s.key for s in suite.services)
+            creds.update(c.key for c in suites[name].credentials)
+        svcs = plugin._needed_service_keys(config, items)  # cell-narrowed, item-driven (not suite-wide)
 
         fs_names = frozenset(getattr(it, "_test_name", it.nodeid) for it in items)
         # node-id → <batch-id> for the SqlLogic items (those carrying `_test_name`); the session-end

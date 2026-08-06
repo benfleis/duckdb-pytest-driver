@@ -57,6 +57,13 @@ Changes since `dev/v0.3`.
   on the same `--temp-dir-root`.
 - Batch affinity now considers full suite membership, not just `auto_init_sql`. Two suites sharing a
   matrix cell but declaring different resources no longer share a subprocess invocation.
+- A suite matrix cell can narrow which of the suite's `services=` it needs (a `services=` key on the
+  cell). Collect-first and `run_paired` both honor it, so a cell that doesn't need a service never
+  boots it — or fails loud trying to.
+- `Service.populate` no longer single-flights together with `start`. Boot still single-flights once,
+  globally; `populate` now single-flights once per declaring suite, so a key shared across suites via
+  `use_service(..., populate=...)` runs each suite's own populate, not just one suite's chosen
+  arbitrarily by internal suite ordering.
 - Suite provisioners are selected by path, allowing a shared provisioner with narrower overrides.
 - Build-kind resource images are built once for multi-platform publication and mirrored during release
   finalization.

@@ -152,6 +152,54 @@ def test_undeclared_dependency_fails_loud(pytester):
     result.stdout.fnmatch_lines(["*bad*depends_on*nonexistent*no service*registered*"])
 
 
+def test_narrowed_cell_still_boots_an_undeclared_dependency(pytester, monkeypatch):
+    """A matrix cell narrowed to `services=["rest"]` (RESOURCE-PLANNING.md phase 10) where `rest`
+    `depends_on` `minio` -- `minio` itself never appears in the cell's narrowed list, but must still
+    boot. `provision_service`'s own `depends_on` recursion is unaffected by `needed_service_keys`
+    narrowing (no transitive expansion needed there, by design)."""
+    log = pytester.path / "order.log"
+    monkeypatch.setenv("ORDER_LOG", str(log))
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        import os
+        from ducktest import register_suite, service
+
+        def _mk_start(name):
+            def _start(config):
+                with open(os.environ["ORDER_LOG"], "a") as f:
+                    f.write(f"start:{name}\\n")
+                return {"endpoint": f"svc://{name}"}
+            return _start
+
+        MINIO = service("minio", start=_mk_start("minio"))
+        REST = service("rest", start=_mk_start("rest"), depends_on=("minio",),
+                        to_env=lambda b: {"REST_ENV": b["endpoint"]})
+
+        def pytest_configure(config):
+            register_suite(config, "s", path=".", default=True, services=[REST, MINIO],
+                matrix=[{"id": "cell", "services": ["rest"]}])
+        """,
+    )
+    _write(
+        pytester,
+        "test_inner.py",
+        """
+        from ducktest.plugin import _item_env, _item_services
+
+        def test_a(request, matrix_cell):
+            # the cell narrowed to just "rest" -- minio never itself appears in the resolved set
+            assert [s.key for s in _item_services(request.config, request.node)] == ["rest"]
+            assert _item_env(request.config, request.node)["REST_ENV"] == "svc://rest"
+        """,
+    )
+    result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1)
+    assert "start:minio" in log.read_text()
+    assert "start:rest" in log.read_text()
+
+
 def test_dependency_cycle_fails_loud(pytester):
     _write(
         pytester,
