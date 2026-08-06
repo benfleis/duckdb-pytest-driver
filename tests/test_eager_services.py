@@ -306,6 +306,96 @@ def test_shared_service_across_suites_boots_and_stops_once(pytester, monkeypatch
     assert stop.read_text().count("s") == 1  # stopped ONCE, not once per binding suite (the fix)
 
 
+# --- populate's block survives past the first provisioning call (regression, driver 84af67a) ----
+
+
+def test_populate_added_field_survives_repeated_provisioning_calls(pytester, monkeypatch):
+    """84af67a split boot and populate into separate store entries; the populate entry published
+    the factory's return value (None -- `_run_populate` mutated its block but didn't return it), so
+    only the FIRST caller (mutating the object in place, synchronously) ever saw the populated
+    field. Every later `provision_service` call -- collect-first's own up-front pass counts as the
+    first, so any actual test pulling env is already a "later" call -- read back the raw boot block
+    via a fresh store round-trip and lost it. Two items force at least two more calls after the
+    up-front one, across two workers."""
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        from ducktest import register_suite, service
+
+        def _start(config):
+            return {"endpoint": "svc://up"}
+
+        def _populate(block, config):
+            block["seeded"] = "yes"  # mutates in place, like a real populate() would
+
+        def _to_env(block):
+            return {"SVC_SEEDED": block.get("seeded", "missing")}
+
+        def pytest_configure(config):
+            register_suite(config, "s", path=".", default=True, services=[
+                service("svc", start=_start, populate=_populate, to_env=_to_env)])
+        """,
+    )
+    _write(
+        pytester,
+        "test_inner.py",
+        """
+        from ducktest.plugin import _item_env
+
+        def test_one(request):
+            assert _item_env(request.config, request.node)["SVC_SEEDED"] == "yes"
+            assert _item_env(request.config, request.node)["SVC_SEEDED"] == "yes"  # repeated call
+
+        def test_two(request):
+            assert _item_env(request.config, request.node)["SVC_SEEDED"] == "yes"
+        """,
+    )
+    result = pytester.runpytest_subprocess("-n", "2", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=2)
+
+
+def test_populate_added_field_survives_for_a_service_shared_across_suites(pytester, monkeypatch):
+    """Same regression, for a descriptor shared by identity across two suites (`_owning_suite_name`
+    returns None -- one combined populate key). Each suite's own item must still see the field."""
+    _write(
+        pytester,
+        "conftest.py",
+        """
+        from ducktest import register_suite, service, use_service
+
+        def _start(config):
+            return {"endpoint": "svc://up"}
+
+        def _populate(block, config):
+            block["seeded"] = "yes"
+
+        _BASE = service("svc", start=_start, populate=_populate,
+                         to_env=lambda b: {"SVC_SEEDED": b.get("seeded", "missing")})
+
+        def pytest_configure(config):
+            register_suite(config, "a", path="a", default=True, services=[use_service(_BASE)])
+            register_suite(config, "b", path="b", default=True, services=[use_service(_BASE)])
+        """,
+    )
+    _write(
+        pytester,
+        "a/test_a.py",
+        "from ducktest.plugin import _item_env\n"
+        "def test_a(request):\n"
+        "    assert _item_env(request.config, request.node)['SVC_SEEDED'] == 'yes'\n",
+    )
+    _write(
+        pytester,
+        "b/test_b.py",
+        "from ducktest.plugin import _item_env\n"
+        "def test_b(request):\n"
+        "    assert _item_env(request.config, request.node)['SVC_SEEDED'] == 'yes'\n",
+    )
+    result = pytester.runpytest_subprocess("-n", "2", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=2)
+
+
 # --- cell-narrowed reachability (RESOURCE-PLANNING.md phase 10) ---------------------------
 
 

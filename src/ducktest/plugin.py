@@ -839,10 +839,14 @@ def _service_block(svc, extra):
 
 
 def _run_populate(config, svc, block):
-    """Run ``svc.populate`` (structure+data) if declared. Idempotent by contract."""
+    """Run ``svc.populate`` (structure+data) if declared, and return the (possibly mutated) block.
+    Idempotent by contract. Must return ``block`` even when ``populate`` is None: the caller stores
+    this return value under the populate store key, so a later reader gets it back instead of a
+    stale, unpopulated copy of the boot block."""
     if svc.populate is not None:
         with step(f"populating service {svc.key}"):
             svc.populate(block, config)
+    return block
 
 
 def _owning_suite_name(config, svc):
@@ -922,7 +926,7 @@ def provision_service(config, svc, *, _visiting=()):
         else:
             block = store.copy_or_provision(handle, svc.key, lambda: _service_block(svc, svc.start(config)))
             populate_key = f"populate:{svc.key}:{_owning_suite_name(config, svc) or ''}"
-            store.copy_or_provision(handle, populate_key, lambda: _run_populate(config, svc, block))
+            block = store.copy_or_provision(handle, populate_key, lambda: _run_populate(config, svc, block))
     return block
 
 
