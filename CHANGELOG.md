@@ -26,6 +26,8 @@ Changes since `dev/v0.3`.
   variables and reference cycles fail with the matrix cell and property in the error.
 - Suite matrix properties can set `test_config`, `init_sql`, `temp_dir_root`, `local_temp_dir_root`,
   `data_dir`, and `local_data_dir`. Other properties become invocation environment variables.
+- A matrix cell can declare `marks`, stamped on every item it fans out to. `-m` then selects a cell
+  by category across every suite that has one, not just one cell by id.
 - `run_paired(init_sql=...)` lets a paired driver supply its own preamble SQL, composed after suite
   and matrix-cell init SQL.
 - `--slow` collects `.test_slow` and `.test_coverage` files. These tests receive the `slow` marker and

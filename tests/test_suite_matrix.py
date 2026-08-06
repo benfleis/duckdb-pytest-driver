@@ -166,3 +166,85 @@ def test_cell_fanned_siblings_of_the_same_file_never_share_a_batch_key():
         "azurite-az",
         (),  # no real `.config` on this fake -> no --init-sqllogic distinction
     )
+
+
+# --- cell marks: select a cell across suites via -m, not just -k on its id ------------------
+
+
+def test_register_suite_rejects_bad_marks():
+    import pytest
+
+    from ducktest.suites import register_suite
+
+    class _Cfg:
+        def getoption(self, name, default=None):
+            return default
+
+        def getini(self, name):
+            return None
+
+    with pytest.raises(TypeError, match="marks"):
+        register_suite(_Cfg(), "s", matrix=[{"id": "x", "marks": "not-a-list"}])
+    with pytest.raises(TypeError, match="marks"):
+        register_suite(_Cfg(), "s", matrix=[{"id": "x", "marks": [""]}])
+
+
+_MARKED_MATRIX_CONFTEST = """
+    from ducktest import register_suite
+
+    def pytest_configure(config):
+        config.addinivalue_line("markers", "real_cloud: hits a real cloud account")
+        register_suite(config, "matrixed", path="test/matrixed", matrix=[
+            {"id": "emulated"},
+            {"id": "real-s3", "marks": ["real_cloud"]},
+        ])
+"""
+
+_EMULATED_OR_REAL_TEST = """
+    def test_plain(matrix_cell):
+        assert matrix_cell["id"] in ("emulated", "real-s3")
+"""
+
+
+def test_matrix_cell_marks_select_the_cell_for_py_fan_out(pytester):
+    _write(pytester, "test/conftest.py", _MARKED_MATRIX_CONFTEST)
+    _write(pytester, "test/matrixed/test_plain.py", _EMULATED_OR_REAL_TEST)
+    result = _run(pytester, "-v", "-m", "real_cloud", "test/matrixed")
+    result.assert_outcomes(passed=1, deselected=1)
+    result.stdout.fnmatch_lines(["*test_plain*real-s3*"])
+
+
+def test_matrix_cell_marks_select_the_cell_for_dot_test_fan_out(pytester):
+    _write(pytester, "test/conftest.py", _MARKED_MATRIX_CONFTEST)
+    _write(pytester, "test/matrixed/answer.test", "query I\nSELECT 42;\n----\n42\n")
+    stub = _stub_binary(pytester)
+    result = _run(pytester, "-v", "--unittest-binary", str(stub), "-m", "real_cloud", "test/matrixed")
+    result.assert_outcomes(passed=1, deselected=1)
+    result.stdout.fnmatch_lines(["*answer.test*real-s3*"])
+
+
+def test_matrix_cell_marks_select_across_suites(pytester):
+    """The actual motivating case: two unrelated suites each have a real-cloud cell; `-m real_cloud`
+    must pick up both, which a `-k`-on-id approach never could without knowing every cell's literal id."""
+    _write(
+        pytester,
+        "test/conftest.py",
+        """
+        from ducktest import register_suite
+
+        def pytest_configure(config):
+            config.addinivalue_line("markers", "real_cloud: hits a real cloud account")
+            register_suite(config, "s3", path="test/s3", matrix=[
+                {"id": "minio"},
+                {"id": "aws", "marks": ["real_cloud"]},
+            ])
+            register_suite(config, "azure", path="test/azure", matrix=[
+                {"id": "azurite"},
+                {"id": "azure-real", "marks": ["real_cloud"]},
+            ])
+        """,
+    )
+    _write(pytester, "test/s3/test_a.py", _PLAIN_TEST.replace('"azurite-az", "azure-az"', '"minio", "aws"'))
+    _write(pytester, "test/azure/test_b.py", _PLAIN_TEST.replace('"azurite-az", "azure-az"', '"azurite", "azure-real"'))
+    result = _run(pytester, "-v", "-m", "real_cloud", "test/s3", "test/azure")
+    result.assert_outcomes(passed=2, deselected=2)

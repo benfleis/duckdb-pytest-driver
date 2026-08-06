@@ -214,7 +214,9 @@ def register_suite(
     Names are unique. A provisioner requires ``path`` and is registered at that path relative to the
     driver working directory. Explicit provisioners registered below that path take precedence.
 
-    Matrix cells must be dictionaries with a non-empty ``id``. Registration validates descriptors but
+    Matrix cells must be dictionaries with a non-empty ``id``; an optional ``marks`` (list/tuple of
+    marker names) is stamped on every item that cell fans out to, so ``-m`` can select a cell across
+    every suite that has one, not just by ``id`` substring. Registration validates descriptors but
     does not fetch credentials, start services, or provision test resources.
     """
     if not name or not isinstance(name, str):
@@ -234,6 +236,12 @@ def register_suite(
         if not isinstance(cell, dict) or not cell.get("id"):
             raise TypeError(
                 f"register_suite: each `matrix` cell must be a dict with a non-empty 'id' key, got {cell!r}"
+            )
+        marks = cell.get("marks", ())
+        if not isinstance(marks, (list, tuple)) or not all(isinstance(m, str) and m for m in marks):
+            raise TypeError(
+                f"register_suite: matrix cell {cell['id']!r} 'marks' must be a list/tuple of non-empty "
+                f"strings, got {marks!r}"
             )
     if not isinstance(auto_init_sql, bool):
         raise TypeError("register_suite: `auto_init_sql` must be a bool")

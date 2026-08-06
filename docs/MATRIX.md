@@ -15,7 +15,13 @@ A suite matrix cell has a required `id` and optional invocation `properties`:
 {"id": "curl", "properties": {"test_config": "test/configs/httpfs_curl.json"}}
 ```
 
-The cell ID appears in the pytest item name.
+The cell ID appears in the pytest item name. An optional `marks` list stamps pytest marks on every
+item that cell fans out to, so `-m` selects it — across every suite that has a cell with that mark,
+not just one cell by name:
+
+```python
+{"id": "aws", "marks": ["real_cloud"], "properties": {"data_dir": env_ref("AWS_S3_DATA_URI")}}
+```
 
 Use `register_suite(matrix=...)` when every SQLLogic body in a suite uses the same configurations:
 

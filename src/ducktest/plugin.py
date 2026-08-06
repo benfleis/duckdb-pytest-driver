@@ -1389,6 +1389,12 @@ def _has_own_matrix_parametrize(metafunc) -> bool:
     return False
 
 
+def _cell_marks(cell) -> list:
+    """A matrix cell's declared `marks` (names), resolved to real `pytest.mark.<name>` objects — so
+    `-m` can select a cell across every suite that has one, not just by `id` substring via `-k`."""
+    return [getattr(pytest.mark, name) for name in cell.get("marks", ())]
+
+
 def pytest_generate_tests(metafunc):
     """`.py` suite-matrix fan-out: a test that pulls in `matrix_cell` (directly, or transitively via
     `resources`) gets parametrized over its suite's `matrix=` cells — the SAME indirect-fixture
@@ -1413,7 +1419,7 @@ def pytest_generate_tests(metafunc):
         return
     metafunc.parametrize(
         "matrix_cell",
-        [pytest.param(cell, id=cell["id"]) for cell in suite.matrix],
+        [pytest.param(cell, id=cell["id"], marks=_cell_marks(cell)) for cell in suite.matrix],
         indirect=True,
     )
 
@@ -1422,9 +1428,9 @@ def _expand_test_matrix(config, items, suites):
     """`.test` suite-matrix fan-out: replace each `SqlLogicItem` belonging to a `matrix=` suite with
     one sibling per cell, stamping `_cell` (feeds `decorate()`'s `Key.cell`, so `_batch_key` never
     batches two cells of the same file together — impossible anyway, since Catch2's registered test
-    identity IS the file path). Runs BEFORE dedup/`assign_batches` so batching sees the full,
-    cell-expanded set. Non-SqlLogic items and items whose suite declares no matrix pass through
-    untouched — a no-op for every suite that doesn't use this.
+    identity IS the file path) and the cell's declared `marks`, if any. Runs BEFORE dedup/
+    `assign_batches` so batching sees the full, cell-expanded set. Non-SqlLogic items and items whose
+    suite declares no matrix pass through untouched — a no-op for every suite that doesn't use this.
     """
     matrix_suites = [s for s in suites if s.matrix]
     if not matrix_suites:
@@ -1449,6 +1455,8 @@ def _expand_test_matrix(config, items, suites):
             )
             sibling._cell = cell["id"]
             sibling._matrix_cell = cell  # full cell dict, for a backend conftest that wants more
+            for mark in _cell_marks(cell):
+                sibling.add_marker(mark)
             expanded.append(sibling)
     return expanded
 
