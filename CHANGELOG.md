@@ -64,6 +64,9 @@ Changes since `dev/v0.3`.
   globally; `populate` now single-flights once per declaring suite, so a key shared across suites via
   `use_service(..., populate=...)` runs each suite's own populate, not just one suite's chosen
   arbitrarily by internal suite ordering.
+- A `.py` driver can now pair with a `.test_slow`/`.test_coverage` body, not just `.test`. A driver
+  paired to a slow body is itself gated on `--slow` and carries the `slow` marker, same as a bare
+  slow body.
 - Suite provisioners are selected by path, allowing a shared provisioner with narrower overrides.
 - Build-kind resource images are built once for multi-platform publication and mirrored during release
   finalization.

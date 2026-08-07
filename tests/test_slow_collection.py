@@ -84,14 +84,112 @@ def test_slow_option_collects_slow_and_coverage_bodies(pytester):
     result.assert_outcomes(passed=3)
 
 
-def test_unpaired_slow_body_is_not_suppressed_by_same_stem_python(pytester):
+_PAIRED_DRIVER = """
+    import os
+    from ducktest import run_paired
+
+    def test_large(request):
+        # proves the .py's OWN test function executed, distinct from the stub binary having been
+        # invoked with the right name -- a bare (unsuppressed) body would ALSO produce that
+        # invocation without ever running this function
+        with open(os.environ["DRIVER_RAN_LOG"], "a") as f:
+            f.write("ran\\n")
+        run_paired(request)
+"""
+
+
+def test_slow_paired_driver_suppresses_the_bare_body_and_runs_the_exact_slow_name(pytester, monkeypatch):
+    ran = pytester.path / "driver_ran.log"
+    monkeypatch.setenv("DRIVER_RAN_LOG", str(ran))
+    stub, log = _stub_binary(pytester)
+    _write(pytester, "test/sql/large.test_slow")
+    _write(pytester, "test/sql/large.py", _PAIRED_DRIVER)
+
+    result = _run(pytester, stub, "--slow")
+
+    result.assert_outcomes(passed=1)  # the driver's own test, not a second item for the bare body
+    assert ran.read_text().count("ran") == 1  # the driver's Python actually ran, body wasn't bare
+    invocations = _invocations(log)
+    assert [call["names"] for call in invocations] == [["test/sql/large.test_slow"]]
+
+
+def test_slow_paired_driver_is_not_collected_without_slow(pytester, monkeypatch):
+    """The --slow gate that already applies to a bare slow body must apply to its driver too --
+    otherwise a plain `pytest` run would silently execute an expensive body it never asked for."""
+    ran = pytester.path / "driver_ran.log"
+    monkeypatch.setenv("DRIVER_RAN_LOG", str(ran))
+    stub, log = _stub_binary(pytester)
+    _write(pytester, "test/sql/large.test_slow")
+    _write(pytester, "test/sql/large.py", _PAIRED_DRIVER)
+
+    result = _run(pytester, stub)
+
+    result.assert_outcomes()  # nothing collected: no bare body (unpaired-slow gate), no driver either
+    assert not ran.exists()
+    assert _invocations(log) == []
+
+
+def test_slow_paired_driver_carries_the_slow_marker(pytester, monkeypatch):
+    monkeypatch.setenv("DRIVER_RAN_LOG", str(pytester.path / "driver_ran.log"))
     stub, _ = _stub_binary(pytester)
     _write(pytester, "test/sql/large.test_slow")
-    _write(pytester, "test/sql/large.py", "# Slow paired drivers are not supported yet.\n")
+    _write(pytester, "test/sql/large.py", _PAIRED_DRIVER)
+    _write(pytester, "test/sql/regular.test")
+
+    result = _run(pytester, stub, "--slow", "-m", "slow")
+
+    result.assert_outcomes(passed=1, deselected=1)
+
+
+def test_coverage_paired_driver_is_also_supported(pytester, monkeypatch):
+    # .test_coverage is a slow-lane suffix too (_SLOW_SUFFIXES) -- pairing must work identically.
+    ran = pytester.path / "driver_ran.log"
+    monkeypatch.setenv("DRIVER_RAN_LOG", str(ran))
+    stub, log = _stub_binary(pytester)
+    _write(pytester, "test/sql/instrumented.test_coverage")
+    _write(pytester, "test/sql/instrumented.py", _PAIRED_DRIVER)
 
     result = _run(pytester, stub, "--slow")
 
     result.assert_outcomes(passed=1)
+    assert ran.read_text().count("ran") == 1
+    invocations = _invocations(log)
+    assert [call["names"] for call in invocations] == [["test/sql/instrumented.test_coverage"]]
+
+
+def test_fast_paired_driver_is_unaffected_by_the_slow_gate(pytester, monkeypatch):
+    # regression guard: the new driver_body_path resolution must still prefer .test first and
+    # never require --slow for an ordinary fast pairing.
+    ran = pytester.path / "driver_ran.log"
+    monkeypatch.setenv("DRIVER_RAN_LOG", str(ran))
+    stub, log = _stub_binary(pytester)
+    _write(pytester, "test/sql/answer.test")
+    _write(pytester, "test/sql/answer.py", _PAIRED_DRIVER)
+
+    result = _run(pytester, stub)
+
+    result.assert_outcomes(passed=1)
+    assert ran.read_text().count("ran") == 1
+    invocations = _invocations(log)
+    assert [call["names"] for call in invocations] == [["test/sql/answer.test"]]
+
+
+def test_naming_a_slow_body_on_the_cli_redirects_to_its_driver(pytester, monkeypatch):
+    # the config.args rewrite (pytest_configure) that sends an explicitly-named body to its same-
+    # stem driver used to hardcode ".test" -- naming a .test_slow directly would otherwise collect
+    # nothing, since the body is still suppressed by has_driver regardless of the arg rewrite.
+    ran = pytester.path / "driver_ran.log"
+    monkeypatch.setenv("DRIVER_RAN_LOG", str(ran))
+    stub, log = _stub_binary(pytester)
+    _write(pytester, "test/sql/large.test_slow")
+    _write(pytester, "test/sql/large.py", _PAIRED_DRIVER)
+
+    result = _run(pytester, stub, "--slow", "test/sql/large.test_slow")
+
+    result.assert_outcomes(passed=1)
+    assert ran.read_text().count("ran") == 1
+    invocations = _invocations(log)
+    assert [call["names"] for call in invocations] == [["test/sql/large.test_slow"]]
 
 
 def test_slow_marker_is_available_to_marker_selection(pytester):

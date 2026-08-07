@@ -34,7 +34,15 @@ from typing import Optional
 import pytest
 
 from . import store
-from .collect import assign_batches, has_driver, is_body, is_driver, is_slow_body  # noqa: F401
+from .collect import (  # noqa: F401
+    assign_batches,
+    body_suffix,
+    driver_body_path,
+    has_driver,
+    is_body,
+    is_driver,
+    is_slow_body,
+)
 from .context import SessionContext, get_context, set_context
 from .decorate import Key, decorate
 from .fixtures import duckdb_shell_for
@@ -499,13 +507,16 @@ def pytest_collect_file(parent, file_path):
     if not str(file_path).startswith(test_root + os.sep):
         return None
     if file_path.suffix == ".py":
-        if is_driver(str(file_path)):
-            return pytest.Module.from_parent(parent, path=file_path)
-        return None
+        body = driver_body_path(str(file_path))
+        if body is None:
+            return None
+        if is_slow_body(body) and not config.getoption("--slow"):
+            return None  # paired to a slow body -- same --slow gate the body itself is subject to
+        return pytest.Module.from_parent(parent, path=file_path)
     if not is_body(str(file_path), slow=config.getoption("--slow")):
         return None
-    if not is_slow_body(str(file_path)) and has_driver(str(file_path)):
-        return None  # runs only via its same-stem driver
+    if has_driver(str(file_path)):
+        return None  # runs only via its same-stem driver, fast or slow
     binary = find_binary(config, working_dir)
     return SqlLogicFile.from_parent(parent, path=file_path, binary=binary, working_dir=working_dir)
 
@@ -1771,11 +1782,13 @@ def pytest_configure(config):
         "markers",
         "slow: SQLLogic body collected from a .test_slow or .test_coverage file.",
     )
-    # Redirect an explicitly-named `.test` arg to its same-stem driver `.py` (the body is suppressed).
+    # Redirect an explicitly-named body arg (any suffix) to its same-stem driver `.py`, if one exists
+    # (the body is suppressed either way, so naming it directly would otherwise collect nothing).
     rewritten = []
     for arg in config.args:
-        if arg.endswith(".test") and os.path.exists(arg):
-            driver = arg[: -len(".test")] + ".py"
+        suffix = body_suffix(arg)
+        if suffix is not None and os.path.exists(arg):
+            driver = arg[: -len(suffix)] + ".py"
             if os.path.exists(driver):
                 rewritten.append(driver)
                 continue
@@ -1818,10 +1831,6 @@ def pytest_sessionfinish(session, exitstatus):
 # ---------------------------------------------------------------------------
 
 
-def _stem_path(path, suffix):
-    return os.path.splitext(str(path))[0] + suffix
-
-
 def _item_services(config, item):
     """Every distinct `Service` (dedup by key) `item` needs, cell-narrowed to its resolved matrix
     cell's `services=` when the cell declares one (`ItemResolution`)."""
@@ -1848,7 +1857,8 @@ def _item_env(config, item):
 
 
 def run_paired(request, *, env=None, init_sql=None):
-    """Drive the calling driver `.py`'s same-stem body (`.test`) through the binary.
+    """Drive the calling driver `.py`'s same-stem body (`.test`, `.test_slow`, or `.test_coverage`)
+    through the binary.
 
     Call from the driver's test function once initialization has run. Raises SqlLogicFailure on failure
     and pytest.skip on a skipped test. Pass ``env`` (e.g. a provisioning fixture's ``bindings.env``) to
@@ -1867,7 +1877,12 @@ def run_paired(request, *, env=None, init_sql=None):
     """
     working_dir = request.config.sqllogic_working_dir
     binary = find_binary(request.config, working_dir)
-    test_path = _stem_path(request.path, ".test")
+    test_path = driver_body_path(str(request.path))
+    if test_path is None:
+        raise pytest.UsageError(
+            f"run_paired: {request.path} has no same-stem SQLLogic body "
+            f"(.test, .test_slow, or .test_coverage)"
+        )
     test_name = os.path.relpath(test_path, working_dir)
     cell = request.getfixturevalue("matrix_cell")
     batch_id = _test_batch_id(f"{test_name}{_cell_suffix(cell)}::{request.node.name}")
@@ -2103,6 +2118,19 @@ def _launch_shell(config, init_sql):
 # ---------------------------------------------------------------------------
 
 
+def _is_slow_item(item) -> bool:
+    """Whether `item` is a slow SQLLogic body — bare, or a driver `.py` paired to one. One check for
+    both shapes, so `-m slow`/`--slow` selection agrees regardless of which lane collected it."""
+    test_name = getattr(item, "_test_name", None)
+    if test_name is not None:
+        return is_slow_body(test_name)
+    path = getattr(item, "path", None)
+    if path is None or not str(path).endswith(".py"):
+        return False
+    body = driver_body_path(str(path))
+    return body is not None and is_slow_body(body)
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_collection_modifyitems(session, config, items):
     suites = get_suites(config)
@@ -2122,7 +2150,7 @@ def pytest_collection_modifyitems(session, config, items):
         _apply_suite_markers(config, items, suites)
 
     for item in items:
-        if is_slow_body(getattr(item, "_test_name", "")):
+        if _is_slow_item(item):
             item._slow = True
             item.add_marker("slow")
 

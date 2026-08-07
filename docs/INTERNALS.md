@@ -97,11 +97,13 @@ bodies.
 ## Collection pipeline
 
 `pytest_collect_file` (`plugin.py`) collects `.test` bodies by default and adds `.test_slow` and
-`.test_coverage` with `--slow`. Slow/coverage items receive the `slow` marker before pytest applies
-`-m` and run in one-test batches. For a `.test`, a same-stem `.py` suppresses the body and
-`run_paired` invokes it through the driver. Slow paired drivers are not supported; an adjacent `.py`
-does not suppress a slow body. Batching groups adjacent same-binary/same-workdir `SqlLogicItem`s under
-an `xdist_group` marker (with `--dist=loadgroup`) so a batch runs on one worker.
+`.test_coverage` with `--slow`. A same-stem `.py` suppresses the body (any of the three suffixes) and
+`run_paired` invokes it through the driver — `collect.driver_body_path` resolves which suffix a
+driver pairs with (`.test` checked first), so `run_paired` never assumes `.test`. A driver paired to
+a slow body is itself gated on `--slow`, same as the bare body would be, and carries the `slow`
+marker; without `--slow` neither the body nor the driver is collected. Batching groups adjacent
+same-binary/same-workdir `SqlLogicItem`s under an `xdist_group` marker (with `--dist=loadgroup`) so a
+batch runs on one worker — paired drivers aren't `SqlLogicItem`s and never batch, slow or not.
 
 ## Extending
 

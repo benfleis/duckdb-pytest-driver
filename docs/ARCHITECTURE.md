@@ -11,12 +11,14 @@ Iceberg, …) onto the driver, not for someone hacking the driver itself (that's
 central artifact is the **`.test` (SQLLogic) file**; Python is thin glue, never the test itself.
 
 Three test lanes:
-- **`.test` alone** — collected and run through the binary. Zero Python. (Always on — the plugin's own
-  collect hook.)
-- **`.test_slow` / `.test_coverage`** — collected with `--slow`, marked `slow`, and run one test per
-  binary invocation.
-- **`.py` driver + same-stem `.test`** — the `.py` is collected; it provisions/decorates, calls
+- **A bare body alone** (`.test`, or `.test_slow`/`.test_coverage` with `--slow`) — collected and run
+  through the binary. Zero Python. `.test` is always on (the plugin's own collect hook); the slow
+  suffixes are marked `slow` and run one test per binary invocation.
+- **`.py` driver + same-stem body** (`.test`, `.test_slow`, or `.test_coverage`) — the `.py` is
+  collected and the body is suppressed; the driver provisions/decorates, calls
   `run_paired(request, env=…)` to run the body through the binary, and may add its own assertions.
+  Paired to a slow/coverage body, the driver itself needs `--slow` too, same as a bare one would —
+  there is no separate "slow driver" concept, just a driver whose body happens to be slow.
 - **`.py` Python-native** — an ordinary pytest test (own assertions, no SQLLogic). Enabled by
   `python_files = test_*.py` in the repo's `pytest.ini` (off by default to shield duckdb *core*'s many
   non-test `test_*.py` scripts; a `ducktest configure --test-kinds python` flag is the planned way to

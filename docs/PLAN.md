@@ -71,8 +71,9 @@ the driver).
 - `${TEST_DIR_BASE}` substitutes empty in a `.test` (env-refresh timing); `__TEST_DIR__`
   (live) works — pick a live token / general var-injection channel. _(open)_
 - **Slow/coverage collection landed.** `--slow` adds `.test_slow` and `.test_coverage` bodies,
-  marks them `slow` before marker selection, and isolates each in a one-test batch. Paired drivers
-  remain `.test`-only.
+  marks them `slow` before marker selection, and isolates each in a one-test batch. **Slow/coverage
+  paired drivers landed too** — a `.py` can pair with any of the three body suffixes; a driver paired
+  to a slow body is itself gated on `--slow`.
 
 ## Pre-0.1 release gates (decided 2026-07-14)
 

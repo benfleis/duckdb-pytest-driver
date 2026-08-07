@@ -28,16 +28,39 @@ from typing import Iterable, Optional
 
 _BODY_SUFFIXES = (".test",)  # `.test_slow`/`.test_coverage` recognized separately, behind --slow
 _SLOW_SUFFIXES = (".test_slow", ".test_coverage")
+_ALL_BODY_SUFFIXES = _BODY_SUFFIXES + _SLOW_SUFFIXES  # every recognized body suffix, fast or slow
 
 
 def has_driver(test_path: str) -> bool:
-    """A `.test` body with a same-stem `.py` beside it → runs only via that driver (body suppressed)."""
+    """A body with a same-stem `.py` beside it → runs only via that driver (body suppressed)."""
     return os.path.exists(_sibling(test_path, ".py"))
 
 
+def body_suffix(path: str) -> Optional[str]:
+    """The recognized body suffix `path` ends with (`.test`, `.test_slow`, or `.test_coverage`), or
+    None. For a caller that needs the suffix itself, not just an `is_body`/`is_slow_body` bool — e.g.
+    resolving a CLI-named body arg to its driver regardless of which suffix it is."""
+    for suffix in _ALL_BODY_SUFFIXES:
+        if path.endswith(suffix):
+            return suffix
+    return None
+
+
+def driver_body_path(py_path: str) -> Optional[str]:
+    """The same-stem SQLLogic body `py_path` pairs with (`.test`, `.test_slow`, or `.test_coverage`,
+    checked in that order), or None if `py_path` isn't a driver. The one place that resolves a
+    driver's body suffix — `is_driver` and `run_paired` both read through this instead of each
+    independently assuming `.test`."""
+    for suffix in _ALL_BODY_SUFFIXES:
+        candidate = _sibling(py_path, suffix)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def is_driver(py_path: str) -> bool:
-    """A `.py` with a same-stem `.test` beside it → a driver whose fixtures wrap the body."""
-    return os.path.exists(_sibling(py_path, ".test"))
+    """A `.py` with a same-stem body beside it (any suffix) → a driver whose fixtures wrap it."""
+    return driver_body_path(py_path) is not None
 
 
 def _sibling(path: str, suffix: str) -> str:

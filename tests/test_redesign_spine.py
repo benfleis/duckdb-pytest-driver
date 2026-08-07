@@ -64,6 +64,24 @@ def test_role_model_pairs_by_stem(tmp_path):
     assert collect.is_driver(str(tmp_path / "x.py"))
 
 
+@pytest.mark.parametrize("suffix", [".test", ".test_slow", ".test_coverage"])
+def test_driver_body_path_resolves_every_recognized_suffix(tmp_path, suffix):
+    py_path = tmp_path / "y.py"
+    assert collect.driver_body_path(str(py_path)) is None  # no sibling of any kind yet
+    body = tmp_path / f"y{suffix}"
+    body.write_text("# body\n")
+    assert collect.driver_body_path(str(py_path)) == str(body)
+    assert collect.is_driver(str(py_path))
+
+
+def test_driver_body_path_prefers_test_over_slow_suffixes(tmp_path):
+    # a stem can only realistically have one body file, but the resolution order should still be
+    # deterministic and documented (.test checked first) rather than filesystem-listing-order luck.
+    (tmp_path / "z.test_slow").write_text("# slow body\n")
+    (tmp_path / "z.test").write_text("# fast body\n")
+    assert collect.driver_body_path(str(tmp_path / "z.py")) == str(tmp_path / "z.test")
+
+
 # --- the typed registry replaces four config._ATTR string maps --------------------------------
 
 
