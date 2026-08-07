@@ -5,7 +5,6 @@ import shutil
 import socket
 
 import pytest
-from cryptography import x509
 
 from ducktest.resources import _process as proc
 from ducktest.resources import mitmproxy as mitm
@@ -75,6 +74,7 @@ def test_mitmproxy_can_sign_with_our_ca(tmp_path):
     """
     import pathlib
 
+    from cryptography import x509
     from mitmproxy.certs import CertStore
 
     from ducktest.resources import ca
