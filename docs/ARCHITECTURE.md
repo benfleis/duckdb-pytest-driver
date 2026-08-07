@@ -46,6 +46,14 @@ this doc hangs off that.
   the roadmap (PLAN.md § *Named test sets*).
 - The selection decision is derived from collected items and is identical on the controller and workers,
   so "what runs" and "what gets provisioned" always agree.
+- **`provisioner=`** registers a path-scoped provisioner for `@requires` tables (§ *Provisioning per-test
+  tables*). **`auto_init_sql=True`** feeds the suite's credential/service init SQL into bare `.test`
+  bodies and `--repl` (`docs/MATRIX.md` § *Init SQL and test configs*).
+- **Overlapping membership.** An item under two suites' paths (or markers) belongs to both: markers from
+  both are stamped, and services/credentials union (deduped by key). Anything that needs exactly one
+  owner picks the first suite in registration order — e.g. if both suites declare a `matrix=`, only the
+  first one's cells apply to the shared item; the second's matrix never fires for it. There is no
+  fan-out and no conflict error; declaring two suites over the same files is legal.
 
 ## The paradigm shift (read this once)
 
