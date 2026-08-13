@@ -174,11 +174,11 @@ def register_options(parser):
         "each value is shlex-split. Generic passthrough for binary flags the driver does not model.",
     )
     parser.addoption(
-        "--temp-dir-base",
+        "--temp-dir-root",
         default=None,
         metavar="ROOT",
         help="This run's `<root>` (may be local OR remote, e.g. s3://…). `_invoke` composes the per-"
-        "invocation --temp-dir-base = <root>/<session-id>/<batch-id> from it; the binary appends the "
+        "invocation --temp-dir-root = <root>/<session-id>/<batch-id> from it; the binary appends the "
         "<test-id> leaf and owns LOCAL create/sweep. The driver sweeps only a REMOTE <root>, once at "
         "session end (SPEC §11.5). Default: the binary's own `duckdb_unittest_tempdir`.",
     )
@@ -505,7 +505,7 @@ def _run_id(config):
 # `root` + `session-id` (the run mnemonic, via `_run_id` — broadcast to every xdist
 # worker so the whole run shares ONE identity) plus an optional read-only DATA dir.
 # It does NOT compose any full path here: `_invoke` composes the ONE per-invocation
-# --temp-dir-base = <root>/<session-id>/<batch-id> (SPEC §11.4). The BINARY appends
+# --temp-dir-root = <root>/<session-id>/<batch-id> (SPEC §11.4). The BINARY appends
 # the <test-id> leaf, derives LOCAL_*, and owns local create/sweep — the driver never
 # composes LOCAL_*, never sets a TEMP_DIR env var. The mnemonic session-id is what
 # makes the run's dirs one shared, sweepable set across workers (not pid-tagged).
@@ -525,10 +525,10 @@ def _is_remote_root(value):
 
 def _root(config):
     """This run's `<root>` — the outer base under which `_invoke` composes `<root>/<session-id>/
-    <batch-id>` (SPEC §11.2). The explicit `--temp-dir-base` (may be local OR remote, e.g. s3://…),
+    <batch-id>` (SPEC §11.2). The explicit `--temp-dir-root` (may be local OR remote, e.g. s3://…),
     else the binary's own default temp-dir name (`duckdb_unittest_tempdir`, resolved by the binary
     relative to its working dir)."""
-    base = config.getoption("--temp-dir-base", default=None)
+    base = config.getoption("--temp-dir-root", default=None)
     return base if base else "duckdb_unittest_tempdir"
 
 
@@ -537,7 +537,7 @@ def _temp_roots(config):
 
     The driver originates only `root` + `session_id` (the run mnemonic, via `_run_id` — broadcast to
     every xdist worker so the whole run shares ONE identity) plus an optional read-only DATA dir. NO
-    full-path composition here and NO LOCAL_*: `_invoke` composes the per-invocation --temp-dir-base =
+    full-path composition here and NO LOCAL_*: `_invoke` composes the per-invocation --temp-dir-root =
     `<root>/<session-id>/<batch-id>`, and the BINARY appends the `<test-id>` leaf + derives LOCAL_*.
 
     Returns the driver's bookkeeping dict:
@@ -1221,9 +1221,7 @@ def _init_sqllogic_arg_for_item(config, item) -> list:
     from .sqllogic import _matrix_cell_init_sql
 
     cell_sql = _matrix_cell_init_sql(item)
-    suite = next(
-        (s for s in get_suites(config) if s.auto_init_sql and _item_in_suite(config, item, s)), None
-    )
+    suite = next((s for s in get_suites(config) if s.auto_init_sql and _item_in_suite(config, item, s)), None)
     if suite is None and not cell_sql:
         return []
     key = (id(config), suite.name if suite else None, cell_sql or "")
@@ -1585,7 +1583,7 @@ def pytest_sessionfinish(session, exitstatus):
         return  # this is a worker
     _teardown_store(config)
     # REMOTE sweeping (SPEC §11.5), controller-only + once: the driver does NOTHING local (the binary owns
-    # LOCAL create/sweep, as-it-goes — it received --temp-dir-base/--temp-dir-run-id/--temp-dir-destroy).
+    # LOCAL create/sweep, as-it-goes — it received --temp-dir-root/--temp-dir-run-id/--temp-dir-destroy).
     # Here it applies the one session-end remote sweep (keep-on-failure by keep-list) then the best-effort
     # age-sweep backstop. Both no-op when <root> is local / no sweeper is registered. A run that never
     # reaches sessionfinish does no sweep — the age-sweep is the eventual backstop (SPEC §11.5).

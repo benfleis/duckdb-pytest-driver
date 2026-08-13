@@ -23,9 +23,9 @@
 real=${DUCKTEST_UNITTEST:-build/release/test/unittest}
 log=${DUCKTEST_WRAP_LOG:-./unittest-invocations.log}
 
-# pull the --temp-dir-base value out of argv for easy grouping
+# pull the --temp-dir-root value out of argv for easy grouping
 base=""; prev=""
-for a in "$@"; do [[ $prev == "--temp-dir-base" ]] && base=$a; prev=$a; done
+for a in "$@"; do [[ $prev == "--temp-dir-root" ]] && base=$a; prev=$a; done
 
 start=$(date +%s.%N)
 "$real" "$@"; rc=$?
@@ -36,7 +36,7 @@ exit $rc
 
 # ---------------------------------------------------------------------------------------------------
 # Overlap check (python3 <this-file>-style; paste after a run). Flags any two invocations that shared a
-# --temp-dir-base while both were live — two workers writing the same temp dir at once. Zero ⇒ grouped.
+# --temp-dir-root while both were live — two workers writing the same temp dir at once. Zero ⇒ grouped.
 #
 #   python3 - unittest-invocations.log <<'PY'
 #   import re, sys

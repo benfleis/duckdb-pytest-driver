@@ -22,7 +22,7 @@ import pytest
 
 # ---------------------------------------------------------------------------
 # <batch-id>: the per-invocation temp run-root segment (SPEC §11.2 / §11.4).
-# The composed --temp-dir-base is <root>/<session-id>/<batch-id>; <batch-id>
+# The composed --temp-dir-root is <root>/<session-id>/<batch-id>; <batch-id>
 # identifies ONE unittest invocation so concurrent invocations never share a
 # run-root (§11.6 concurrency). A batched invocation reuses the batch's id; a
 # single (unbatched) test / paired-driver invocation derives one from the test
@@ -43,17 +43,17 @@ def _matrix_cell_properties(item) -> dict:
     (`plugin.py`'s `_expand_test_matrix` stamps `_matrix_cell` with the suite's cell dict verbatim).
     Homogeneous, backend-declared vocabulary -- same spirit as `requires.py`'s `Requirement.properties`:
     a cell says WHAT it needs (`temp_dir_root`, `data_dir`, or any plain env var name); which of
-    those becomes a `--temp-dir-base`/`--data-dir` CLI arg vs a literal env var is THIS module's
+    those becomes a `--temp-dir-root`/`--data-dir` CLI arg vs a literal env var is THIS module's
     call (`_split_matrix_cell_properties`), never the conftest's. `{}` for a non-matrix item or a
     cell with no `properties` key."""
     cell = getattr(item, "_matrix_cell", None)
     return (cell.get("properties") if cell else None) or {}
 
 
-# Property names this module claims and routes into `temp_roots` (`--temp-dir-base`/`--data-dir`)
+# Property names this module claims and routes into `temp_roots` (`--temp-dir-root`/`--data-dir`)
 # instead of passing through as a literal env var; everything else is a plain env var, verbatim.
-# `temp_dir_root` is deliberately NOT `TEMP_DIR`/`--temp-dir-base` itself -- it's the prefix
-# `_invoke` composes `<root>/<session-id>/<batch-id>` onto (SPEC §11.2/§11.4). `<batch-id>` isn't
+# `temp_dir_root` is the `<root>` prefix, deliberately NOT the composed `TEMP_DIR` itself --
+# `_invoke` composes `<root>/<session-id>/<batch-id>` onto it (SPEC §11.2/§11.4). `<batch-id>` isn't
 # minted until `assign_batches` runs in the PLAN phase, strictly after a matrix cell's properties
 # are fixed at collect+decorate time (`_expand_test_matrix` runs first) -- so a cell can only ever
 # declare the root, never the composed TEMP_DIR.
@@ -74,7 +74,7 @@ _CLAIMED_PROPERTY_KEYS = frozenset({_TEST_CONFIG_PROPERTY_KEY, _INIT_SQL_PROPERT
 
 def _split_matrix_cell_properties(properties: dict):
     """Split a cell's `properties` dict into `(env, temp_roots)` -- the ONE place that decides which
-    property names are `--temp-dir-base`/`--data-dir` CLI args (`_TEMP_ROOTS_PROPERTY_KEYS`) vs
+    property names are `--temp-dir-root`/`--data-dir` CLI args (`_TEMP_ROOTS_PROPERTY_KEYS`) vs
     literal env vars (everything else, passed through verbatim). `_CLAIMED_PROPERTY_KEYS`
     (`test_config`/`init_sql`) are handled by their own mechanisms, never env vars."""
     env, temp_roots = {}, {}
@@ -118,10 +118,10 @@ def _matrix_cell_env(item) -> dict:
 def _matrix_cell_temp_roots(item, base: dict) -> dict:
     """`base` (the run-wide `_temp_roots(config)`), with a matrix cell's `temp_dir_root`/`data_dir`
     properties overlaid as `root`/`data_dir` -- same rationale as `_matrix_cell_env`, for the SAME
-    two fields (`--temp-dir-base`/`--data-dir` are already remote-capable, SPEC §11.2/§11.3, but
+    two fields (`--temp-dir-root`/`--data-dir` are already remote-capable, SPEC §11.2/§11.3, but
     `_temp_roots` is cached once per `config`, not cell-aware): two cells of the same file needing
     DIFFERENT remote roots (e.g. `az://` vs `abfss://`, different storage accounts) can't share one
-    `--temp-dir-base`/`--data-dir`. `session_id`/`destroy` stay run-wide -- only `root`/`data_dir`
+    `--temp-dir-root`/`--data-dir`. `session_id`/`destroy` stay run-wide -- only `root`/`data_dir`
     are ever cell-specific. `base` unchanged for a non-matrix item or a cell with neither property."""
     _, override = _split_matrix_cell_properties(_matrix_cell_properties(item))
     if not override:
@@ -406,7 +406,7 @@ def _invoke(
     args = ["--emit-test-events", *(extra_args or []), *args]
     run_env = dict(os.environ)
     if temp_roots:
-        # SPEC §11.4: compose the per-batch run-root and pass it as the ONE --temp-dir-base string
+        # SPEC §11.4: compose the per-batch run-root and pass it as the ONE --temp-dir-root string
         # (<root>/<session-id>/<batch-id>) — NOT --temp-dir EXACT, and NOT a TEMP_DIR/LOCAL_*/DATA_DIR
         # env var (the binary composes/derives + would overwrite those). --temp-dir-run-id off so the
         # binary appends no extra run-id level (ResolveRunIdRoot returns the base verbatim). The binary
@@ -414,11 +414,11 @@ def _invoke(
         # destroy is passed THROUGH to gate the binary's LOCAL sweep. DATA is a plain read-only path:
         # --data-dir only when the driver has an override, else the binary defaults to working_dir/data.
         base = _compose_base(temp_roots["root"], temp_roots["session_id"], batch_id)
-        # TODO: DuckDB's --temp-dir-base has no DUCKDB_TEST_*-style env fallback (unlike --data-dir),
+        # TODO: DuckDB's --temp-dir-root has no DUCKDB_TEST_*-style env fallback (unlike --data-dir),
         # and "base" reads worse than "root" for what's really a prefix another two levels get
         # appended onto (SPEC §11.4) -- once upstream lands an env-settable, root-named equivalent,
         # switch this (and the CLI flag this driver itself exposes) over to match.
-        temp_args = ["--temp-dir-base", base, "--temp-dir-run-id", "off"]
+        temp_args = ["--temp-dir-root", base, "--temp-dir-run-id", "off"]
         if temp_roots.get("destroy"):
             temp_args += ["--temp-dir-destroy", str(temp_roots["destroy"])]
         if temp_roots.get("data_dir"):
@@ -488,7 +488,7 @@ def _scan_test_events(output: str) -> dict:
 
 def _verify_event_temp_dirs(events: dict, expected_base: str) -> None:
     """Fail loud if any `end` event's echoed `temp_dir` doesn't start with THIS invocation's
-    composed `--temp-dir-base` (the event-tag check, RESOURCE-PLANNING.md §5 phase 9) — proof the
+    composed `--temp-dir-root` (the event-tag check, RESOURCE-PLANNING.md §5 phase 9) — proof the
     stream belongs to the subprocess we just ran, not silently assumed. A binary too old to echo
     `temp_dir` (the field is simply absent) skips the check for that event, same as `_classify`'s
     existing "no terminal event -> trust the return code" fallback for an old/crashed binary.
@@ -498,7 +498,7 @@ def _verify_event_temp_dirs(events: dict, expected_base: str) -> None:
         if temp_dir and not temp_dir.startswith(expected_base):
             raise RuntimeError(
                 f"[TEST_EVENT] for {name!r} echoed temp_dir={temp_dir!r}, which does not start with "
-                f"this invocation's --temp-dir-base={expected_base!r} -- the event stream may be "
+                f"this invocation's --temp-dir-root={expected_base!r} -- the event stream may be "
                 "misattributed to the wrong subprocess."
             )
 

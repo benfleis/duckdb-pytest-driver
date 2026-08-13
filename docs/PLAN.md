@@ -630,7 +630,7 @@ STRING)` (+ `tpc{h,ds}` for bulk reads); avoid bespoke per-test tables so provis
     `identity.py` lives in UC not the driver).
 - **Min duckdb (unittest) version contract** _[real, mechanism TBD]_ — the driver assumes unittest flags
   (`--emit-test-events`, `--temp-dir-*`, `--select-tag`); a stale binary errors `Unrecognised token:
-  --temp-dir-base`. A standalone release needs a pinned/probed floor (probe `unittest --version`/features
+  --temp-dir-root`. A standalone release needs a pinned/probed floor (probe `unittest --version`/features
   or a documented minimum). _(from EXTRACT_DRIVER_PLAN)_
 - **Versioning scheme** _[decided 2026-07-14]_ — see *Pre-0.1 release gates* above: `0.0.1` pushed to the
   real `duckdb`-org repo as-is, iterate publicly, `0.1.0` once hardened against Iceberg + others. Still

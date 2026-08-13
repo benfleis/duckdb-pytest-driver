@@ -43,6 +43,7 @@ from ducktest import requires_matrix, TableSpec, run_paired
 def test_rw(request, resources):
     run_paired(request, env=resources.env)
 ```
+
 → `test_rw[cmt]`, `test_rw[plain]`, each with its own `@requires` cell.
 
 ### Composition (per-test wins outright)
@@ -61,7 +62,7 @@ conftest — decides how each key is delivered:
 | --- | --- | --- |
 | `test_config` | `--test-config <path>` (resolved against the working dir) | a duckdb test-config JSON: `on_init` SQL + `statically_loaded_extensions` + `skip_tests` |
 | `init_sql` | merged into the item's `--init-sqllogic` preamble | inline SQL a cell runs before the body (e.g. `SET x='y';`) — the lighter alternative to `test_config` for a pure-`SET` cell |
-| `temp_dir_root` | `--temp-dir-base` prefix | the cell's scratch/write root (e.g. a per-backend `az://…`) |
+| `temp_dir_root` | `--temp-dir-root` prefix | the cell's scratch/write root (e.g. a per-backend `az://…`) |
 | `data_dir` | `--data-dir` | the cell's read-data root |
 | *anything else* | a literal **env var** in the body's environment | `${VAR}` a `.test` body reads (e.g. `AZ_STORAGE_ACCOUNT`, `S3_ENDPOINT`) |
 

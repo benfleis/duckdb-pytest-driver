@@ -193,7 +193,7 @@ class Suite:
                     ``Requirement.properties``). A bare `.test`'s subprocess specifically reads a
                     ``"properties"`` key (``sqllogic.py``'s ``_matrix_cell_properties``): declare WHAT
                     a cell needs (``temp_dir_root``, ``data_dir``, or any plain env var name) and the
-                    framework decides downstream whether that becomes a ``--temp-dir-base``/
+                    framework decides downstream whether that becomes a ``--temp-dir-root``/
                     ``--data-dir`` CLI arg or a literal env var (``_split_matrix_cell_properties``) --
                     never the conftest's call. ``()`` => no suite-level matrix (today's behavior,
                     unchanged).

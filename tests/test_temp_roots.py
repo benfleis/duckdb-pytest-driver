@@ -2,7 +2,7 @@
 
 The driver originates ONLY the run's ``root`` + ``session_id`` (the run mnemonic) plus an optional
 read-only DATA dir; it composes NO full path in `_temp_roots`. Per invocation, `_invoke` composes the
-ONE ``--temp-dir-base = <root>/<session-id>/<batch-id>`` and passes ``--temp-dir-run-id off`` so the
+ONE ``--temp-dir-root = <root>/<session-id>/<batch-id>`` and passes ``--temp-dir-run-id off`` so the
 binary appends no run-id level; the binary then adds the ``<test-id>`` leaf, derives ``LOCAL_*``, and
 owns local create/sweep. These exercise the pure origination (`_temp_roots`) offline and prove the
 corrected flags reach the subprocess — and that the OLD wrong passthrough (``--temp-dir`` exact +
@@ -27,10 +27,10 @@ _ROOT_VARS = ("TEMP_DIR", "LOCAL_TEMP_DIR", "DATA_DIR", "LOCAL_DATA_DIR")
 class _Cfg:
     """Minimal stand-in for a pytest Config: a fixed session-id + the options `_temp_roots` reads."""
 
-    def __init__(self, temp_dir_base=None, run_id=RUN_ID, data_dir=None, destroy="on-success"):
+    def __init__(self, temp_dir_root=None, run_id=RUN_ID, data_dir=None, destroy="on-success"):
         self._sqllogic_run_id = run_id  # read by _run_id (bypasses _make_run_id)
         self._opts = {
-            "--temp-dir-base": temp_dir_base,
+            "--temp-dir-root": temp_dir_root,
             "--data-dir": data_dir,
             "--temp-dir-destroy": destroy,
         }
@@ -76,7 +76,7 @@ def test_is_remote_root(value, remote):
 
 
 def test_originates_root_and_session_id_only(clean_env):
-    roots = _temp_roots(_Cfg(temp_dir_base="/tmp/base"))
+    roots = _temp_roots(_Cfg(temp_dir_root="/tmp/base"))
     assert roots["root"] == "/tmp/base"
     assert roots["session_id"] == RUN_ID
     assert roots["destroy"] == "on-success"
@@ -87,21 +87,21 @@ def test_originates_root_and_session_id_only(clean_env):
 
 
 def test_unset_base_falls_back_to_binary_default(clean_env):
-    roots = _temp_roots(_Cfg(temp_dir_base=None))
+    roots = _temp_roots(_Cfg(temp_dir_root=None))
     # default is the binary's own temp-dir name; the binary resolves it relative to its working dir
     assert roots["root"] == "duckdb_unittest_tempdir"
     assert roots["session_id"] == RUN_ID
 
 
 def test_remote_base_passes_through_verbatim(clean_env):
-    roots = _temp_roots(_Cfg(temp_dir_base="s3://bucket/scratch"))
+    roots = _temp_roots(_Cfg(temp_dir_root="s3://bucket/scratch"))
     assert roots["root"] == "s3://bucket/scratch"  # remote root is the base as-is
     assert _is_remote_root(roots["root"])
     assert roots["session_id"] == RUN_ID
 
 
 def test_data_dir_override_is_originated(clean_env):
-    roots = _temp_roots(_Cfg(temp_dir_base="/tmp/base", data_dir="/inputs/data"))
+    roots = _temp_roots(_Cfg(temp_dir_root="/tmp/base", data_dir="/inputs/data"))
     assert roots["data_dir"] == "/inputs/data"
     # DATA is a plain read-only path: NOT composed with root/session-id
     assert RUN_ID not in roots["data_dir"]
@@ -109,7 +109,7 @@ def test_data_dir_override_is_originated(clean_env):
 
 
 def test_one_run_one_set_cached(clean_env):
-    cfg = _Cfg(temp_dir_base="/tmp/base")
+    cfg = _Cfg(temp_dir_root="/tmp/base")
     first = _temp_roots(cfg)
     second = _temp_roots(cfg)
     assert first is second  # composed once per run, not re-derived per invocation
@@ -200,17 +200,17 @@ def _echo_stub(tmp_path):
 
 def test_composed_base_and_run_id_off_reach_subprocess(clean_env, tmp_path):
     base = str(tmp_path / "base")
-    roots = _temp_roots(_Cfg(temp_dir_base=base))
+    roots = _temp_roots(_Cfg(temp_dir_root=base))
     result = _invoke(_echo_stub(tmp_path), ["some/body.test"], str(tmp_path), roots, batch_id="batch-7")
     out = result["stdout"]
-    # CORRECT: the ONE composed --temp-dir-base = <root>/<session-id>/<batch-id> + --temp-dir-run-id off
-    assert f"--temp-dir-base {base}/{RUN_ID}/batch-7" in out
+    # CORRECT: the ONE composed --temp-dir-root = <root>/<session-id>/<batch-id> + --temp-dir-run-id off
+    assert f"--temp-dir-root {base}/{RUN_ID}/batch-7" in out
     assert "--temp-dir-run-id off" in out
     assert "--temp-dir-destroy on-success" in out
     assert "--emit-test-events" in out
     # WRONG (removed): --run-id is gone
     assert "--run-id" not in out
-    # WRONG (removed): --temp-dir EXACT is gone (the trailing space avoids matching --temp-dir-base)
+    # WRONG (removed): --temp-dir EXACT is gone (the trailing space avoids matching --temp-dir-root)
     assert "--temp-dir " not in out
     # WRONG (removed): the driver sets NONE of the root env vars — the binary composes/derives them
     for var in _ROOT_VARS:
@@ -220,28 +220,28 @@ def test_composed_base_and_run_id_off_reach_subprocess(clean_env, tmp_path):
 def test_distinct_batch_ids_yield_distinct_run_roots(clean_env, tmp_path):
     stub = _echo_stub(tmp_path)
     base = str(tmp_path / "base")
-    roots = _temp_roots(_Cfg(temp_dir_base=base))
+    roots = _temp_roots(_Cfg(temp_dir_root=base))
     out7 = _invoke(stub, ["b.test"], str(tmp_path), roots, batch_id="batch-7")["stdout"]
     out8 = _invoke(stub, ["b.test"], str(tmp_path), roots, batch_id="batch-8")["stdout"]
-    assert f"--temp-dir-base {base}/{RUN_ID}/batch-7" in out7
-    assert f"--temp-dir-base {base}/{RUN_ID}/batch-8" in out8
+    assert f"--temp-dir-root {base}/{RUN_ID}/batch-7" in out7
+    assert f"--temp-dir-root {base}/{RUN_ID}/batch-8" in out8
     assert "batch-7" not in out8 and "batch-8" not in out7  # never collide on the shared session-id
 
 
 def test_data_dir_passed_only_when_set(clean_env, tmp_path):
     stub = _echo_stub(tmp_path)
     # no override → NO --data-dir (the binary defaults to working_dir/data)
-    roots = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    roots = _temp_roots(_Cfg(temp_dir_root=str(tmp_path / "base")))
     assert "--data-dir" not in _invoke(stub, ["b.test"], str(tmp_path), roots, batch_id="batch-0")["stdout"]
     # explicit override → passed EXACT, never composed with the session-id
-    roots2 = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base2"), data_dir="/inputs/data"))
+    roots2 = _temp_roots(_Cfg(temp_dir_root=str(tmp_path / "base2"), data_dir="/inputs/data"))
     out = _invoke(stub, ["b.test"], str(tmp_path), roots2, batch_id="batch-0")["stdout"]
     assert "--data-dir /inputs/data" in out
     assert f"/inputs/data/{RUN_ID}" not in out
 
 
 def test_provisioned_env_layers_over_ambient(clean_env, tmp_path):
-    roots = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    roots = _temp_roots(_Cfg(temp_dir_root=str(tmp_path / "base")))
     result = _invoke(
         _echo_stub(tmp_path),
         ["some/body.test"],
@@ -253,7 +253,7 @@ def test_provisioned_env_layers_over_ambient(clean_env, tmp_path):
     out = result["stdout"]
     # an explicit per-invocation env (e.g. a provisioned var) still layers over the ambient env
     assert "ENV DATA_DIR=s3://override" in out
-    # ...but the driver itself never sets TEMP_DIR (the binary composes it from --temp-dir-base)
+    # ...but the driver itself never sets TEMP_DIR (the binary composes it from --temp-dir-root)
     assert "ENV TEMP_DIR=<unset>" in out
 
 
@@ -261,7 +261,7 @@ def test_provisioned_env_layers_over_ambient(clean_env, tmp_path):
 # The event-tag check: a [TEST_EVENT] end's echoed temp_dir must match THIS invocation's base
 #
 
-# A `--temp-dir-base`-aware stub that emits one `[TEST_EVENT] end` with a `temp_dir` it composes
+# A `--temp-dir-root`-aware stub that emits one `[TEST_EVENT] end` with a `temp_dir` it composes
 # from its own argv -- unless STUB_TEMP_DIR_OVERRIDE forces a different (wrong) value, to prove the
 # mismatch case fails loud.
 _EVENT_STUB = textwrap.dedent(
@@ -272,7 +272,7 @@ _EVENT_STUB = textwrap.dedent(
     def parse_base(argv):
         it = iter(argv)
         for a in it:
-            if a == "--temp-dir-base":
+            if a == "--temp-dir-root":
                 return next(it, None)
         return None
 
@@ -295,13 +295,13 @@ def _event_stub(tmp_path):
 
 
 def test_invoke_passes_when_echoed_temp_dir_matches_the_composed_base(clean_env, tmp_path):
-    roots = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    roots = _temp_roots(_Cfg(temp_dir_root=str(tmp_path / "base")))
     result = _invoke(_event_stub(tmp_path), ["b.test"], str(tmp_path), roots, batch_id="batch-0")
     assert result["returncode"] == 0  # no RuntimeError raised: the echoed temp_dir matched
 
 
 def test_invoke_fails_loud_when_echoed_temp_dir_does_not_match(clean_env, tmp_path):
-    roots = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    roots = _temp_roots(_Cfg(temp_dir_root=str(tmp_path / "base")))
     with pytest.raises(RuntimeError, match="does not start with"):
         _invoke(
             _event_stub(tmp_path),
@@ -315,7 +315,7 @@ def test_invoke_fails_loud_when_echoed_temp_dir_does_not_match(clean_env, tmp_pa
 
 def test_invoke_skips_the_check_when_temp_dir_field_is_absent(clean_env, tmp_path):
     # an old binary that doesn't echo temp_dir (the field is just missing) -- no false failure.
-    roots = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    roots = _temp_roots(_Cfg(temp_dir_root=str(tmp_path / "base")))
     result = _invoke(_echo_stub(tmp_path), ["b.test"], str(tmp_path), roots, batch_id="batch-0")
     assert result["returncode"] == 0
 
@@ -353,7 +353,7 @@ class _FakeMatrixItem:
 def test_matrix_cell_properties_override_temp_dir_root_data_dir_and_reach_env(clean_env, tmp_path):
     from ducktest.sqllogic import _matrix_cell_env, _matrix_cell_temp_roots
 
-    base = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    base = _temp_roots(_Cfg(temp_dir_root=str(tmp_path / "base")))
     item = _FakeMatrixItem(
         {
             "backend": "azure-az",
@@ -369,7 +369,7 @@ def test_matrix_cell_properties_override_temp_dir_root_data_dir_and_reach_env(cl
     out = _invoke(_properties_echo_stub(tmp_path), ["b.test"], str(tmp_path), roots, batch_id="batch-0", env=env)[
         "stdout"
     ]
-    assert f"--temp-dir-base az://acct.blob.core.windows.net/w/{RUN_ID}/batch-0" in out
+    assert f"--temp-dir-root az://acct.blob.core.windows.net/w/{RUN_ID}/batch-0" in out
     assert "--data-dir az://acct.blob.core.windows.net/d" in out
     assert "ENV AZURE_STORAGE_ACCOUNT=acct" in out
 
@@ -377,10 +377,10 @@ def test_matrix_cell_properties_override_temp_dir_root_data_dir_and_reach_env(cl
 def test_two_matrix_cells_never_collide_on_temp_dir_root_or_data_dir(clean_env, tmp_path):
     # The actual motivating bug: az's `test/core` suite fans one .test file across two cells
     # (azure-az, azure-abfss) needing DIFFERENT storage accounts -- they must never resolve to the
-    # same --temp-dir-base/--data-dir, even sharing a batch-id.
+    # same --temp-dir-root/--data-dir, even sharing a batch-id.
     from ducktest.sqllogic import _matrix_cell_temp_roots
 
-    base = _temp_roots(_Cfg(temp_dir_base=str(tmp_path / "base")))
+    base = _temp_roots(_Cfg(temp_dir_root=str(tmp_path / "base")))
     az_item = _FakeMatrixItem(
         {
             "backend": "azure-az",
@@ -409,7 +409,7 @@ def test_two_matrix_cells_never_collide_on_temp_dir_root_or_data_dir(clean_env, 
         _matrix_cell_temp_roots(abfss_item, base),
         batch_id="batch-0",
     )["stdout"]
-    assert f"--temp-dir-base az://acct1.blob.core.windows.net/w/{RUN_ID}/batch-0" in az_out
-    assert f"--temp-dir-base abfss://acct2.dfs.core.windows.net/w/{RUN_ID}/batch-0" in abfss_out
+    assert f"--temp-dir-root az://acct1.blob.core.windows.net/w/{RUN_ID}/batch-0" in az_out
+    assert f"--temp-dir-root abfss://acct2.dfs.core.windows.net/w/{RUN_ID}/batch-0" in abfss_out
     assert "--data-dir az://acct1.blob.core.windows.net/d" in az_out
     assert "--data-dir abfss://acct2.dfs.core.windows.net/d" in abfss_out

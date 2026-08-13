@@ -2,7 +2,7 @@
 
 The driver sweeps REMOTE TEMP once at ``sessionfinish`` (controller-only): it sweeps the session prefix
 ``<root>/<session-id>/``, sparing the batches of FAILED tests (the keep-list). Remoteness comes from
-``--temp-dir-base`` (the driver's ``<root>``), NOT a driver-set env var, and sweeping is scoped to TEMP
+``--temp-dir-root`` (the driver's ``<root>``), NOT a driver-set env var, and sweeping is scoped to TEMP
 only — DATA is never swept. These exercise the framework's *when* + keep-list against a FAKE sweeper
 that only records its ``sweep``/``list_run_prefixes`` calls — no rclone / object store needed.
 
@@ -23,7 +23,7 @@ from ducktest.context import Plan, SessionContext, set_context
 from ducktest.sweeper import age_sweep, record_failure, sweep_session
 
 RUN_ID = "2026-07-18T00-00-00Z--brave-fox-42"
-REMOTE = "s3://bucket/scratch"  # a remote --temp-dir-base (the <root>)
+REMOTE = "s3://bucket/scratch"  # a remote --temp-dir-root (the <root>)
 _ROOT_VARS = ("TEMP_DIR", "LOCAL_TEMP_DIR", "DATA_DIR", "LOCAL_DATA_DIR")
 
 
@@ -74,14 +74,14 @@ class Rep:
 
 class Cfg:
     """Minimal pytest.Config stand-in: a typed stash (for the SessionContext), a fixed session-id, and
-    the options the sweeper reads. ``temp_dir_base`` is the ``<root>`` (remote → the sweeper fires; local
+    the options the sweeper reads. ``temp_dir_root`` is the ``<root>`` (remote → the sweeper fires; local
     → it no-ops)."""
 
-    def __init__(self, age_days=7, temp_dir_base=REMOTE):
+    def __init__(self, age_days=7, temp_dir_root=REMOTE):
         self.stash = pytest.Stash()
         self._sqllogic_run_id = RUN_ID
         self._opts = {
-            "--temp-dir-base": temp_dir_base,
+            "--temp-dir-root": temp_dir_root,
             "--data-dir": None,
             "--temp-dir-destroy": "on-success",
             "--temp-sweep-age-days": age_days,
@@ -186,7 +186,7 @@ def test_no_batch_map_keeps_whole_session_on_failure(clean_env):
 def test_local_root_is_noop(clean_env):
     # A local <root> => local is the binary's job, driver does nothing.
     sweeper = FakeSweeper()
-    cfg = _config(sweeper, node_batch_ids={"t/a.test": "batch-0"}, temp_dir_base="/tmp/base")
+    cfg = _config(sweeper, node_batch_ids={"t/a.test": "batch-0"}, temp_dir_root="/tmp/base")
     record_failure(cfg, Rep("t/a.test", failed=True))
     sweep_session(cfg)
     assert sweeper.swept == []
@@ -253,7 +253,7 @@ def test_age_sweep_noop_without_list_support(clean_env):
 
 def test_age_sweep_local_root_is_noop(clean_env):
     sweeper = FakeSweepSweeper([(f"{REMOTE}/{_session_id(99)}", _session_id(99))])
-    cfg = _config(sweeper, temp_dir_base="/tmp/base")
+    cfg = _config(sweeper, temp_dir_root="/tmp/base")
     age_sweep(cfg)
     assert sweeper.swept == []
 
@@ -266,7 +266,7 @@ def test_age_sweep_local_root_is_noop(clean_env):
 def test_session_sweep_wired_through_real_pytest(pytester, monkeypatch):
     """Prove the wiring (controller logreport → sessionfinish → sweep_session) under a real run: a
     conftest registers a sweeper that logs its sweep call; one test passes, one fails. Remoteness comes
-    from a remote --temp-dir-base. The failing tests are plain `.py` (not batched SqlLogic items), so
+    from a remote --temp-dir-root. The failing tests are plain `.py` (not batched SqlLogic items), so
     they aren't in the node→batch map → the sweep keeps the WHOLE session (the coarse under-sweep-safe
     fallback), proving the failure was collected on the controller and the sweep fired exactly once."""
     sweep_log = pytester.path / "sweep.log"
@@ -297,7 +297,7 @@ def test_session_sweep_wired_through_real_pytest(pytester, monkeypatch):
             assert False
         """
     )
-    result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider", "--temp-dir-base", REMOTE)
+    result = pytester.runpytest_subprocess("-n", "0", "-p", "no:cacheprovider", "--temp-dir-root", REMOTE)
     result.assert_outcomes(passed=1, failed=1)
     import json
 
