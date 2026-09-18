@@ -94,12 +94,15 @@ def run(items, engines, *, duckdb_bin, temp_root, keep=False, out=sys.stdout):
             if problems:
                 result["problems"] = problems
             result["seconds"] = round(time.perf_counter() - t0, 2)
+            result["seconds_by_client"] = ctx.seconds_by_client()
+            result["seconds_by_client"] = ctx.seconds_by_client()
             if result["outcome"] == PASSED and not keep:
                 shutil.rmtree(temp_dir)
             else:
                 result["kept"] = temp_dir
             results.append(result)
-            print(f"{result['outcome'].upper():8} {item.id}  ({result['seconds']}s)", file=out, flush=True)
+            spent = ", ".join(f"{name} {seconds}s" for name, seconds in result["seconds_by_client"].items())
+            print(f"{result['outcome'].upper():8} {item.id}  ({result['seconds']}s: {spent})", file=out, flush=True)
     finally:
         for handle in handles.values():
             handle.stop()

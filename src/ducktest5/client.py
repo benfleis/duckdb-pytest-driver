@@ -1,14 +1,13 @@
 """One SQL vocabulary for every client a body drives, DuckDB included.
 
-    setup(sql)             not under test; a failure aborts the test and reports as a setup ERROR
+    setup(sql)             not under test; a failure reports as a setup ERROR, not a FAILED test
     oks(sql)               statement ok      under test; must succeed
     errs(sql, text)        statement error   under test; must fail, with `text` in the message
     expects(sql, rows)     query + ----      under test; expected rows beside the query
-    requires(sql[, rows])  as `oks` / `expects`, for a step the rest of the test cannot do without
     teardown(sql)          runs after the body, even when the test aborted; a failure is an ERROR
 
-`oks`, `errs` and `expects` are checks: a failure is recorded and the body goes on, so one run shows
-every failed check. `requires` and `setup` abort the test.
+A failure aborts the test, as in a .test file. `on_fail="continue"` on `oks`, `errs` or `expects`
+records the failure and lets the body go on, for independent checks a reader wants to see together.
 
 `sql` is one statement, a block of them split on `;`, or a list of statements taken as they are (for
 a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
@@ -29,9 +28,13 @@ the type matters, ask in SQL (`SELECT typeof(x)`). DuckDB, Spark and Databricks 
 """
 
 import re
+import time
 import traceback
 
 from .sqltext import format_rows, parse_rows, render_rows, split_statements, sql_values
+
+
+ON_FAIL = ("abort_test", "continue")
 
 
 class SqlError(Exception):
@@ -64,19 +67,23 @@ class Client:
     def __init__(self, name, run, *, table=None, record=None, defer=None):
         """`run(statements)` runs them in order and returns `(column_names, rows)` of the last,
         rows as tuples; it raises SqlError, with the failed statement's index, on the first error.
-        `record(failure)` takes a failed check; `defer(callable)` takes a teardown. Without them a
-        failed check raises and a teardown runs at once."""
+        `record(failure)` takes a failure under `on_fail="continue"`; `defer(callable)` takes a
+        teardown. Without them such a failure raises and a teardown runs at once."""
         self.name = name
         self._run = run
         self._params = {"t": table} if table else {}
         self._record = record
         self._defer = defer
+        self.seconds = 0.0  # spent inside `run`, so a report can say which client the time went to
+        self.seconds = 0.0  # spent inside `run`, so a report can say which client the time went to
 
-    def _check(self, assertion, *args, **params):
+    def _check(self, on_fail, assertion, *args, **params):
+        if on_fail not in ON_FAIL:
+            raise ValueError(f"on_fail={on_fail!r}; it is one of {ON_FAIL}")
         try:
             assertion(*args, **params)
         except ExpectationFailed as failure:
-            if self._record is None:
+            if on_fail == "abort_test" or self._record is None:
                 raise
             self._record(failure)
 
@@ -92,9 +99,16 @@ class Client:
 
         return split_statements(fill(sql)) if isinstance(sql, str) else [fill(s).strip() for s in sql]
 
-    def _must_run(self, statements, what):
+    def _timed_run(self, statements):
+        t0 = time.perf_counter()
         try:
             return self._run(statements)
+        finally:
+            self.seconds += time.perf_counter() - t0
+
+    def _must_run(self, statements, what):
+        try:
+            return self._timed_run(statements)
         except SqlError as exc:
             failed = statements[exc.statement] if exc.statement is not None else "\n".join(statements)
             raise ExpectationFailed(self.name, failed, f"{what} failed: {exc}") from None
@@ -124,24 +138,18 @@ class Client:
 
         self._defer(run) if self._defer else run()
 
-    def oks(self, sql, **params):
-        self._check(self._assert_ok, sql, **params)
+    def oks(self, sql, *, on_fail="abort_test", **params):
+        self._check(on_fail, self._assert_ok, sql, **params)
 
-    def errs(self, sql, text, **params):
-        self._check(self._assert_error, sql, text, **params)
+    def errs(self, sql, text, *, on_fail="abort_test", **params):
+        self._check(on_fail, self._assert_error, sql, text, **params)
 
-    def expects(self, sql, rows, *, sort=False, **params):
-        self._check(self._assert_rows, sql, rows, sort=sort, **params)
+    def expects(self, sql, rows, *, sort=False, on_fail="abort_test", **params):
+        self._check(on_fail, self._assert_rows, sql, rows, sort=sort, **params)
 
-    def expects_contains(self, sql, rows, **params):
+    def expects_contains(self, sql, rows, *, on_fail="abort_test", **params):
         """Every row of `rows` is in the result; the result may hold more."""
-        self._check(self._assert_contains, sql, rows, **params)
-
-    def requires(self, sql, rows=None, *, sort=False, **params):
-        if rows is None:
-            self._assert_ok(sql, **params)
-        else:
-            self._assert_rows(sql, rows, sort=sort, **params)
+        self._check(on_fail, self._assert_contains, sql, rows, **params)
 
     def _assert_ok(self, sql, **params):
         self._must_run(self._statements(sql, params), "statement")
@@ -177,7 +185,7 @@ class Client:
     def _assert_error(self, sql, text, **params):
         statements = self._statements(sql, params)
         try:
-            self._run(statements)
+            self._timed_run(statements)
         except SqlError as exc:
             if exc.statement not in (None, len(statements) - 1):
                 raise ExpectationFailed(self.name, statements[exc.statement], f"statement failed: {exc}") from None

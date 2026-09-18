@@ -16,13 +16,26 @@ class SparkHandle:
         for n, statement in enumerate(statements):
             try:
                 result = self.session.sql(statement)
-                rows = [tuple(r) for r in result.collect()]
+                rows = [tuple(_plain(v) for v in r) for r in result.collect()]
             except Exception as exc:  # py4j and pyspark raise unrelated types; all mean "the SQL failed"
                 raise SqlError(_message(exc), statement=n) from None
         return list(result.columns), rows
 
     def stop(self):
         self.session.stop()
+
+
+def _plain(value):
+    """A struct arrives as a Row, which is a tuple that has lost its field names in any other form."""
+    if hasattr(value, "asDict"):
+        return {k: _plain(v) for k, v in value.asDict().items()}
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex().upper()
+    return value
 
 
 def _message(exc):

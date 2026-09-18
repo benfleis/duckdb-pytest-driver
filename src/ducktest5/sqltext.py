@@ -2,6 +2,7 @@
 
 import datetime
 import decimal
+import json
 import textwrap
 
 _QUOTES = {"'": "'", '"': '"', "`": "`"}
@@ -88,8 +89,9 @@ def render(value):
         return value.isoformat(sep=" ")
     if isinstance(value, float) and value == int(value) and abs(value) < 1e15:
         return f"{value:.1f}"
-    if isinstance(value, (list, tuple)):
-        return "[" + ", ".join(render(v) for v in value) + "]"
+    if isinstance(value, (list, tuple, dict)):
+        # One form for a nested value whatever the client's own types: compact JSON.
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=False, default=str)
     if isinstance(value, (datetime.date, datetime.time, decimal.Decimal, int, float, str)):
         return str(value)
     return str(value)

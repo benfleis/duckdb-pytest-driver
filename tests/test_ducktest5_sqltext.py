@@ -29,8 +29,8 @@ def test_split_statements(block, statements):
 
 
 def test_both_spellings_of_rows_are_the_same_text():
-    typed = [(1, None, "", True, 1.0, 1.5, datetime.date(2026, 1, 1), decimal.Decimal("2.50"), [1, None])]
-    text = "1\tNULL\t(empty)\ttrue\t1.0\t1.5\t2026-01-01\t2.50\t[1, NULL]"
+    typed = [(1, None, "", True, 1.0, 1.5, datetime.date(2026, 1, 1), decimal.Decimal("2.50"), [1, None], {"a": 1, "b": "ü"})]
+    text = '1\tNULL\t(empty)\ttrue\t1.0\t1.5\t2026-01-01\t2.50\t[1,null]\t{"a":1,"b":"ü"}'
     assert render_rows(typed) == parse_rows(text)
 
 
@@ -109,19 +109,20 @@ def test_error_in_an_earlier_statement_is_not_the_expected_error():
     _client(fail_at=1).errs("SELECT 1; SELECT nope", "boom")
 
 
-def test_a_failed_check_is_recorded_and_the_body_goes_on():
+def test_a_failure_aborts_by_default():
+    client = Client("fake", lambda statements: (["i"], [(1,)]), record=[].append)
+    with pytest.raises(ExpectationFailed):
+        client.expects("SELECT 1", rows="2")
+
+
+def test_on_fail_continue_records_and_the_body_goes_on():
     recorded = []
     client = Client("fake", lambda statements: (["i"], [(1,)]), record=recorded.append)
-    client.expects("SELECT 1", rows="2")
-    client.expects("SELECT 1", rows="3")
+    client.expects("SELECT 1", rows="2", on_fail="continue")
+    client.expects("SELECT 1", rows="3", on_fail="continue")
     assert len(recorded) == 2
-
-
-def test_requires_aborts_even_when_checks_are_recorded():
-    client = Client("fake", lambda statements: (["i"], [(1,)]), record=[].append)
-    client.requires("SELECT 1", rows="1")
-    with pytest.raises(ExpectationFailed):
-        client.requires("SELECT 1", rows="2")
+    with pytest.raises(ValueError):
+        client.expects("SELECT 1", rows="1", on_fail="ignore")
 
 
 def test_a_failed_setup_is_not_a_failed_check():

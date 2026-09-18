@@ -16,6 +16,8 @@ class Ctx:
         self._engines = {e: engines[e] for e in item.test.engines}
         self.failed_checks = []
         self.teardowns = []
+        self.clients = []
+        self.clients = []
 
     def duckdb(self, preamble="", *, table=None):
         """The built duckdb shell as a client. Every call is a fresh process running `preamble` then
@@ -32,7 +34,15 @@ class Ctx:
         return self._client(name, self._engines[name].run, table)
 
     def _client(self, name, run, table):
-        return Client(name, run, table=table, record=self.failed_checks.append, defer=self.teardowns.append)
+        client = Client(name, run, table=table, record=self.failed_checks.append, defer=self.teardowns.append)
+        self.clients.append(client)
+        return client
+
+    def seconds_by_client(self):
+        totals = {}
+        for client in self.clients:
+            totals[client.name] = totals.get(client.name, 0.0) + client.seconds
+        return {name: round(seconds, 2) for name, seconds in totals.items()}
 
     def location(self, name):
         """A path under this test's temp dir for a table the body creates. Not created here."""
