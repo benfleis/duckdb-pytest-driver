@@ -15,10 +15,16 @@ class SparkHandle:
         try:
             return [tuple(r) for r in self.session.sql(sql).collect()]
         except Exception as exc:  # py4j and pyspark raise unrelated types; all mean "the SQL failed"
-            raise SqlError(str(exc).splitlines()[0]) from None
+            raise SqlError(_message(exc)) from None
 
     def stop(self):
         self.session.stop()
+
+
+def _message(exc):
+    """The JVM exception's own message lines, without the py4j preamble and the Java stack."""
+    lines = [l for l in str(exc).splitlines() if l.strip() and not l.startswith(("\tat ", "An error occurred while calling"))]
+    return "\n".join(lines[:6]).lstrip(": ")
 
 
 @contextlib.contextmanager
