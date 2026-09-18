@@ -75,6 +75,97 @@ the driver).
   paired drivers landed too** — a `.py` can pair with any of the three body suffixes; a driver paired
   to a slow body is itself gated on `--slow`.
 
+## v0.4 — review follow-ups (reviewed 2026-08-14)
+
+Findings from reviewing `HendrikLambert:dev/v0.4` (+ the `duckdb-httpfs:ducktest-migration` branch)
+against the branching point. `file:line` refs are on the v0.4 branch. Ordered by severity within group.
+The spine (collect-first, single plan, one-way per-item env, matrix axis) and the services layer are
+sound; these are the outcomes worth fixing before v0.4 lands.
+
+### Correctness
+
+- **[HIGH] Teardown crashes on a managed service that `depends_on` an attached/external one** —
+  `plugin.py:989` `_stop_services` builds `started` from store presence, but attached
+  (`--existing-service`) / `start=None` services are never stored, so `_topological_service_order`
+  (`plugin.py:957`) raises `UsageError` on the missing dep and aborts `sessionfinish` teardown (leaks
+  the `SyncManager`, `prior_env` never restored). Breaks the exact `rest`→`minio` + `--existing-service`
+  split-brain case the design serves. Repro added: `tests/test_service_depends_on_attach.py` (red until
+  fixed). Fix: teardown must ignore deps outside the started subset — the helper's only caller is
+  teardown, but keep the undeclared-key guard a separate test relies on (filter in `_stop_services`,
+  don't weaken the helper). Also add the managed→attached-dependency case to `test_service_depends_on.py`.
+- **[MED] A matrix cell's `temp_dir_root` override escapes both the session sweep and the age-sweep
+  backstop** — `sweeper.py:80` / `sqllogic.py:184` model a single run-wide root, so a cell writing to an
+  alternate remote root (the feature's own motivating `az://acct1` vs `abfss://acct2` case) leaks its
+  temp tree permanently, violating SPEC §11.6. Fix: enumerate per-cell roots for the keep-list/age sweep,
+  or `log()` the un-swept roots. Add a test asserting the sweep reaches an alternate-root tree.
+- **[MED] RO store-backed single-flight assumes cross-worker shared storage** — `provision.py:150`. A
+  provisioner whose RO `instantiate` writes worker-local state has peer workers skip instantiation and
+  address a missing table (silent-wrongness, no opt-out). Fix: per-provisioner opt-out, or document the
+  shared-storage requirement and fail loud otherwise. Test the local-storage case.
+- **[MED] A wedged `docker` call hangs the session with no output** — `resources/_docker.py:16` runs
+  `docker` with `capture_output=True` and no `timeout`, so an exec that never returns blocks its worker
+  forever: pytest prints nothing, no test is reported, and the run has to be killed. Observed through the
+  UC repo's `uctl` wrapper, which has the same shape: `uctl` had already exited (defunct) while its
+  `docker` child held the captured pipes, so the reader waited on an EOF that could not come, and the
+  child was never reaped. Fix: give every docker invocation a timeout and report the expiry as a failure;
+  keep a grandchild from holding the captured pipes. Test: a fake `docker` on PATH that sleeps past the
+  timeout must fail rather than hang.
+- **[LOW-MED] Event `temp_dir` check false-fires with a local mirror** — `sqllogic.py:538/573` asserts the
+  echoed `temp_dir` `startswith` the *remote* root; with `--local-temp-dir-root` the binary echoes the
+  local path → spurious `RuntimeError` on a passing test. Compare against the local root when set; add a
+  test exercising the event check with `--local-temp-dir-root`.
+
+### Design & docs
+
+- **[MED] `identity.py` ships as dead public API under a deprecated name** — promoted into `__all__` with
+  zero in-tree callers, named `identity` which this branch's own `ARCHITECTURE.md` tells integrators to
+  stop using; `ARCHITECTURE.md` also flatly denies the module is in ducktest (three tellings disagree).
+  Fix: wire it to a consumer (the `Provisioner` base — the UC/iceberg identity contract) or keep internal
+  until wired; settle the name; unify the two env-key rules (`identity.env_key` vs `plugin.py:1429`);
+  correct `ARCHITECTURE.md`.
+- **[MED] `decorate.py` `Key.backend`/`Key.access` projections are inert** — `coordination_key`/
+  `rw_identity` are dead; `Key` carries 3 of 5 fields perpetually `None`. Wire a consumer or drop the
+  scaffolding and downgrade its docstring from guarantee to intent.
+- **[MED] Duplicate roadmap** — `RESOURCE-PLANNING.md` restates already-landed behavior documented in four
+  other files; `SPEC §11.4` re-derives `MATRIX.md`; new per-service docs carry roadmap/status narration.
+  Consolidate roadmap into this file; make SPEC reference MATRIX; strip status sections from reference docs.
+- **[LOW] Polish** — `id(config)` memo GC-reuse footgun (`plugin.py:1331`); nondeterministic init-SQL
+  concat over a `frozenset` (`plugin.py:1098`); attached-HTTPS yields no trust env (`httpserver.py:79`);
+  attach always runs `populate` (no read-only opt-out); invented "2-min default" store timeout in
+  `INTERNALS.md`; broken `docs/services/*` cross-ref links; env-ref error names the internal key `'root'`
+  not `temp_dir_root` (`sqllogic.py:135`).
+
+### httpfs migration (`duckdb-httpfs:ducktest-migration` — test-only, zero C++)
+
+- **[MED] CA/TLS positive path is unexercised** — only a negative `ca_cert_file` test exists; no migrated
+  test forces a successful handshake against the driver-minted CA (HTTP server defaults to plain HTTP,
+  S3 cells set `DUCKDB_S3_USE_SSL=false`). CA-bundle/trust plumbing regressions would pass silently. Add
+  one HTTPS-origin case (flip `DUCKTEST_HTTP_SERVER_TLS`, assert a scan succeeds *only* with the minted
+  `ca_cert_file`). Header-merge and proxy-auth surfaces ARE genuinely exercised (self-checking).
+- **[LOW-MED] Stale docstring** `mitm_profile.py:18` — claims `run_paired` can't pass `--init-sqllogic`;
+  it does via `init_sql` (`plugin.py:1859→1334`), the path `http_proxy_auth.py` depends on. Correct it.
+- **[LOW] Cosmetic** — `# group:` tags carried through the file moves no longer match the new directory
+  layout; the proxy suite provisions `CA_SERVICE` it never exercises (ties to the CA gap above).
+
+### Prose
+
+- **[LOW] Migration-phase handles in added docstrings** — `plugin.py`/`provision.py`/`decorate.py`/
+  `rclone.py` lean on "phase 3–9", "P3/P4", "found live via <box>", "the az `test/core`", dated notes;
+  collapse each to the invariant it states (per AGENTS.md §Comments). One is factually wrong:
+  `tests/test_auto_init_sql.py:645` says `_batch_key` folds in the init-sqllogic argv — it keys on suite
+  identity; rewrite to name the real mechanism. (Commit messages + CHANGELOG are clean/exemplary.)
+
+### Compatibility & logistics
+
+- **DuckDB dependency gate** — v0.4 requires the `unittest` interface from DuckDB **#24355**; any `.test`
+  keeping `require-env` for a driver-passed var also needs **#24459**. Fix the PR-number inconsistency:
+  `SPEC.md:544` credits **#24158** for the same flags the CHANGELOG credits to **#24355**.
+- **Default image namespace** — `_images.py` `DEFAULT_IMAGE_NS` now defaults to a personal
+  `ghcr.io/hendriklambert`, not `benfleis`; confirm intended.
+- **Reconcile with in-flight work** — v0.4 supersedes the local `temp-dir-base`→`-root` rename (`dd710fc`)
+  with the fuller #24355 interface (`--local-temp-dir-root`/`--local-data-dir`/`--env-passthrough`), and
+  merged `resource-planning` (matrix/identity/`depends_on`/RO-sharing/`Key` are shared lineage).
+
 ## Pre-0.1 release gates (decided 2026-07-14)
 
 **Release plan:** push `0.0.1` to the real `duckdb`-org repo now, as-is — iterate publicly there — land
