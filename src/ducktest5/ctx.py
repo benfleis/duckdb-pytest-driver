@@ -15,13 +15,16 @@ def _no_reconnect():
 
 
 class Ctx:
-    def __init__(self, item, *, temp_dir, duckdb_bin, duckdb_session, engines):
+    def __init__(self, item, *, temp_dir, duckdb_bin, duckdb_session, engines, services=None, remote_parts=()):
         self.id = item.id
         self.case = item.case
         self.temp_dir = temp_dir
         self._duckdb_bin = duckdb_bin
         self._duckdb_session = duckdb_session
         self._engines = {e: engines[e] for e in item.test.engines}
+        self._services = {s: services[s] for s in item.test.services} if services else {}
+        self._remote_parts = remote_parts
+        self.remote_locations = []  # (service id, uri): what this test may have written outside temp_dir
         self.failed_checks = []
         self.teardowns = []
         self.clients = []
@@ -58,8 +61,20 @@ class Ctx:
             totals[client.name] = totals.get(client.name, 0.0) + client.seconds
         return {name: round(seconds, 2) for name, seconds in totals.items()}
 
-    def location(self, name):
-        """A path under this test's temp dir for a table the body creates. Not created here."""
-        return os.path.join(self.temp_dir, name)
+    def service(self, name):
+        """The facts of a service this test declared: endpoint, bucket, credentials."""
+        if name not in self._services:
+            raise KeyError(f"service {name!r} is not declared by this test (services={sorted(self._services)})")
+        return self._services[name].block
+
+    def location(self, name, *, on=None):
+        """A place for a table the body creates; nothing is created here. By default a path under
+        this test's temp dir; with `on=<service>`, a URI under this run's prefix on that service."""
+        if on is None:
+            return os.path.join(self.temp_dir, name)
+        provisioned = self._services[on] if on in self._services else self.service(on)
+        uri = provisioned.service.location(provisioned.block, *self._remote_parts, name)
+        self.remote_locations.append((on, uri))
+        return uri
 
     step = staticmethod(step)

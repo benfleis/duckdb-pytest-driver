@@ -14,27 +14,59 @@ class Engine:
 
     `boot(log_path)` returns a handle with `run(statements)` (as `Client` describes it) and `stop()`. `variant` names
     what was booted (e.g. "spark:4.2:delta-4.4") for the scan record and the report.
+
+    `uses` names services the engine can talk to. It never makes a run provision one: when a
+    selected test needs such a service, the handle's `use_service(id, block)` is called once, after
+    boot, with the facts of the instance.
     """
 
     id: str
     variant: str
     boot: Callable
+    uses: tuple = ()
+
+
+@dataclass(frozen=True)
+class Service:
+    """Infrastructure a test needs and the run provides: an object store, a catalog server.
+
+    `block(**overrides)` gives the facts of one instance (endpoint, bucket, credentials) as a plain
+    dict, the same shape whether the run started the instance or found it. The rest work on a block:
+    `alive(block)` is a cheap probe; `start(block)` / `stop(block)` boot and remove a managed
+    instance (`start=None`: the service is never ours to start, e.g. a cloud workspace);
+    `setup(block)` makes the structure tests rely on (a bucket, a user) and must be idempotent, as
+    it runs in every mode; `clean(block, prefix)` removes what a test wrote under `prefix`.
+    `secrets` names block fields that must not reach a report.
+
+    How an instance comes to be is the run's choice, not the test's -- see `provision`.
+    """
+
+    id: str
+    block: Callable
+    alive: Callable
+    start: Callable | None = None
+    stop: Callable | None = None
+    setup: Callable | None = None
+    clean: Callable | None = None
+    location: Callable | None = None  # (block, *parts) -> a writable URI under the run's prefix
+    secrets: tuple = ()
 
 
 @dataclass(frozen=True)
 class Test:
     body: Callable
     engines: tuple = ()
+    services: tuple = ()
     cases: dict = field(default_factory=dict)
     tags: tuple = ()
 
 
-def test(*, engines=(), cases=None, tags=()):
+def test(*, engines=(), services=(), cases=None, tags=()):
     """Mark `body(ctx)` as a test. `cases` maps a case id to the params the body reads as `ctx.case`;
     the test runs once per case."""
 
     def mark(body):
-        body.__ducktest__ = Test(body, tuple(engines), dict(cases or {}), tuple(tags))
+        body.__ducktest__ = Test(body, tuple(engines), tuple(services), dict(cases or {}), tuple(tags))
         return body
 
     return mark

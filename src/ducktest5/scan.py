@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass
 
 from .binary import UsageError
-from .declare import PROJECT_FILE, Engine, Test
+from .declare import PROJECT_FILE, Engine, Service, Test
 
 
 @dataclass(frozen=True)
@@ -22,7 +22,7 @@ class Item:
     def case(self):
         return self.test.cases.get(self.case_id, {})
 
-    def record(self, engines):
+    def record(self, engines, services=None):
         return {
             "identity": {
                 "id": self.id,
@@ -33,6 +33,7 @@ class Item:
             "preconditions": {
                 "engines": [{"id": e, "variant": engines[e].variant} for e in self.test.engines],
                 "clients": ["duckdb-shell", *self.test.engines],
+                "services": list(self.test.services),
             },
             "runtime": {"case": self.case},
         }
@@ -46,19 +47,27 @@ def _load(path, name):
     return module
 
 
+@dataclass(frozen=True)
+class Project:
+    engines: dict
+    services: dict
+
+
 def load_project(root):
-    """The engines declared in the nearest `ducktest_project.py` at or above `root`."""
+    """What the nearest `ducktest_project.py` at or above `root` declares: ENGINES and SERVICES."""
     here = os.path.abspath(root if os.path.isdir(root) else os.path.dirname(root))
     while True:
         candidate = os.path.join(here, PROJECT_FILE)
         if os.path.isfile(candidate):
             project = _load(candidate, "ducktest_project")
             engines = {e.id: e for e in getattr(project, "ENGINES", ())}
+            services = {s.id: s for s in getattr(project, "SERVICES", ())}
             assert all(isinstance(e, Engine) for e in engines.values()), f"{candidate}: ENGINES must hold Engine"
-            return engines
+            assert all(isinstance(s, Service) for s in services.values()), f"{candidate}: SERVICES must hold Service"
+            return Project(engines, services)
         parent = os.path.dirname(here)
         if parent == here:
-            return {}
+            return Project({}, {})
         here = parent
 
 
@@ -73,8 +82,9 @@ def _test_files(root):
 
 
 def scan(root, *, select=None, working_dir="."):
-    """Returns (items, engines). Selection is a substring match on the item id."""
-    engines = load_project(root)
+    """Returns (items, project). Selection is a substring match on the item id."""
+    project = load_project(root)
+    engines = project.engines
     items = []
     for path in _test_files(root):
         rel = os.path.relpath(path, working_dir)
@@ -86,9 +96,12 @@ def scan(root, *, select=None, working_dir="."):
             unknown = [e for e in test.engines if e not in engines]
             if unknown:
                 raise UsageError(f"{rel}::{name} needs engines {unknown}, not declared in {PROJECT_FILE}")
+            unknown = [s for s in test.services if s not in project.services]
+            if unknown:
+                raise UsageError(f"{rel}::{name} needs services {unknown}, not declared in {PROJECT_FILE}")
             for case_id in test.cases or [None]:
                 suffix = f"[{case_id}]" if case_id is not None else ""
                 items.append(Item(f"{rel}::{name}{suffix}", test, case_id, rel))
     if select:
         items = [i for i in items if select in i.id]
-    return items, engines
+    return items, project

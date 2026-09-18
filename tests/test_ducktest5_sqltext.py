@@ -29,7 +29,9 @@ def test_split_statements(block, statements):
 
 
 def test_both_spellings_of_rows_are_the_same_text():
-    typed = [(1, None, "", True, 1.0, 1.5, datetime.date(2026, 1, 1), decimal.Decimal("2.50"), [1, None], {"a": 1, "b": "ü"})]
+    typed = [
+        (1, None, "", True, 1.0, 1.5, datetime.date(2026, 1, 1), decimal.Decimal("2.50"), [1, None], {"a": 1, "b": "ü"})
+    ]
     text = '1\tNULL\t(empty)\ttrue\t1.0\t1.5\t2026-01-01\t2.50\t[1,null]\t{"a":1,"b":"ü"}'
     assert render_rows(typed) == parse_rows(text)
 

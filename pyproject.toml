@@ -22,6 +22,9 @@ classifiers = [
 dependencies = ["pytest>=7.4", "pyyaml>=6"]
 
 [project.optional-dependencies]
+# For ducktest5's S3 services (MinIO): bucket setup and the cleanup of what a run wrote.
+s3 = ["boto3"]
+
 # For CONSUMERS who want `-n` parallelism: `pip install duckdb-pytest-driver[xdist]`.
 xdist = ["pytest-xdist"]
 

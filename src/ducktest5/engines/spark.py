@@ -21,6 +21,21 @@ class SparkHandle:
                 raise SqlError(_message(exc), statement=n) from None
         return list(result.columns), rows
 
+    def use_service(self, service_id, block):
+        """Point s3a at an S3-compatible service. Spark copies SQL confs into the Hadoop conf of each
+        query, so this works after boot; the jar must already be on the classpath (`s3a=True`)."""
+        for key, value in {
+            "fs.s3a.endpoint": block["endpoint"],
+            "fs.s3a.endpoint.region": block["region"],
+            "fs.s3a.path.style.access": str(block["url_style"] == "path").lower(),
+            "fs.s3a.connection.ssl.enabled": str(block["use_ssl"]).lower(),
+            "fs.s3a.access.key": block["access_key"],
+            "fs.s3a.secret.key": block["secret_key"],
+            "fs.s3a.aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+        }.items():
+            self.session.conf.set(key, value)
+            self.session.sparkContext._jsc.hadoopConfiguration().set(key, value)
+
     def stop(self):
         self.session.stop()
 
@@ -40,7 +55,9 @@ def _plain(value):
 
 def _message(exc):
     """The JVM exception's own message lines, without the py4j preamble and the Java stack."""
-    lines = [l for l in str(exc).splitlines() if l.strip() and not l.startswith(("\tat ", "An error occurred while calling"))]
+    lines = [
+        l for l in str(exc).splitlines() if l.strip() and not l.startswith(("\tat ", "An error occurred while calling"))
+    ]
     return "\n".join(lines[:6]).lstrip(": ")
 
 
@@ -60,7 +77,7 @@ def _stdio_to(log_path):
             os.close(saved[1])
 
 
-def _boot_delta(log_path):
+def _boot_delta(log_path, packages=()):
     import pyspark
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
@@ -79,13 +96,23 @@ def _boot_delta(log_path):
         .config("spark.default.parallelism", "2")
     )
     with _stdio_to(log_path):
-        session = configure_spark_with_delta_pip(builder).getOrCreate()
+        session = configure_spark_with_delta_pip(builder, extra_packages=list(packages)).getOrCreate()
         session.sparkContext.setLogLevel("ERROR")
     return SparkHandle(session), pyspark.__version__
 
 
-def delta_spark(id="spark"):
-    """Local Spark with the delta-spark that matches the installed pyspark."""
+def _hadoop_version():
+    import glob
+
+    import pyspark
+
+    jars = glob.glob(os.path.join(os.path.dirname(pyspark.__file__), "jars", "hadoop-client-api-*.jar"))
+    return os.path.basename(jars[0])[len("hadoop-client-api-") : -len(".jar")] if jars else None
+
+
+def delta_spark(id="spark", *, s3a=False, uses=()):
+    """Local Spark with the delta-spark that matches the installed pyspark. `s3a=True` puts the
+    hadoop-aws that matches Spark's Hadoop on the classpath, so the engine can use an S3 service."""
     from importlib.metadata import PackageNotFoundError, version
 
     def v(dist):
@@ -94,4 +121,6 @@ def delta_spark(id="spark"):
         except PackageNotFoundError:
             return "missing"
 
-    return Engine(id, f"spark:{v('pyspark')}:delta-{v('delta-spark')}:local", lambda log: _boot_delta(log)[0])
+    packages = (f"org.apache.hadoop:hadoop-aws:{_hadoop_version()}",) if s3a else ()
+    variant = f"spark:{v('pyspark')}:delta-{v('delta-spark')}:local" + (":s3a" if s3a else "")
+    return Engine(id, variant, lambda log: _boot_delta(log, packages)[0], uses=tuple(uses))

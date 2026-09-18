@@ -22,17 +22,34 @@ def main(argv=None):
     p.add_argument("--duckdb-bin")
     p.add_argument("--temp-dir-root", default="duckdb_unittest_tempdir")
     p.add_argument("--keep", action="store_true", help="keep temp dirs of passed tests too")
+    p.add_argument(
+        "--existing-service",
+        action="append",
+        default=[],
+        metavar="ID[=URL|={json}]",
+        help="use a running instance of a service; it is never stopped (also DUCKTEST_EXISTING_SERVICE_<ID>)",
+    )
+    p.add_argument("--keep-services", action="store_true", help="find each service or start it, and leave it running")
     args = parser.parse_args(argv)
 
     try:
-        items, engines = scan(args.path, select=args.select, working_dir=os.getcwd())
+        items, project = scan(args.path, select=args.select, working_dir=os.getcwd())
+        engines = project.engines
         if args.command == "scan":
             yaml.safe_dump([i.record(engines) for i in items], sys.stdout, sort_keys=False, width=100)
             return 0
         if not items:
             raise UsageError(f"no tests selected under {args.path}")
         duckdb_bin = find_duckdb(explicit=args.duckdb_bin, build=args.build, working_dir=os.getcwd())
-        return run(items, engines, duckdb_bin=duckdb_bin, temp_root=args.temp_dir_root, keep=args.keep)
+        return run(
+            items,
+            project,
+            duckdb_bin=duckdb_bin,
+            temp_root=args.temp_dir_root,
+            keep=args.keep,
+            existing_services=args.existing_service,
+            keep_services=args.keep_services,
+        )
     except UsageError as exc:
         print(f"ducktest5: {exc}", file=sys.stderr)
         return 2
