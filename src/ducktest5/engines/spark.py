@@ -73,6 +73,10 @@ def _boot_delta(log_path):
         .config("spark.ui.enabled", "false")
         .config("spark.ui.showConsoleProgress", "false")
         .config("spark.sql.shuffle.partitions", "2")
+        # Delta rebuilds a table's state as a 50-partition job by default: 50 tasks for a log of a
+        # few commits, on every statement. Test tables are tiny.
+        .config("spark.databricks.delta.snapshotPartitions", "1")
+        .config("spark.default.parallelism", "2")
     )
     with _stdio_to(log_path):
         session = configure_spark_with_delta_pip(builder).getOrCreate()
