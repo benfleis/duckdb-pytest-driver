@@ -2,8 +2,8 @@
 
 import os
 
-from .client import Client, SqlError
-from .shell import DuckShell, last_json_array
+from .client import Client
+from .engines.duckdb import DuckDBShell
 from .steps import step
 
 
@@ -16,23 +16,13 @@ class Ctx:
         self._engines = {e: engines[e] for e in item.test.engines}
 
     def duckdb(self, preamble="", *, table=None):
-        """The built duckdb shell as a client. Every statement is a fresh process running
-        `preamble + sql`, so it always sees the latest committed state.
+        """The built duckdb shell as a client. Every call is a fresh process running `preamble` then
+        the call's statements, so it always sees the latest committed state.
 
-        TODO: one process per statement does not scale (about 0.5s each on a debug build, plus a
-        re-ATTACH). The target is one shell per test with statements piped in, and a full disconnect
-        only where a test needs caches flushed.
+        TODO: one process per call still costs about 0.5s on a debug build, plus the re-ATTACH. The
+        target is one shell per test, with a full disconnect only where a test needs caches flushed.
         """
-        shell = DuckShell(self._duckdb_bin, preamble)
-
-        def run(sql):
-            p = shell._run(sql, json_out=True)
-            if p.returncode != 0:
-                raise SqlError(p.stderr.strip())
-            rows = last_json_array(p.stdout)
-            return (list(rows[0]) if rows else []), [tuple(row.values()) for row in rows]
-
-        return Client("duckdb", run, table=table)
+        return Client("duckdb", DuckDBShell(self._duckdb_bin, preamble).run, table=table)
 
     def engine(self, name, *, table=None):
         if name not in self._engines:

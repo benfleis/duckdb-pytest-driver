@@ -11,12 +11,15 @@ class SparkHandle:
     def __init__(self, session):
         self.session = session
 
-    def run(self, sql):
-        try:
-            result = self.session.sql(sql)
-            return list(result.columns), [tuple(r) for r in result.collect()]
-        except Exception as exc:  # py4j and pyspark raise unrelated types; all mean "the SQL failed"
-            raise SqlError(_message(exc)) from None
+    def run(self, statements):
+        result = None
+        for n, statement in enumerate(statements):
+            try:
+                result = self.session.sql(statement)
+                rows = [tuple(r) for r in result.collect()]
+            except Exception as exc:  # py4j and pyspark raise unrelated types; all mean "the SQL failed"
+                raise SqlError(_message(exc), statement=n) from None
+        return list(result.columns), rows
 
     def stop(self):
         self.session.stop()

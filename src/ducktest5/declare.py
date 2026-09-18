@@ -12,7 +12,7 @@ PROJECT_FILE = "ducktest_project.py"
 class Engine:
     """A non-DuckDB SQL engine a body can drive, booted once per run and shared by every test.
 
-    `boot(log_path)` returns a handle with `run(sql)` (`(column_names, rows)`, rows as tuples, or SqlError) and `stop()`. `variant` names
+    `boot(log_path)` returns a handle with `run(statements)` (as `Client` describes it) and `stop()`. `variant` names
     what was booted (e.g. "spark:4.2:delta-4.4") for the scan record and the report.
     """
 

@@ -1,32 +1,34 @@
 """One SQL vocabulary for every client a body drives, DuckDB included. The verbs are sqllogictest's:
 
-    ok(sql)             statement ok      setup or action; must succeed
+    ok(sql)             statement ok      must succeed
     expect(sql, rows)   query + ----      the assertion, expected rows beside the query
     error(sql, text)    statement error   must fail, with `text` in the message
 
-`{t}` in a statement is this client's spelling of the table under test; other `{name}` placeholders
-come from keyword arguments. Braces that are not a known placeholder are left alone (struct literals).
+`sql` is one statement, a block of them split on `;`, or a list of statements taken as they are (for
+a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
+and `rows` / `text` belong to the last one. `{t}` is this client's spelling of the table under test; other
+`{name}` placeholders come from keyword arguments. Braces that are not a known placeholder are left
+alone (struct literals), so write plain strings, not f-strings.
 
-Rows compare on a canonical form: dates, times and decimals become their text (ISO) form, because
-clients disagree on the Python type (the duckdb shell returns JSON text, Spark returns `datetime`).
-Write such values as strings in expected rows.
+Rows compare as TEXT, the way a .test file does: one line per row, TAB between values, `NULL`,
+`(empty)`, `true`/`false`. `rows` is written in that form; a list of tuples is a second spelling of
+the same thing, rendered by the same rules before the comparison, so `[(1, None, "")]` means exactly
+`1<TAB>NULL<TAB>(empty)`. The text form is the only comparison: 1 and '1' are equal, as in a .test
+file. Where the type matters, ask in SQL (`SELECT typeof(x)`). Every client has
+`assert_true(cond[, message])`, so a statement can check itself.
 """
 
-import datetime
-import decimal
 import re
 
-
-def canonical(value):
-    if isinstance(value, (datetime.date, datetime.time, decimal.Decimal)):
-        return value.isoformat(sep=" ") if isinstance(value, datetime.datetime) else str(value)
-    if isinstance(value, (list, tuple)):
-        return type(value)(canonical(v) for v in value)
-    return value
+from .sqltext import format_rows, parse_rows, render_rows, split_statements
 
 
 class SqlError(Exception):
-    pass
+    """`statement` is the index, in the list given to `run`, of the statement that failed."""
+
+    def __init__(self, message, statement=None):
+        super().__init__(message)
+        self.statement = statement
 
 
 class ExpectationFailed(AssertionError):
@@ -34,74 +36,87 @@ class ExpectationFailed(AssertionError):
         super().__init__(f"[{client}] {problem}\n{_indent(sql)}")
 
 
-def _indent(text):
-    return "\n".join("    " + line for line in text.strip().splitlines())
+def _indent(text, by="    "):
+    return "\n".join(by + line for line in text.strip("\n").splitlines())
 
 
-def _table(rows):
-    return _indent("\n".join(repr(r) for r in rows) or "(no rows)")
+def _as_text(rows):
+    return parse_rows(rows) if isinstance(rows, str) else render_rows(rows)
 
 
 class Client:
     def __init__(self, name, run, *, table=None):
-        """`run(sql)` returns `(column_names, rows)` with rows as tuples, or raises SqlError."""
+        """`run(statements)` runs them in order and returns `(column_names, rows)` of the last,
+        rows as tuples; it raises SqlError, with the failed statement's index, on the first error."""
         self.name = name
         self._run = run
         self._params = {"t": table} if table else {}
 
-    def _render(self, sql, params):
+    def _statements(self, sql, params):
         known = {**self._params, **params}
-        return re.sub(r"\{(\w+)\}", lambda m: str(known[m.group(1)]) if m.group(1) in known else m.group(0), sql)
+
+        def fill(text):
+            return re.sub(r"\{(\w+)\}", lambda m: str(known[m.group(1)]) if m.group(1) in known else m.group(0), text)
+
+        return split_statements(fill(sql)) if isinstance(sql, str) else [fill(s).strip() for s in sql]
+
+    def _must_run(self, statements, what):
+        try:
+            return self._run(statements)
+        except SqlError as exc:
+            failed = statements[exc.statement] if exc.statement is not None else "\n".join(statements)
+            raise ExpectationFailed(self.name, failed, f"{what} failed: {exc}") from None
 
     def rows(self, sql, **params):
-        return self._run(self._render(sql, params))[1]
+        return self._must_run(self._statements(sql, params), "query")[1]
 
     def record(self, sql, **params):
         """The single row of `sql` as a dict, for DESCRIBE-like statements with many columns."""
-        columns, rows = self._run(self._render(sql, params))
-        assert len(rows) == 1, f"[{self.name}] expected one row, got {len(rows)}\n{_indent(sql)}"
+        statements = self._statements(sql, params)
+        columns, rows = self._must_run(statements, "query")
+        assert len(rows) == 1, f"[{self.name}] expected one row, got {len(rows)}\n{_indent(statements[-1])}"
         return dict(zip(columns, rows[0]))
 
     def ok(self, sql, **params):
-        sql = self._render(sql, params)
-        try:
-            self._run(sql)
-        except SqlError as exc:
-            raise ExpectationFailed(self.name, sql, f"statement failed: {exc}") from None
+        self._must_run(self._statements(sql, params), "statement")
 
-    def expect(self, sql, rows, **params):
-        sql = self._render(sql, params)
-        try:
-            actual = self._run(sql)[1]
-        except SqlError as exc:
-            raise ExpectationFailed(self.name, sql, f"query failed: {exc}") from None
-        expected = [canonical(tuple(r)) for r in rows]
-        actual = [canonical(r) for r in actual]
-        if actual != expected:
-            raise ExpectationFailed(
-                self.name, sql, f"wrong result\n  expected:\n{_table(expected)}\n  actual:\n{_table(actual)}\n  query:"
-            )
+    def expect(self, sql, rows, *, sort=False, **params):
+        statements = self._statements(sql, params)
+        expected, actual = _as_text(rows), render_rows(self._must_run(statements, "query")[1])
+        if sort:
+            expected, actual = sorted(expected), sorted(actual)
+        if actual == expected:
+            return
+        widths = {len(r) for r in expected}, {len(r) for r in actual}
+        hint = ""
+        if actual and expected and widths[0] != widths[1]:
+            hint = f" (expected rows have {sorted(widths[0])} values, the result has {sorted(widths[1])}; TAB between values?)"
+        raise ExpectationFailed(
+            self.name,
+            statements[-1],
+            f"wrong result{hint}\n  expected:\n{_indent(format_rows(expected))}\n  actual:\n{_indent(format_rows(actual))}\n  query:",
+        )
 
     def expect_contains(self, sql, rows, **params):
         """Every row of `rows` is in the result; the result may hold more."""
-        sql = self._render(sql, params)
-        try:
-            actual = self._run(sql)[1]
-        except SqlError as exc:
-            raise ExpectationFailed(self.name, sql, f"query failed: {exc}") from None
-        actual = [canonical(r) for r in actual]
-        missing = [canonical(tuple(r)) for r in rows if canonical(tuple(r)) not in actual]
+        statements = self._statements(sql, params)
+        actual = render_rows(self._must_run(statements, "query")[1])
+        missing = [r for r in _as_text(rows) if r not in actual]
         if missing:
             raise ExpectationFailed(
-                self.name, sql, f"rows missing\n  missing:\n{_table(missing)}\n  actual:\n{_table(actual)}\n  query:"
+                self.name,
+                statements[-1],
+                f"rows missing\n  missing:\n{_indent(format_rows(missing))}\n  actual:\n{_indent(format_rows(actual))}\n  query:",
             )
 
     def error(self, sql, text, **params):
-        sql = self._render(sql, params)
+        statements = self._statements(sql, params)
         try:
-            self._run(sql)
+            self._run(statements)
         except SqlError as exc:
+            if exc.statement not in (None, len(statements) - 1):
+                raise ExpectationFailed(self.name, statements[exc.statement], f"statement failed: {exc}") from None
             if text not in str(exc):
-                raise ExpectationFailed(self.name, sql, f"failed, but not with {text!r}: {exc}") from None
+                raise ExpectationFailed(self.name, statements[-1], f"failed, but not with {text!r}: {exc}") from None
             return
-        raise ExpectationFailed(self.name, sql, f"statement succeeded, expected an error with {text!r}")
+        raise ExpectationFailed(self.name, statements[-1], f"statement succeeded, expected an error with {text!r}")
