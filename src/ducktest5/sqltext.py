@@ -42,8 +42,42 @@ def _has_sql(statement):
     return any(line.strip() and not line.strip().startswith("--") for line in statement.splitlines())
 
 
+class L(str):
+    """A SQL literal or expression written by hand, e.g. `L("1::TINYINT")`. It goes into a statement
+    as it is. Python knows nothing about what it evaluates to, so rows cannot be derived from it."""
+
+
+def sql_values(rows):
+    """Rows of native values (int, str, date, None, bool) or `L(...)` as a SQL VALUES list."""
+    return ", ".join("(" + ", ".join(_sql_literal(v) for v in _as_row(row)) + ")" for row in rows)
+
+
+def _sql_literal(value):
+    if isinstance(value, L):
+        return str(value)
+    if value is None:
+        return "NULL"
+    if value is True or value is False:
+        return "true" if value else "false"
+    if isinstance(value, (int, float, decimal.Decimal)):
+        return str(value)
+    if isinstance(value, datetime.datetime):
+        return f"TIMESTAMP '{value.isoformat(sep=' ')}'"
+    if isinstance(value, datetime.date):
+        return f"DATE '{value.isoformat()}'"
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    raise TypeError(f"no SQL literal for {value!r}; write it as L('...')")
+
+
+def _as_row(row):
+    return row if isinstance(row, (list, tuple)) else (row,)
+
+
 def render(value):
     """One value as sqllogictest prints it."""
+    if isinstance(value, L):
+        raise TypeError(f"values contain L({str(value)!r}); define the rows by hand")
     if value is None:
         return "NULL"
     if value is True or value is False:
@@ -63,7 +97,7 @@ def render(value):
 
 def render_rows(rows):
     """A row that is not a tuple or list is a row of one value, so `[1, 3]` is two rows."""
-    return [tuple(render(v) for v in (row if isinstance(row, (list, tuple)) else (row,))) for row in rows]
+    return [tuple(render(v) for v in _as_row(row)) for row in rows]
 
 
 def parse_rows(text):

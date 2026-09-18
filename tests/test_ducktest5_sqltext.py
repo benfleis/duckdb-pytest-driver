@@ -6,7 +6,7 @@ import decimal
 import pytest
 
 from ducktest5.client import Client, ExpectationFailed, SqlError
-from ducktest5.sqltext import parse_rows, render_rows, split_statements
+from ducktest5.sqltext import L, parse_rows, render_rows, split_statements, sql_values
 
 
 @pytest.mark.parametrize(
@@ -32,6 +32,26 @@ def test_both_spellings_of_rows_are_the_same_text():
     typed = [(1, None, "", True, 1.0, 1.5, datetime.date(2026, 1, 1), decimal.Decimal("2.50"), [1, None])]
     text = "1\tNULL\t(empty)\ttrue\t1.0\t1.5\t2026-01-01\t2.50\t[1, NULL]"
     assert render_rows(typed) == parse_rows(text)
+
+
+def test_values_are_the_root_of_both_the_insert_and_the_rows():
+    values = [(1, "it's", datetime.date(2026, 1, 1), None)]
+    assert sql_values(values) == "(1, 'it''s', DATE '2026-01-01', NULL)"
+    assert render_rows(values) == parse_rows("1\tit's\t2026-01-01\tNULL")
+
+
+def test_a_hand_written_literal_goes_in_as_it_is_and_rows_must_then_be_given():
+    values = [(L("1::TINYINT"), "a")]
+    assert sql_values(values) == "(1::TINYINT, 'a')"
+    with pytest.raises(TypeError, match="define the rows by hand"):
+        render_rows(values)
+
+
+def test_a_list_of_rows_in_a_placeholder_is_a_values_list():
+    seen = []
+    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), table="cat.t")
+    client.ok("INSERT INTO {t} VALUES {seed_values}", seed_values=[(1, "a"), (2, None)])
+    assert seen == ["INSERT INTO cat.t VALUES (1, 'a'), (2, NULL)"]
 
 
 def test_a_bare_value_is_a_row_of_one_value():

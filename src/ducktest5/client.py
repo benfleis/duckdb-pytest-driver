@@ -7,8 +7,10 @@
 `sql` is one statement, a block of them split on `;`, or a list of statements taken as they are (for
 a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
 and `rows` / `text` belong to the last one. `{t}` is this client's spelling of the table under test; other
-`{name}` placeholders come from keyword arguments. Braces that are not a known placeholder are left
-alone (struct literals), so write plain strings, not f-strings.
+`{name}` placeholders come from keyword arguments; one that is a list of rows goes in as a SQL VALUES
+list, so the values a test inserts and the rows it expects back are one definition (`L("...")` puts
+hand-written SQL in a value; rows can then not be derived and must be given). Braces that are not a
+known placeholder are left alone (struct literals), so write plain strings, not f-strings.
 
 Rows compare as TEXT, the way a .test file does: one line per row, TAB between values, `NULL`,
 `(empty)`, `true`/`false`. `rows` is written in that form; a list of tuples is a second spelling of
@@ -21,7 +23,7 @@ have `assert_true(cond[, message])`, so a statement can check itself.
 
 import re
 
-from .sqltext import format_rows, parse_rows, render_rows, split_statements
+from .sqltext import format_rows, parse_rows, render_rows, split_statements, sql_values
 
 
 class SqlError(Exception):
@@ -56,8 +58,12 @@ class Client:
     def _statements(self, sql, params):
         known = {**self._params, **params}
 
+        def value(name):
+            v = known[name]
+            return sql_values(v) if isinstance(v, (list, tuple)) else str(v)
+
         def fill(text):
-            return re.sub(r"\{(\w+)\}", lambda m: str(known[m.group(1)]) if m.group(1) in known else m.group(0), text)
+            return re.sub(r"\{(\w+)\}", lambda m: value(m.group(1)) if m.group(1) in known else m.group(0), text)
 
         return split_statements(fill(sql)) if isinstance(sql, str) else [fill(s).strip() for s in sql]
 

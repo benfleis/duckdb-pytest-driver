@@ -4,3 +4,4 @@ Imports nothing from `ducktest` (whose package init pulls in pytest); `ducktest`
 """
 
 from .declare import Engine, test  # noqa: F401
+from .sqltext import L  # noqa: F401
