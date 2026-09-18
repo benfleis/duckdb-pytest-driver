@@ -3,30 +3,44 @@
 import os
 
 from .client import Client
-from .engines.duckdb import DuckDBShell
+from .engines.duckdb import DuckDBPerCall
 from .steps import step
 
 
+def _no_reconnect():
+    raise NotImplementedError(
+        "reconnect() is a new connection on the same instance; the duckdb shell has one connection. "
+        "restart() gives a new instance, respawn() a new process."
+    )
+
+
 class Ctx:
-    def __init__(self, item, *, temp_dir, duckdb_bin, engines):
+    def __init__(self, item, *, temp_dir, duckdb_bin, duckdb_session, engines):
         self.id = item.id
         self.case = item.case
         self.temp_dir = temp_dir
         self._duckdb_bin = duckdb_bin
+        self._duckdb_session = duckdb_session
         self._engines = {e: engines[e] for e in item.test.engines}
         self.failed_checks = []
         self.teardowns = []
         self.clients = []
         self.clients = []
 
-    def duckdb(self, preamble="", *, table=None):
-        """The built duckdb shell as a client. Every call is a fresh process running `preamble` then
-        the call's statements, so it always sees the latest committed state.
-
-        TODO: one process per call still costs about 0.5s on a debug build, plus the re-ATTACH. The
-        target is one shell per test, with a full disconnect only where a test needs caches flushed.
-        """
-        return self._client("duckdb", DuckDBShell(self._duckdb_bin, preamble).run, table)
+    def duckdb(self, preamble="", *, table=None, session="per_run"):
+        """DuckDB as a client. `per_run` (the rule): the run's one shell, on the instance this test
+        started fresh; `preamble` runs once, now. The client has `restart()` (new instance, then the
+        test's preambles again) and `respawn()` (new process, the same). `per_call`: a cold process
+        for every call, running `preamble` each time."""
+        if session == "per_call":
+            return self._client("duckdb", DuckDBPerCall(self._duckdb_bin, preamble).run, table)
+        if session != "per_run":
+            raise ValueError(f"session={session!r}; it is 'per_run' or 'per_call'")
+        shared = self._duckdb_session
+        shared.add_preamble(preamble)
+        client = self._client("duckdb", shared.run, table)
+        client.restart, client.respawn, client.reconnect = shared.restart, shared.respawn, _no_reconnect
+        return client
 
     def engine(self, name, *, table=None):
         if name not in self._engines:

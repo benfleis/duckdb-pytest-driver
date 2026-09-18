@@ -17,6 +17,7 @@ import yaml
 
 from .client import SetupFailed
 from .ctx import Ctx
+from .engines.duckdb import DuckDBSession
 from .mnemonic import run_id as make_run_id
 
 # FAILED: something under test went wrong. ERROR: setup or teardown did, so the test proved nothing.
@@ -78,6 +79,7 @@ def run(items, engines, *, duckdb_bin, temp_root, keep=False, out=sys.stdout):
             boot_errors[engine_id] = f"{type(exc).__name__}: {exc} (log: {log})"
 
     results = []
+    duckdb_session = DuckDBSession(duckdb_bin)
     try:
         for n, item in enumerate(items):
             blocked_by = [e for e in item.test.engines if e in boot_errors]
@@ -87,7 +89,8 @@ def run(items, engines, *, duckdb_bin, temp_root, keep=False, out=sys.stdout):
                 continue
             temp_dir = os.path.join(run_dir, f"{n:03d}")
             os.makedirs(temp_dir)
-            ctx = Ctx(item, temp_dir=temp_dir, duckdb_bin=duckdb_bin, engines=handles)
+            duckdb_session.begin_test()
+            ctx = Ctx(item, temp_dir=temp_dir, duckdb_bin=duckdb_bin, duckdb_session=duckdb_session, engines=handles)
             t0 = time.perf_counter()
             outcome, problems = _run_body(item, ctx)
             result = {"id": item.id, "outcome": outcome}
@@ -104,6 +107,7 @@ def run(items, engines, *, duckdb_bin, temp_root, keep=False, out=sys.stdout):
             spent = ", ".join(f"{name} {seconds}s" for name, seconds in result["seconds_by_client"].items())
             print(f"{result['outcome'].upper():8} {item.id}  ({result['seconds']}s: {spent})", file=out, flush=True)
     finally:
+        duckdb_session.close()
         for handle in handles.values():
             handle.stop()
 
