@@ -472,8 +472,41 @@ def pytest_load_initial_conftests(early_config, parser, args):
     yield
 
 
+_BLOCKED_PREFIX = "BLOCKED: provisioning of "
+_BLOCKED_SUFFIX = " failed -- see 'provisioning failures' below"
+_BLOCKED_RE = re.compile(rf"^{re.escape(_BLOCKED_PREFIX)}(?:'(?P<key>[^']*)'|.+?){re.escape(_BLOCKED_SUFFIX)}$")
+
+
+def _blocked_line(key):
+    return f"{_BLOCKED_PREFIX}{repr(key) if key else 'a required resource'}{_BLOCKED_SUFFIX}"
+
+
+def _rewrite_infra_longrepr(call, report):
+    """Apply the INFRA-signal rendering to `report`, if its exception is one. Idempotent."""
+    excinfo = getattr(call, "excinfo", None)
+    if excinfo is None:
+        return
+    if excinfo.errisinstance(store.ProvisionFailed):
+        report.longrepr = _blocked_line(getattr(excinfo.value, "key", None))
+    elif excinfo.errisinstance((store.ProvisionTimeout, store.ResourceMissing)):
+        report.longrepr = str(excinfo.value)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Rewrite INFRA longreprs HERE, not just in `pytest_exception_interact` — xdist ships the
+    report in `pytest_runtest_logreport`, which the runner calls BEFORE `pytest_exception_interact`.
+    Mutating it there is therefore invisible to the controller under `-n`, i.e. in exactly the runs
+    that matter; the worker rewrote a report that had already been serialized and sent.
+    """
+    outcome = yield
+    _rewrite_infra_longrepr(call, outcome.get_result())
+
+
 def pytest_exception_interact(node, call, report):
     """Render provisioning/credential INFRA failures as their one-line reason, not a traceback.
+
+    Retained for the phases `pytest_runtest_makereport` doesn't cover (collection). Idempotent with it.
 
     ProvisionFailed / ProvisionTimeout / ResourceMissing are store signals, not code bugs (a service
     never became ready, a credential fetch failed as the poison-pill owner, a resource was never
@@ -481,12 +514,15 @@ def pytest_exception_interact(node, call, report):
     consumer, at any phase (setup/call/teardown). The exception type is untouched (still catchable
     upstream); only its rendering changes — so a consumer needs no per-fixture `try/except` to get a
     clean, loud failure.
+
+    ProvisionFailed goes one step further. It is raised only at the *waiter* end (the owner re-raises
+    its own factory's exception), so it is always a CASCADE off one root cause — N blocked tests are
+    one failure with N victims, not N failures. Repeating the owner's reason (let alone its stack) N
+    times buries it, so a blocked test renders as a one-liner naming what blocked it and the reason
+    is reported once, in the terminal summary. The count is untouched: every blocked test still
+    fails, loud and counted.
     """
-    excinfo = getattr(call, "excinfo", None)
-    if excinfo is not None and excinfo.errisinstance(
-        (store.ProvisionFailed, store.ProvisionTimeout, store.ResourceMissing)
-    ):
-        report.longrepr = str(excinfo.value)
+    _rewrite_infra_longrepr(call, report)
 
 
 def pytest_ignore_collect(collection_path, config):
@@ -1134,6 +1170,25 @@ def _for_each_reachable_resource(config, reachable_suite_names, *, on_credential
             on_service(svc)
 
 
+_PROVISION_FAILURES = "_ducktest_provision_failures"
+
+
+def _record_provision_failure(config, key, exc):
+    """Keep the ROOT cause of a failed provision (first wins) for the terminal summary.
+
+    The blocked tests only carry `_blocked_line`, so this is the one place the reason survives.
+    """
+    failures = getattr(config, _PROVISION_FAILURES, None)
+    if failures is None:
+        failures = {}
+        setattr(config, _PROVISION_FAILURES, failures)
+    failures.setdefault(key, str(exc) or repr(exc))
+
+
+def get_provision_failures(config):
+    return getattr(config, _PROVISION_FAILURES, None) or {}
+
+
 def provision_reachable(config, reachable_suite_names, *, needed_services=None):
     """Provision everything the reachable suites need: fetch their credentials, provision their
     services, adopt env. Dedup by key for credentials (a shared credential is ONE resource); services
@@ -1150,12 +1205,15 @@ def provision_reachable(config, reachable_suite_names, *, needed_services=None):
             provision_service(config, svc)
         except (KeyboardInterrupt, SystemExit):
             raise
-        except BaseException:
+        except BaseException as exc:
             # Up-front service provisioning is best-effort pre-warm: a failure (e.g. a dead
             # --existing-service, which raises pytest.fail's BaseException-derived Failed) is
             # re-surfaced authoritatively when a fixture pulls it or a test uses its env — as a
             # per-test setup error — not a whole-collection abort here.
-            pass
+            # Swallowed here, so this is the ONLY place the reason is seen when the pre-warm owns
+            # the boot: keep it for the summary, else every victim reports a poison pill whose
+            # cause was never printed.
+            _record_provision_failure(config, svc.key, exc)
 
     _for_each_reachable_resource(
         config,
@@ -1358,7 +1416,9 @@ def _init_sqllogic_arg_for_item(config, item, *, matrix_cell=None, driver_sql=No
         if suite is not None:
             allowed = {s.key for s in resolution.services}
             narrowed = tuple(s for s in suite.services if s.key in allowed)
-        parts = [p for p in (_suite_init_sql(config, suite, services=narrowed) if suite else "", cell_sql, driver_sql) if p]
+        parts = [
+            p for p in (_suite_init_sql(config, suite, services=narrowed) if suite else "", cell_sql, driver_sql) if p
+        ]
         sql = "\n\n".join(parts)
         path = _write_init_sqllogic_snippet(sql) if sql else ""
         _init_sqllogic_paths[key] = path
@@ -1880,8 +1940,7 @@ def run_paired(request, *, env=None, init_sql=None):
     test_path = driver_body_path(str(request.path))
     if test_path is None:
         raise pytest.UsageError(
-            f"run_paired: {request.path} has no same-stem SQLLogic body "
-            f"(.test, .test_slow, or .test_coverage)"
+            f"run_paired: {request.path} has no same-stem SQLLogic body (.test, .test_slow, or .test_coverage)"
         )
     test_name = os.path.relpath(test_path, working_dir)
     cell = request.getfixturevalue("matrix_cell")
@@ -2202,9 +2261,7 @@ def pytest_collection_modifyitems(session, config, items):
     # (creds + services), single-flighted so the controller's up-front boot/fetch isn't duplicated. The
     # controller itself provisions from the collect-first Plan (see controller.py), so gate on worker.
     if getattr(config, "workerinput", None) is not None and suites:
-        provision_reachable(
-            config, _reachable_suites(config, items), needed_services=_needed_services(config, items)
-        )
+        provision_reachable(config, _reachable_suites(config, items), needed_services=_needed_services(config, items))
 
 
 # ---------------------------------------------------------------------------
@@ -2212,9 +2269,43 @@ def pytest_collection_modifyitems(session, config, items):
 # ---------------------------------------------------------------------------
 
 
+def _summarize_provisioning_failures(terminalreporter, config):
+    """Say once, in red, that a provision failed and how many tests it took down with it.
+
+    A cascade is otherwise invisible: N identical one-liners look like N problems. This names the
+    resource, counts the victims, and prints the root cause — the reason the run went red — once.
+    """
+    from collections import Counter
+
+    counts = Counter()
+    for status in ("error", "failed"):
+        for rep in terminalreporter.stats.get(status, []):
+            match = _BLOCKED_RE.match(str(getattr(rep, "longrepr", "")))
+            if match:
+                counts[match.group("key") or ""] += 1
+    if not counts:
+        return
+
+    reasons = get_provision_failures(config)
+    total = sum(counts.values())
+    terminalreporter.write_sep("=", f"provisioning failed: {total} tests blocked", red=True, bold=True)
+    for key, n in counts.most_common():
+        name = repr(key) if key else "a required resource"
+        terminalreporter.write_line(f"  {name}: {n} test{'' if n == 1 else 's'} blocked by this", red=True, bold=True)
+        reason = reasons.get(key)
+        if not reason:
+            # The owner was another process (a worker booted it); its real exception — with the
+            # traceback we deliberately keep for root causes — is that test's own failure above.
+            reason = "root cause raised in another process; see the failing provisioner above"
+        for line in reason.splitlines():
+            terminalreporter.write_line(f"      {line}", red=True)
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Consolidate per-test skip reasons into one counted digest for the run."""
     from collections import Counter
+
+    _summarize_provisioning_failures(terminalreporter, config)
 
     skipped = terminalreporter.stats.get("skipped", [])
     if not skipped:

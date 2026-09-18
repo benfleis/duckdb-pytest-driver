@@ -47,7 +47,16 @@ class ProvisionTimeout(Exception):
 
 class ProvisionFailed(Exception):
     """A provision terminally FAILED (the poison pill): the owner's factory raised, so the key is
-    marked failed and every subsequent reader fails fast — no factory re-run, no retry storm."""
+    marked failed and every subsequent reader fails fast — no factory re-run, no retry storm.
+
+    Raised only at the *waiter* end — the owner re-raises its factory's own exception — so this type
+    marks a **cascading** failure, and ``key`` names the resource that blocked the caller. Reporting
+    uses that split to attribute one root cause instead of N independent ones.
+    """
+
+    def __init__(self, message, key=None):
+        super().__init__(message)
+        self.key = key
 
 
 # per-key provisioning state — write-once, read-many: absent -> PENDING -> SET | FAILED.
@@ -212,7 +221,7 @@ def copy_or_provision(store, key, factory, timeout=None, poll=0.2):
         if role == "set":
             return json.loads(payload)
         if role == "failed":
-            raise ProvisionFailed(payload)
+            raise ProvisionFailed(payload, key=key)
         if role == "owner":
             try:
                 block = factory()  # owner only
