@@ -17,7 +17,11 @@ _IMAGE = os.environ.get("DUCKTEST_MINIO_IMAGE", "quay.io/minio/minio:RELEASE.202
 
 def minio_block(**overrides):
     port = int(overrides.get("port", os.environ.get("DUCKTEST_MINIO_S3_PORT", "9000")))
-    endpoint = overrides.get("endpoint", f"http://127.0.0.1:{port}").rstrip("/")
+    # Where a started instance is published, and so where it is reached. With a docker daemon that
+    # is not on this machine's loopback (DOCKER_HOST), this is the address of the daemon's host as
+    # seen from here; publishing on that one address also keeps the port off the host's other networks.
+    host = overrides.get("host", os.environ.get("DUCKTEST_SERVICE_HOST", "127.0.0.1"))
+    endpoint = overrides.get("endpoint", f"http://{host}:{port}").rstrip("/")
     return {
         "endpoint": endpoint,
         "s3_endpoint": endpoint.split("://", 1)[-1],  # host:port, what DuckDB's ENDPOINT takes
@@ -30,6 +34,7 @@ def minio_block(**overrides):
         "temp_prefix": overrides.get("temp_prefix", "temp"),
         "container": overrides.get("container", os.environ.get("DUCKTEST_MINIO_CONTAINER", "ducktest-minio")),
         "port": port,
+        "publish": f"{host}:{port}",
     }
 
 
@@ -59,7 +64,7 @@ def _start(block):
     docker("rm", "-f", block["container"], check=False)  # a container leaked by an interrupted run holds the port
     docker(
         "run", "-d", "--name", block["container"],
-        "-p", f"{block['port']}:9000",
+        "-p", f"{block['publish']}:9000",
         "-e", f"MINIO_ROOT_USER={block['access_key']}",
         "-e", f"MINIO_ROOT_PASSWORD={block['secret_key']}",
         "--tmpfs", "/data:size=2g",  # MinIO's free-drive check otherwise depends on the host's docker storage

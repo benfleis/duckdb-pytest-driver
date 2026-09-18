@@ -104,3 +104,16 @@ def test_how_an_existing_service_is_named(monkeypatch, entries, env, expected):
     if env:
         monkeypatch.setenv("DUCKTEST_EXISTING_SERVICE_STORE", env)
     assert existing_overrides("store", entries) == expected
+
+
+def test_a_started_minio_is_published_and_reached_on_the_service_host(monkeypatch):
+    from ducktest5.services.minio import minio_block
+
+    assert minio_block()["endpoint"] == "http://127.0.0.1:9000"
+    monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
+    block = minio_block()
+    assert (block["endpoint"], block["publish"], block["s3_endpoint"]) == (
+        "http://172.18.0.1:9000",
+        "172.18.0.1:9000",
+        "172.18.0.1:9000",
+    )
