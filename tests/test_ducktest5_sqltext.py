@@ -34,6 +34,10 @@ def test_both_spellings_of_rows_are_the_same_text():
     assert render_rows(typed) == parse_rows(text)
 
 
+def test_a_bare_value_is_a_row_of_one_value():
+    assert render_rows([1, 3]) == parse_rows("1\n3") == render_rows([(1,), (3,)])
+
+
 def test_text_rows_ignore_indentation_and_blank_lines():
     assert parse_rows("\n        1\ta b\n        2\tc\n        ") == [("1", "a b"), ("2", "c")]
 

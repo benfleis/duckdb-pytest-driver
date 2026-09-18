@@ -13,9 +13,10 @@ alone (struct literals), so write plain strings, not f-strings.
 Rows compare as TEXT, the way a .test file does: one line per row, TAB between values, `NULL`,
 `(empty)`, `true`/`false`. `rows` is written in that form; a list of tuples is a second spelling of
 the same thing, rendered by the same rules before the comparison, so `[(1, None, "")]` means exactly
-`1<TAB>NULL<TAB>(empty)`. The text form is the only comparison: 1 and '1' are equal, as in a .test
-file. Where the type matters, ask in SQL (`SELECT typeof(x)`). Every client has
-`assert_true(cond[, message])`, so a statement can check itself.
+`1<TAB>NULL<TAB>(empty)`, and `[1, 3]` is two rows of one value. Pick the spelling that reads best
+at that place. The text form is the only comparison: 1 and '1' are equal, as in a .test
+file. Where the type matters, ask in SQL (`SELECT typeof(x)`). DuckDB, Spark and Databricks SQL all
+have `assert_true(cond[, message])`, so a statement can check itself.
 """
 
 import re

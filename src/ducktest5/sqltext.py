@@ -62,7 +62,8 @@ def render(value):
 
 
 def render_rows(rows):
-    return [tuple(render(v) for v in row) for row in rows]
+    """A row that is not a tuple or list is a row of one value, so `[1, 3]` is two rows."""
+    return [tuple(render(v) for v in (row if isinstance(row, (list, tuple)) else (row,))) for row in rows]
 
 
 def parse_rows(text):
