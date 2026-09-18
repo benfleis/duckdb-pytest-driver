@@ -15,10 +15,12 @@ import traceback
 
 import yaml
 
+from .client import SetupFailed
 from .ctx import Ctx
 from .mnemonic import run_id as make_run_id
 
-PASSED, FAILED, BLOCKED = "passed", "failed", "blocked"
+# FAILED: something under test went wrong. ERROR: setup or teardown did, so the test proved nothing.
+PASSED, FAILED, ERROR, BLOCKED = "passed", "failed", "error", "blocked"
 
 
 def _write(run_dir, name, doc):
@@ -30,8 +32,31 @@ def _describe_failure(exc, body):
     """The error, plus the innermost line of the test's own file: where the body failed, not where a
     helper raised."""
     text = "".join(traceback.format_exception_only(type(exc), exc)).rstrip()
-    lines = [f.lineno for f in traceback.extract_tb(exc.__traceback__) if f.filename == body.__code__.co_filename]
+    stack = getattr(exc, "stack", None) or traceback.extract_tb(exc.__traceback__)
+    lines = [f.lineno for f in stack if f.filename == body.__code__.co_filename]
     return f"{text}\n  at {body.__code__.co_filename}:{lines[-1]}" if lines else text
+
+
+def _run_body(item, ctx):
+    """Returns (outcome, [problem descriptions]). Checks that failed are all reported; an abort or a
+    crash is reported after them; teardowns run whatever happened."""
+    body, outcome, problems = item.test.body, PASSED, []
+    try:
+        body(ctx)
+    except SetupFailed as exc:
+        outcome, problems = ERROR, [f"setup failed\n{_describe_failure(exc, body)}"]
+    except Exception as exc:
+        outcome, problems = FAILED, [_describe_failure(exc, body)]
+    if ctx.failed_checks:
+        problems = [_describe_failure(f, body) for f in ctx.failed_checks] + problems
+        outcome = FAILED if outcome == PASSED else outcome
+    for teardown in reversed(ctx.teardowns):
+        try:
+            teardown()
+        except Exception as exc:
+            problems.append(f"teardown failed\n{exc}")
+            outcome = ERROR if outcome == PASSED else outcome
+    return outcome, problems
 
 
 def run(items, engines, *, duckdb_bin, temp_root, keep=False, out=sys.stdout):
@@ -64,11 +89,10 @@ def run(items, engines, *, duckdb_bin, temp_root, keep=False, out=sys.stdout):
             os.makedirs(temp_dir)
             ctx = Ctx(item, temp_dir=temp_dir, duckdb_bin=duckdb_bin, engines=handles)
             t0 = time.perf_counter()
-            try:
-                item.test.body(ctx)
-                result = {"id": item.id, "outcome": PASSED}
-            except Exception as exc:
-                result = {"id": item.id, "outcome": FAILED, "error": _describe_failure(exc, item.test.body)}
+            outcome, problems = _run_body(item, ctx)
+            result = {"id": item.id, "outcome": outcome}
+            if problems:
+                result["problems"] = problems
             result["seconds"] = round(time.perf_counter() - t0, 2)
             if result["outcome"] == PASSED and not keep:
                 shutil.rmtree(temp_dir)
@@ -80,14 +104,18 @@ def run(items, engines, *, duckdb_bin, temp_root, keep=False, out=sys.stdout):
         for handle in handles.values():
             handle.stop()
 
-    counts = {o: sum(r["outcome"] == o for r in results) for o in (PASSED, FAILED, BLOCKED)}
+    counts = {o: sum(r["outcome"] == o for r in results) for o in (PASSED, FAILED, ERROR, BLOCKED)}
     _write(run_dir, "05-report.yaml", {"run_id": run_id, "counts": counts, "engines_failed": boot_errors, "tests": results})
 
     for r in results:
-        if r["outcome"] == FAILED:
-            print(f"\n--- {r['id']}\n{r['error']}\n  kept: {r['kept']}", file=out)
+        if r["outcome"] in (FAILED, ERROR):
+            print(f"\n--- {r['id']}", file=out)
+            for problem in r["problems"]:
+                print(f"{problem}\n", file=out)
+            print(f"  kept: {r['kept']}", file=out)
     for engine_id, error in boot_errors.items():
         blocked = sum(engine_id in r.get("blocked_by", ()) for r in results)
         print(f"\nengine {engine_id!r} did not boot: {blocked} tests blocked\n  {error}", file=out)
-    print(f"\n{counts[PASSED]} passed, {counts[FAILED]} failed, {counts[BLOCKED]} blocked -- {run_dir}", file=out)
-    return 0 if counts[FAILED] == counts[BLOCKED] == 0 else 1
+    summary = ", ".join(f"{counts[o]} {o}" for o in (PASSED, FAILED, ERROR, BLOCKED) if counts[o] or o == PASSED)
+    print(f"\n{summary} -- {run_dir}", file=out)
+    return 0 if counts[PASSED] == len(results) else 1

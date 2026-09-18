@@ -1,27 +1,35 @@
-"""One SQL vocabulary for every client a body drives, DuckDB included. The verbs are sqllogictest's:
+"""One SQL vocabulary for every client a body drives, DuckDB included.
 
-    ok(sql)             statement ok      must succeed
-    expect(sql, rows)   query + ----      the assertion, expected rows beside the query
-    error(sql, text)    statement error   must fail, with `text` in the message
+    setup(sql)             not under test; a failure aborts the test and reports as a setup ERROR
+    oks(sql)               statement ok      under test; must succeed
+    errs(sql, text)        statement error   under test; must fail, with `text` in the message
+    expects(sql, rows)     query + ----      under test; expected rows beside the query
+    requires(sql[, rows])  as `oks` / `expects`, for a step the rest of the test cannot do without
+    teardown(sql)          runs after the body, even when the test aborted; a failure is an ERROR
+
+`oks`, `errs` and `expects` are checks: a failure is recorded and the body goes on, so one run shows
+every failed check. `requires` and `setup` abort the test.
 
 `sql` is one statement, a block of them split on `;`, or a list of statements taken as they are (for
 a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
-and `rows` / `text` belong to the last one. `{t}` is this client's spelling of the table under test; other
-`{name}` placeholders come from keyword arguments; one that is a list of rows goes in as a SQL VALUES
-list, so the values a test inserts and the rows it expects back are one definition (`L("...")` puts
-hand-written SQL in a value; rows can then not be derived and must be given). Braces that are not a
-known placeholder are left alone (struct literals), so write plain strings, not f-strings.
+and `rows` / `text` belong to the last one. `{t}` is this client's spelling of the table under test;
+other `{name}` placeholders come from keyword arguments; one that is a list of rows goes in as a SQL
+VALUES list, so the values a test inserts and the rows it expects back are one definition
+(`L("...")` puts hand-written SQL in a value; rows can then not be derived and must be given).
+Braces that are not a known placeholder are left alone (struct literals), so write plain strings,
+not f-strings.
 
 Rows compare as TEXT, the way a .test file does: one line per row, TAB between values, `NULL`,
 `(empty)`, `true`/`false`. `rows` is written in that form; a list of tuples is a second spelling of
 the same thing, rendered by the same rules before the comparison, so `[(1, None, "")]` means exactly
 `1<TAB>NULL<TAB>(empty)`, and `[1, 3]` is two rows of one value. Pick the spelling that reads best
-at that place. The text form is the only comparison: 1 and '1' are equal, as in a .test
-file. Where the type matters, ask in SQL (`SELECT typeof(x)`). DuckDB, Spark and Databricks SQL all
-have `assert_true(cond[, message])`, so a statement can check itself.
+at that place. The text form is the only comparison: 1 and '1' are equal, as in a .test file. Where
+the type matters, ask in SQL (`SELECT typeof(x)`). DuckDB, Spark and Databricks SQL all have
+`assert_true(cond[, message])`, so a statement can check itself.
 """
 
 import re
+import traceback
 
 from .sqltext import format_rows, parse_rows, render_rows, split_statements, sql_values
 
@@ -37,6 +45,11 @@ class SqlError(Exception):
 class ExpectationFailed(AssertionError):
     def __init__(self, client, sql, problem):
         super().__init__(f"[{client}] {problem}\n{_indent(sql)}")
+        self.stack = traceback.extract_stack()[:-1]  # a recorded check has no traceback to read later
+
+
+class SetupFailed(Exception):
+    """Something the test needs, but does not test, failed."""
 
 
 def _indent(text, by="    "):
@@ -48,12 +61,24 @@ def _as_text(rows):
 
 
 class Client:
-    def __init__(self, name, run, *, table=None):
+    def __init__(self, name, run, *, table=None, record=None, defer=None):
         """`run(statements)` runs them in order and returns `(column_names, rows)` of the last,
-        rows as tuples; it raises SqlError, with the failed statement's index, on the first error."""
+        rows as tuples; it raises SqlError, with the failed statement's index, on the first error.
+        `record(failure)` takes a failed check; `defer(callable)` takes a teardown. Without them a
+        failed check raises and a teardown runs at once."""
         self.name = name
         self._run = run
         self._params = {"t": table} if table else {}
+        self._record = record
+        self._defer = defer
+
+    def _check(self, assertion, *args, **params):
+        try:
+            assertion(*args, **params)
+        except ExpectationFailed as failure:
+            if self._record is None:
+                raise
+            self._record(failure)
 
     def _statements(self, sql, params):
         known = {**self._params, **params}
@@ -84,10 +109,44 @@ class Client:
         assert len(rows) == 1, f"[{self.name}] expected one row, got {len(rows)}\n{_indent(statements[-1])}"
         return dict(zip(columns, rows[0]))
 
-    def ok(self, sql, **params):
+    def setup(self, sql, **params):
+        try:
+            self._assert_ok(sql, **params)
+        except ExpectationFailed as failure:
+            raise SetupFailed(str(failure)) from None
+
+    def teardown(self, sql, **params):
+        def run():
+            try:
+                self._assert_ok(sql, **params)
+            except ExpectationFailed as failure:
+                raise SetupFailed(str(failure)) from None
+
+        self._defer(run) if self._defer else run()
+
+    def oks(self, sql, **params):
+        self._check(self._assert_ok, sql, **params)
+
+    def errs(self, sql, text, **params):
+        self._check(self._assert_error, sql, text, **params)
+
+    def expects(self, sql, rows, *, sort=False, **params):
+        self._check(self._assert_rows, sql, rows, sort=sort, **params)
+
+    def expects_contains(self, sql, rows, **params):
+        """Every row of `rows` is in the result; the result may hold more."""
+        self._check(self._assert_contains, sql, rows, **params)
+
+    def requires(self, sql, rows=None, *, sort=False, **params):
+        if rows is None:
+            self._assert_ok(sql, **params)
+        else:
+            self._assert_rows(sql, rows, sort=sort, **params)
+
+    def _assert_ok(self, sql, **params):
         self._must_run(self._statements(sql, params), "statement")
 
-    def expect(self, sql, rows, *, sort=False, **params):
+    def _assert_rows(self, sql, rows, *, sort=False, **params):
         statements = self._statements(sql, params)
         expected, actual = _as_text(rows), render_rows(self._must_run(statements, "query")[1])
         if sort:
@@ -104,8 +163,7 @@ class Client:
             f"wrong result{hint}\n  expected:\n{_indent(format_rows(expected))}\n  actual:\n{_indent(format_rows(actual))}\n  query:",
         )
 
-    def expect_contains(self, sql, rows, **params):
-        """Every row of `rows` is in the result; the result may hold more."""
+    def _assert_contains(self, sql, rows, **params):
         statements = self._statements(sql, params)
         actual = render_rows(self._must_run(statements, "query")[1])
         missing = [r for r in _as_text(rows) if r not in actual]
@@ -116,7 +174,7 @@ class Client:
                 f"rows missing\n  missing:\n{_indent(format_rows(missing))}\n  actual:\n{_indent(format_rows(actual))}\n  query:",
             )
 
-    def error(self, sql, text, **params):
+    def _assert_error(self, sql, text, **params):
         statements = self._statements(sql, params)
         try:
             self._run(statements)

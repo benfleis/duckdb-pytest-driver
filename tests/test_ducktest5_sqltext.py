@@ -5,7 +5,7 @@ import decimal
 
 import pytest
 
-from ducktest5.client import Client, ExpectationFailed, SqlError
+from ducktest5.client import Client, ExpectationFailed, SetupFailed, SqlError
 from ducktest5.sqltext import L, parse_rows, render_rows, split_statements, sql_values
 
 
@@ -50,7 +50,7 @@ def test_a_hand_written_literal_goes_in_as_it_is_and_rows_must_then_be_given():
 def test_a_list_of_rows_in_a_placeholder_is_a_values_list():
     seen = []
     client = Client("fake", lambda statements: seen.extend(statements) or ([], []), table="cat.t")
-    client.ok("INSERT INTO {t} VALUES {seed_values}", seed_values=[(1, "a"), (2, None)])
+    client.oks("INSERT INTO {t} VALUES {seed_values}", seed_values=[(1, "a"), (2, None)])
     assert seen == ["INSERT INTO cat.t VALUES (1, 'a'), (2, NULL)"]
 
 
@@ -74,36 +74,65 @@ def _client(result=None, fail_at=None):
 def test_a_list_of_statements_is_not_split():
     seen = []
     client = Client("fake", lambda statements: seen.extend(statements) or ([], []), table="cat.t")
-    client.ok(["BEGIN SELECT 1; SELECT 2; END", "SELECT * FROM {t}"])
+    client.oks(["BEGIN SELECT 1; SELECT 2; END", "SELECT * FROM {t}"])
     assert seen == ["BEGIN SELECT 1; SELECT 2; END", "SELECT * FROM cat.t"]
 
 
 def test_unknown_braces_are_left_alone():
     seen = []
     client = Client("fake", lambda statements: seen.extend(statements) or ([], []), table="cat.t")
-    client.ok("SELECT {'a': 1} FROM {t} WHERE x = {x}", x=3)
+    client.oks("SELECT {'a': 1} FROM {t} WHERE x = {x}", x=3)
     assert seen == ["SELECT {'a': 1} FROM cat.t WHERE x = 3"]
 
 
 def test_a_failure_in_a_block_names_the_statement():
     with pytest.raises(ExpectationFailed) as e:
-        _client(fail_at=1).ok("SELECT 1; SELECT nope; SELECT 3")
+        _client(fail_at=1).oks("SELECT 1; SELECT nope; SELECT 3")
     assert "SELECT nope" in str(e.value) and "SELECT 3" not in str(e.value)
 
 
 def test_a_wrong_result_prints_the_actual_rows_as_pasteable_text():
     with pytest.raises(ExpectationFailed) as e:
-        _client(result=[(1, "a"), (2, None)]).expect("SELECT 1", rows="1\ta\n2\tb")
+        _client(result=[(1, "a"), (2, None)]).expects("SELECT 1", rows="1\ta\n2\tb")
     assert "  actual:\n    1\ta\n    2\tNULL\n" in str(e.value)
 
 
 def test_a_column_count_mismatch_says_so():
     with pytest.raises(ExpectationFailed) as e:
-        _client(result=[(1, 2)]).expect("SELECT 1, 2", rows="1  2")
+        _client(result=[(1, 2)]).expects("SELECT 1, 2", rows="1  2")
     assert "TAB between values?" in str(e.value)
 
 
 def test_error_in_an_earlier_statement_is_not_the_expected_error():
     with pytest.raises(ExpectationFailed):
-        _client(fail_at=0).error("SELECT nope; SELECT also_nope", "boom")
-    _client(fail_at=1).error("SELECT 1; SELECT nope", "boom")
+        _client(fail_at=0).errs("SELECT nope; SELECT also_nope", "boom")
+    _client(fail_at=1).errs("SELECT 1; SELECT nope", "boom")
+
+
+def test_a_failed_check_is_recorded_and_the_body_goes_on():
+    recorded = []
+    client = Client("fake", lambda statements: (["i"], [(1,)]), record=recorded.append)
+    client.expects("SELECT 1", rows="2")
+    client.expects("SELECT 1", rows="3")
+    assert len(recorded) == 2
+
+
+def test_requires_aborts_even_when_checks_are_recorded():
+    client = Client("fake", lambda statements: (["i"], [(1,)]), record=[].append)
+    client.requires("SELECT 1", rows="1")
+    with pytest.raises(ExpectationFailed):
+        client.requires("SELECT 1", rows="2")
+
+
+def test_a_failed_setup_is_not_a_failed_check():
+    with pytest.raises(SetupFailed):
+        _client(fail_at=0).setup("CREATE TABLE x (i INT)")
+
+
+def test_a_teardown_is_deferred():
+    deferred, seen = [], []
+    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), defer=deferred.append)
+    client.teardown("DROP TABLE x")
+    assert seen == [] and len(deferred) == 1
+    deferred[0]()
+    assert seen == ["DROP TABLE x"]
