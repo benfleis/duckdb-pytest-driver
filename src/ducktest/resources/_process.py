@@ -29,19 +29,53 @@ _POLL_S = 0.05
 _READY_POLL_S = 0.3
 
 
-def wait_until(probe, timeout_s, on_timeout):
-    """Poll ``probe()`` (a no-arg bool) until true or ``timeout_s`` elapses; on timeout raise
-    ``RuntimeError(on_timeout())`` (a callable, so the message is built only if it's needed).
+_NO_PROGRESS = object()
 
-    Readiness is generic — a container and a local subprocess both need it — so it lives here, the layer
-    with no dependencies of its own, and ``_docker`` builds on it.
+
+def wait_until(probe, timeout_s, on_timeout, stall_s=None, poll_s=_READY_POLL_S):
+    """Poll ``probe()`` until ready, or fail with ``RuntimeError(on_timeout() + <clocks>)``.
+
+    ``probe()`` returns ``True`` when ready. Anything else is a **progress token** for that poll --
+    whatever the caller can cheaply observe (a set of seeded schemas, a byte count, a state string).
+    A bool probe is the degenerate case: ``False`` is a constant token, i.e. never any progress.
+
+    Two clocks, because "slow" and "wedged" are different failures and only one of them is worth
+    waiting out. ``stall_s`` bounds time since the token last *changed*, so a service that is merely
+    contended keeps its deadline alive by making progress, while one that dies mid-way fails in
+    ``stall_s`` instead of burning the full ``timeout_s``. ``timeout_s`` remains the backstop for
+    the case that defeats a stall clock: steady progress that will never actually arrive.
+
+    ``stall_s=None`` (default) disables the stall clock -- pure deadline, the historical behavior, so
+    existing bool probes are unaffected. ``on_timeout`` is a callable so the message is built only
+    if needed; the clock that fired is appended to it.
+
+    Readiness is generic -- a container and a local subprocess both need it -- so it lives here, the
+    layer with no dependencies of its own, and ``_docker`` builds on it.
     """
-    deadline = time.monotonic() + timeout_s
+    start = time.monotonic()
+    deadline = start + timeout_s
+    token = _NO_PROGRESS
+    last_change = start
+    advanced = False
+
     while time.monotonic() < deadline:
-        if probe():
+        value = probe()
+        if value is True:
             return
-        time.sleep(_READY_POLL_S)
-    raise RuntimeError(on_timeout())
+        now = time.monotonic()
+        if value != token:
+            advanced = token is not _NO_PROGRESS  # the first token is a baseline, not progress
+            token, last_change = value, now
+        if stall_s is not None and now - last_change >= stall_s:
+            stuck_for = now - last_change
+            since = (
+                f"last progress at {last_change - start:.1f}s, nothing new for {stuck_for:.1f}s"
+                if advanced
+                else f"no progress at all in {stuck_for:.1f}s"
+            )
+            raise RuntimeError(f"{on_timeout()} [stalled: {since}]")
+        time.sleep(poll_s)
+    raise RuntimeError(f"{on_timeout()} [timed out: {time.monotonic() - start:.1f}s elapsed, limit {timeout_s}s]")
 
 
 def pidfile(proc, control_dir) -> str:
