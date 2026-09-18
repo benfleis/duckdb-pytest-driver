@@ -13,7 +13,8 @@ class SparkHandle:
 
     def run(self, sql):
         try:
-            return [tuple(r) for r in self.session.sql(sql).collect()]
+            result = self.session.sql(sql)
+            return list(result.columns), [tuple(r) for r in result.collect()]
         except Exception as exc:  # py4j and pyspark raise unrelated types; all mean "the SQL failed"
             raise SqlError(_message(exc)) from None
 

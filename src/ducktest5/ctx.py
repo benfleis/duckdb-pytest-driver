@@ -29,7 +29,8 @@ class Ctx:
             p = shell._run(sql, json_out=True)
             if p.returncode != 0:
                 raise SqlError(p.stderr.strip())
-            return [tuple(row.values()) for row in last_json_array(p.stdout)]
+            rows = last_json_array(p.stdout)
+            return (list(rows[0]) if rows else []), [tuple(row.values()) for row in rows]
 
         return Client("duckdb", run, table=table)
 
