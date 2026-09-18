@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 # >=7.4: the pytest_ignore_collect hook uses the collection_path arg (added in 7.4).
-dependencies = ["pytest>=7.4"]
+dependencies = ["pytest>=7.4", "pyyaml>=6"]
 
 [project.optional-dependencies]
 # For CONSUMERS who want `-n` parallelism: `pip install duckdb-pytest-driver[xdist]`.
@@ -58,9 +58,10 @@ ducktest = "ducktest.plugin"
 # config a plugin can't inject, so bare `pytest` works afterward.
 [project.scripts]
 ducktest = "ducktest.cli:main"
+ducktest5 = "ducktest5.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ducktest"]
+packages = ["src/ducktest", "src/ducktest5"]
 
 # Scope the package's own `pytest` run to its self-tests; the runnable examples under
 # examples/ are collected only when targeted explicitly (`pytest examples/...`).
