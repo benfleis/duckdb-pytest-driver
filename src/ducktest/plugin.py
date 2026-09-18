@@ -21,6 +21,7 @@ vendored back into ``duckdb/test/py/``.
 """
 
 import contextlib
+import dataclasses
 import logging
 import os
 import re
@@ -1030,10 +1031,10 @@ def _stop_services(config):
 
     A block exists in the store under a service's key iff some worker provisioned it, so store-presence
     == started; dedup by key (a shared service is ONE physical resource). The topological sort runs
-    over only the STARTED subset (never the full declared set) — `provision_service` always
-    provisions a service's dependencies before itself, so a started service's dependencies are
-    necessarily started too, meaning an unreached/never-provisioned service (however its
-    `depends_on` is shaped) can never surface a spurious cycle/undeclared-key error at teardown.
+    over only the STARTED subset (never the full declared set), and only over the `depends_on` edges
+    inside it: a dependency that was attached (`--existing-service`) is never stored, so it is not
+    ours to stop, and an unreached/never-provisioned service (however its `depends_on` is shaped) can
+    never surface a spurious cycle/undeclared-key error at teardown.
     """
     handle = get_store(config)
     if handle is None:
@@ -1045,7 +1046,11 @@ def _stop_services(config):
         except store.ResourceMissing:
             continue
         started.append(svc)
-    for svc in reversed(_topological_service_order(started)):
+    started_keys = {svc.key for svc in started}
+    ordered = _topological_service_order(
+        [dataclasses.replace(svc, depends_on=tuple(d for d in svc.depends_on if d in started_keys)) for svc in started]
+    )
+    for svc in reversed(ordered):
         if svc.stop is None:
             continue
         try:

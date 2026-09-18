@@ -7,12 +7,10 @@ raises `UsageError` on `rest`'s now-unsatisfiable dep -- aborting `sessionfinish
 the store manager). This is the container split-brain case the design exists to serve: attaching a
 dependency must not perturb the owned lifecycle.
 
-Currently FAILS (the teardown sort raises); passes once teardown ignores deps outside the started set.
+Teardown orders only the started subset and ignores a `depends_on` edge that points outside it.
 """
 
 import textwrap
-
-import pytest
 
 
 def _write(pytester, name, body):
@@ -49,7 +47,6 @@ _CONFTEST = """
 """
 
 
-@pytest.mark.xfail(strict=True, reason="teardown sorts over deps outside the started set; fix pending")
 def test_teardown_survives_managed_dependent_of_attached_dependency(pytester):
     _write(pytester, "conftest.py", _CONFTEST)
     _write(
