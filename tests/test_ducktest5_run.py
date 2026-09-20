@@ -412,6 +412,18 @@ def test_failed_checks_alone_fail_the_case(tmp_path):
     assert _run_body(case, ctx_for(case, tmp_path))[0] == "failed"
 
 
+def test_a_failed_check_stays_a_failure_when_a_setup_fails_after_it(tmp_path):
+    def body(ctx):
+        c = ctx.engine("fake")
+        c.expects("SELECT 1", [2], on_fail="continue")
+        c.setup("SELECT boom")
+
+    case = py_case(body, engines=["fake"])
+    outcome, problems = _run_body(case, ctx_for(case, tmp_path))
+    assert outcome == "failed"
+    assert "wrong result" in problems[0] and problems[1].startswith("setup failed")
+
+
 def test_a_failed_setup_is_an_error_not_a_failure(tmp_path):
     def body(ctx):
         ctx.engine("fake").setup("SELECT boom")

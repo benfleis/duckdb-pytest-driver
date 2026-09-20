@@ -60,7 +60,7 @@ def _run_body(case, ctx):
             outcome, problems = FAILED, [_describe_failure(exc, body)]
         if ctx.failed_checks:
             problems = [_describe_failure(f, body) for f in ctx.failed_checks] + problems
-            outcome = FAILED if outcome == PASSED else outcome
+            outcome = FAILED  # also over a setup that failed later: the check had already proven a failure
     finally:
         for teardown in reversed(ctx.teardowns):
             try:
