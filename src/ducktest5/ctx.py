@@ -3,7 +3,7 @@
 import os
 
 from .client import Client, SetupFailed, SqlError
-from .engines.duckdb import DuckDBPerCall
+from .engines.duckdb import DEFAULT_TIMEOUT_S, DuckDBPerCall
 from .steps import step
 
 
@@ -50,14 +50,21 @@ class Ctx:
         self.clients = []
         self.clients = []
 
-    def duckdb(self, preamble="", *, table=None, session="per_run"):
+    def duckdb(self, preamble="", *, table=None, session="per_run", timeout=DEFAULT_TIMEOUT_S):
         """DuckDB as a client. `per_run` (the rule): the run's one shell, on the instance this test
         started fresh; `preamble` runs once, now. The client has `restart()` (new instance, then the
         test's preambles again) and `respawn()` (new process, the same). `per_call`: a cold process
-        for every call, running `preamble` each time."""
+        for every call, running `preamble` each time.
+
+        `timeout`, in seconds, is for each statement (`per_call`: for each call); after it the shell
+        is killed and the statement has failed.
+
+        A body that uses threads: the one shell takes one statement at a time, so threads on `per_run`
+        clients are safe and wait for each other. Use `per_call` only when the statements must run
+        in parallel; each call is then its own process, with nothing shared but files."""
         preamble = "\n".join(x for x in (self._variant_preamble(), preamble) if x)
         if session == "per_call":
-            per_call = DuckDBPerCall(self._duckdb_bin, preamble, home=self._duckdb_home)
+            per_call = DuckDBPerCall(self._duckdb_bin, preamble, timeout=timeout, home=self._duckdb_home)
             return self._client("duckdb", per_call.run, table)
         if session != "per_run":
             raise ValueError(f"session={session!r}; it is 'per_run' or 'per_call'")
@@ -66,7 +73,7 @@ class Ctx:
             shared.add_preamble(preamble)
         except SqlError as exc:
             raise SetupFailed(f"[duckdb] the preamble failed: {exc}") from None
-        client = self._client("duckdb", shared.run, table)
+        client = self._client("duckdb", lambda statements: shared.run(statements, timeout=timeout), table)
         client.restart, client.respawn, client.reconnect = shared.restart, shared.respawn, _no_reconnect
         return client
 

@@ -79,6 +79,7 @@ class FakeSession:
 
     def __init__(self, binary=None, *, home=None, preamble_fails=False):
         self.preambles, self.statements, self.preamble_fails, self.home = [], [], preamble_fails, home
+        self.timeouts = []
 
     def begin_test(self):
         self.preambles = []
@@ -88,8 +89,9 @@ class FakeSession:
             raise SqlError("Catalog Error: no such secret type")
         self.preambles.append(preamble)
 
-    def run(self, statements):
+    def run(self, statements, *, timeout=None):
         self.statements += statements
+        self.timeouts.append(timeout)
         return ["v"], [(1,)]
 
     restart = respawn = close = lambda self: None
@@ -648,3 +650,16 @@ def test_duckdb_gets_a_home_under_the_run_dir_for_both_kinds_of_session(tmp_path
 
     _, run_dir, _, _ = go(tmp_path, [py_case(body)])
     assert seen == {"session": str(run_dir / "home"), "per_call": str(run_dir / "home")}
+
+
+def test_the_timeout_of_a_duckdb_client_reaches_each_of_its_statements(tmp_path):
+    seen = []
+
+    def body(ctx):
+        ctx.duckdb(timeout=7).oks("SELECT 1")
+        ctx.duckdb().oks("SELECT 2")
+        seen.extend(ctx._duckdb_session.timeouts)
+        seen.append(ctx.duckdb(session="per_call", timeout=9)._run.__self__._timeout)
+
+    assert go(tmp_path, [py_case(body)])[0] == 0
+    assert seen == [7, 120, 9]

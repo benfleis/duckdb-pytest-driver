@@ -12,14 +12,14 @@ class SparkHandle:
         self.session = session
 
     def run(self, statements):
-        result = None
+        result, rows = None, []
         for n, statement in enumerate(statements):
             try:
                 result = self.session.sql(statement)
                 rows = [tuple(_plain(v) for v in r) for r in result.collect()]
             except Exception as exc:  # py4j and pyspark raise unrelated types; all mean "the SQL failed"
                 raise SqlError(_message(exc), statement=n) from None
-        return list(result.columns), rows
+        return (list(result.columns) if result is not None else []), rows
 
     def begin_test(self):
         """One session serves every test, so drop what a test can leave behind in it."""
