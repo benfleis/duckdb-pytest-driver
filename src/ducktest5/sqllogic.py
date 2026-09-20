@@ -27,6 +27,7 @@ _EVENT = re.compile(r"\[TEST_EVENT\] (\{.*\})")
 _SKIP = re.compile(r"\[SKIP_TEST\] (.*?) :: (.*)")
 _PROGRESS = re.compile(r"^\[\d+/\d+\] \(\d+%\): .*$", re.M)
 DEFAULT_TIMEOUT_S = 600
+_OUTSIDE_A_TEST = object()  # the process hung while no test was running: at startup, between tests, at exit
 
 
 def find_unittest(*, explicit=None, build="debug", working_dir="."):
@@ -123,7 +124,7 @@ def _human(output):
 
 def _invoke(binary, batch, working_dir):
     """Run the batch and watch it: a test that is still running after its timeout gets the process
-    killed. Returns (output, name of the test that was killed for time, or None)."""
+    killed. Returns (output, what was running when it was killed or None, the exit code)."""
     batch.write()
     args = [
         binary,
@@ -164,14 +165,14 @@ def _invoke(binary, batch, working_dir):
         # batch's general timeout.
         limit = batch.timeout_for(running) if running else batch.timeout_s
         if time.perf_counter() - since > limit:
-            killed_for = running or batch.names[0]
+            killed_for = running or _OUTSIDE_A_TEST
             proc.kill()
             break
-    proc.wait()
+    returncode = proc.wait()
     text = "".join(output)
     with open(os.path.join(batch.dir, "output.txt"), "w") as f:
         f.write(text)
-    return text, killed_for
+    return text, killed_for, returncode
 
 
 def _classify(name, ev, detail, skip_reason=None):
@@ -202,48 +203,80 @@ def _sub(batch, tag, names):
 
 
 def run_batch(binary, batch, working_dir):
-    """Run one batch; returns {name: TestResult}.
+    """Run one batch; returns {name: TestResult}, one for every name.
 
-    - A test that was still running at its timeout is an ERROR, and the tests after it run as a new batch.
-    - A test that failed inside a batch of several runs again alone, so that the text is its own.
-    - A test with no end event (a crash) runs again alone; with no end event alone, it is an ERROR.
+    - An end event is the only thing that gives a test an outcome here. A test that was still running
+      at its timeout is an ERROR. A test with no end event runs again: the ones after a killed test as
+      a new batch, the others alone; with no end event alone, it is an ERROR.
+    - A test that failed inside a batch of several runs again alone for its text only. Its outcome
+      stays FAILED also when it passes alone: a failure that needs the other files of the batch is
+      state that leaks between tests, which is a failure.
+    - When the process hung while no test was running, or ended with an exit code that the end events
+      do not explain, every test of the batch that would count as passed is an ERROR instead.
     """
     t0 = time.perf_counter()
-    output, killed_for = _invoke(binary, batch, working_dir)
+    output, killed_for, returncode = _invoke(binary, batch, working_dir)
     seconds = time.perf_counter() - t0
-    begun, ended = _events(output)
+    _, ended = _events(output)
     skipped = _skip_reasons(output)
     results, alone, rest = {}, [], []
-    for name in batch.names:
+    names = list(dict.fromkeys(batch.names))
+    for name in names:
         ev = ended.get(name)
-        if name == killed_for:
+        if ev is None and killed_for is not _OUTSIDE_A_TEST and name == killed_for:
             results[name] = TestResult(
                 name,
                 ERROR,
                 detail=f"still running after {batch.timeout_for(name):.0f}s; the process was killed\n{_human(output)}".strip(),
             )
         elif ev is None:
-            (rest if killed_for else alone).append(name)
-        elif ev.get("status") == "error" and len(batch.names) > 1:
+            (rest if killed_for is not None else alone).append(name)
+        elif ev.get("status") == "error" and len(names) > 1:
             alone.append(name)
         else:
             results[name] = _classify(name, ev, _human(output) if ev.get("status") != "ok" else "", skipped.get(name))
-    if len(batch.names) == 1 and alone:
+
+    unexplained = None
+    if killed_for is _OUTSIDE_A_TEST:
+        unexplained = f"the process hung while no test was running (limit {batch.timeout_s:.0f}s) and was killed"
+    elif (
+        killed_for is None
+        and returncode != 0
+        and all(n in ended for n in names)  # a missing end event is a crash, and has its own path below
+        and not any(ev.get("status") == "error" for ev in ended.values())
+    ):
+        unexplained = f"the binary ended with exit code {returncode} although no test reported a failure"
+    if unexplained:
+        for name in names:
+            if name not in results or results[name].outcome == PASSED:
+                results[name] = TestResult(name, ERROR, detail=f"{unexplained}\n{_human(output)}".strip())
+        return results
+
+    if len(names) == 1 and alone:
         name = alone.pop()
         results[name] = TestResult(
             name, ERROR, detail=f"the binary ended without an end event for this test\n{_human(output)}".strip()
         )
-    if rest:
+    if rest and len(rest) < len(names):
         results.update(run_batch(binary, _sub(batch, "rest", rest), working_dir))
     for name in alone:
-        result = run_batch(binary, _sub(batch, "alone-" + re.sub(r"[^A-Za-z0-9._-]+", "_", name), [name]), working_dir)[
+        again = run_batch(binary, _sub(batch, "alone-" + re.sub(r"[^A-Za-z0-9._-]+", "_", name), [name]), working_dir)[
             name
         ]
-        if result.outcome == PASSED:
-            result.note = "failed or did not finish in its batch, passed when run alone"
-        results[name] = result
-    if len(batch.names) == 1:
-        results[batch.names[0]].seconds = round(seconds, 2)
+        if name in ended and again.outcome == PASSED:  # it failed in the batch and passes alone
+            again = TestResult(
+                name,
+                FAILED,
+                detail="failed when run with the other tests of its batch, and passed when run alone: "
+                f"one of them leaves state that breaks it. The batch output is in {os.path.join(batch.dir, 'output.txt')}",
+            )
+        results[name] = again
+    for name in names:  # a name the binary never mentioned at all
+        results.setdefault(
+            name, TestResult(name, ERROR, detail=f"the binary reported nothing for this test\n{_human(output)}".strip())
+        )
+    if len(names) == 1:
+        results[names[0]].seconds = round(seconds, 2)
     return results
 
 
@@ -271,13 +304,14 @@ def list_binary_tests(binary, working_dir, scratch):
     return names
 
 
-def check_against_binary(scanned_paths, binary, working_dir, scratch, scan_root):
+def check_against_binary(scanned_paths, binary, working_dir, scratch, scan_root, excluded=()):
     """Both sides in one scope: every `.test` the scan found under `scan_root` against every test the
     binary knows under it. A file on disk that the binary does not know would never run; a test the
     binary knows that is not on disk is a stale build."""
     root_rel = os.path.relpath(scan_root, working_dir)
     inside = lambda n: root_rel in (".", "") or n == root_rel or n.startswith(root_rel.rstrip("/") + "/")  # noqa: E731
-    known = {n for n in list_binary_tests(binary, working_dir, scratch) if inside(n)}
+    left_out = {os.path.normpath(p) for p in excluded}
+    known = {n for n in list_binary_tests(binary, working_dir, scratch) if inside(n) and n not in left_out}
     scanned = {os.path.normpath(p) for p in scanned_paths if inside(os.path.normpath(p))}
     problems = []
     if only_disk := sorted(scanned - known):

@@ -147,3 +147,24 @@ def test_a_teardown_is_deferred():
     assert seen == [] and len(deferred) == 1
     deferred[0]()
     assert seen == ["DROP TABLE x"]
+
+
+def test_braces_that_a_value_or_a_nested_struct_brings_are_not_touched():
+    seen = []
+    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), table="cat.t")
+    client.oks("SELECT {'a': {'b': 1}} AS s, {n} AS n, '{j}' AS j", {"n": 3, "j": '{"a":{"b":1}}'})
+    assert seen == ["SELECT {'a': {'b': 1}} AS s, 3 AS n, '{\"a\":{\"b\":1}}' AS j"]
+
+
+def test_not_a_number_and_infinity_render_and_insert():
+    rows = [(float("nan"), float("inf"), float("-inf"))]
+    assert render_rows(rows) == [("nan", "inf", "-inf")]
+    assert sql_values(rows) == "('nan'::DOUBLE, 'inf'::DOUBLE, '-inf'::DOUBLE)"
+
+
+def test_errs_does_not_take_a_failure_of_the_client_for_the_error_it_asked_for():
+    def broken(statements):
+        raise SqlError("no answer from the shell: boom")
+
+    with pytest.raises(ExpectationFailed, match="not a statement of this call"):
+        Client("fake", broken).errs("SELECT 1", "boom")

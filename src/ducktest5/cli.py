@@ -80,7 +80,12 @@ def main(argv=None):
             if not args.no_binary_check:
                 scratch = os.path.join(args.temp_dir_root, ".list")
                 problems = sqllogic.check_against_binary(
-                    [c.test.body_file for c in cases if c.test.body_file], unittest_bin, cwd, scratch, project.root
+                    [c.test.body_file for c in cases if c.test.body_file],
+                    unittest_bin,
+                    cwd,
+                    scratch,
+                    project.root,
+                    excluded=project.excluded_bodies(cwd),
                 )
                 if problems:
                     raise UsageError(

@@ -12,9 +12,10 @@ services, engines, variants) add up, dict fields (values, settings) update by ke
 
 from __future__ import annotations
 
-import fnmatch
+import functools
 import importlib.util
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 
@@ -32,10 +33,26 @@ class Rule:
     fields: dict
 
     def matches(self, rel_to_conf):
-        p = self.pattern
-        return (
-            fnmatch.fnmatchcase(rel_to_conf, p) or (p.endswith("/**") and rel_to_conf.startswith(p[:-2])) or p == "**"
-        )
+        return _glob(self.pattern).fullmatch(rel_to_conf) is not None
+
+
+@functools.lru_cache(maxsize=None)
+def _glob(pattern):
+    """`*` and `?` stay inside one path segment; `**` crosses segments; `dir/**` is everything below
+    `dir`. `fnmatch` alone lets `*` cross `/`, so `*.test` would also match `sub/deep/x.test`."""
+    out, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif pattern.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif pattern[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif pattern[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(pattern[i]), i + 1
+    return re.compile(out)
 
 
 def _rule(pattern, fields):
@@ -51,8 +68,9 @@ def default(**fields):
 
 
 def match(pattern, **fields):
-    """A rule for the tests whose path, relative to this file, matches `pattern` (`*` stays in one
-    directory level only when the pattern has no `**`; `dir/**` is everything below `dir`)."""
+    """A rule for the tests whose path, relative to this file, matches `pattern`: `*` stays inside one
+    directory level, `**` crosses levels, `dir/**` is everything below `dir`, and a pattern with no
+    wildcard names one file."""
     return _rule(pattern, fields)
 
 
@@ -91,7 +109,23 @@ class Project:
     sets: dict
     exclude: tuple
     _rules_by_dir: dict = field(default_factory=dict)
+    _used: set = field(default_factory=set)
     unused_rules: list = field(default_factory=list)
+
+    def excludes(self, rel_to_root):
+        return any(
+            _glob(p).fullmatch(rel_to_root) or _glob(p.rstrip("/") + "/**").fullmatch(rel_to_root) for p in self.exclude
+        )
+
+    def excluded_bodies(self, working_dir):
+        """The `.test` files EXCLUDE leaves out, relative to `working_dir`: the binary still knows them."""
+        out = []
+        for dirpath, _, filenames in os.walk(self.root):
+            for f in filenames:
+                rel = os.path.relpath(os.path.join(dirpath, f), self.root).replace(os.sep, "/")
+                if f.endswith((".test", ".test_slow", ".test_coverage")) and self.excludes(rel):
+                    out.append(os.path.relpath(os.path.join(dirpath, f), working_dir))
+        return out
 
     def settle(self, test_path):
         """Apply every rule on the way from the root down to `test_path` (absolute)."""
@@ -147,10 +181,9 @@ def find_root(start):
 def load_project(start):
     root = find_root(start)
     project = Project(root, {}, {}, {}, {}, ())
-    project._used = set()
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith((".", "__")))
+    for dirpath, dirnames, filenames in os.walk(root):  # top-down, so the root file and its EXCLUDE come first
         if CONF_FILE not in filenames:
+            _prune(project, root, dirpath, dirnames)
             continue
         path = os.path.join(dirpath, CONF_FILE)
         module = _load(path, "ducktestconf_" + os.path.relpath(dirpath, root).replace(os.sep, "_").replace(".", "root"))
@@ -169,7 +202,17 @@ def load_project(start):
             for name in ("ENGINES", "SERVICES", "AXES", "SETS", "EXCLUDE"):
                 if hasattr(module, name):
                     raise UsageError(f"{path}: {name} belongs in the root {CONF_FILE} only; this file may hold RULES")
+        _prune(project, root, dirpath, dirnames)
     return project
+
+
+def _prune(project, root, dirpath, dirnames):
+    rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
+    dirnames[:] = sorted(
+        d
+        for d in dirnames
+        if not d.startswith((".", "__")) and not project.excludes(d if rel_dir == "." else f"{rel_dir}/{d}")
+    )
 
 
 def _check(path, project):

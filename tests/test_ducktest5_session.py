@@ -86,3 +86,14 @@ def test_two_columns_of_one_name_stay_two_columns(session):
 
 def test_a_struct_inside_a_value_is_a_dict(session):
     assert session.run(["SELECT {'a': 1, 'b': [{'c': 2}]} AS s"])[1] == [({"a": 1, "b": [{"c": 2}]},)]
+
+
+def test_a_trailing_comment_does_not_swallow_the_end_of_the_statement(session):
+    assert session.run(["SELECT 2 AS two -- the last word"])[1] == [(2,)]
+
+
+def test_a_statement_that_prints_text_is_a_result_not_an_error(session):
+    columns, rows = session.run(["EXPLAIN SELECT 1"])
+    assert columns == ["output"] and "PROJECTION" in rows[0][0].upper()
+    with pytest.raises(SqlError, match="Binder Error"):
+        session.run(["SELECT nope"])

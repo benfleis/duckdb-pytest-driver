@@ -95,7 +95,9 @@ class Client:
         known = {**self._params, **(params or {}), **more}
 
         def value(match):
-            name = match.group(1)
+            if match.group(1):  # {{word}}: a literal brace pair around a word
+                return "{" + match.group(1) + "}"
+            name = match.group(2)
             if name not in known:
                 raise UsageError(
                     f"[{self.name}] no value for {{{name}}}; known: {sorted(known)}. "
@@ -105,8 +107,8 @@ class Client:
             return sql_values(v) if isinstance(v, (list, tuple)) else str(v)
 
         def fill(text):
-            text = re.sub(r"(?<!\{)\{(\w+)\}(?!\})", value, text)
-            return text.replace("{{", "{").replace("}}", "}")
+            # One pass, so that what a value brings in is never read as a placeholder or an escape.
+            return re.sub(r"\{\{(\w+)\}\}|\{(\w+)\}", value, text)
 
         return split_statements(fill(sql)) if isinstance(sql, str) else [fill(x).strip() for x in sql]
 
@@ -198,8 +200,10 @@ class Client:
         try:
             self._timed_run(statements)
         except SqlError as exc:
-            if exc.statement not in (None, len(statements) - 1):
-                raise ExpectationFailed(self.name, statements[exc.statement], f"statement failed: {exc}") from None
+            if exc.statement != len(statements) - 1:
+                # An earlier statement, the preamble, or the client itself failed: not the error asked for.
+                failed = statements[exc.statement] if exc.statement is not None else "(not a statement of this call)"
+                raise ExpectationFailed(self.name, failed, f"statement failed: {exc}") from None
             if text not in str(exc):
                 raise ExpectationFailed(self.name, statements[-1], f"failed, but not with {text!r}: {exc}") from None
             return

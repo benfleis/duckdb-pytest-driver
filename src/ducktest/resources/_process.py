@@ -19,7 +19,7 @@ import subprocess
 import time
 from collections import namedtuple
 
-from ducktest5.host import wait_until  # noqa: F401  (moved; pytest-free)
+from ducktest5.host import wait_until  # noqa: F401  (lives where no pytest is imported)
 
 from ..steps import step
 

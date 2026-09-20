@@ -46,6 +46,29 @@ def test_each_ending_gets_its_own_outcome(tmp_path):
     assert results["d_giveup.test"].detail == "skip on error_message matching 'HTTP'"
 
 
+def test_a_test_that_fails_only_beside_others_is_failed_and_the_batch_output_stays(tmp_path):
+    results = run(tmp_path, ["a.test", "b_onlyinbatch_fail.test"])
+    assert results["b_onlyinbatch_fail.test"].outcome == FAILED
+    assert "passed when run alone" in results["b_onlyinbatch_fail.test"].detail
+    assert (tmp_path / "b001" / "output.txt").exists()
+
+
+def test_a_hang_after_the_last_test_blames_no_test_and_nothing_counts_as_passed(tmp_path):
+    results = run(tmp_path, ["a.test", "b_stallatexit.test"], timeout_s=0.5)
+    assert {r.outcome for r in results.values()} == {ERROR}
+    assert "while no test was running" in results["a.test"].detail
+
+
+def test_an_exit_code_that_no_test_explains_is_an_error(tmp_path):
+    results = run(tmp_path, ["a.test", "b_badexit.test"])
+    assert {r.outcome for r in results.values()} == {ERROR}
+    assert "exit code 7" in results["a.test"].detail
+
+
+def test_a_name_twice_in_one_batch_gives_one_result(tmp_path):
+    assert list(run(tmp_path, ["a.test", "a.test"])) == ["a.test"]
+
+
 def test_a_failure_in_a_batch_is_run_again_alone_so_its_text_is_its_own(tmp_path):
     results = run(tmp_path, ["a.test", "b_fail.test", "c_fail.test"])
     assert "c_fail" not in results["b_fail.test"].detail

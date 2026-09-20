@@ -2,7 +2,7 @@
 
 import os
 
-from .client import Client
+from .client import Client, SetupFailed, SqlError
 from .engines.duckdb import DuckDBPerCall
 from .steps import step
 
@@ -59,7 +59,10 @@ class Ctx:
         if session != "per_run":
             raise ValueError(f"session={session!r}; it is 'per_run' or 'per_call'")
         shared = self._duckdb_session
-        shared.add_preamble(preamble)
+        try:
+            shared.add_preamble(preamble)
+        except SqlError as exc:
+            raise SetupFailed(f"[duckdb] the preamble failed: {exc}") from None
         client = self._client("duckdb", shared.run, table)
         client.restart, client.respawn, client.reconnect = shared.restart, shared.respawn, _no_reconnect
         return client

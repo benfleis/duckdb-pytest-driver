@@ -1,8 +1,10 @@
-"""plan -> provision -> exec -> cleanup -> report, over the items `scan` selected.
+"""provision -> exec -> cleanup -> report, over the cases a selection gave.
 
-Each phase writes what it decided into the run dir (`01-tests.yaml`, `05-report.yaml`), so a run can
-be inspected after the fact. The plan is serial and provisioning is a temp dir per test plus the
-engines the selected tests declare; both grow only when a test needs more.
+`.test` cases go to the unittest binary in batches, several processes at a time; Python bodies run in
+this process, one after another. What was decided and what happened is in the run dir:
+`01-tests.yaml`, `03-provision.yaml` (secrets redacted), `04-events.jsonl` (one line for each case),
+`05-report.yaml`. Whatever goes wrong outside a body is an ERROR of the cases it hit, never the end
+of the run, and services are released on every way out.
 """
 
 from __future__ import annotations
@@ -69,7 +71,7 @@ def _run_body(case, ctx):
     return outcome, problems
 
 
-def _env_for_body(case, provisioned):
+def _env_for_body(case):
     """What a `.test` body sees as `{NAME}`: the case's values, upper-cased as a .test writes them."""
     return {k.upper(): v for k, v in case.values.items()}
 
@@ -86,7 +88,7 @@ def _init_sql(case, provisioned):
 def _batch_key(case, provisioned):
     return json.dumps(
         [
-            sorted(_env_for_body(case, provisioned).items()),
+            sorted(_env_for_body(case).items()),
             sorted(case.settings.items()),
             _init_sql(case, provisioned),
             bool(case.services),
@@ -151,130 +153,168 @@ def run(
         )
         print(f"{outcome.upper():8} {case.id}{tail}" + (f"  [{note}]" if note else ""), file=out, flush=True)
 
-    # provision: each service some selected case needs, then each engine. One that does not come up
-    # blocks its cases; the rest of the run goes on.
-    provisioned, boot_errors = {}, {}
-    for service_id in sorted({s for c in cases for s in c.services}):
-        print(f"service {service_id} ...", file=out, flush=True)
-        try:
-            provisioned[service_id] = provision(
-                project.services[service_id],
-                existing=existing_overrides(service_id, existing_services),
-                keep=keep_services,
-            )
-            print(f"service {service_id} -- {provisioned[service_id].mode}", file=out, flush=True)
-        except Exception as exc:
-            boot_errors[service_id] = f"{type(exc).__name__}: {exc}"
-    _write(run_dir, "03-provision.yaml", {k: {"mode": p.mode, "block": p.redacted()} for k, p in provisioned.items()})
-
-    blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
-    handles = {}
-    # An engine boots only when a case that can still run needs it.
-    for engine_id in sorted({e for c in cases if not blocked(c) for e in c.engines}):
-        log = os.path.join(run_dir, f"engine-{engine_id}.log")
-        print(f"boot {engine_id} ({engines[engine_id].variant}) ...", file=out, flush=True)
-        t0 = time.perf_counter()
-        try:
-            handles[engine_id] = engines[engine_id].boot(log)
-            for service_id in engines[engine_id].uses:
-                if service_id in provisioned:
-                    handles[engine_id].use_service(service_id, provisioned[service_id].block)
-            print(f"boot {engine_id} -- done ({time.perf_counter() - t0:.1f}s)", file=out, flush=True)
-        except Exception as exc:
-            boot_errors[engine_id] = f"{type(exc).__name__}: {exc} (log: {log})"
-
-    runnable = []
-    for case in cases:
-        if by := blocked(case):
-            done(case, BLOCKED, runner="-", blocked_by=by, note=f"{by[0]} did not come up")
-        else:
-            runnable.append(case)
-
+    provisioned, boot_errors, handles = {}, {}, {}
     duckdb_session = DuckDBSession(duckdb_bin)
+    blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
     try:
+        # provision: each service some selected case needs, then each engine. One that does not come
+        # up blocks its cases; the rest of the run goes on.
+        for service_id in sorted({s for c in cases for s in c.services}):
+            print(f"service {service_id} ...", file=out, flush=True)
+            try:
+                provisioned[service_id] = provision(
+                    project.services[service_id],
+                    existing=existing_overrides(service_id, existing_services),
+                    keep=keep_services,
+                )
+                print(f"service {service_id} -- {provisioned[service_id].mode}", file=out, flush=True)
+            except Exception as exc:
+                boot_errors[service_id] = f"{type(exc).__name__}: {exc}"
+        _write(
+            run_dir, "03-provision.yaml", {k: {"mode": p.mode, "block": p.redacted()} for k, p in provisioned.items()}
+        )
+
+        # An engine boots only when a case that can still run needs it.
+        for engine_id in sorted({e for c in cases if not blocked(c) for e in c.engines}):
+            log = os.path.join(run_dir, f"engine-{engine_id}.log")
+            print(f"boot {engine_id} ({engines[engine_id].variant}) ...", file=out, flush=True)
+            t0 = time.perf_counter()
+            try:
+                handles[engine_id] = engines[engine_id].boot(log)
+                for service_id in engines[engine_id].uses:
+                    if service_id in provisioned:
+                        handles[engine_id].use_service(service_id, provisioned[service_id].block)
+                print(f"boot {engine_id} -- done ({time.perf_counter() - t0:.1f}s)", file=out, flush=True)
+            except Exception as exc:
+                boot_errors[engine_id] = f"{type(exc).__name__}: {exc} (log: {log})"
+
+        runnable = []
+        for case in cases:
+            if by := blocked(case):
+                done(case, BLOCKED, runner="-", blocked_by=by, note=f"{by[0]} did not come up")
+            else:
+                runnable.append(case)
+
         # .test bodies with no Python: batches through the unittest binary, several at a time.
         sqllogic_cases = [c for c in runnable if c.test.type == SQLLOGIC]
-        if sqllogic_cases:
-            if unittest_bin is None:
-                raise UsageError("the selection holds .test files, and no unittest binary was found")
-            groups = {}
-            for c in sqllogic_cases:
-                groups.setdefault(_batch_key(c, provisioned), []).append(c)
-            batches = []
-            for group in groups.values():
-                slow = [c for c in group if "slow" in c.tags]
-                fast = [c for c in group if "slow" not in c.tags]
-                for chunk in [fast[i : i + batch_size] for i in range(0, len(fast), batch_size)] + [[c] for c in slow]:
-                    n = len(batches) + 1
-                    first = chunk[0]
-                    batches.append(
-                        (
-                            chunk,
-                            sqllogic.Batch(
-                                os.path.join(run_dir, "batches", f"b{n:03d}"),
-                                [c.test.body_file for c in chunk],
-                                _env_for_body(first, provisioned),
-                                first.settings,
-                                _init_sql(first, provisioned),
-                                strict_connection_errors=bool(first.services),
-                                timeouts={c.test.body_file: c.test.timeout for c in chunk if c.test.timeout},
-                            ),
-                        )
+        if sqllogic_cases and unittest_bin is None:
+            raise UsageError("the selection holds .test files, and no unittest binary was found")
+        groups = {}
+        for c in sqllogic_cases:
+            groups.setdefault(_batch_key(c, provisioned), []).append(c)
+        batches = []
+        for group in groups.values():
+            # One file once in a batch: two cases of one file that differ only in tags or services
+            # would else be the same name twice, with one result between them.
+            chunks, slow = [], [[c] for c in group if "slow" in c.tags]
+            for c in (c for c in group if "slow" not in c.tags):
+                chunk = next(
+                    (
+                        k
+                        for k in chunks
+                        if len(k) < batch_size and c.test.body_file not in {x.test.body_file for x in k}
+                    ),
+                    None,
+                )
+                if chunk is None:
+                    chunks.append(chunk := [])
+                chunk.append(c)
+            for chunk in chunks + slow:
+                first = chunk[0]
+                batches.append(
+                    (
+                        chunk,
+                        sqllogic.Batch(
+                            os.path.join(run_dir, "batches", f"b{len(batches) + 1:03d}"),
+                            [c.test.body_file for c in chunk],
+                            _env_for_body(first),
+                            first.settings,
+                            _init_sql(first, provisioned),
+                            strict_connection_errors=bool(first.services),
+                            timeouts={c.test.body_file: c.test.timeout for c in chunk if c.test.timeout},
+                        ),
                     )
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-                futures = {
-                    pool.submit(sqllogic.run_batch, unittest_bin, batch, working_dir): (chunk, batch)
-                    for chunk, batch in batches
-                }
-                for future in concurrent.futures.as_completed(futures):
-                    chunk, batch = futures[future]
+                )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            futures = {
+                pool.submit(sqllogic.run_batch, unittest_bin, batch, working_dir): (chunk, batch)
+                for chunk, batch in batches
+            }
+            for future in concurrent.futures.as_completed(futures):
+                chunk, batch = futures[future]
+                try:
                     by_name = future.result()
+                except Exception as exc:  # the binary could not be started, the batch dir not written, ...
                     for case in chunk:
-                        r = by_name[case.test.body_file]
-                        problems = [r.detail] if r.detail and r.outcome != PASSED else []
                         done(
                             case,
-                            r.outcome,
+                            ERROR,
                             runner="unittest",
-                            seconds=r.seconds,
-                            problems=problems,
-                            kept=[r.kept] if r.kept else [],
-                            note=r.note,
-                            batch=os.path.relpath(batch.dir, run_dir),
+                            problems=[f"the batch could not run: {type(exc).__name__}: {exc}"],
                         )
-                    if all(by_name[c.test.body_file].outcome == PASSED for c in chunk) and not keep:
-                        shutil.rmtree(batch.dir, ignore_errors=True)
+                    continue
+                for case in chunk:
+                    r = by_name[case.test.body_file]
+                    problems = [r.detail] if r.detail and r.outcome != PASSED else []
+                    done(
+                        case,
+                        r.outcome,
+                        runner="unittest",
+                        seconds=r.seconds,
+                        problems=problems,
+                        kept=[r.kept] if r.kept else [],
+                        note=r.note,
+                        batch=os.path.relpath(batch.dir, run_dir),
+                    )
+                if all(by_name[c.test.body_file].outcome == PASSED for c in chunk) and not keep:
+                    shutil.rmtree(batch.dir, ignore_errors=True)
 
         # Python bodies, in this process, one after another.
         for case in runnable:
             if case.test.type == SQLLOGIC:
                 continue
-            temp_dir = os.path.join(run_dir, "cases", case.dir_name)
-            os.makedirs(temp_dir)
-            duckdb_session.begin_test()
-            for handle in handles.values():
-                if hasattr(handle, "begin_test"):
-                    handle.begin_test()
-            ctx = Ctx(
-                case,
-                temp_dir=temp_dir,
-                duckdb_bin=duckdb_bin,
-                duckdb_session=duckdb_session,
-                engines=handles,
-                services=provisioned,
-                remote_parts=(run_id, case.dir_name),
-                init_sql=_init_sql(case, provisioned),
-                run_test=lambda case=case, temp_dir=temp_dir, **kw: _run_paired(
-                    case, unittest_bin, working_dir, temp_dir, provisioned, **kw
-                ),
-            )
             t0 = time.perf_counter()
+            temp_dir = os.path.join(run_dir, "cases", case.dir_name)
+            try:
+                os.makedirs(temp_dir)
+                duckdb_session.begin_test()
+                for handle in handles.values():
+                    if hasattr(handle, "begin_test"):
+                        handle.begin_test()
+                ctx = Ctx(
+                    case,
+                    temp_dir=temp_dir,
+                    duckdb_bin=duckdb_bin,
+                    duckdb_session=duckdb_session,
+                    engines=handles,
+                    services=provisioned,
+                    remote_parts=(run_id, case.dir_name),
+                    init_sql=_init_sql(case, provisioned),
+                    run_test=lambda case=case, temp_dir=temp_dir, **kw: _run_paired(
+                        case, unittest_bin, working_dir, temp_dir, provisioned, **kw
+                    ),
+                )
+            except Exception as exc:
+                done(
+                    case,
+                    ERROR,
+                    runner="python",
+                    problems=[f"the case could not be set up: {type(exc).__name__}: {exc}"],
+                )
+                continue
             outcome, problems = _run_body(case, ctx)
             kept = []
             if outcome == PASSED and not keep:
-                shutil.rmtree(temp_dir)
+                shutil.rmtree(temp_dir, ignore_errors=True)
                 for service_id, uri in ctx.remote_locations:
-                    provisioned[service_id].service.clean(provisioned[service_id].block, uri)
+                    try:
+                        provisioned[service_id].service.clean(provisioned[service_id].block, uri)
+                    except Exception as exc:
+                        outcome = ERROR
+                        problems.append(
+                            f"what the case wrote at {uri} could not be removed: {type(exc).__name__}: {exc}"
+                        )
+                        kept.append(uri)
             else:
                 kept = [temp_dir, *(uri for _, uri in ctx.remote_locations)]
             done(
@@ -290,12 +330,28 @@ def run(
         events.close()
         duckdb_session.close()
         for handle in handles.values():
-            handle.stop()
+            try:
+                handle.stop()
+            except Exception:
+                pass
         for p in provisioned.values():
-            release(p)
+            try:
+                release(p)
+            except Exception as exc:
+                print(f"service {p.service.id} could not be stopped: {exc}", file=out)
             if p.mode == KEPT:
                 print(f"service {p.service.id} left running; next run: {attach_argument(p)}", file=out)
+        _report(run_dir, run_id, results, boot_errors, out)
 
+    outcomes = (PASSED, FAILED, ERROR, BLOCKED, SKIPPED)
+    counts = {o: sum(r["outcome"] == o for r in results) for o in outcomes}
+    # Green means it ran: a skip inside the binary does not fail the run, anything else not passed does,
+    # and a run in which nothing passed is not green.
+    bad = counts[FAILED] + counts[ERROR] + counts[BLOCKED]
+    return 0 if bad == 0 and counts[PASSED] > 0 else 1
+
+
+def _report(run_dir, run_id, results, boot_errors, out):
     outcomes = (PASSED, FAILED, ERROR, BLOCKED, SKIPPED)
     counts = {o: sum(r["outcome"] == o for r in results) for o in outcomes}
     _write(
@@ -329,10 +385,6 @@ def run(
         print(f"\n{name!r} did not come up: {n_blocked} cases blocked\n  {error}", file=out)
     summary = ", ".join(f"{counts[o]} {o}" for o in outcomes if counts[o] or o == PASSED)
     print(f"\n{summary} -- {run_dir}", file=out)
-    # Green means it ran: a skip inside the binary does not fail the run, anything else not passed does,
-    # and a run in which nothing passed is not green.
-    bad = counts[FAILED] + counts[ERROR] + counts[BLOCKED]
-    return 0 if bad == 0 and counts[PASSED] > 0 else 1
 
 
 def _run_paired(case, unittest_bin, working_dir, temp_dir, provisioned, *, env=None, init_sql=""):
@@ -342,7 +394,7 @@ def _run_paired(case, unittest_bin, working_dir, temp_dir, provisioned, *, env=N
     batch = sqllogic.Batch(
         os.path.join(temp_dir, "run_test"),
         [case.test.body_file],
-        {**_env_for_body(case, provisioned), **(env or {})},
+        {**_env_for_body(case), **(env or {})},
         case.settings,
         "\n".join(x for x in (_init_sql(case, provisioned), init_sql) if x),
         case.test.timeout or sqllogic.DEFAULT_TIMEOUT_S,

@@ -124,3 +124,23 @@ def test_managed_refuses_to_replace_an_instance_that_already_answers():
     with pytest.raises(RuntimeError, match="already answers.*--existing-service store.*--keep-services"):
         provision(fake.service())
     assert fake.calls == []
+
+
+def test_a_setup_that_fails_does_not_leave_a_started_instance_behind():
+    fake = Fake()
+
+    def setup(block):
+        fake.calls.append("setup")
+        raise RuntimeError("no boto3")
+
+    service = Service(
+        "store",
+        block=lambda **o: {},
+        alive=lambda b: fake.up,
+        start=lambda b: (fake.calls.append("start"), setattr(fake, "up", True)),
+        stop=lambda b: fake.calls.append("stop"),
+        setup=setup,
+    )
+    with pytest.raises(RuntimeError, match="no boto3"):
+        provision(service)
+    assert fake.calls == ["start", "setup", "stop"]

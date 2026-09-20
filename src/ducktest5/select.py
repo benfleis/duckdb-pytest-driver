@@ -43,11 +43,16 @@ def _path_matches(case_path, wanted):
         case_path == wanted
         or case_path.startswith(wanted + "/")
         or fnmatch.fnmatchcase(case_path, wanted)
-        or os.path.splitext(case_path)[0] == os.path.splitext(wanted)[0]  # foo.test names the paired foo.py too
+        # `foo.test` names the paired `foo.py` too, and the other way round; nothing wider than that
+        or (
+            os.path.splitext(case_path)[0] == os.path.splitext(wanted)[0]
+            and {os.path.splitext(case_path)[1], os.path.splitext(wanted)[1]} & {".py"}
+            and {os.path.splitext(case_path)[1], os.path.splitext(wanted)[1]} != {".py"}
+        )
     )
 
 
-def _parse(expr, axes, known_tags):
+def _parse(expr, axes, known_tags, known_cases):
     negate = expr.startswith("not:")
     body = expr[4:] if negate else expr
     key, sep, raw = body.partition("=")
@@ -62,7 +67,13 @@ def _parse(expr, axes, known_tags):
         unknown = [v for v in values if v not in axes[key]]
         if unknown:
             raise UsageError(f"--select {expr!r}: axis {key!r} has no value {unknown}; it has {sorted(axes[key])}")
-    elif key not in ("type", "case"):
+    elif key == "type":
+        if unknown := [v for v in values if v not in ("sqllogic", "paired", "python")]:
+            raise UsageError(f"--select {expr!r}: no type {unknown}; types are sqllogic, paired, python")
+    elif key == "case":
+        if unknown := [v for v in values if v not in known_cases]:
+            raise UsageError(f"--select {expr!r}: no test has a case {unknown}")
+    else:
         raise UsageError(
             f"--select {expr!r}: unknown key {key!r}; keys are tag, type, case" + "".join(f", {a}" for a in axes)
         )
@@ -95,7 +106,8 @@ def apply(cases, selection, project):
     elif selection.is_bare() and "default" in project.sets:
         paths += project.sets["default"].get("paths", [])
         exprs += project.sets["default"].get("select", [])
-    parsed = [_parse(e, axes, known_tags) for e in exprs]
+    known_cases = {c.case_id for c in cases if c.case_id is not None}
+    parsed = [_parse(e, axes, known_tags, known_cases) for e in exprs]
 
     if selection.ids:
         known = {c.id for c in cases}
@@ -121,6 +133,7 @@ def apply(cases, selection, project):
         elif (
             not selection.ids
             and not selection.slow
+            and case.test.body_file not in paths  # a slow file named exactly is asked for
             and (slow := next((t for t in ("slow", "coverage") if t in case.tags and t not in asked_for), None))
         ):
             why_not[case.id] = f"tag {slow}: runs only when asked for: --slow, --select tag={slow}, or --id"

@@ -7,6 +7,7 @@ Groups, tags and selection work on cases.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -88,10 +89,12 @@ class Case:
 
     @property
     def dir_name(self):
-        """A directory name that says which case it holds."""
-        return re.sub(
+        """A directory name that says which case it holds, and is its own: two tests of one file
+        name in two directories must not share it."""
+        readable = re.sub(
             r"[^A-Za-z0-9._=,\[\]-]+", "_", self.id.split("::", 1)[-1] + "@" + os.path.basename(self.test.path)
         )
+        return f"{readable}-{hashlib.sha1(self.id.encode()).hexdigest()[:6]}"
 
     def record(self, project):
         return {

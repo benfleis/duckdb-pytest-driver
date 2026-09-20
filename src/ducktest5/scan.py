@@ -6,7 +6,6 @@ files. A `.test` file is found by name only, so a tree of thousands of them cost
 
 from __future__ import annotations
 
-import fnmatch
 import importlib.util
 import itertools
 import os
@@ -21,14 +20,28 @@ _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 
 
 def _load(path, name):
+    """Import one test file. Its own directory is importable while it loads, so that a test can
+    import a helper beside it; a failure says which file it was."""
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    sys.path.insert(0, os.path.dirname(path))
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        raise UsageError(f"{path} could not be imported: {type(exc).__name__}: {exc}") from exc
+    finally:
+        sys.path.remove(os.path.dirname(path))
     return module
 
 
-def _walk(root, exclude):
+def _has_test_bodies(path):
+    """Only a file that marks a body with `@test` is imported; a helper module beside the tests is not."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return "@test" in f.read()
+
+
+def _walk(root, excludes):
     """(bodies, scripts): `.test`-like files and `.py` files under root, as absolute paths."""
     bodies, scripts = [], []
     for dirpath, dirnames, filenames in os.walk(root):
@@ -36,11 +49,11 @@ def _walk(root, exclude):
         for f in sorted(filenames):
             path = os.path.join(dirpath, f)
             rel = os.path.relpath(path, root).replace(os.sep, "/")
-            if any(fnmatch.fnmatchcase(rel, p) or rel.startswith(p.rstrip("*").rstrip("/") + "/") for p in exclude):
+            if excludes(rel):
                 continue
             if f.endswith(BODY_SUFFIXES):
                 bodies.append(path)
-            elif f.endswith(".py") and f not in _NOT_TESTS:
+            elif f.endswith(".py") and f not in _NOT_TESTS and _has_test_bodies(path):
                 scripts.append(path)
     return bodies, scripts
 
@@ -52,7 +65,7 @@ def _suffix_tags(path):
 def scan(start, *, working_dir="."):
     """Returns (cases, project): every case under the project root, in a stable order."""
     project = load_project(start)
-    bodies, scripts = _walk(project.root, project.exclude)
+    bodies, scripts = _walk(project.root, project.excludes)
     body_by_stem = {}
     for b in bodies:
         body_by_stem.setdefault(os.path.splitext(b)[0], b)  # .test wins over .test_slow of one stem

@@ -8,4 +8,4 @@ Readiness polling is NOT here: ``wait_until`` is generic (a container and a loca
 it) and lives in :mod:`._process`, the layer with no dependencies of its own.
 """
 
-from ducktest5.host import docker  # noqa: F401  (moved; pytest-free, and every call has a timeout)
+from ducktest5.host import docker  # noqa: F401  (lives where no pytest is imported)

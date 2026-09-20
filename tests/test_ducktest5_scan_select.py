@@ -166,3 +166,71 @@ def test_an_id_is_taken_verbatim(project):
 def test_a_selection_that_can_never_match_is_an_error(project, kwargs, message):
     with pytest.raises(UsageError, match=message):
         select(project, **kwargs)
+
+
+def test_a_star_stays_inside_one_directory_and_two_stars_cross(tmp_path):
+    cases, _ = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": "from ducktest5 import match\nRULES = [match('*.test', tags=['top']), match('**/*.test', tags=['any']), match('sub/**', tags=['below'])]",
+            "test/x.test": "",
+            "test/sub/deep/y.test": "",
+        },
+    )
+    tags = {c.test.path: c.test.tags for c in cases}
+    assert tags == {"test/x.test": ["top", "any"], "test/sub/deep/y.test": ["any", "below"]}
+
+
+def test_an_excluded_directory_is_not_scanned_and_its_configuration_is_not_loaded(tmp_path):
+    cases, project = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": "EXCLUDE = ['old']",
+            "test/a.test": "",
+            "test/old/b.test": "",
+            "test/old/ducktestconf.py": "from ducktest5 import match\nRULES = [match('gone.test', tags=['x'])]",
+        },
+    )
+    assert ids(cases) == ["test/a.test::a"]
+    assert project.excluded_bodies(str(tmp_path)) == ["test/old/b.test"]
+
+
+def test_only_a_file_with_test_bodies_is_imported_and_a_broken_one_says_which(tmp_path):
+    cases, _ = tree(
+        tmp_path, {"test/a.test": "", "test/helper.py": "raise RuntimeError('a helper must not run at scan')"}
+    )
+    assert ids(cases) == ["test/a.test::a"]
+    with pytest.raises(UsageError, match=r"broken\.py could not be imported: ModuleNotFoundError"):
+        tree(
+            tmp_path / "2",
+            {"test/broken.py": "import no_such_module\nfrom ducktest5 import test\n@test()\ndef t(ctx): pass"},
+        )
+
+
+def test_a_test_can_import_a_helper_beside_it(tmp_path):
+    cases, _ = tree(
+        tmp_path,
+        {
+            "test/helper.py": "X = 1",
+            "test/t.py": "from helper import X\nfrom ducktest5 import test\n@test()\ndef t(ctx): pass",
+        },
+    )
+    assert ids(cases) == ["test/t.py::t"]
+
+
+def test_two_tests_of_one_file_name_get_their_own_directory(tmp_path):
+    body = "from ducktest5 import test\n@test()\ndef t(ctx): pass"
+    cases, _ = tree(tmp_path, {"test/a/same.py": body, "test/b/same.py": body})
+    assert len({c.dir_name for c in cases}) == 2
+
+
+def test_a_path_names_its_paired_file_and_nothing_wider(project):
+    assert ids(select(project, paths=["test/b/paired.test"])[0]) == [
+        "test/b/paired.py::body[cmt]",
+        "test/b/paired.py::body[plain]",
+    ]
+    assert ids(select(project, paths=["test/a/y.test_slow"])[0]) == [
+        "test/a/y.test_slow::y"
+    ]  # named exactly: asked for
+    with pytest.raises(UsageError, match="no test has a case"):
+        select(project, select=["case=cmtt"])

@@ -14,6 +14,7 @@ call.
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 
@@ -35,9 +36,20 @@ def _nested(value):
     return value
 
 
+_ERROR_LINE = re.compile(r"^(?:[A-Za-z]+(?: [A-Za-z]+)* )?Error:", re.M)
+
+
+def _is_error(output):
+    """The shell prints an error as `<Kind> Error: ...`. Text that is neither that nor a JSON result is
+    what a statement such as EXPLAIN prints, and is a result."""
+    return bool(output) and not output.startswith("[") and bool(_ERROR_LINE.search(output))
+
+
 def _rows(text):
     """Rows of `duckdb -json` output. A row stays a list of pairs, so two columns of one name
     (`SELECT a.id, b.id`) stay two columns; an object inside a value (a struct, a map) is a dict."""
+    if text and not text.startswith("["):
+        return ["output"], [(text,)]  # a statement that prints text, not rows: EXPLAIN
     try:
         rows = json.loads(text, object_pairs_hook=_Pairs) if text else []
     except ValueError:
@@ -120,8 +132,10 @@ class DuckDBSession:
                 self._replay()
         output = ""
         for n, statement in enumerate(statements):
-            output = self._send(statement.rstrip(";") + ";")
-            if output and not output.startswith("["):
+            # The `;` goes on its own line: after a trailing `-- comment` it would be part of the comment,
+            # and the shell would then read the marker as more SQL and never answer.
+            output = self._send(statement.rstrip().rstrip(";") + "\n;")
+            if _is_error(output):
                 raise SqlError(output, statement=n if numbered else None)
         return output
 
@@ -164,7 +178,7 @@ class DuckDBPerCall:
     def run(self, statements):
         script = [self.preamble]
         for n, statement in enumerate(statements):
-            script += [f".print {_MARK.format(n)}", statement.rstrip(";") + ";"]
+            script += [f".print {_MARK.format(n)}", statement.rstrip().rstrip(";") + "\n;"]
         p = subprocess.run(
             [self.binary, "-unsigned", "-bail", "-json", "-init", os.devnull],
             input="\n".join(script) + "\n",

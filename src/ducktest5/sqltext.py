@@ -3,6 +3,7 @@
 import datetime
 import decimal
 import json
+import math
 import textwrap
 
 _QUOTES = {"'": "'", '"': '"', "`": "`"}
@@ -60,6 +61,8 @@ def _sql_literal(value):
         return "NULL"
     if value is True or value is False:
         return "true" if value else "false"
+    if isinstance(value, float) and not math.isfinite(value):
+        return f"'{render(value)}'::DOUBLE"
     if isinstance(value, (int, float, decimal.Decimal)):
         return str(value)
     if isinstance(value, datetime.datetime):
@@ -87,8 +90,11 @@ def render(value):
         return "(empty)"
     if isinstance(value, datetime.datetime):
         return value.isoformat(sep=" ")
-    if isinstance(value, float) and value == int(value) and abs(value) < 1e15:
-        return f"{value:.1f}"
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return "nan" if math.isnan(value) else ("inf" if value > 0 else "-inf")
+        if value == int(value) and abs(value) < 1e15:
+            return f"{value:.1f}"
     if isinstance(value, (list, tuple, dict)):
         # One form for a nested value whatever the client's own types: compact JSON.
         return json.dumps(value, separators=(",", ":"), ensure_ascii=False, default=str)

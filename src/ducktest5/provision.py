@@ -91,7 +91,12 @@ def provision(service, *, existing=None, keep=False, ready_timeout_s=60):
                     service.stop(block)  # do not leak a half-booted instance
                 raise
     if service.setup:
-        service.setup(block)
+        try:
+            service.setup(block)
+        except BaseException:
+            if mode == MANAGED and service.stop:
+                service.stop(block)  # else the next run is refused: "already answers"
+            raise
     return Provisioned(service, block, mode)
 
 

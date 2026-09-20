@@ -6,6 +6,8 @@
     *fail*   ends with status error        *hang*    never ends
     *crash*  exits before its end event    *skip*    ends as skip-requirement
     *giveup* prints a SKIP_TEST line and ends ok, as the binary does for an error on its skip list
+    *onlyinbatch_fail* fails beside other tests and passes alone
+    *stallatexit* / *badexit* end ok, then the process hangs / exits 7
 """
 
 import json
@@ -25,6 +27,7 @@ def main(argv):
         return 3
     names = [line.strip() for line in open(argv[argv.index("-f") + 1]) if line.strip()]
     config = json.load(open(argv[argv.index("--test-config") + 1]))
+    failed = False
     for name in names:
         temp = f"{config['temp_dir_root']}/run/{name.replace('/', '_')}"
         event(event="begin", name=name, temp_dir=temp)
@@ -35,9 +38,13 @@ def main(argv):
             return 139
         if "env" in name:
             print("ENV " + json.dumps({e["env_name"]: e["env_value"] for e in config["test_env"]}), flush=True)
+        if "onlyinbatch" in name and len(names) == 1:
+            event(event="end", name=name, status="ok", passes=1, fails=0, **{"skip-mode": 0}, temp_dir=temp)
+            continue
         if "fail" in name:
             print(f"Wrong result in query! ({name}:4)\nExpected result:\n2\nActual result:\n1", flush=True)
             event(event="end", name=name, status="error", passes=0, fails=1, **{"skip-mode": 0}, temp_dir=temp)
+            failed = True
         elif "giveup" in name:
             print(f"[SKIP_TEST] {name} :: skip on error_message matching 'HTTP'", file=sys.stderr, flush=True)
             event(event="end", name=name, status="ok", passes=1, fails=0, **{"skip-mode": 0}, temp_dir=temp)
@@ -48,7 +55,11 @@ def main(argv):
             )
         else:
             event(event="end", name=name, status="ok", passes=1, fails=0, **{"skip-mode": 0}, temp_dir=temp)
-    return 1 if any("fail" in n for n in names) else 0
+    if any("stallatexit" in n for n in names):
+        time.sleep(60)
+    if any("badexit" in n for n in names):
+        return 7
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
