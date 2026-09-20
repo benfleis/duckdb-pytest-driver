@@ -60,16 +60,32 @@ class TestResult:
 @dataclass
 class Batch:
     dir: str
-    names: list
+    # (key, test name) pairs. The binary knows a test by its name; the caller knows it by the key, and
+    # gets its result, and gives its timeout and retries, by the key. A bare name is its own key.
+    tests: list
     env: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     init_sql: str = ""
     timeout_s: float = DEFAULT_TIMEOUT_S  # for one test, counted from the binary's begin event for it
-    timeouts: dict = field(default_factory=dict)  # test name -> seconds, where a test has its own
-    retries: dict = field(default_factory=dict)  # test name -> how often a failure may run again
+    timeouts: dict = field(default_factory=dict)  # key -> seconds, where a test has its own
+    retries: dict = field(default_factory=dict)  # key -> how often a failure may run again
+
+    def __post_init__(self):
+        self.tests = [(t, t) if isinstance(t, str) else tuple(t) for t in self.tests]
+        self._key = {name: key for key, name in self.tests}
+        if len(self._key) != len(self.tests):
+            # The binary reports by name, so two cases of one file could not be told apart.
+            raise ValueError(f"a test can be in a batch once: {self.names}")
+
+    @property
+    def names(self):
+        return [name for _, name in self.tests]
 
     def timeout_for(self, name):
-        return self.timeouts.get(name) or self.timeout_s
+        return self.timeouts.get(self._key[name]) or self.timeout_s
+
+    def retries_for(self, name):
+        return self.retries.get(self._key[name], 0)
 
     def write(self):
         os.makedirs(self.dir, exist_ok=True)
@@ -192,7 +208,7 @@ def _classify(name, ev, detail, skip_reason=None):
 def _sub(batch, tag, names):
     return Batch(
         os.path.join(batch.dir, tag),
-        names,
+        [(batch._key[name], name) for name in names],
         batch.env,
         batch.settings,
         batch.init_sql,
@@ -207,13 +223,13 @@ def _safe(name):
 
 
 def run_batch(binary, batch, working_dir):
-    """Run one batch; returns {name: TestResult}, one for every name. A test with `retries` that ended
+    """Run one batch; returns {key: TestResult}, one for every test. A test with `retries` that ended
     FAILED or ERROR runs again alone, up to that many times. The first attempt that passes makes it
     PASSED, with the attempt in its note and in `attempts`; when none passes, the first result that is
     the test's own stays. For such a test the run alone after a failure in a batch is attempt 2."""
     results = _run_once(binary, batch, working_dir)
     for name, first in list(results.items()):
-        allowed = 1 + batch.retries.get(name, 0)
+        allowed = 1 + batch.retries_for(name)
         result, attempt = first, first.attempts
         while result.outcome in (FAILED, ERROR) and attempt < allowed:
             attempt += 1
@@ -224,7 +240,7 @@ def run_batch(binary, batch, working_dir):
         else:
             result = first
         result.attempts = attempt
-    return results
+    return {batch._key[name]: result for name, result in results.items()}
 
 
 def _run_once(binary, batch, working_dir):
@@ -245,7 +261,7 @@ def _run_once(binary, batch, working_dir):
     _, ended = _events(output)
     skipped = _skip_reasons(output)
     results, alone, rest = {}, [], []
-    names = list(dict.fromkeys(batch.names))
+    names = batch.names
     for name in names:
         ev = ended.get(name)
         if ev is None and killed_for is not _OUTSIDE_A_TEST and name == killed_for:
@@ -286,7 +302,7 @@ def _run_once(binary, batch, working_dir):
         results.update(_run_once(binary, _sub(batch, "rest", rest), working_dir))
     for name in alone:
         again = _run_once(binary, _sub(batch, "alone-" + _safe(name), [name]), working_dir)[name]
-        if batch.retries.get(name):
+        if batch.retries_for(name):
             again.attempts = 2
         elif name in ended and again.outcome == PASSED:  # it failed in the batch and passes alone
             again = TestResult(

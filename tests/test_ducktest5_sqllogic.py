@@ -91,8 +91,19 @@ def test_an_exit_code_that_no_test_explains_is_an_error(tmp_path):
     assert "exit code 7" in results["a.test"].detail
 
 
-def test_a_name_twice_in_one_batch_gives_one_result(tmp_path):
-    assert list(run(tmp_path, ["a.test", "a.test"])) == ["a.test"]
+def test_results_timeouts_and_retries_go_by_the_callers_key_not_by_file_name(tmp_path, flaky_state):
+    tests = [("case 1", "a.test"), ("case 2", "b_flaky2.test"), ("case 3", "c_hang.test")]
+    results = run(tmp_path, tests, retries={"case 2": 1}, timeouts={"case 3": 0.5})
+    assert {key: (r.name, r.outcome) for key, r in results.items()} == {
+        "case 1": ("a.test", PASSED),
+        "case 2": ("b_flaky2.test", PASSED),
+        "case 3": ("c_hang.test", ERROR),
+    }
+
+
+def test_a_file_twice_in_one_batch_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="once"):
+        run(tmp_path, [("t[k=a]", "t.test"), ("t[k=b]", "t.test")])
 
 
 def test_a_failure_in_a_batch_is_run_again_alone_so_its_text_is_its_own(tmp_path):

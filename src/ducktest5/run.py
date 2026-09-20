@@ -205,10 +205,12 @@ def run(
             groups.setdefault(_batch_key(c, provisioned), []).append(c)
         batches = []
         for group in groups.values():
-            # One file once in a batch: two cases of one file that differ only in tags or services
-            # would else be the same name twice, with one result between them.
-            chunks, slow = [], [[c] for c in group if "slow" in c.tags]
-            for c in (c for c in group if "slow" not in c.tags):
+            # One file once in a batch: the binary reports by file name. A case with a service runs
+            # alone: a failure in a batch of several runs again for its text, and that second run would
+            # see what the first left on the service.
+            alone = lambda c: "slow" in c.tags or bool(c.services)  # noqa: E731
+            chunks, slow = [], [[c] for c in group if alone(c)]
+            for c in (c for c in group if not alone(c)):
                 chunk = next(
                     (
                         k
@@ -227,12 +229,12 @@ def run(
                         chunk,
                         sqllogic.Batch(
                             os.path.join(run_dir, "batches", f"b{len(batches) + 1:03d}"),
-                            [c.test.body_file for c in chunk],
+                            [(c.id, c.test.body_file) for c in chunk],
                             _env_for_body(first),
                             first.settings,
                             _init_sql(first, provisioned),
-                            timeouts={c.test.body_file: c.test.timeout for c in chunk if c.test.timeout},
-                            retries={c.test.body_file: c.test.retries for c in chunk if c.test.retries},
+                            timeouts={c.id: c.test.timeout for c in chunk if c.test.timeout},
+                            retries={c.id: c.test.retries for c in chunk if c.test.retries},
                         ),
                     )
                 )
@@ -244,7 +246,7 @@ def run(
             for future in concurrent.futures.as_completed(futures):
                 chunk, batch = futures[future]
                 try:
-                    by_name = future.result()
+                    by_case = future.result()
                 except Exception as exc:  # the binary could not be started, the batch dir not written, ...
                     for case in chunk:
                         done(
@@ -255,7 +257,7 @@ def run(
                         )
                     continue
                 for case in chunk:
-                    r = by_name[case.test.body_file]
+                    r = by_case[case.id]
                     problems = [r.detail] if r.detail and r.outcome != PASSED else []
                     done(
                         case,
@@ -269,8 +271,7 @@ def run(
                         **({"attempts": r.attempts} if r.attempts > 1 else {}),
                     )
                 # What a failed attempt printed stays, also when a later attempt passed.
-                ran = [by_name[c.test.body_file] for c in chunk]
-                if all(r.outcome == PASSED and r.attempts == 1 for r in ran) and not keep:
+                if all(r.outcome == PASSED and r.attempts == 1 for r in by_case.values()) and not keep:
                     shutil.rmtree(batch.dir, ignore_errors=True)
 
         # Python bodies, in this process, one after another.
@@ -413,13 +414,13 @@ def _run_paired(case, unittest_bin, working_dir, temp_dir, provisioned, *, env=N
         raise UsageError(f"{case.id} runs {case.test.body_file}, and no unittest binary was found")
     batch = sqllogic.Batch(
         os.path.join(temp_dir, "run_test"),
-        [case.test.body_file],
+        [(case.id, case.test.body_file)],
         {**_env_for_body(case), **(env or {})},
         case.settings,
         "\n".join(x for x in (_init_sql(case, provisioned), init_sql) if x),
         case.test.timeout or sqllogic.DEFAULT_TIMEOUT_S,
     )
-    result = sqllogic.run_batch(unittest_bin, batch, working_dir)[case.test.body_file]
+    result = sqllogic.run_batch(unittest_bin, batch, working_dir)[case.id]
     if result.outcome == SKIPPED:
         raise SetupFailed(f"{case.test.body_file} was skipped inside the binary: {result.detail}")
     if result.outcome != PASSED:

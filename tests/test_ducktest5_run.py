@@ -131,6 +131,12 @@ def outcomes(report):
     return {c["id"].split("::")[-1]: c["outcome"] for c in report["cases"]}
 
 
+@pytest.fixture
+def flaky_state(tmp_path, monkeypatch):
+    (tmp_path / "state").mkdir()
+    monkeypatch.setenv("FAKE_UNITTEST_STATE", str(tmp_path / "state"))
+
+
 def passes(ctx):
     pass
 
@@ -211,6 +217,15 @@ def test_a_batch_holds_at_most_batch_size_files_and_a_slow_file_runs_alone(tmp_p
     batches = batch_of(report)
     assert sorted(list(batches.values()).count(b) for b in set(batches.values())) == [1, 1, 2]
     assert list(batches.values()).count(batches["s"]) == 1
+
+
+def test_a_case_with_a_service_runs_alone_and_its_failure_is_not_run_a_second_time(tmp_path, flaky_state):
+    store = FakeStore()
+    cases = [sql_case("a.test"), sql_case("b.test", services=["store"]), sql_case("c_flaky2.test", services=["store"])]
+    _, _, report, _ = go(tmp_path, cases, services=[store.service()])
+    assert len(set(batch_of(report).values())) == 3
+    assert outcomes(report)["c_flaky2"] == "failed"
+    assert (tmp_path / "state" / "c_flaky2.test.runs").read_text() == "1"
 
 
 def test_a_variant_init_sql_is_the_batch_init_file(tmp_path):
@@ -576,12 +591,6 @@ def test_an_unknown_session_kind_is_refused(tmp_path):
 # -----------------------------------------------------------------------------
 # Retries
 #
-
-
-@pytest.fixture
-def flaky_state(tmp_path, monkeypatch):
-    (tmp_path / "state").mkdir()
-    monkeypatch.setenv("FAKE_UNITTEST_STATE", str(tmp_path / "state"))
 
 
 def test_a_flaky_file_is_passed_with_its_attempts_in_the_event_line_and_its_output_stays(tmp_path, flaky_state):
