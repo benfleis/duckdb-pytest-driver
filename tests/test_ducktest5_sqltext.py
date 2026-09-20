@@ -22,6 +22,8 @@ from ducktest5.sqltext import L, parse_rows, render_rows, split_statements, sql_
         ("SELECT 1 -- c;d\n; SELECT 2", ["SELECT 1 -- c;d", "SELECT 2"]),
         ("SELECT 1 /* ; */; SELECT 2", ["SELECT 1 /* ; */", "SELECT 2"]),
         ("SELECT $$;$$; SELECT 2", ["SELECT $$;$$", "SELECT 2"]),
+        ("SELECT $body$ a; $$ b; $body$; SELECT 2", ["SELECT $body$ a; $$ b; $body$", "SELECT 2"]),
+        ("SELECT $1; SELECT $2", ["SELECT $1", "SELECT $2"]),
         ("SELECT 1;\n\n  -- only a comment\n;", ["SELECT 1"]),
     ],
 )
@@ -168,3 +170,28 @@ def test_errs_does_not_take_a_failure_of_the_client_for_the_error_it_asked_for()
 
     with pytest.raises(ExpectationFailed, match="not a statement of this call"):
         Client("fake", broken).errs("SELECT 1", "boom")
+
+
+@pytest.mark.parametrize(
+    "rows, spellings",
+    [
+        (1, "rows=[1], or text with a TAB between values, rows='1'"),
+        (None, "rows=[None], or text with a TAB between values, rows='NULL'"),
+        ((1, "a"), "rows=[(1, 'a')], or text with a TAB between values, rows='1\\ta'"),
+    ],
+)
+def test_rows_that_are_a_scalar_or_one_tuple_are_refused_with_the_two_valid_spellings(rows, spellings):
+    client = _client(result=[(1, "a")])
+    for verb in (client.expects, client.expects_contains):
+        with pytest.raises(UsageError, match="is not rows") as e:
+            verb("SELECT 1", rows)
+        assert spellings in str(e.value)
+
+
+def test_contains_counts_how_often_a_row_is_expected():
+    client = _client(result=[(1,), (2,), (2,)])
+    client.expects_contains("SELECT 1", [2, 2])
+    client.expects_contains("SELECT 1", "2\n1")
+    with pytest.raises(ExpectationFailed) as e:
+        client.expects_contains("SELECT 1", [1, 1, 2])
+    assert "  missing:\n    1\n  actual:" in str(e.value)

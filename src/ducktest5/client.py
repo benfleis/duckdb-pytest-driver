@@ -22,8 +22,9 @@ not f-strings.
 Rows compare as TEXT, the way a .test file does: one line per row, TAB between values, `NULL`,
 `(empty)`, `true`/`false`. `rows` is written in that form; a list of tuples is a second spelling of
 the same thing, rendered by the same rules before the comparison, so `[(1, None, "")]` means exactly
-`1<TAB>NULL<TAB>(empty)`, and `[1, 3]` is two rows of one value. Pick the spelling that reads best
-at that place. The text form is the only comparison: 1 and '1' are equal, as in a .test file. Where
+`1<TAB>NULL<TAB>(empty)`, and `[1, 3]` is two rows of one value. Rows that are not a list or text (a
+bare value, a single tuple) are refused: they could mean one row or several. Pick the spelling that
+reads best at that place. The text form is the only comparison: 1 and '1' are equal, as in a .test file. Where
 the type matters, ask in SQL (`SELECT typeof(x)`). DuckDB, Spark and Databricks SQL all have
 `assert_true(cond[, message])`, so a statement can check itself.
 """
@@ -31,6 +32,7 @@ the type matters, ask in SQL (`SELECT typeof(x)`). DuckDB, Spark and Databricks 
 import re
 import time
 import traceback
+from collections import Counter
 
 from .binary import UsageError
 from .sqltext import format_rows, parse_rows, render_rows, split_statements, sql_values
@@ -62,7 +64,16 @@ def _indent(text, by="    "):
 
 
 def _as_text(rows):
-    return parse_rows(rows) if isinstance(rows, str) else render_rows(rows)
+    if isinstance(rows, str):
+        return parse_rows(rows)
+    if not isinstance(rows, list):
+        # A tuple could be one row or several rows of one value, and a scalar is not rows at all.
+        one = render_rows([rows])[0]
+        raise UsageError(
+            f"rows={rows!r} is not rows. Rows are a list of rows, rows=[{rows!r}], "
+            f"or text with a TAB between values, rows={chr(9).join(one)!r}"
+        )
+    return render_rows(rows)
 
 
 class Client:
@@ -161,7 +172,7 @@ class Client:
         self._check(on_fail, self._assert_rows, sql, rows, params, sort=sort, **more)
 
     def expects_contains(self, sql, rows, params=None, *, on_fail="abort_test", **more):
-        """Every row of `rows` is in the result; the result may hold more."""
+        """Every row of `rows` is in the result, as often as it is in `rows`; the result may hold more."""
         self._check(on_fail, self._assert_contains, sql, rows, params, **more)
 
     def _assert_ok(self, sql, params=None, **more):
@@ -187,7 +198,7 @@ class Client:
     def _assert_contains(self, sql, rows, params=None, **more):
         statements = self._statements(sql, params, more)
         actual = render_rows(self._must_run(statements, "query")[1])
-        missing = [r for r in _as_text(rows) if r not in actual]
+        missing = list((Counter(_as_text(rows)) - Counter(actual)).elements())
         if missing:
             raise ExpectationFailed(
                 self.name,

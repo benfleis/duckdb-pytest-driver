@@ -4,13 +4,18 @@ import datetime
 import decimal
 import json
 import math
+import re
 import textwrap
 
 _QUOTES = {"'": "'", '"': '"', "`": "`"}
+_DOLLAR_TAG = re.compile(r"\$(?:[A-Za-z_]\w*)?\$")
 
 
 def split_statements(block):
-    """The statements of `block`, split on `;` outside quotes, `$$ $$` bodies and comments."""
+    """The statements of `block`, split on `;` outside quotes, `$$ $$` and `$tag$ $tag$` bodies and
+    comments. A quote inside a string is the doubled quote of standard SQL. A backslash escape
+    (Spark's `'it\\'s'`) is not known here, so a statement with one and a `;` inside a string is cut
+    in the wrong place: give such statements as a list, which is not split."""
     statements, start, i, n = [], 0, 0, len(block)
     while i < n:
         c = block[i]
@@ -29,9 +34,9 @@ def split_statements(block):
         elif block.startswith("/*", i):
             i = block.find("*/", i + 2)
             i = n if i < 0 else i + 1
-        elif block.startswith("$$", i):
-            i = block.find("$$", i + 2)
-            i = n if i < 0 else i + 1
+        elif c == "$" and (tag := _DOLLAR_TAG.match(block, i)):
+            i = block.find(tag.group(), tag.end())
+            i = n if i < 0 else i + len(tag.group()) - 1
         elif c == ";":
             statements.append(block[start:i])
             start = i + 1
