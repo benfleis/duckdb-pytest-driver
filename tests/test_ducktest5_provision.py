@@ -117,3 +117,10 @@ def test_a_started_minio_is_published_and_reached_on_the_service_host(monkeypatc
         "172.18.0.1:9000",
         "172.18.0.1:9000",
     )
+
+
+def test_managed_refuses_to_replace_an_instance_that_already_answers():
+    fake = Fake(up=True)
+    with pytest.raises(RuntimeError, match="already answers.*--existing-service store.*--keep-services"):
+        provision(fake.service())
+    assert fake.calls == []

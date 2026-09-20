@@ -21,6 +21,13 @@ class SparkHandle:
                 raise SqlError(_message(exc), statement=n) from None
         return list(result.columns), rows
 
+    def begin_test(self):
+        """One session serves every test, so drop what a test can leave behind in it."""
+        for view in self.session.catalog.listTables():
+            if view.isTemporary:
+                self.session.catalog.dropTempView(view.name)
+        self.session.catalog.clearCache()
+
     def use_service(self, service_id, block):
         """Point s3a at an S3-compatible service. Spark copies SQL confs into the Hadoop conf of each
         query, so this works after boot; the jar must already be on the classpath (`s3a=True`)."""
@@ -32,6 +39,8 @@ class SparkHandle:
             "fs.s3a.access.key": block["access_key"],
             "fs.s3a.secret.key": block["secret_key"],
             "fs.s3a.aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+            # so that a body can give Spark the same `s3://` URI it gives DuckDB
+            "fs.s3.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
         }.items():
             self.session.conf.set(key, value)
             self.session.sparkContext._jsc.hadoopConfiguration().set(key, value)
@@ -56,7 +65,9 @@ def _plain(value):
 def _message(exc):
     """The JVM exception's own message lines, without the py4j preamble and the Java stack."""
     lines = [
-        l for l in str(exc).splitlines() if l.strip() and not l.startswith(("\tat ", "An error occurred while calling"))
+        line
+        for line in str(exc).splitlines()
+        if line.strip() and not line.startswith(("\tat ", "An error occurred while calling"))
     ]
     return "\n".join(lines[:6]).lstrip(": ")
 

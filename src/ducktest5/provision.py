@@ -70,6 +70,13 @@ def provision(service, *, existing=None, keep=False, ready_timeout_s=60):
         block = service.block()
         if keep and service.alive(block):
             mode = KEPT
+        elif service.alive(block):
+            # `start` begins by removing a leftover container of its name. An instance that answers
+            # is not a leftover: it may be one that another run, or the user, keeps.
+            raise RuntimeError(
+                f"service {service.id!r} already answers at {block.get('endpoint')}. Use it with "
+                f"--existing-service {service.id}, or keep it with --keep-services, or stop it first."
+            )
         else:
             service.start(block)
             mode = KEPT if keep else MANAGED

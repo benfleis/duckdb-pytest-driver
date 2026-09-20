@@ -12,6 +12,7 @@ call.
 """
 
 import json
+import os
 import queue
 import subprocess
 import threading
@@ -22,9 +23,26 @@ from ..sqltext import split_statements
 _MARK = "<<ducktest:{}>>"
 
 
+class _Pairs(list):
+    """A JSON object kept as its (key, value) pairs."""
+
+
+def _nested(value):
+    if isinstance(value, _Pairs):
+        return {k: _nested(v) for k, v in value}
+    if isinstance(value, list):
+        return [_nested(v) for v in value]
+    return value
+
+
 def _rows(text):
-    rows = json.loads(text) if text else []
-    return (list(rows[0]) if rows else []), [tuple(row.values()) for row in rows]
+    """Rows of `duckdb -json` output. A row stays a list of pairs, so two columns of one name
+    (`SELECT a.id, b.id`) stay two columns; an object inside a value (a struct, a map) is a dict."""
+    try:
+        rows = json.loads(text, object_pairs_hook=_Pairs) if text else []
+    except ValueError:
+        raise SqlError(f"the duckdb shell printed something that is not a result:\n{text}") from None
+    return ([k for k, _ in rows[0]] if rows else []), [tuple(_nested(v) for _, v in row) for row in rows]
 
 
 class DuckDBSession:
@@ -73,7 +91,7 @@ class DuckDBSession:
     def _spawn(self):
         # stderr joins stdout, so an error arrives in order, before the marker of its statement.
         self._process = subprocess.Popen(
-            [self.binary, "-unsigned", "-json"],
+            [self.binary, "-unsigned", "-json", "-init", os.devnull],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -148,7 +166,7 @@ class DuckDBPerCall:
         for n, statement in enumerate(statements):
             script += [f".print {_MARK.format(n)}", statement.rstrip(";") + ";"]
         p = subprocess.run(
-            [self.binary, "-unsigned", "-bail", "-json"],
+            [self.binary, "-unsigned", "-bail", "-json", "-init", os.devnull],
             input="\n".join(script) + "\n",
             capture_output=True,
             text=True,

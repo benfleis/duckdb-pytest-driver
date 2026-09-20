@@ -5,6 +5,7 @@ import decimal
 
 import pytest
 
+from ducktest5.binary import UsageError
 from ducktest5.client import Client, ExpectationFailed, SetupFailed, SqlError
 from ducktest5.sqltext import L, parse_rows, render_rows, split_statements, sql_values
 
@@ -80,11 +81,18 @@ def test_a_list_of_statements_is_not_split():
     assert seen == ["BEGIN SELECT 1; SELECT 2; END", "SELECT * FROM cat.t"]
 
 
-def test_unknown_braces_are_left_alone():
+def test_a_struct_literal_is_left_alone_and_a_case_table_cannot_shadow_a_verb_option():
     seen = []
-    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), table="cat.t")
-    client.oks("SELECT {'a': 1} FROM {t} WHERE x = {x}", x=3)
-    assert seen == ["SELECT {'a': 1} FROM cat.t WHERE x = 3"]
+    client = Client("fake", lambda statements: seen.extend(statements) or (["x"], [(3,)]), table="cat.t")
+    case = {"x": 3, "sort": "this is a column of the case table, not the option", "on_fail": "nor this"}
+    client.expects("SELECT {'a': 1}, {{literal}} FROM {t} WHERE x = {x}", [3], case)
+    assert seen == ["SELECT {'a': 1}, {literal} FROM cat.t WHERE x = 3"]
+
+
+def test_a_placeholder_with_no_value_is_an_error_that_names_what_is_known():
+    client = Client("fake", lambda statements: ([], []), table="cat.t", values={"catalog": "duck"})
+    with pytest.raises(UsageError, match=r"no value for \{seed_vlaues\}; known: \['catalog', 'seed_values', 't'\]"):
+        client.oks("INSERT INTO {t} VALUES {seed_vlaues}", {"seed_values": [(1,)]})
 
 
 def test_a_failure_in_a_block_names_the_statement():

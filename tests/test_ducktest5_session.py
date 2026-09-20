@@ -78,3 +78,11 @@ def test_per_call_is_a_cold_process_each_time():
     shell.run(["CREATE TABLE gone (i INT)"])
     with pytest.raises(SqlError, match="does not exist"):
         shell.run(["SELECT * FROM gone"])
+
+
+def test_two_columns_of_one_name_stay_two_columns(session):
+    assert session.run(["SELECT 1 AS a, 2 AS a"]) == (["a", "a"], [(1, 2)])
+
+
+def test_a_struct_inside_a_value_is_a_dict(session):
+    assert session.run(["SELECT {'a': 1, 'b': [{'c': 2}]} AS s"])[1] == [({"a": 1, "b": [{"c": 2}]},)]

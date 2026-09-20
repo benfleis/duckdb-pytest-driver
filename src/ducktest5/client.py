@@ -12,8 +12,9 @@ records the failure and lets the body go on, for independent checks a reader wan
 `sql` is one statement, a block of them split on `;`, or a list of statements taken as they are (for
 a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
 and `rows` / `text` belong to the last one. `{t}` is this client's spelling of the table under test;
-other `{name}` placeholders come from keyword arguments; one that is a list of rows goes in as a SQL
-VALUES list, so the values a test inserts and the rows it expects back are one definition
+other `{name}` placeholders come from the case's values, from a dict given after the SQL (a case table
+goes there), or from keyword arguments; an unknown one is an error, and `{{word}}` is a literal brace
+pair. A value that is a list of rows goes in as a SQL VALUES list, so the values a test inserts and the rows it expects back are one definition
 (`L("...")` puts hand-written SQL in a value; rows can then not be derived and must be given).
 Braces that are not a known placeholder are left alone (struct literals), so write plain strings,
 not f-strings.
@@ -31,6 +32,7 @@ import re
 import time
 import traceback
 
+from .binary import UsageError
 from .sqltext import format_rows, parse_rows, render_rows, split_statements, sql_values
 
 
@@ -64,14 +66,14 @@ def _as_text(rows):
 
 
 class Client:
-    def __init__(self, name, run, *, table=None, record=None, defer=None):
+    def __init__(self, name, run, *, table=None, values=None, record=None, defer=None):
         """`run(statements)` runs them in order and returns `(column_names, rows)` of the last,
         rows as tuples; it raises SqlError, with the failed statement's index, on the first error.
         `record(failure)` takes a failure under `on_fail="continue"`; `defer(callable)` takes a
         teardown. Without them such a failure raises and a teardown runs at once."""
         self.name = name
         self._run = run
-        self._params = {"t": table} if table else {}
+        self._params = {**(values or {}), **({"t": table} if table else {})}
         self._record = record
         self._defer = defer
         self.seconds = 0.0  # spent inside `run`, so a report can say which client the time went to
@@ -87,17 +89,26 @@ class Client:
                 raise
             self._record(failure)
 
-    def _statements(self, sql, params):
-        known = {**self._params, **params}
+    def _statements(self, sql, params, more):
+        """`params` is a dict of placeholder values (a case table goes here, so its keys cannot collide
+        with a verb's own options); `more` are the same as keywords, for the odd single value."""
+        known = {**self._params, **(params or {}), **more}
 
-        def value(name):
+        def value(match):
+            name = match.group(1)
+            if name not in known:
+                raise UsageError(
+                    f"[{self.name}] no value for {{{name}}}; known: {sorted(known)}. "
+                    "A literal brace pair around a word is written {{word}}."
+                )
             v = known[name]
             return sql_values(v) if isinstance(v, (list, tuple)) else str(v)
 
         def fill(text):
-            return re.sub(r"\{(\w+)\}", lambda m: value(m.group(1)) if m.group(1) in known else m.group(0), text)
+            text = re.sub(r"(?<!\{)\{(\w+)\}(?!\})", value, text)
+            return text.replace("{{", "{").replace("}}", "}")
 
-        return split_statements(fill(sql)) if isinstance(sql, str) else [fill(s).strip() for s in sql]
+        return split_statements(fill(sql)) if isinstance(sql, str) else [fill(x).strip() for x in sql]
 
     def _timed_run(self, statements):
         t0 = time.perf_counter()
@@ -113,49 +124,49 @@ class Client:
             failed = statements[exc.statement] if exc.statement is not None else "\n".join(statements)
             raise ExpectationFailed(self.name, failed, f"{what} failed: {exc}") from None
 
-    def rows(self, sql, **params):
-        return self._must_run(self._statements(sql, params), "query")[1]
+    def rows(self, sql, params=None, **more):
+        return self._must_run(self._statements(sql, params, more), "query")[1]
 
-    def record(self, sql, **params):
+    def record(self, sql, params=None, **more):
         """The single row of `sql` as a dict, for DESCRIBE-like statements with many columns."""
-        statements = self._statements(sql, params)
+        statements = self._statements(sql, params, more)
         columns, rows = self._must_run(statements, "query")
         assert len(rows) == 1, f"[{self.name}] expected one row, got {len(rows)}\n{_indent(statements[-1])}"
         return dict(zip(columns, rows[0]))
 
-    def setup(self, sql, **params):
+    def setup(self, sql, params=None, **more):
         try:
-            self._assert_ok(sql, **params)
+            self._assert_ok(sql, params, **more)
         except ExpectationFailed as failure:
             raise SetupFailed(str(failure)) from None
 
-    def teardown(self, sql, **params):
+    def teardown(self, sql, params=None, **more):
         def run():
             try:
-                self._assert_ok(sql, **params)
+                self._assert_ok(sql, params, **more)
             except ExpectationFailed as failure:
                 raise SetupFailed(str(failure)) from None
 
         self._defer(run) if self._defer else run()
 
-    def oks(self, sql, *, on_fail="abort_test", **params):
-        self._check(on_fail, self._assert_ok, sql, **params)
+    def oks(self, sql, params=None, *, on_fail="abort_test", **more):
+        self._check(on_fail, self._assert_ok, sql, params, **more)
 
-    def errs(self, sql, text, *, on_fail="abort_test", **params):
-        self._check(on_fail, self._assert_error, sql, text, **params)
+    def errs(self, sql, text, params=None, *, on_fail="abort_test", **more):
+        self._check(on_fail, self._assert_error, sql, text, params, **more)
 
-    def expects(self, sql, rows, *, sort=False, on_fail="abort_test", **params):
-        self._check(on_fail, self._assert_rows, sql, rows, sort=sort, **params)
+    def expects(self, sql, rows, params=None, *, sort=False, on_fail="abort_test", **more):
+        self._check(on_fail, self._assert_rows, sql, rows, params, sort=sort, **more)
 
-    def expects_contains(self, sql, rows, *, on_fail="abort_test", **params):
+    def expects_contains(self, sql, rows, params=None, *, on_fail="abort_test", **more):
         """Every row of `rows` is in the result; the result may hold more."""
-        self._check(on_fail, self._assert_contains, sql, rows, **params)
+        self._check(on_fail, self._assert_contains, sql, rows, params, **more)
 
-    def _assert_ok(self, sql, **params):
-        self._must_run(self._statements(sql, params), "statement")
+    def _assert_ok(self, sql, params=None, **more):
+        self._must_run(self._statements(sql, params, more), "statement")
 
-    def _assert_rows(self, sql, rows, *, sort=False, **params):
-        statements = self._statements(sql, params)
+    def _assert_rows(self, sql, rows, params=None, *, sort=False, **more):
+        statements = self._statements(sql, params, more)
         expected, actual = _as_text(rows), render_rows(self._must_run(statements, "query")[1])
         if sort:
             expected, actual = sorted(expected), sorted(actual)
@@ -171,8 +182,8 @@ class Client:
             f"wrong result{hint}\n  expected:\n{_indent(format_rows(expected))}\n  actual:\n{_indent(format_rows(actual))}\n  query:",
         )
 
-    def _assert_contains(self, sql, rows, **params):
-        statements = self._statements(sql, params)
+    def _assert_contains(self, sql, rows, params=None, **more):
+        statements = self._statements(sql, params, more)
         actual = render_rows(self._must_run(statements, "query")[1])
         missing = [r for r in _as_text(rows) if r not in actual]
         if missing:
@@ -182,8 +193,8 @@ class Client:
                 f"rows missing\n  missing:\n{_indent(format_rows(missing))}\n  actual:\n{_indent(format_rows(actual))}\n  query:",
             )
 
-    def _assert_error(self, sql, text, **params):
-        statements = self._statements(sql, params)
+    def _assert_error(self, sql, text, params=None, **more):
+        statements = self._statements(sql, params, more)
         try:
             self._timed_run(statements)
         except SqlError as exc:
