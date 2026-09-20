@@ -77,13 +77,25 @@ def _stop(block):
 
 
 def _setup(block):
+    try:
+        _s3(block).Bucket(block["bucket"]).create()
+    except Exception as exc:
+        # Create and see, not look and then create: two runs on one instance would race.
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+        if code not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+            raise
+
+
+def _clean(block, uri):
+    """Remove the object at `uri` and everything below it. Only ever under the bucket's temp prefix."""
+    root = _location(block) + "/"
+    below = uri[len(root) :].strip("/") if uri.startswith(root) else ""
+    if not below:
+        raise ValueError(f"{uri!r} is not below {root}: only what is there is removed")
+    key = f"{block['temp_prefix']}/{below}"
     bucket = _s3(block).Bucket(block["bucket"])
-    if bucket.creation_date is None:
-        bucket.create()
-
-
-def _clean(block, prefix):
-    _s3(block).Bucket(block["bucket"]).objects.filter(Prefix=prefix.split(f"s3://{block['bucket']}/", 1)[-1]).delete()
+    bucket.Object(key).delete()
+    bucket.objects.filter(Prefix=key + "/").delete()  # with the `/`: `.../t` must not take `.../t2` with it
 
 
 def _location(block, *parts):

@@ -13,6 +13,7 @@ argument that lets the next run find the instance.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from .binary import UsageError
 from .host import wait_until
 
 MANAGED, EXISTING, KEPT = "managed", "existing", "kept"
+_MASK = "***"
 
 
 def _key(service_id):
@@ -44,7 +46,12 @@ def _parse(value):
     if not value:
         return {}
     if value.startswith("{"):
-        return json.loads(value)
+        overrides = json.loads(value)
+        if masked := sorted(k for k, v in overrides.items() if v == _MASK):
+            raise UsageError(
+                f"an existing service with {masked} = {_MASK!r}: put the value in, or set it in the environment"
+            )
+        return overrides
     return {"endpoint": value}
 
 
@@ -55,7 +62,7 @@ class Provisioned:
     mode: str
 
     def redacted(self):
-        return {k: ("***" if k in self.service.secrets else v) for k, v in self.block.items()}
+        return {k: (_MASK if k in self.service.secrets else v) for k, v in self.block.items()}
 
 
 def provision(service, *, existing=None, keep=False, ready_timeout_s=60):
@@ -106,10 +113,32 @@ def release(provisioned):
         provisioned.service.stop(provisioned.block)
 
 
+@contextlib.contextmanager
+def _no_ducktest_environment():
+    saved = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("DUCKTEST_")}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
 def attach_argument(provisioned):
-    """What the next run passes to find a kept instance."""
-    block = provisioned.block
-    return f"--existing-service '{provisioned.service.id}={json.dumps({'endpoint': block.get('endpoint')})}'"
+    """What the next run passes to find a kept instance: the endpoint, and every other field that
+    is not what the service gives with no DUCKTEST_* variable set, so that a shell without those
+    variables finds the same instance, bucket and all. A secret is never printed."""
+    service, block = provisioned.service, provisioned.block
+    with _no_ducktest_environment():
+        defaults = service.block()
+        overrides = {
+            k: v
+            for k, v in block.items()
+            # a field the service works out from others is not an override: it does not come back
+            if k == "endpoint" or (v != defaults.get(k) and service.block(**{k: v}).get(k) == v)
+        }
+    masked = sorted(k for k in overrides if k in service.secrets)
+    overrides.update({k: _MASK for k in masked})
+    note = f"  ({_MASK}: a secret, not printed; put the value in, or set it in the environment)" if masked else ""
+    return f"--existing-service '{service.id}={json.dumps(overrides)}'{note}"
 
 
 def check_declared(needed, declared, where):

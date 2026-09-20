@@ -2,6 +2,7 @@
 
 import pytest
 
+from ducktest5.binary import UsageError
 from ducktest5.declare import Service
 from ducktest5.provision import EXISTING, KEPT, MANAGED, attach_argument, existing_overrides, provision, release
 
@@ -104,6 +105,11 @@ def test_how_an_existing_service_is_named(monkeypatch, entries, env, expected):
     if env:
         monkeypatch.setenv("DUCKTEST_EXISTING_SERVICE_STORE", env)
     assert existing_overrides("store", entries) == expected
+
+
+def test_a_masked_secret_is_not_taken_for_a_value():
+    with pytest.raises(UsageError, match=r"\['secret_key'\] = '\*\*\*': put the value in"):
+        existing_overrides("store", ['store={"endpoint": "http://h", "secret_key": "***"}'])
 
 
 def test_a_started_minio_is_published_and_reached_on_the_service_host(monkeypatch):
