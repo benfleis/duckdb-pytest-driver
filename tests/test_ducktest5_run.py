@@ -238,6 +238,32 @@ def test_a_variant_init_sql_is_the_batch_init_file(tmp_path):
     assert init.read_text() == "statement ok\nATTACH 'http://store';\n"
 
 
+SECRET = Variant("s3", init_sql="CREATE SECRET (SECRET 'hunter2')")
+
+
+def files_with_the_secret(run_dir):
+    return [p.name for p in run_dir.rglob("*") if p.is_file() and "hunter2" in p.read_text(errors="replace")]
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_init_sql_does_not_stay_in_a_batch_that_is_kept_for_its_failure(tmp_path, keep):
+    cases = [sql_case("a.test", {"k": SECRET}), sql_case("b_fail.test", {"k": SECRET})]
+    _, run_dir, _, _ = go(tmp_path, cases, keep=keep)
+    inits = sorted(str(p.relative_to(run_dir / "batches")) for p in run_dir.rglob("init.sqllogic"))
+    assert inits == ["b001/alone-b_fail.test/init.sqllogic", "b001/init.sqllogic"]
+    # with --keep the user asked for everything, and that is how the init SQL is got back
+    assert files_with_the_secret(run_dir) == (["init.sqllogic"] * 2 if keep else [])
+    if not keep:
+        assert "again with --keep" in (run_dir / "batches" / "b001" / "init.sqllogic").read_text()
+
+
+def test_init_sql_does_not_stay_in_the_directory_of_a_failed_paired_case(tmp_path):
+    case = py_case(runs_its_file, {"k": SECRET}, body_file="test/p_fail.test")
+    _, run_dir, report, _ = go(tmp_path, [case])
+    assert (run_dir / "cases" / case.dir_name / "run_test" / "init.sqllogic").exists()
+    assert files_with_the_secret(run_dir) == []
+
+
 # -----------------------------------------------------------------------------
 # What does not come up blocks its cases, and only those
 #

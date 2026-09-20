@@ -24,6 +24,7 @@ def test_a_batch_is_two_files(tmp_path):
     assert config["test_env"] == [{"env_name": "CATALOG", "env_value": "duck"}]
     assert config["settings"] == [{"name": "threads", "value": "2"}]
     assert open(config["init_sqllogic"]).read() == "statement ok\nSELECT 1;\n"
+    assert os.stat(config["init_sqllogic"]).st_mode & 0o777 == 0o600  # it may hold a secret
 
 
 def test_no_batch_lets_the_binary_forgive_a_connection_error(tmp_path):

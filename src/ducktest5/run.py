@@ -272,8 +272,12 @@ def run(
                         **({"attempts": r.attempts} if r.attempts > 1 else {}),
                     )
                 # What a failed attempt printed stays, also when a later attempt passed.
-                if all(r.outcome == PASSED and r.attempts == 1 for r in by_case.values()) and not keep:
+                if keep:
+                    continue
+                if all(r.outcome == PASSED and r.attempts == 1 for r in by_case.values()):
                     shutil.rmtree(batch.dir, ignore_errors=True)
+                else:
+                    sqllogic.remove_init_sql(batch.dir)
 
         # Python bodies, in this process, one after another.
         def attempt(case, n):
@@ -338,6 +342,9 @@ def run(
                     *(temp_dir for temp_dir, _ in tried if os.path.isdir(temp_dir)),
                     *(uri for _, c in tried if c for _, uri in c.remote_locations),
                 ]
+                if not keep:
+                    for temp_dir, _ in tried:
+                        sqllogic.remove_init_sql(temp_dir)
             done(
                 case,
                 outcome,
