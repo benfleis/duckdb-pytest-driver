@@ -559,3 +559,60 @@ def test_a_preamble_that_fails_is_a_setup_error(tmp_path):
 def test_an_unknown_session_kind_is_refused(tmp_path):
     with pytest.raises(ValueError, match="'per_run' or 'per_call'"):
         ctx_for(py_case(passes), tmp_path).duckdb(session="per_test")
+
+
+# -----------------------------------------------------------------------------
+# Retries
+#
+
+
+@pytest.fixture
+def flaky_state(tmp_path, monkeypatch):
+    (tmp_path / "state").mkdir()
+    monkeypatch.setenv("FAKE_UNITTEST_STATE", str(tmp_path / "state"))
+
+
+def test_a_flaky_file_is_passed_with_its_attempts_in_the_event_line_and_its_output_stays(tmp_path, flaky_state):
+    cases = [sql_case("a.test"), sql_case("b_flaky2.test", retries=1), sql_case("c_flaky2.test")]
+    code, run_dir, report, text = go(tmp_path, cases)
+    assert outcomes(report) == {"a": "passed", "b_flaky2": "passed", "c_flaky2": "failed"}
+    events = [json.loads(line) for line in (run_dir / "04-events.jsonl").read_text().splitlines()]
+    assert [e.get("attempts") for e in events] == [None, 2, None]
+    assert "[passed on attempt 2 of 2]" in text
+
+
+def test_the_output_of_a_failed_attempt_stays_when_a_later_attempt_passed(tmp_path, flaky_state):
+    code, run_dir, _, _ = go(tmp_path, [sql_case("b_flaky2.test", retries=1)])
+    assert code == 0
+    assert "Wrong result in query" in (run_dir / "batches" / "b001" / "output.txt").read_text()
+
+
+def test_a_python_body_with_retries_runs_again_in_a_directory_of_its_own(tmp_path):
+    seen = []
+
+    def flaky(ctx):
+        seen.append((os.path.basename(ctx.temp_dir), os.listdir(ctx.temp_dir), ctx.location("t", on="store")))
+        open(os.path.join(ctx.temp_dir, "left-behind"), "w").close()
+        assert len(seen) == 2
+
+    store = FakeStore()
+    case = py_case(flaky, services=["store"], retries=2)
+    code, run_dir, report, _ = go(tmp_path, [case], services=[store.service()])
+    assert code == 0
+    assert [(name, files) for name, files, _ in seen] == [(case.dir_name, []), (case.dir_name + ".attempt2", [])]
+    assert (report["cases"][0]["attempts"], report["cases"][0]["note"]) == (2, "passed on attempt 2 of 3")
+    assert store.cleaned == [uri for _, _, uri in seen] and len(set(store.cleaned)) == 2
+    assert list((run_dir / "cases").iterdir()) == []
+
+
+def test_a_python_body_that_never_passes_keeps_its_first_failure(tmp_path):
+    seen = []
+
+    def never(ctx):
+        seen.append(1)
+        assert False, f"attempt {len(seen)}"
+
+    _, run_dir, report, _ = go(tmp_path, [py_case(never, retries=1)])
+    case = report["cases"][0]
+    assert (case["outcome"], case["attempts"], len(case["kept"])) == ("failed", 2, 2)
+    assert "attempt 1" in case["problems"][0] and len(case["problems"]) == 1

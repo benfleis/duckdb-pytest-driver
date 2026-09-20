@@ -54,6 +54,7 @@ class TestResult:
     detail: str = ""
     kept: str | None = None
     note: str = ""
+    attempts: int = 1
 
 
 @dataclass
@@ -64,8 +65,8 @@ class Batch:
     settings: dict = field(default_factory=dict)
     init_sql: str = ""
     timeout_s: float = DEFAULT_TIMEOUT_S  # for one test, counted from the binary's begin event for it
-    strict_connection_errors: bool = False
     timeouts: dict = field(default_factory=dict)  # test name -> seconds, where a test has its own
+    retries: dict = field(default_factory=dict)  # test name -> how often a failure may run again
 
     def timeout_for(self, name):
         return self.timeouts.get(name) or self.timeout_s
@@ -79,12 +80,11 @@ class Batch:
             "temp_dir_root": os.path.join(self.dir, "tmp"),
             "test_env": [{"env_name": k, "env_value": str(v)} for k, v in sorted(self.env.items())],
             "settings": [{"name": k, "value": str(v)} for k, v in sorted(self.settings.items())],
-        }
-        if self.strict_connection_errors:
             # By default the binary ends a file early, as not failed, when an error mentions 'HTTP' or
-            # 'Unable to connect': a test against the public internet must not fail without a network.
-            # When the run itself provides the service, the same error means the service died.
-            config["skip_error_messages"] = []
+            # 'Unable to connect'. Here an error is a failure; a test that may fail for reasons that are
+            # not its own asks for `retries`.
+            "skip_error_messages": [],
+        }
         if self.init_sql:
             init = os.path.join(self.dir, "init.sqllogic")
             with open(init, "w") as f:
@@ -197,20 +197,45 @@ def _sub(batch, tag, names):
         batch.settings,
         batch.init_sql,
         batch.timeout_s,
-        batch.strict_connection_errors,
         batch.timeouts,
+        batch.retries,
     )
 
 
+def _safe(name):
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+
+
 def run_batch(binary, batch, working_dir):
-    """Run one batch; returns {name: TestResult}, one for every name.
+    """Run one batch; returns {name: TestResult}, one for every name. A test with `retries` that ended
+    FAILED or ERROR runs again alone, up to that many times. The first attempt that passes makes it
+    PASSED, with the attempt in its note and in `attempts`; when none passes, the first result that is
+    the test's own stays. For such a test the run alone after a failure in a batch is attempt 2."""
+    results = _run_once(binary, batch, working_dir)
+    for name, first in list(results.items()):
+        allowed = 1 + batch.retries.get(name, 0)
+        result, attempt = first, first.attempts
+        while result.outcome in (FAILED, ERROR) and attempt < allowed:
+            attempt += 1
+            result = _run_once(binary, _sub(batch, f"attempt{attempt}-{_safe(name)}", [name]), working_dir)[name]
+        if result.outcome == PASSED and attempt > 1:
+            result.note = "; ".join(x for x in (result.note, f"passed on attempt {attempt} of {allowed}") if x)
+            results[name] = result
+        else:
+            result = first
+        result.attempts = attempt
+    return results
+
+
+def _run_once(binary, batch, working_dir):
+    """One batch, with no retries; returns {name: TestResult}, one for every name.
 
     - An end event is the only thing that gives a test an outcome here. A test that was still running
       at its timeout is an ERROR. A test with no end event runs again: the ones after a killed test as
       a new batch, the others alone; with no end event alone, it is an ERROR.
     - A test that failed inside a batch of several runs again alone for its text only. Its outcome
       stays FAILED also when it passes alone: a failure that needs the other files of the batch is
-      state that leaks between tests, which is a failure.
+      state that leaks between tests, which is a failure. Only a test with `retries` may pass there.
     - When the process hung while no test was running, or ended with an exit code that the end events
       do not explain, every test of the batch that would count as passed is an ERROR instead.
     """
@@ -258,12 +283,12 @@ def run_batch(binary, batch, working_dir):
             name, ERROR, detail=f"the binary ended without an end event for this test\n{_human(output)}".strip()
         )
     if rest and len(rest) < len(names):
-        results.update(run_batch(binary, _sub(batch, "rest", rest), working_dir))
+        results.update(_run_once(binary, _sub(batch, "rest", rest), working_dir))
     for name in alone:
-        again = run_batch(binary, _sub(batch, "alone-" + re.sub(r"[^A-Za-z0-9._-]+", "_", name), [name]), working_dir)[
-            name
-        ]
-        if name in ended and again.outcome == PASSED:  # it failed in the batch and passes alone
+        again = _run_once(binary, _sub(batch, "alone-" + _safe(name), [name]), working_dir)[name]
+        if batch.retries.get(name):
+            again.attempts = 2
+        elif name in ended and again.outcome == PASSED:  # it failed in the batch and passes alone
             again = TestResult(
                 name,
                 FAILED,

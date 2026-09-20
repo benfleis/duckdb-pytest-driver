@@ -8,18 +8,28 @@
     *giveup* prints a SKIP_TEST line and ends ok, as the binary does for an error on its skip list
     *onlyinbatch_fail* fails beside other tests and passes alone
     *stallatexit* / *badexit* end ok, then the process hangs / exits 7
+    *flakyN* fails until its Nth run, counted in a file under $FAKE_UNITTEST_STATE
 
 `-l` lists the names in the file that $FAKE_UNITTEST_LIST names.
 """
 
 import json
 import os
+import re
 import sys
 import time
 
 
 def event(**fields):
     print("[TEST_EVENT] " + json.dumps(fields), file=sys.stderr, flush=True)
+
+
+def runs_so_far(name):
+    path = os.path.join(os.environ["FAKE_UNITTEST_STATE"], name.replace("/", "_") + ".runs")
+    runs = int(open(path).read()) + 1 if os.path.exists(path) else 1
+    with open(path, "w") as f:
+        f.write(str(runs))
+    return runs
 
 
 def main(argv):
@@ -44,7 +54,8 @@ def main(argv):
         if "onlyinbatch" in name and len(names) == 1:
             event(event="end", name=name, status="ok", passes=1, fails=0, **{"skip-mode": 0}, temp_dir=temp)
             continue
-        if "fail" in name:
+        flaky = re.search(r"flaky(\d+)", name)
+        if "fail" in name or (flaky and runs_so_far(name) < int(flaky.group(1))):
             print(f"Wrong result in query! ({name}:4)\nExpected result:\n2\nActual result:\n1", flush=True)
             event(event="end", name=name, status="error", passes=0, fails=1, **{"skip-mode": 0}, temp_dir=temp)
             failed = True

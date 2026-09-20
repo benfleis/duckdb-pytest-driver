@@ -7,7 +7,11 @@ subtree (`default`) or about a pattern relative to its file (`match`); a pattern
 How rules combine, in one order: the root file first, then each file on the way down to the test; in a
 file, the rules as listed; then the test's own `@test(...)`. Along that order, list fields (tags,
 services, engines, variants) add up, dict fields (values, settings) update by key, and single values
-(in_default_set, timeout) are replaced. `why` records which rule gave what.
+(in_default_set, timeout, retries) are replaced. `why` records which rule gave what.
+
+`retries=N` lets a test that ended FAILED or ERROR run again, alone, up to N times; it is PASSED when an
+attempt passes, and the report says which attempt. It is for a test that can fail for reasons that are
+not its own, such as one that reaches the public network.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from .declare import CONF_FILE, Engine, Service, Variant
 
 _LISTS = ("tags", "services", "engines", "variants")
 _DICTS = ("values", "settings")
-_SINGLES = ("in_default_set", "timeout")
+_SINGLES = ("in_default_set", "timeout", "retries")
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,9 @@ def _rule(pattern, fields):
     unknown = sorted(set(fields) - set(_LISTS + _DICTS + _SINGLES))
     if unknown:
         raise UsageError(f"rule {pattern!r}: unknown field(s) {unknown}; known: {_LISTS + _DICTS + _SINGLES}")
+    retries = fields.get("retries", 0)
+    if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
+        raise UsageError(f"rule {pattern!r}: retries={retries!r}; it is a whole number, 0 or more")
     return Rule(pattern, fields)
 
 
@@ -86,6 +93,7 @@ class Settled:
     settings: dict = field(default_factory=dict)
     in_default_set: bool = True
     timeout: float | None = None
+    retries: int = 0
     why: list = field(default_factory=list)
 
     def apply(self, fields, source):

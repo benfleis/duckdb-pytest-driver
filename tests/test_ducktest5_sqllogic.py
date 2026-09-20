@@ -24,12 +24,38 @@ def test_a_batch_is_two_files(tmp_path):
     assert config["test_env"] == [{"env_name": "CATALOG", "env_value": "duck"}]
     assert config["settings"] == [{"name": "threads", "value": "2"}]
     assert open(config["init_sqllogic"]).read() == "statement ok\nSELECT 1;\n"
-    assert "skip_error_messages" not in config
 
 
-def test_a_case_with_a_run_provided_service_does_not_forgive_a_connection_error(tmp_path):
-    run(tmp_path, ["a.test"], strict_connection_errors=True)
+def test_no_batch_lets_the_binary_forgive_a_connection_error(tmp_path):
+    run(tmp_path, ["a.test"])
     assert json.loads((tmp_path / "b001" / "config.json").read_text())["skip_error_messages"] == []
+
+
+@pytest.fixture
+def flaky_state(tmp_path, monkeypatch):
+    (tmp_path / "state").mkdir()
+    monkeypatch.setenv("FAKE_UNITTEST_STATE", str(tmp_path / "state"))
+
+
+def test_a_test_with_retries_that_passes_on_a_later_attempt_is_passed_and_says_so(tmp_path, flaky_state):
+    results = run(tmp_path, ["a.test", "b_flaky3.test"], retries={"b_flaky3.test": 2})
+    flaky = results["b_flaky3.test"]
+    assert (flaky.outcome, flaky.attempts, flaky.note) == (PASSED, 3, "passed on attempt 3 of 3")
+    assert (results["a.test"].outcome, results["a.test"].attempts) == (PASSED, 1)
+
+
+def test_without_retries_a_failure_is_not_run_again(tmp_path, flaky_state):
+    results = run(tmp_path, ["b_flaky2.test"])
+    assert (results["b_flaky2.test"].outcome, results["b_flaky2.test"].attempts) == (FAILED, 1)
+    assert (tmp_path / "state" / "b_flaky2.test.runs").read_text() == "1"
+
+
+def test_when_no_attempt_passes_the_first_failure_stays(tmp_path, flaky_state):
+    results = run(tmp_path, ["b_flaky9.test"], retries={"b_flaky9.test": 2})
+    flaky = results["b_flaky9.test"]
+    assert (flaky.outcome, flaky.attempts) == (FAILED, 3)
+    assert flaky.kept.startswith(str(tmp_path / "b001" / "tmp"))  # of the first attempt, not of a later one
+    assert (tmp_path / "state" / "b_flaky9.test.runs").read_text() == "3"
 
 
 def test_each_ending_gets_its_own_outcome(tmp_path):

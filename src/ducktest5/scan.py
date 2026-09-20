@@ -148,4 +148,5 @@ def _settle(test, project, working_dir):
         merged = getattr(settled, name) + [x for x in own[name] if x not in getattr(settled, name)]
         setattr(test, name, merged)
     test.values, test.settings = settled.values, settled.settings
-    test.in_default_set, test.timeout, test.why = settled.in_default_set, settled.timeout, settled.why
+    test.in_default_set, test.timeout, test.retries = settled.in_default_set, settled.timeout, settled.retries
+    test.why = settled.why

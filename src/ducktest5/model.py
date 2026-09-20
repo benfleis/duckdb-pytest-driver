@@ -32,6 +32,7 @@ class TestDef:
     settings: dict = field(default_factory=dict)
     in_default_set: bool = True
     timeout: float | None = None
+    retries: int = 0  # how often a FAILED or ERROR may run again
     why: list = field(default_factory=list)
 
 
@@ -115,6 +116,7 @@ class Case:
                 "values": _plain(self.values),
                 "settings": self.settings,
                 "timeout": self.test.timeout,
+                "retries": self.test.retries,
             },
             "why": self.test.why,
         }

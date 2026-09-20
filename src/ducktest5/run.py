@@ -91,7 +91,6 @@ def _batch_key(case, provisioned):
             sorted(_env_for_body(case).items()),
             sorted(case.settings.items()),
             _init_sql(case, provisioned),
-            bool(case.services),
         ],
         default=str,
     )
@@ -232,8 +231,8 @@ def run(
                             _env_for_body(first),
                             first.settings,
                             _init_sql(first, provisioned),
-                            strict_connection_errors=bool(first.services),
                             timeouts={c.test.body_file: c.test.timeout for c in chunk if c.test.timeout},
+                            retries={c.test.body_file: c.test.retries for c in chunk if c.test.retries},
                         ),
                     )
                 )
@@ -267,16 +266,20 @@ def run(
                         kept=[r.kept] if r.kept else [],
                         note=r.note,
                         batch=os.path.relpath(batch.dir, run_dir),
+                        **({"attempts": r.attempts} if r.attempts > 1 else {}),
                     )
-                if all(by_name[c.test.body_file].outcome == PASSED for c in chunk) and not keep:
+                # What a failed attempt printed stays, also when a later attempt passed.
+                ran = [by_name[c.test.body_file] for c in chunk]
+                if all(r.outcome == PASSED and r.attempts == 1 for r in ran) and not keep:
                     shutil.rmtree(batch.dir, ignore_errors=True)
 
         # Python bodies, in this process, one after another.
-        for case in runnable:
-            if case.test.type == SQLLOGIC:
-                continue
-            t0 = time.perf_counter()
-            temp_dir = os.path.join(run_dir, "cases", case.dir_name)
+        def attempt(case, n):
+            """Returns (outcome, problems, the case's directory, what it may have written on services)."""
+            # An attempt after the first has its own directory and prefix, so it does not see what
+            # the one before it left.
+            dir_name = case.dir_name if n == 1 else f"{case.dir_name}.attempt{n}"
+            temp_dir = os.path.join(run_dir, "cases", dir_name)
             try:
                 os.makedirs(temp_dir)
                 duckdb_session.begin_test()
@@ -290,25 +293,35 @@ def run(
                     duckdb_session=duckdb_session,
                     engines=handles,
                     services=provisioned,
-                    remote_parts=(run_id, case.dir_name),
+                    remote_parts=(run_id, dir_name),
                     init_sql=_init_sql(case, provisioned),
-                    run_test=lambda case=case, temp_dir=temp_dir, **kw: _run_paired(
-                        case, unittest_bin, working_dir, temp_dir, provisioned, **kw
-                    ),
+                    run_test=lambda **kw: _run_paired(case, unittest_bin, working_dir, temp_dir, provisioned, **kw),
                 )
             except Exception as exc:
-                done(
-                    case,
-                    ERROR,
-                    runner="python",
-                    problems=[f"the case could not be set up: {type(exc).__name__}: {exc}"],
-                )
+                return ERROR, [f"the case could not be set up: {type(exc).__name__}: {exc}"], temp_dir, None
+            return *_run_body(case, ctx), temp_dir, ctx
+
+        for case in runnable:
+            if case.test.type == SQLLOGIC:
                 continue
-            outcome, problems = _run_body(case, ctx)
+            t0 = time.perf_counter()
+            allowed, tried, first = 1 + case.test.retries, [], None
+            for n in range(1, allowed + 1):
+                outcome, problems, temp_dir, ctx = attempt(case, n)
+                tried.append((temp_dir, ctx))
+                if outcome not in (FAILED, ERROR):
+                    break
+                first = first or (outcome, problems)
+            note = ""
+            if outcome in (FAILED, ERROR):
+                outcome, problems = first
+            elif n > 1:
+                note = f"passed on attempt {n} of {allowed}"
             kept = []
             if outcome == PASSED and not keep:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                for service_id, uri in ctx.remote_locations:
+                for temp_dir, _ in tried:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                for service_id, uri in (x for _, c in tried if c for x in c.remote_locations):
                     try:
                         provisioned[service_id].service.clean(provisioned[service_id].block, uri)
                     except Exception as exc:
@@ -318,7 +331,10 @@ def run(
                         )
                         kept.append(uri)
             else:
-                kept = [temp_dir, *(uri for _, uri in ctx.remote_locations)]
+                kept = [
+                    *(temp_dir for temp_dir, _ in tried if os.path.isdir(temp_dir)),
+                    *(uri for _, c in tried if c for _, uri in c.remote_locations),
+                ]
             done(
                 case,
                 outcome,
@@ -326,7 +342,9 @@ def run(
                 seconds=round(time.perf_counter() - t0, 2),
                 problems=problems,
                 kept=kept,
-                seconds_by_client=ctx.seconds_by_client(),
+                note=note,
+                seconds_by_client=ctx.seconds_by_client() if ctx else {},
+                **({"attempts": n} if n > 1 else {}),
             )
     finally:
         events.close()
@@ -400,7 +418,6 @@ def _run_paired(case, unittest_bin, working_dir, temp_dir, provisioned, *, env=N
         case.settings,
         "\n".join(x for x in (_init_sql(case, provisioned), init_sql) if x),
         case.test.timeout or sqllogic.DEFAULT_TIMEOUT_S,
-        strict_connection_errors=bool(case.services),
     )
     result = sqllogic.run_batch(unittest_bin, batch, working_dir)[case.test.body_file]
     if result.outcome == SKIPPED:

@@ -234,3 +234,11 @@ def test_a_path_names_its_paired_file_and_nothing_wider(project):
     ]  # named exactly: asked for
     with pytest.raises(UsageError, match="no test has a case"):
         select(project, select=["case=cmtt"])
+
+
+def test_retries_is_a_rule_field_and_a_whole_number(tmp_path):
+    files = {"test/ducktestconf.py": "from ducktest5 import match\nRULES = [match('net.test', retries=2)]"}
+    cases, _ = tree(tmp_path, {**files, "test/net.test": "", "test/plain.test": ""})
+    assert [(c.test.name, c.test.retries) for c in cases] == [("net", 2), ("plain", 0)]
+    with pytest.raises(UsageError, match="retries=-1; it is a whole number, 0 or more"):
+        tree(tmp_path, {"test/ducktestconf.py": "from ducktest5 import default\nRULES = [default(retries=-1)]"})
