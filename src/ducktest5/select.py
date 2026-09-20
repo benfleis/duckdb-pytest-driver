@@ -7,13 +7,18 @@
 - Every `--select EXPR` must hold. An EXPR is `key=v1,v2` (any of the values) or `not:key=v1,v2`.
   Keys: `tag`, `type`, `case`, and the name of any variant axis. An unknown key is an error, and so is
   a tag or an axis value that no scanned case has: a selection that can never match is a typo.
-- `--id` takes a case id verbatim, for a re-run. Quote it in a shell.
+- `--id` names one case exactly, for a re-run. Quote it in a shell. A case named by id always runs:
+  no `--select`, no tag and no PATH takes it out. With `--id` alone, only the named cases run; with
+  PATHs, `--select` or `--set` as well, the named cases are added to what those give (a union).
 - `--set NAME` takes a named set from the project's SETS; a set is `{"paths": [...], "select": [...]}`.
 - With nothing given, the set `default` applies if the project has one; else every case whose test is
   in the default set.
+- `in_default_set=False` takes a test out of that last run only: the run with nothing given, in a
+  project that has no set `default`. With a set `default`, or with any PATH, `--select`, `--id` or
+  `--set`, it has no effect.
 - A case with the tag `slow` or `coverage` (a `.test_slow`, a `.test_coverage`) runs only when asked
-  for: `--slow` (these too), `--select tag=slow` (only these), or its `--id`. A path alone does not
-  bring it in.
+  for: `--slow` (these too), `--select tag=slow` (only these), its `--id`, or its file named exactly
+  as a PATH. A directory or a glob does not bring it in.
 """
 
 from __future__ import annotations
@@ -119,10 +124,13 @@ def apply(cases, selection, project):
             raise UsageError(f"path {p!r} holds no test")
 
     bare = selection.is_bare() and "default" not in project.sets
+    only_ids = bool(selection.ids) and not (paths or exprs)
     asked_for = {v for negate, key, values in parsed if key == "tag" and not negate for v in values}
     selected, why_not = [], {}
     for case in cases:
-        if selection.ids and case.id not in selection.ids:
+        if case.id in selection.ids:
+            selected.append(case)
+        elif only_ids:
             why_not[case.id] = "not named by --id"
         elif paths and not any(_path_matches(case.test.path, p) for p in paths):
             why_not[case.id] = "outside the given paths"
@@ -131,8 +139,7 @@ def apply(cases, selection, project):
         elif bare and not case.test.in_default_set:
             why_not[case.id] = "its test is not in the default set (in_default_set=False)"
         elif (
-            not selection.ids
-            and not selection.slow
+            not selection.slow
             and case.test.body_file not in paths  # a slow file named exactly is asked for
             and (slow := next((t for t in ("slow", "coverage") if t in case.tags and t not in asked_for), None))
         ):

@@ -151,6 +151,22 @@ def test_an_id_is_taken_verbatim(project):
     assert ids(select(project, ids=["test/b/paired.py::body[plain]"])[0]) == ["test/b/paired.py::body[plain]"]
 
 
+def test_an_id_is_added_to_what_paths_and_selects_give(project):
+    slow, plain = "test/a/y.test_slow::y", "test/b/paired.py::body[plain]"
+    selected, why_not = select(project, paths=["test/b/one.test"], ids=[plain])
+    assert ids(selected) == ["test/b/one.test::one", plain]
+    assert why_not["test/b/solo.py::solo"] == "outside the given paths"
+    # no select, path or tag takes out a case that is named by id
+    assert ids(select(project, select=["type=python"], ids=[slow])[0]) == [slow, "test/b/solo.py::solo"]
+    assert ids(select(project, set_name="cmt", ids=[slow])[0]) == [slow, "test/b/paired.py::body[cmt]"]
+    # and the slow rule still holds for the cases that are not named
+    assert ids(select(project, paths=["test/a"], select=["backend=oss"], ids=[plain])[0]) == [
+        "test/a/x.test::x[backend=oss]",
+        plain,
+    ]
+    assert slow in select(project, paths=["test/a"], ids=[plain])[1]
+
+
 @pytest.mark.parametrize(
     "kwargs, message",
     [

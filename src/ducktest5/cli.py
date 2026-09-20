@@ -26,7 +26,13 @@ def main(argv=None):
         p.add_argument(
             "--select", action="append", default=[], metavar="EXPR", help="key=v1,v2 or not:key=v; every one must hold"
         )
-        p.add_argument("--id", action="append", default=[], metavar="CASE_ID", help="a case id, verbatim")
+        p.add_argument(
+            "--id",
+            action="append",
+            default=[],
+            metavar="CASE_ID",
+            help="a case id, verbatim; it runs whatever else is given",
+        )
         p.add_argument("--set", metavar="NAME", help="a named set of the project")
         p.add_argument("--slow", action="store_true", help="also take cases with the tag slow or coverage")
         p.add_argument("--root", default=None, help="where the tests are (default: ./test, else .)")
