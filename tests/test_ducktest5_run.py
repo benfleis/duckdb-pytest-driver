@@ -690,3 +690,9 @@ def test_the_timeout_of_a_duckdb_client_reaches_each_of_its_statements(tmp_path)
 
     assert go(tmp_path, [py_case(body)])[0] == 0
     assert seen == [7, 120, 9]
+
+
+def test_the_scan_record_names_the_version_of_an_engine(tmp_path):
+    project = Project(str(tmp_path), {"fake": FakeEngine().engine()}, {}, {}, {}, ())
+    record = py_case(passes, engines=["fake"]).record(project)
+    assert record["preconditions"]["engines"] == [{"id": "fake", "version": "fake:1"}]

@@ -12,8 +12,8 @@ CONF_FILE = "ducktestconf.py"  # not `ducktest.py`: that name would shadow the p
 class Engine:
     """A non-DuckDB SQL engine a body can drive, booted once per run and shared by every test.
 
-    `boot(log_path)` returns a handle with `run(statements)` (as `Client` describes it) and `stop()`. `variant` names
-    what was booted (e.g. "spark:4.2:delta-4.4") for the scan record and the report.
+    `boot(log_path)` returns a handle with `run(statements)` (as `Client` describes it) and `stop()`.
+    `version` names what was booted (e.g. "spark:4.2:delta-4.4") for the scan record and the report.
 
     `uses` names services the engine can talk to. It never makes a run provision one: when a
     selected test needs such a service, the handle's `use_service(id, block)` is called once, after
@@ -21,7 +21,7 @@ class Engine:
     """
 
     id: str
-    variant: str
+    version: str
     boot: Callable
     uses: tuple = ()
 

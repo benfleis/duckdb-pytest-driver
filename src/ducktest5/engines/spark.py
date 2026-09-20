@@ -133,5 +133,5 @@ def delta_spark(id="spark", *, s3a=False, uses=()):
             return "missing"
 
     packages = (f"org.apache.hadoop:hadoop-aws:{_hadoop_version()}",) if s3a else ()
-    variant = f"spark:{v('pyspark')}:delta-{v('delta-spark')}:local" + (":s3a" if s3a else "")
-    return Engine(id, variant, lambda log: _boot_delta(log, packages)[0], uses=tuple(uses))
+    booted = f"spark:{v('pyspark')}:delta-{v('delta-spark')}:local" + (":s3a" if s3a else "")
+    return Engine(id, booted, lambda log: _boot_delta(log, packages)[0], uses=tuple(uses))

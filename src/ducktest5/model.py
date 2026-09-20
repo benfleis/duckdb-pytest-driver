@@ -109,7 +109,7 @@ class Case:
             "selection": {"tags": self.tags, "in_default_set": self.test.in_default_set},
             "preconditions": {
                 "services": self.services,
-                "engines": [{"id": e, "variant": project.engines[e].variant} for e in self.engines],
+                "engines": [{"id": e, "version": project.engines[e].version} for e in self.engines],
             },
             "runtime": {
                 "case": _plain(self.params),

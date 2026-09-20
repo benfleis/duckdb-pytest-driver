@@ -178,7 +178,7 @@ def run(
         # An engine boots only when a case that can still run needs it.
         for engine_id in sorted({e for c in cases if not blocked(c) for e in c.engines}):
             log = os.path.join(run_dir, f"engine-{engine_id}.log")
-            print(f"boot {engine_id} ({engines[engine_id].variant}) ...", file=out, flush=True)
+            print(f"boot {engine_id} ({engines[engine_id].version}) ...", file=out, flush=True)
             t0 = time.perf_counter()
             try:
                 handles[engine_id] = engines[engine_id].boot(log)
