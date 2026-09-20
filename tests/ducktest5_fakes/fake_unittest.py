@@ -8,9 +8,12 @@
     *giveup* prints a SKIP_TEST line and ends ok, as the binary does for an error on its skip list
     *onlyinbatch_fail* fails beside other tests and passes alone
     *stallatexit* / *badexit* end ok, then the process hangs / exits 7
+
+`-l` lists the names in the file that $FAKE_UNITTEST_LIST names.
 """
 
 import json
+import os
 import sys
 import time
 
@@ -22,7 +25,7 @@ def event(**fields):
 def main(argv):
     if "-l" in argv:
         print("name\tgroup")
-        for line in open(argv[argv.index("--list-from") + 1]) if "--list-from" in argv else []:
+        for line in open(os.environ["FAKE_UNITTEST_LIST"]) if "FAKE_UNITTEST_LIST" in os.environ else []:
             print(f"{line.strip()}\t[x]")
         return 3
     names = [line.strip() for line in open(argv[argv.index("-f") + 1]) if line.strip()]

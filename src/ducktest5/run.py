@@ -110,8 +110,10 @@ def run(
     keep_services=False,
     batch_size=10,
     workers=4,
-    out=sys.stdout,
+    out=None,
+    session_factory=DuckDBSession,
 ):
+    out = out or sys.stdout  # looked up now: a caller may have replaced it since import
     engines = project.engines
     run_id = make_run_id()
     run_dir = os.path.join(os.path.abspath(temp_root), run_id)
@@ -154,7 +156,7 @@ def run(
         print(f"{outcome.upper():8} {case.id}{tail}" + (f"  [{note}]" if note else ""), file=out, flush=True)
 
     provisioned, boot_errors, handles = {}, {}, {}
-    duckdb_session = DuckDBSession(duckdb_bin)
+    duckdb_session = session_factory(duckdb_bin)
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
     try:
         # provision: each service some selected case needs, then each engine. One that does not come
