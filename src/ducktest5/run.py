@@ -27,10 +27,9 @@ from .ctx import Ctx
 from .engines.duckdb import DuckDBSession
 from .mnemonic import run_id as make_run_id
 from .model import SQLLOGIC
+from .outcomes import ALL as OUTCOMES
+from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
 from .provision import KEPT, attach_argument, existing_overrides, provision, release
-
-# FAILED: something under test went wrong. ERROR: setup or teardown did, so the test proved nothing.
-PASSED, FAILED, ERROR, BLOCKED, SKIPPED = "passed", "failed", "error", "blocked", "skipped"
 
 
 def _write(run_dir, name, doc):
@@ -373,8 +372,7 @@ def run(
                 print(f"service {p.service.id} left running; next run: {attach_argument(p)}", file=out)
         _report(run_dir, run_id, results, boot_errors, out)
 
-    outcomes = (PASSED, FAILED, ERROR, BLOCKED, SKIPPED)
-    counts = {o: sum(r["outcome"] == o for r in results) for o in outcomes}
+    counts = {o: sum(r["outcome"] == o for r in results) for o in OUTCOMES}
     # Green means it ran: a skip inside the binary does not fail the run, anything else not passed does,
     # and a run in which nothing passed is not green.
     bad = counts[FAILED] + counts[ERROR] + counts[BLOCKED]
@@ -382,8 +380,7 @@ def run(
 
 
 def _report(run_dir, run_id, results, boot_errors, out):
-    outcomes = (PASSED, FAILED, ERROR, BLOCKED, SKIPPED)
-    counts = {o: sum(r["outcome"] == o for r in results) for o in outcomes}
+    counts = {o: sum(r["outcome"] == o for r in results) for o in OUTCOMES}
     _write(
         run_dir,
         "05-report.yaml",
@@ -413,7 +410,7 @@ def _report(run_dir, run_id, results, boot_errors, out):
     for name, error in boot_errors.items():
         n_blocked = sum(name in r.get("blocked_by", ()) for r in results)
         print(f"\n{name!r} did not come up: {n_blocked} cases blocked\n  {error}", file=out)
-    summary = ", ".join(f"{counts[o]} {o}" for o in outcomes if counts[o] or o == PASSED)
+    summary = ", ".join(f"{counts[o]} {o}" for o in OUTCOMES if counts[o] or o == PASSED)
     print(f"\n{summary} -- {run_dir}", file=out)
 
 

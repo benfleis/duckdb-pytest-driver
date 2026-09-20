@@ -21,8 +21,8 @@ import time
 from dataclasses import dataclass, field
 
 from .binary import UsageError
+from .outcomes import ERROR, FAILED, PASSED, SKIPPED
 
-PASSED, FAILED, ERROR, SKIPPED = "passed", "failed", "error", "skipped"
 _EVENT = re.compile(r"\[TEST_EVENT\] (\{.*\})")
 _SKIP = re.compile(r"\[SKIP_TEST\] (.*?) :: (.*)")
 _PROGRESS = re.compile(r"^\[\d+/\d+\] \(\d+%\): .*$", re.M)

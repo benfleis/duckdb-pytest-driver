@@ -16,12 +16,13 @@ from .select import Selection, apply
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="ducktest5")
     sub = parser.add_subparsers(dest="command", required=True)
+    commands = {}
     for name, text in (
         ("scan", "print every selected case with what it needs"),
         ("select", "print which cases would run, and for each other case why not"),
         ("run", "run the selected cases"),
     ):
-        p = sub.add_parser(name, help=text)
+        p = commands[name] = sub.add_parser(name, help=text)
         p.add_argument("paths", nargs="*", metavar="PATH", help="files, directories or globs; several are a union")
         p.add_argument(
             "--select", action="append", default=[], metavar="EXPR", help="key=v1,v2 or not:key=v; every one must hold"
@@ -38,24 +39,29 @@ def main(argv=None):
         p.add_argument("--root", default=None, help="where the tests are (default: ./test, else .)")
         if name == "select":
             p.add_argument("--why", action="store_true", help="also print which rule gave each case what")
-    p.add_argument("--build", default="debug", help="build/<BUILD>/ holds duckdb and test/unittest (default: debug)")
-    p.add_argument("--duckdb-bin")
-    p.add_argument("--unittest-bin")
-    p.add_argument("--temp-dir-root", default="duckdb_unittest_tempdir")
-    p.add_argument("--keep", action="store_true", help="keep what passed cases wrote, too")
-    p.add_argument("--batch-size", type=int, default=10, help=".test files for one unittest process")
-    p.add_argument("--workers", type=int, default=4, help="unittest processes at a time")
-    p.add_argument(
+    run_options = commands["run"]
+    run_options.add_argument(
+        "--build", default="debug", help="build/<BUILD>/ holds duckdb and test/unittest (default: debug)"
+    )
+    run_options.add_argument("--duckdb-bin")
+    run_options.add_argument("--unittest-bin")
+    run_options.add_argument("--temp-dir-root", default="duckdb_unittest_tempdir")
+    run_options.add_argument("--keep", action="store_true", help="keep what passed cases wrote, too")
+    run_options.add_argument("--batch-size", type=int, default=10, help=".test files for one unittest process")
+    run_options.add_argument("--workers", type=int, default=4, help="unittest processes at a time")
+    run_options.add_argument(
         "--no-binary-check", action="store_true", help="do not compare the .test files on disk with `unittest -l`"
     )
-    p.add_argument(
+    run_options.add_argument(
         "--existing-service",
         action="append",
         default=[],
         metavar="ID[=URL|={json}]",
         help="use a running instance of a service; it is never stopped (also DUCKTEST_EXISTING_SERVICE_<ID>)",
     )
-    p.add_argument("--keep-services", action="store_true", help="find each service or start it, and leave it running")
+    run_options.add_argument(
+        "--keep-services", action="store_true", help="find each service or start it, and leave it running"
+    )
     args = parser.parse_args(argv)
 
     try:

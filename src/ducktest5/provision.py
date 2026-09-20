@@ -139,9 +139,3 @@ def attach_argument(provisioned):
     overrides.update({k: _MASK for k in masked})
     note = f"  ({_MASK}: a secret, not printed; put the value in, or set it in the environment)" if masked else ""
     return f"--existing-service '{service.id}={json.dumps(overrides)}'{note}"
-
-
-def check_declared(needed, declared, where):
-    unknown = sorted(set(needed) - set(declared))
-    if unknown:
-        raise UsageError(f"{where} needs services {unknown}, not declared in the project file")
