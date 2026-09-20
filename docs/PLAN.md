@@ -102,18 +102,14 @@ sound; these are the outcomes worth fixing before v0.4 lands.
   provisioner whose RO `instantiate` writes worker-local state has peer workers skip instantiation and
   address a missing table (silent-wrongness, no opt-out). Fix: per-provisioner opt-out, or document the
   shared-storage requirement and fail loud otherwise. Test the local-storage case.
-- **[MED] A wedged `docker` call hangs the session with no output** — `resources/_docker.py:16` runs
-  `docker` with `capture_output=True` and no `timeout`, so an exec that never returns blocks its worker
-  forever: pytest prints nothing, no test is reported, and the run has to be killed. Observed through the
-  UC repo's `uctl` wrapper, which has the same shape: `uctl` had already exited (defunct) while its
-  `docker` child held the captured pipes, so the reader waited on an EOF that could not come, and the
-  child was never reaped. Fix: give every docker invocation a timeout and report the expiry as a failure;
-  keep a grandchild from holding the captured pipes. Test: a fake `docker` on PATH that sleeps past the
-  timeout must fail rather than hang.
-- **[LOW-MED] Event `temp_dir` check false-fires with a local mirror** — `sqllogic.py:538/573` asserts the
-  echoed `temp_dir` `startswith` the *remote* root; with `--local-temp-dir-root` the binary echoes the
-  local path → spurious `RuntimeError` on a passing test. Compare against the local root when set; add a
-  test exercising the event check with `--local-temp-dir-root`.
+- **[MED, FIXED] A wedged `docker` call hung the session with no output** — `resources/_docker.py`
+  ran `docker` with no timeout. Every call now has one (180 s), also the `check=False` cleanup form, and
+  the expiry is a `RuntimeError`. Test: `tests/test_docker_timeout.py`, a fake `docker` on PATH that
+  sleeps. Not covered: UC's own `uctl` wrapper has the same shape and its own `subprocess.run`.
+- **[WITHDRAWN] Event `temp_dir` check with a local mirror** — the review said the binary echoes the
+  local path when `--local-temp-dir-root` is set. It does not: the event carries `TEMP_DIR`, the remote
+  one (checked on DuckDB fc4002c6e3: `--temp-dir-root s3://b/x --local-temp-dir-root /l` echoes
+  `s3://b/x/<test>`), which starts with the composed root. The check is right as it is.
 
 ### Design & docs
 
