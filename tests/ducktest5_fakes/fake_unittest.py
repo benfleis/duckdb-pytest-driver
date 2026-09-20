@@ -8,6 +8,7 @@
     *giveup* prints a SKIP_TEST line and ends ok, as the binary does for an error on its skip list
     *onlyinbatch_fail* fails beside other tests and passes alone
     *stallatexit* / *badexit* end ok, then the process hangs / exits 7
+    *nap*    takes 0.3 s
     *flakyN* fails until its Nth run, counted in a file under $FAKE_UNITTEST_STATE
 
 `-l` lists the names in the file that $FAKE_UNITTEST_LIST names.
@@ -46,6 +47,8 @@ def main(argv):
         event(event="begin", name=name, temp_dir=temp)
         if "hang" in name:
             time.sleep(60)
+        if "nap" in name:
+            time.sleep(0.3)
         if "crash" in name:
             print("Segmentation fault (fake)", flush=True)
             return 139

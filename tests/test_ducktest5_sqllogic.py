@@ -151,3 +151,10 @@ def test_a_binary_that_lists_nothing_is_an_error_not_an_empty_set(tmp_path):
     silent.chmod(0o755)
     with pytest.raises(sqllogic.UsageError, match="listed nothing"):
         sqllogic.list_binary_tests(str(silent), str(tmp_path), str(tmp_path / "s"))
+
+
+def test_each_test_of_a_batch_has_its_own_seconds(tmp_path):
+    results = run(tmp_path, ["a.test", "b_nap.test", "c_fail.test", "d_crash.test"])
+    assert 0 <= results["a.test"].seconds < 0.3 <= results["b_nap.test"].seconds < 2
+    assert results["c_fail.test"].seconds is not None
+    assert results["d_crash.test"].seconds is not None  # no end event: what its run alone took

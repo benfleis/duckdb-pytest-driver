@@ -410,6 +410,7 @@ def test_each_case_has_one_event_line(tmp_path):
     variant = Variant("oss")
     _, run_dir, _, _ = go(tmp_path, [sql_case("a.test", {"backend": variant}), py_case(fails)])
     events = [json.loads(line) for line in (run_dir / "04-events.jsonl").read_text().splitlines()]
+    assert all(isinstance(e["seconds"], float) for e in events)
     assert [(e["id"], e["outcome"], e["runner"], e["variants"]) for e in events] == [
         ("a.test::a[backend=oss]", "passed", "unittest", {"backend": "oss"}),
         ("test/body.py::fails", "failed", "python", {}),

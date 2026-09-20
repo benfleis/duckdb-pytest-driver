@@ -154,7 +154,8 @@ def _human(output):
 
 def _invoke(binary, batch, working_dir):
     """Run the batch and watch it: a test that is still running after its timeout gets the process
-    killed. Returns (output, what was running when it was killed or None, the exit code)."""
+    killed. Returns (output, what was running when it was killed or None, the exit code, and
+    {test name: seconds between its begin and end events})."""
     batch.write()
     args = [
         binary,
@@ -172,7 +173,7 @@ def _invoke(binary, batch, working_dir):
     threading.Thread(
         target=lambda: [lines.put(line) for line in proc.stdout] and None or lines.put(None), daemon=True
     ).start()
-    output, running, since, killed_for = [], None, time.perf_counter(), None
+    output, running, since, killed_for, took = [], None, time.perf_counter(), None, {}
     while True:
         try:
             line = lines.get(timeout=0.2)
@@ -190,6 +191,8 @@ def _invoke(binary, batch, working_dir):
                 if ev.get("event") == "begin":
                     running, since = ev.get("name"), time.perf_counter()
                 elif ev.get("event") == "end":
+                    if running == ev.get("name"):
+                        took[running] = round(time.perf_counter() - since, 2)
                     running, since = None, time.perf_counter()
         # Before the first begin event the binary starts up and loads extensions; that shares the
         # batch's general timeout.
@@ -202,7 +205,7 @@ def _invoke(binary, batch, working_dir):
     text = "".join(output)
     with open(os.path.join(batch.dir, "output.txt"), "w") as f:
         f.write(text)
-    return text, killed_for, returncode
+    return text, killed_for, returncode, took
 
 
 def _classify(name, ev, detail, skip_reason=None):
@@ -270,7 +273,7 @@ def _run_once(binary, batch, working_dir):
       do not explain, every test of the batch that would count as passed is an ERROR instead.
     """
     t0 = time.perf_counter()
-    output, killed_for, returncode = _invoke(binary, batch, working_dir)
+    output, killed_for, returncode, took = _invoke(binary, batch, working_dir)
     seconds = time.perf_counter() - t0
     _, ended = _events(output)
     skipped = _skip_reasons(output)
@@ -290,6 +293,7 @@ def _run_once(binary, batch, working_dir):
             alone.append(name)
         else:
             results[name] = _classify(name, ev, _human(output) if ev.get("status") != "ok" else "", skipped.get(name))
+            results[name].seconds = took.get(name)
 
     unexplained = None
     if killed_for is _OUTSIDE_A_TEST:
@@ -330,7 +334,7 @@ def _run_once(binary, batch, working_dir):
         results.setdefault(
             name, TestResult(name, ERROR, detail=f"the binary reported nothing for this test\n{_human(output)}".strip())
         )
-    if len(names) == 1:
+    if len(names) == 1 and results[names[0]].seconds is None:  # no end event: what the process took
         results[names[0]].seconds = round(seconds, 2)
     return results
 
