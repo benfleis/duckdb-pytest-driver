@@ -3,5 +3,6 @@
 Imports nothing from `ducktest` (whose package init pulls in pytest); `ducktest` imports from here.
 """
 
-from .declare import Engine, test  # noqa: F401
+from .conf import default, match  # noqa: F401
+from .declare import Engine, Service, Variant, test  # noqa: F401
 from .sqltext import L  # noqa: F401

@@ -15,14 +15,32 @@ def _no_reconnect():
 
 
 class Ctx:
-    def __init__(self, item, *, temp_dir, duckdb_bin, duckdb_session, engines, services=None, remote_parts=()):
-        self.id = item.id
-        self.case = item.case
+    def __init__(
+        self,
+        case,
+        *,
+        temp_dir,
+        duckdb_bin,
+        duckdb_session,
+        engines,
+        services=None,
+        remote_parts=(),
+        init_sql="",
+        run_test=None,
+    ):
+        self.id = case.id
+        self.case = case.params
+        self.variant = {axis: v for axis, v in case.axis_values.items()}
+        self.values = case.values
+        self._settings = case.settings
+        self._init_sql = init_sql
+        self._run_test = run_test
+        self._location_on = next((v.location_on for v in case.axis_values.values() if v.location_on), None)
         self.temp_dir = temp_dir
         self._duckdb_bin = duckdb_bin
         self._duckdb_session = duckdb_session
-        self._engines = {e: engines[e] for e in item.test.engines}
-        self._services = {s: services[s] for s in item.test.services} if services else {}
+        self._engines = {e: engines[e] for e in case.engines}
+        self._services = {s: services[s] for s in case.services} if services else {}
         self._remote_parts = remote_parts
         self.remote_locations = []  # (service id, uri): what this test may have written outside temp_dir
         self.failed_checks = []
@@ -35,6 +53,7 @@ class Ctx:
         started fresh; `preamble` runs once, now. The client has `restart()` (new instance, then the
         test's preambles again) and `respawn()` (new process, the same). `per_call`: a cold process
         for every call, running `preamble` each time."""
+        preamble = "\n".join(x for x in (self._variant_preamble(), preamble) if x)
         if session == "per_call":
             return self._client("duckdb", DuckDBPerCall(self._duckdb_bin, preamble).run, table)
         if session != "per_run":
@@ -50,8 +69,22 @@ class Ctx:
             raise KeyError(f"engine {name!r} is not declared by this test (engines={sorted(self._engines)})")
         return self._client(name, self._engines[name].run, table)
 
+    def _variant_preamble(self):
+        """What the case's variant values bring for DuckDB: init SQL, then settings."""
+        sets = [f"SET {k} = '{str(v).replace(chr(39), chr(39) * 2)}';" for k, v in self._settings.items()]
+        return "\n".join([self._init_sql, *sets]).strip()
+
+    def run_test(self, *, env=None, init_sql=""):
+        """For a paired test: run the `.test` file of this body's stem through the unittest binary.
+        `env` adds `{NAME}` values for the file; `init_sql` runs before it."""
+        if self._run_test is None:
+            raise RuntimeError("run_test() is for a Python body that has a .test file of the same stem")
+        self._run_test(env=env, init_sql=init_sql)
+
     def _client(self, name, run, table):
-        client = Client(name, run, table=table, record=self.failed_checks.append, defer=self.teardowns.append)
+        client = Client(
+            name, run, table=table, values=self.values, record=self.failed_checks.append, defer=self.teardowns.append
+        )
         self.clients.append(client)
         return client
 
@@ -70,6 +103,7 @@ class Ctx:
     def location(self, name, *, on=None):
         """A place for a table the body creates; nothing is created here. By default a path under
         this test's temp dir; with `on=<service>`, a URI under this run's prefix on that service."""
+        on = on or self._location_on
         if on is None:
             return os.path.join(self.temp_dir, name)
         provisioned = self._services[on] if on in self._services else self.service(on)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-PROJECT_FILE = "ducktest_project.py"
+CONF_FILE = "ducktestconf.py"  # not `ducktest.py`: that name would shadow the package on a sys.path entry
 
 
 @dataclass(frozen=True)
@@ -53,20 +53,40 @@ class Service:
 
 
 @dataclass(frozen=True)
+class Variant:
+    """One alternative on a variant axis, with everything it brings. The list of what it may hold is
+    closed on purpose: services and engines the case then needs, `values` for `{name}` in SQL,
+    DuckDB `settings`, `init_sql` to run before the body (text, or a function of the provisioned
+    services' blocks), `tags`, and `location_on`: the service on which `ctx.location()` puts what the
+    body creates."""
+
+    id: str
+    services: tuple = ()
+    engines: tuple = ()
+    values: dict = field(default_factory=dict)
+    settings: dict = field(default_factory=dict)
+    init_sql: object = None
+    tags: tuple = ()
+    location_on: str | None = None
+
+
+@dataclass(frozen=True)
 class Test:
     body: Callable
     engines: tuple = ()
     services: tuple = ()
     cases: dict = field(default_factory=dict)
     tags: tuple = ()
+    variants: tuple = ()
 
 
-def test(*, engines=(), services=(), cases=None, tags=()):
+def test(*, engines=(), services=(), cases=None, tags=(), variants=()):
     """Mark `body(ctx)` as a test. `cases` maps a case id to the params the body reads as `ctx.case`;
-    the test runs once per case."""
+    `variants` names the project's axes the test takes part in. The test runs once for each
+    combination of a case and one value of every axis."""
 
     def mark(body):
-        body.__ducktest__ = Test(body, tuple(engines), tuple(services), dict(cases or {}), tuple(tags))
+        body.__ducktest__ = Test(body, tuple(engines), tuple(services), dict(cases or {}), tuple(tags), tuple(variants))
         return body
 
     return mark

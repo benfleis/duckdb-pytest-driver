@@ -1,4 +1,4 @@
-"""`ducktest5 scan|run PATH [--select TEXT]`"""
+"""`ducktest5 scan|select|run [PATH ...] [--select EXPR ...] [--id CASE_ID ...] [--set NAME]`"""
 
 import argparse
 import os
@@ -6,22 +6,42 @@ import sys
 
 import yaml
 
+from . import sqllogic
 from .binary import UsageError, find_duckdb
 from .run import run
 from .scan import scan
+from .select import Selection, apply
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="ducktest5")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("scan", "run"):
-        p = sub.add_parser(name)
-        p.add_argument("path")
-        p.add_argument("--select", help="keep tests whose id contains this text")
-    p.add_argument("--build", default="debug", help="build/<BUILD>/duckdb (default: debug)")
+    for name, text in (
+        ("scan", "print every selected case with what it needs"),
+        ("select", "print which cases would run, and for each other case why not"),
+        ("run", "run the selected cases"),
+    ):
+        p = sub.add_parser(name, help=text)
+        p.add_argument("paths", nargs="*", metavar="PATH", help="files, directories or globs; several are a union")
+        p.add_argument(
+            "--select", action="append", default=[], metavar="EXPR", help="key=v1,v2 or not:key=v; every one must hold"
+        )
+        p.add_argument("--id", action="append", default=[], metavar="CASE_ID", help="a case id, verbatim")
+        p.add_argument("--set", metavar="NAME", help="a named set of the project")
+        p.add_argument("--slow", action="store_true", help="also take cases with the tag slow or coverage")
+        p.add_argument("--root", default=None, help="where the tests are (default: ./test, else .)")
+        if name == "select":
+            p.add_argument("--why", action="store_true", help="also print which rule gave each case what")
+    p.add_argument("--build", default="debug", help="build/<BUILD>/ holds duckdb and test/unittest (default: debug)")
     p.add_argument("--duckdb-bin")
+    p.add_argument("--unittest-bin")
     p.add_argument("--temp-dir-root", default="duckdb_unittest_tempdir")
-    p.add_argument("--keep", action="store_true", help="keep temp dirs of passed tests too")
+    p.add_argument("--keep", action="store_true", help="keep what passed cases wrote, too")
+    p.add_argument("--batch-size", type=int, default=10, help=".test files for one unittest process")
+    p.add_argument("--workers", type=int, default=4, help="unittest processes at a time")
+    p.add_argument(
+        "--no-binary-check", action="store_true", help="do not compare the .test files on disk with `unittest -l`"
+    )
     p.add_argument(
         "--existing-service",
         action="append",
@@ -33,22 +53,51 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
-        items, project = scan(args.path, select=args.select, working_dir=os.getcwd())
-        engines = project.engines
+        cwd = os.getcwd()
+        root = args.root or ("test" if os.path.isdir("test") else ".")
+        cases, project = scan(root, working_dir=cwd)
+        selected, why_not = apply(cases, Selection(args.paths, args.select, args.id, args.set, args.slow), project)
         if args.command == "scan":
-            yaml.safe_dump([i.record(engines) for i in items], sys.stdout, sort_keys=False, width=100)
+            yaml.safe_dump([c.record(project) for c in selected], sys.stdout, sort_keys=False, width=100)
             return 0
-        if not items:
-            raise UsageError(f"no tests selected under {args.path}")
-        duckdb_bin = find_duckdb(explicit=args.duckdb_bin, build=args.build, working_dir=os.getcwd())
+        if args.command == "select":
+            for c in selected:
+                print(f"run   {c.id}")
+                if args.why:
+                    for line in c.test.why:
+                        print(f"        {line}")
+            for c in cases:
+                if c.id in why_not:
+                    print(f"skip  {c.id}  -- {why_not[c.id]}")
+            print(f"\n{len(selected)} of {len(cases)} cases")
+            return 0
+        if not selected:
+            raise UsageError("no case selected")
+        duckdb_bin = find_duckdb(explicit=args.duckdb_bin, build=args.build, working_dir=cwd)
+        unittest_bin = None
+        if any(c.test.body_file for c in selected):
+            unittest_bin = sqllogic.find_unittest(explicit=args.unittest_bin, build=args.build, working_dir=cwd)
+            if not args.no_binary_check:
+                scratch = os.path.join(args.temp_dir_root, ".list")
+                problems = sqllogic.check_against_binary(
+                    [c.test.body_file for c in cases if c.test.body_file], unittest_bin, cwd, scratch, project.root
+                )
+                if problems:
+                    raise UsageError(
+                        "the tests on disk and the unittest binary do not agree:\n  " + "\n  ".join(problems)
+                    )
         return run(
-            items,
+            selected,
             project,
             duckdb_bin=duckdb_bin,
+            unittest_bin=unittest_bin,
+            working_dir=cwd,
             temp_root=args.temp_dir_root,
             keep=args.keep,
             existing_services=args.existing_service,
             keep_services=args.keep_services,
+            batch_size=args.batch_size,
+            workers=args.workers,
         )
     except UsageError as exc:
         print(f"ducktest5: {exc}", file=sys.stderr)
