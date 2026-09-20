@@ -155,7 +155,8 @@ def run(
         print(f"{outcome.upper():8} {case.id}{tail}" + (f"  [{note}]" if note else ""), file=out, flush=True)
 
     provisioned, boot_errors, handles = {}, {}, {}
-    duckdb_session = session_factory(duckdb_bin)
+    duckdb_home = os.path.join(run_dir, "home")
+    duckdb_session = session_factory(duckdb_bin, home=duckdb_home)
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
     try:
         # provision: each service some selected case needs, then each engine. One that does not come
@@ -292,6 +293,7 @@ def run(
                     temp_dir=temp_dir,
                     duckdb_bin=duckdb_bin,
                     duckdb_session=duckdb_session,
+                    duckdb_home=duckdb_home,
                     engines=handles,
                     services=provisioned,
                     remote_parts=(run_id, dir_name),

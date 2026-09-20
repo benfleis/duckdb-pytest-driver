@@ -97,3 +97,32 @@ def test_a_statement_that_prints_text_is_a_result_not_an_error(session):
     assert columns == ["output"] and "PROJECTION" in rows[0][0].upper()
     with pytest.raises(SqlError, match="Binder Error"):
         session.run(["SELECT nope"])
+
+
+# -----------------------------------------------------------------------------
+# A private HOME
+#
+
+_PERSIST = "CREATE PERSISTENT SECRET ducktest_home_probe (TYPE s3, KEY_ID 'k', SECRET 'x')"
+
+
+@pytest.mark.parametrize("client", [DuckDBSession, DuckDBPerCall])
+def test_what_a_test_persists_lands_under_the_private_home_not_the_users(tmp_path, monkeypatch, client):
+    users_home = tmp_path / "users-home"
+    users_home.mkdir()
+    monkeypatch.setenv("HOME", str(users_home))
+    c = client(_shell(), home=str(tmp_path / "private"))
+    try:
+        c.run([_PERSIST])
+    finally:
+        getattr(c, "close", lambda: None)()
+    assert (tmp_path / "private" / ".duckdb" / "stored_secrets" / "ducktest_home_probe.duckdb_secret").exists()
+    assert list(users_home.iterdir()) == []
+
+
+def test_with_no_home_given_a_temporary_one_is_used(tmp_path, monkeypatch):
+    users_home = tmp_path / "users-home"
+    users_home.mkdir()
+    monkeypatch.setenv("HOME", str(users_home))
+    DuckDBPerCall(_shell()).run([_PERSIST])
+    assert list(users_home.iterdir()) == []

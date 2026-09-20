@@ -77,8 +77,8 @@ class FakeStore:
 class FakeSession:
     """Stands in for the run's DuckDB shell: keeps the text it was given."""
 
-    def __init__(self, binary=None, *, preamble_fails=False):
-        self.preambles, self.statements, self.preamble_fails = [], [], preamble_fails
+    def __init__(self, binary=None, *, home=None, preamble_fails=False):
+        self.preambles, self.statements, self.preamble_fails, self.home = [], [], preamble_fails, home
 
     def begin_test(self):
         self.preambles = []
@@ -578,7 +578,7 @@ def test_a_preamble_that_fails_is_a_setup_error(tmp_path):
     def body(ctx):
         ctx.duckdb()
 
-    _, _, report, _ = go(tmp_path, [py_case(body)], session_factory=lambda b: FakeSession(preamble_fails=True))
+    _, _, report, _ = go(tmp_path, [py_case(body)], session_factory=lambda b, **kw: FakeSession(preamble_fails=True))
     assert report["cases"][0]["outcome"] == "error"
     assert "the preamble failed: Catalog Error" in report["cases"][0]["problems"][0]
 
@@ -637,3 +637,14 @@ def test_a_python_body_that_never_passes_keeps_its_first_failure(tmp_path):
     case = report["cases"][0]
     assert (case["outcome"], case["attempts"], len(case["kept"])) == ("failed", 2, 2)
     assert "attempt 1" in case["problems"][0] and len(case["problems"]) == 1
+
+
+def test_duckdb_gets_a_home_under_the_run_dir_for_both_kinds_of_session(tmp_path):
+    seen = {}
+
+    def body(ctx):
+        seen["session"] = ctx._duckdb_session.home
+        seen["per_call"] = ctx.duckdb(session="per_call")._run.__self__._home.path
+
+    _, run_dir, _, _ = go(tmp_path, [py_case(body)])
+    assert seen == {"session": str(run_dir / "home"), "per_call": str(run_dir / "home")}

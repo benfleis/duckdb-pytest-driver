@@ -9,6 +9,10 @@ process for its run. The words are sqllogictest's, where it has them:
 
 Each test starts on a fresh instance. `DuckDBPerCall` is the exception: a cold process for every
 call.
+
+Both run with a private HOME, as the unittest binary does: the persistent secrets and the installed
+extensions of whoever starts the run stay out of the tests, and what a test persists stays out of
+their home.
 """
 
 import json
@@ -16,6 +20,7 @@ import os
 import queue
 import re
 import subprocess
+import tempfile
 import threading
 
 from ..client import SqlError
@@ -34,6 +39,19 @@ def _nested(value):
     if isinstance(value, list):
         return [_nested(v) for v in value]
     return value
+
+
+class _Home:
+    """The HOME of a client's shell processes: the directory given, else a temporary one that goes
+    away with the client."""
+
+    def __init__(self, path=None):
+        self._temporary = None if path else tempfile.TemporaryDirectory(prefix="ducktest-home-")
+        self.path = os.path.abspath(path or self._temporary.name)
+
+    def env(self):
+        os.makedirs(self.path, exist_ok=True)  # DuckDB fails on a home directory that is set and absent
+        return {**os.environ, "HOME": self.path}
 
 
 _ERROR_LINE = re.compile(r"^(?:[A-Za-z]+(?: [A-Za-z]+)* )?Error:", re.M)
@@ -58,9 +76,10 @@ def _rows(text):
 
 
 class DuckDBSession:
-    def __init__(self, binary, *, timeout=120):
+    def __init__(self, binary, *, timeout=120, home=None):
         self.binary = binary
         self._timeout = timeout
+        self._home = _Home(home)
         self._process = None
         self._lines = None
         self._calls = 0
@@ -109,6 +128,7 @@ class DuckDBSession:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=self._home.env(),
         )
         self._lines = queue.Queue()
         threading.Thread(target=self._pump, args=(self._process, self._lines), daemon=True).start()
@@ -170,10 +190,11 @@ class DuckDBPerCall:
     """A cold process for every call: `preamble`, then the call's statements, with a marker before
     each, so under `-bail` the last marker reached names the statement that failed."""
 
-    def __init__(self, binary, preamble="", *, timeout=120):
+    def __init__(self, binary, preamble="", *, timeout=120, home=None):
         self.binary = binary
         self.preamble = preamble
         self._timeout = timeout
+        self._home = _Home(home)
 
     def run(self, statements):
         script = [self.preamble]
@@ -185,6 +206,7 @@ class DuckDBPerCall:
             capture_output=True,
             text=True,
             timeout=self._timeout,
+            env=self._home.env(),
         )
         chunks = p.stdout.split("<<ducktest:")
         reached = len(chunks) - 2  # chunks[0] is the preamble's output

@@ -23,6 +23,7 @@ class Ctx:
         duckdb_bin,
         duckdb_session,
         engines,
+        duckdb_home=None,
         services=None,
         remote_parts=(),
         init_sql="",
@@ -39,6 +40,7 @@ class Ctx:
         self.temp_dir = temp_dir
         self._duckdb_bin = duckdb_bin
         self._duckdb_session = duckdb_session
+        self._duckdb_home = duckdb_home
         self._engines = {e: engines[e] for e in case.engines}
         self._services = {s: services[s] for s in case.services} if services else {}
         self._remote_parts = remote_parts
@@ -55,7 +57,8 @@ class Ctx:
         for every call, running `preamble` each time."""
         preamble = "\n".join(x for x in (self._variant_preamble(), preamble) if x)
         if session == "per_call":
-            return self._client("duckdb", DuckDBPerCall(self._duckdb_bin, preamble).run, table)
+            per_call = DuckDBPerCall(self._duckdb_bin, preamble, home=self._duckdb_home)
+            return self._client("duckdb", per_call.run, table)
         if session != "per_run":
             raise ValueError(f"session={session!r}; it is 'per_run' or 'per_call'")
         shared = self._duckdb_session
