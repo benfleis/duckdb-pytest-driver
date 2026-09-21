@@ -21,6 +21,9 @@ class TestDef:
     path: str  # relative to the working directory; for a .test body also its name in the unittest binary
     name: str
     type: str
+    # Relative to the project root, so that a case id is the same from every working directory. The
+    # binary and the PATH arguments keep using `path`, which is relative to the working directory.
+    root_path: str | None = None
     body: object = None  # the Python callable, for python and paired tests
     body_file: str | None = None  # the .test file, for sqllogic and paired tests
     cases: dict = field(default_factory=dict)
@@ -35,6 +38,9 @@ class TestDef:
     retries: int = 0  # how often a FAILED or ERROR may run again
     why: list = field(default_factory=list)
 
+    def __post_init__(self):
+        self.root_path = self.root_path or self.path
+
 
 @dataclass
 class Case:
@@ -47,7 +53,7 @@ class Case:
         parts = ([self.case_id] if self.case_id is not None else []) + [
             f"{a}={v.id}" for a, v in self.axis_values.items()
         ]
-        return f"{self.test.path}::{self.test.name}" + (f"[{','.join(parts)}]" if parts else "")
+        return f"{self.test.root_path}::{self.test.name}" + (f"[{','.join(parts)}]" if parts else "")
 
     @property
     def params(self):
@@ -101,7 +107,7 @@ class Case:
         return {
             "identity": {
                 "id": self.id,
-                "test": f"{self.test.path}::{self.test.name}",
+                "test": f"{self.test.root_path}::{self.test.name}",
                 "type": self.test.type,
                 "case": self.case_id,
                 "variants": {a: v.id for a, v in self.axis_values.items()},

@@ -58,6 +58,10 @@ def _walk(root, excludes):
     return bodies, scripts
 
 
+def _root_path(path, root):
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+
 def _suffix_tags(path):
     return ["slow"] if path.endswith(".test_slow") else ["coverage"] if path.endswith(".test_coverage") else []
 
@@ -91,6 +95,7 @@ def scan(start, *, working_dir="."):
                     path=rel,
                     name=name,
                     type=PAIRED if body_file else PYTHON,
+                    root_path=_root_path(path, project.root),
                     body=decl.body,
                     body_file=os.path.relpath(body_file, working_dir) if body_file else None,
                     cases=dict(decl.cases),
@@ -109,21 +114,22 @@ def scan(start, *, working_dir="."):
                 path=rel,
                 name=os.path.splitext(os.path.basename(path))[0],
                 type=SQLLOGIC,
+                root_path=_root_path(path, project.root),
                 body_file=rel,
                 tags=_suffix_tags(path),
             )
         )
 
     cases = []
-    for test in sorted(tests, key=lambda t: (t.path, t.name)):
+    for test in sorted(tests, key=lambda t: (t.root_path, t.name)):
         _settle(test, project, working_dir)
-        axes = []
         for axis in test.variants:
             if axis not in project.axes:
                 raise UsageError(
                     f"{test.path}::{test.name} takes part in axis {axis!r}; the project has {sorted(project.axes)}"
                 )
-            axes.append([(axis, v) for v in project.axes[axis].values()])
+        # AXES decides the order of the axis parts in an id, not the order in which rules name them.
+        axes = [[(axis, v) for v in values.values()] for axis, values in project.axes.items() if axis in test.variants]
         for case_id in test.cases or [None]:
             for combo in itertools.product(*axes):
                 cases.append(Case(test, case_id, dict(combo)))

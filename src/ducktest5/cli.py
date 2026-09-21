@@ -32,7 +32,7 @@ def main(argv=None):
             action="append",
             default=[],
             metavar="CASE_ID",
-            help="a case id, verbatim; it runs whatever else is given",
+            help="a case id, verbatim (its path is relative to the project root); it runs whatever else is given",
         )
         p.add_argument("--set", metavar="NAME", help="a named set of the project")
         p.add_argument("--slow", action="store_true", help="also take cases with the tag slow or coverage")

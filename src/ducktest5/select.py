@@ -7,7 +7,8 @@
 - Every `--select EXPR` must hold. An EXPR is `key=v1,v2` (any of the values) or `not:key=v1,v2`.
   Keys: `tag`, `type`, `case`, and the name of any variant axis. An unknown key is an error, and so is
   a tag or an axis value that no scanned case has: a selection that can never match is a typo.
-- `--id` names one case exactly, for a re-run. Quote it in a shell. A case named by id always runs:
+- `--id` names one case exactly, for a re-run. Its path part is relative to the project root, so it
+  reads and works the same from every directory. Quote it in a shell. A case named by id always runs:
   no `--select`, no tag and no PATH takes it out. With `--id` alone, only the named cases run; with
   PATHs, `--select` or `--set` as well, the named cases are added to what those give (a union).
 - `--set NAME` takes a named set from the project's SETS; a set is `{"paths": [...], "select": [...]}`.

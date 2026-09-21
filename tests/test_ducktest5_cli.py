@@ -40,11 +40,11 @@ def test_select_says_what_runs_what_does_not_and_with_why_which_rule_gave_what(t
     assert main(["select", "test/a", "--why"]) == 0
     assert capsys.readouterr().out == textwrap.dedent(
         """\
-        run   test/a/x.test::x
+        run   a/x.test::x
                 tags=['all']  <- ducktestconf.py: default
                 timeout=30  <- ducktestconf.py: match 'a/**'
-        skip  test/a/y.test_slow::y  -- tag slow: runs only when asked for: --slow, --select tag=slow, or --id
-        skip  test/b/z_fail.test::z_fail  -- outside the given paths
+        skip  a/y.test_slow::y  -- tag slow: runs only when asked for: --slow, --select tag=slow, or --id
+        skip  b/z_fail.test::z_fail  -- outside the given paths
 
         1 of 3 cases
         """
@@ -58,7 +58,7 @@ def test_select_without_why_prints_no_rules(tree, capsys):
 
 def test_scan_prints_the_record_of_each_selected_case(tree, capsys):
     assert main(["scan", "test/a/x.test"]) == 0
-    assert "id: test/a/x.test::x" in capsys.readouterr().out
+    assert "id: a/x.test::x" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -66,7 +66,7 @@ def test_scan_prints_the_record_of_each_selected_case(tree, capsys):
     [
         (["select", "test/nowhere"], "path 'test/nowhere' holds no test"),
         (["select", "--select", "tag=typo"], "no scanned case has tag ['typo']"),
-        (["select", "--id", "test/a/x.test::nope"], "--id: no such case"),
+        (["select", "--id", "a/x.test::nope"], "--id: no such case"),
         (["select", "--set", "nightly"], "--set 'nightly': the project has sets []"),
         (["run", "--select", "not:tag=all"], "no case selected"),
         (["run", "test/a"], "duckdb shell not found"),
@@ -88,7 +88,14 @@ def test_an_unknown_option_is_refused_by_the_parser(tree):
 def test_run_gives_the_exit_code_of_the_run(tree, capsys):
     assert main(run_args("test/a", "--no-binary-check")) == 0
     assert main(run_args("test/b", "--no-binary-check")) == 1
-    assert "FAILED   test/b/z_fail.test::z_fail" in capsys.readouterr().out
+    assert "FAILED   b/z_fail.test::z_fail" in capsys.readouterr().out
+
+
+def test_an_id_names_the_same_case_from_any_directory(tree, monkeypatch, capsys):
+    assert main(run_args("--id", "b/z_fail.test::z_fail", "--no-binary-check")) == 1
+    monkeypatch.chdir(tree / "test" / "a")
+    assert main(run_args("--id", "b/z_fail.test::z_fail", "--no-binary-check")) == 1
+    assert capsys.readouterr().out.count("FAILED   b/z_fail.test::z_fail") == 2
 
 
 def test_an_excluded_file_that_the_binary_knows_is_not_a_stale_build(tree, monkeypatch, capsys):

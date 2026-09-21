@@ -60,27 +60,49 @@ def ids(cases):
 def test_files_become_tests_by_name_only_and_cases_multiply(project):
     cases, _ = project
     assert ids(cases) == [
-        "test/a/x.test::x[backend=oss]",
-        "test/a/x.test::x[backend=dbx]",
-        "test/a/y.test_slow::y",
-        "test/b/one.test::one",
-        "test/b/paired.py::body[cmt]",
-        "test/b/paired.py::body[plain]",
-        "test/b/solo.py::solo",
+        "a/x.test::x[backend=oss]",
+        "a/x.test::x[backend=dbx]",
+        "a/y.test_slow::y",
+        "b/one.test::one",
+        "b/paired.py::body[cmt]",
+        "b/paired.py::body[plain]",
+        "b/solo.py::solo",
     ]
     by_id = {c.id: c for c in cases}
-    assert by_id["test/b/paired.py::body[cmt]"].test.type == "paired"
-    assert by_id["test/b/paired.py::body[cmt]"].test.body_file == "test/b/paired.test"
-    assert by_id["test/b/solo.py::solo"].test.type == "python"
+    assert by_id["b/paired.py::body[cmt]"].test.type == "paired"
+    assert by_id["b/paired.py::body[cmt]"].test.body_file == "test/b/paired.test"
+    assert by_id["b/solo.py::solo"].test.type == "python"
+
+
+def test_an_id_is_the_same_from_every_working_directory(tmp_path, project):
+    from_below = scan(str(tmp_path / "test"), working_dir=str(tmp_path / "test" / "a"))[0]
+    assert ids(from_below) == ids(project[0])
+    # the path the binary and the PATH arguments use does follow the working directory
+    assert [c.test.path for c in from_below][:2] == ["x.test", "x.test"]
+
+
+def test_the_axis_parts_of_an_id_come_in_the_order_of_axes(tmp_path):
+    cases, _ = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import Variant, default
+                AXES = {"backend": [Variant("oss")], "storage": [Variant("s3")]}
+                RULES = [default(variants=["storage", "backend"])]
+            """,
+            "test/a.test": "",
+        },
+    )
+    assert ids(cases) == ["a.test::a[backend=oss,storage=s3]"]
 
 
 def test_rules_apply_from_the_root_down_and_the_test_itself_last(project):
-    x = next(c for c in project[0] if c.id == "test/a/x.test::x[backend=oss]")
+    x = next(c for c in project[0] if c.id == "a/x.test::x[backend=oss]")
     assert x.test.tags == ["all", "a"]
     assert x.values == {"region": "us", "catalog": "duck"}  # the deeper file replaced `region`; the variant added
     assert x.test.timeout == 5  # a single value: the last rule that set it
     assert any("a/ducktestconf.py: match 'x.test'" in line for line in x.test.why)
-    paired = next(c for c in project[0] if c.id == "test/b/paired.py::body[cmt]")
+    paired = next(c for c in project[0] if c.id == "b/paired.py::body[cmt]")
     assert paired.test.tags == ["all", "mine"]
     assert "needs-credentials" in next(c for c in project[0] if c.id.endswith("[backend=dbx]")).tags
 
@@ -122,46 +144,46 @@ def select(project, **kwargs):
 
 def test_a_bare_run_leaves_slow_out_and_says_why(project):
     selected, why_not = select(project)
-    assert "test/a/y.test_slow::y" not in ids(selected) and len(selected) == 6
-    assert "--slow" in why_not["test/a/y.test_slow::y"]
-    assert "test/a/y.test_slow::y" in ids(select(project, slow=True)[0])
-    assert ids(select(project, select=["tag=slow"])[0]) == ["test/a/y.test_slow::y"]
+    assert "a/y.test_slow::y" not in ids(selected) and len(selected) == 6
+    assert "--slow" in why_not["a/y.test_slow::y"]
+    assert "a/y.test_slow::y" in ids(select(project, slow=True)[0])
+    assert ids(select(project, select=["tag=slow"])[0]) == ["a/y.test_slow::y"]
 
 
 def test_paths_are_a_union_and_selects_must_all_hold(project):
     assert len(select(project, paths=["test/a/x.test", "test/b/one.test"])[0]) == 3
-    assert ids(select(project, paths=["test/a"], select=["backend=oss"])[0]) == ["test/a/x.test::x[backend=oss]"]
-    assert ids(select(project, select=["not:tag=a", "type=sqllogic"])[0]) == ["test/b/one.test::one"]
+    assert ids(select(project, paths=["test/a"], select=["backend=oss"])[0]) == ["a/x.test::x[backend=oss]"]
+    assert ids(select(project, select=["not:tag=a", "type=sqllogic"])[0]) == ["b/one.test::one"]
     assert ids(select(project, select=["case=cmt,plain"])[0]) == [
-        "test/b/paired.py::body[cmt]",
-        "test/b/paired.py::body[plain]",
+        "b/paired.py::body[cmt]",
+        "b/paired.py::body[plain]",
     ]
 
 
 def test_a_set_is_paths_and_selects_with_a_name(project):
     assert ids(select(project, set_name="smoke")[0]) == [
-        "test/a/x.test::x[backend=oss]",
-        "test/a/x.test::x[backend=dbx]",
-        "test/b/one.test::one",
+        "a/x.test::x[backend=oss]",
+        "a/x.test::x[backend=dbx]",
+        "b/one.test::one",
     ]
-    assert ids(select(project, set_name="cmt")[0]) == ["test/b/paired.py::body[cmt]"]
+    assert ids(select(project, set_name="cmt")[0]) == ["b/paired.py::body[cmt]"]
 
 
 def test_an_id_is_taken_verbatim(project):
-    assert ids(select(project, ids=["test/b/paired.py::body[plain]"])[0]) == ["test/b/paired.py::body[plain]"]
+    assert ids(select(project, ids=["b/paired.py::body[plain]"])[0]) == ["b/paired.py::body[plain]"]
 
 
 def test_an_id_is_added_to_what_paths_and_selects_give(project):
-    slow, plain = "test/a/y.test_slow::y", "test/b/paired.py::body[plain]"
+    slow, plain = "a/y.test_slow::y", "b/paired.py::body[plain]"
     selected, why_not = select(project, paths=["test/b/one.test"], ids=[plain])
-    assert ids(selected) == ["test/b/one.test::one", plain]
-    assert why_not["test/b/solo.py::solo"] == "outside the given paths"
+    assert ids(selected) == ["b/one.test::one", plain]
+    assert why_not["b/solo.py::solo"] == "outside the given paths"
     # no select, path or tag takes out a case that is named by id
-    assert ids(select(project, select=["type=python"], ids=[slow])[0]) == [slow, "test/b/solo.py::solo"]
-    assert ids(select(project, set_name="cmt", ids=[slow])[0]) == [slow, "test/b/paired.py::body[cmt]"]
+    assert ids(select(project, select=["type=python"], ids=[slow])[0]) == [slow, "b/solo.py::solo"]
+    assert ids(select(project, set_name="cmt", ids=[slow])[0]) == [slow, "b/paired.py::body[cmt]"]
     # and the slow rule still holds for the cases that are not named
     assert ids(select(project, paths=["test/a"], select=["backend=oss"], ids=[plain])[0]) == [
-        "test/a/x.test::x[backend=oss]",
+        "a/x.test::x[backend=oss]",
         plain,
     ]
     assert slow in select(project, paths=["test/a"], ids=[plain])[1]
@@ -175,7 +197,7 @@ def test_an_id_is_added_to_what_paths_and_selects_give(project):
         ({"select": ["backnd=oss"]}, "unknown key 'backnd'"),
         ({"select": ["slow"]}, "write key=value"),
         ({"paths": ["test/nowhere"]}, "holds no test"),
-        ({"ids": ["test/a/x.test::x"]}, "no such case"),
+        ({"ids": ["a/x.test::x"]}, "no such case"),
         ({"set_name": "nightly"}, "the project has sets"),
     ],
 )
@@ -207,7 +229,7 @@ def test_an_excluded_directory_is_not_scanned_and_its_configuration_is_not_loade
             "test/old/ducktestconf.py": "from ducktest5 import match\nRULES = [match('gone.test', tags=['x'])]",
         },
     )
-    assert ids(cases) == ["test/a.test::a"]
+    assert ids(cases) == ["a.test::a"]
     assert project.excluded_bodies(str(tmp_path)) == ["test/old/b.test"]
 
 
@@ -215,7 +237,7 @@ def test_only_a_file_with_test_bodies_is_imported_and_a_broken_one_says_which(tm
     cases, _ = tree(
         tmp_path, {"test/a.test": "", "test/helper.py": "raise RuntimeError('a helper must not run at scan')"}
     )
-    assert ids(cases) == ["test/a.test::a"]
+    assert ids(cases) == ["a.test::a"]
     with pytest.raises(UsageError, match=r"broken\.py could not be imported: ModuleNotFoundError"):
         tree(
             tmp_path / "2",
@@ -231,7 +253,7 @@ def test_a_test_can_import_a_helper_beside_it(tmp_path):
             "test/t.py": "from helper import X\nfrom ducktest5 import test\n@test()\ndef t(ctx): pass",
         },
     )
-    assert ids(cases) == ["test/t.py::t"]
+    assert ids(cases) == ["t.py::t"]
 
 
 def test_two_tests_of_one_file_name_get_their_own_directory(tmp_path):
@@ -242,12 +264,10 @@ def test_two_tests_of_one_file_name_get_their_own_directory(tmp_path):
 
 def test_a_path_names_its_paired_file_and_nothing_wider(project):
     assert ids(select(project, paths=["test/b/paired.test"])[0]) == [
-        "test/b/paired.py::body[cmt]",
-        "test/b/paired.py::body[plain]",
+        "b/paired.py::body[cmt]",
+        "b/paired.py::body[plain]",
     ]
-    assert ids(select(project, paths=["test/a/y.test_slow"])[0]) == [
-        "test/a/y.test_slow::y"
-    ]  # named exactly: asked for
+    assert ids(select(project, paths=["test/a/y.test_slow"])[0]) == ["a/y.test_slow::y"]  # named exactly: asked for
     with pytest.raises(UsageError, match="no test has a case"):
         select(project, select=["case=cmtt"])
 
