@@ -30,6 +30,7 @@ does not (`evidence: run-summary`). A report says so in one line when any case w
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -39,6 +40,10 @@ from .binary import UsageError
 from .outcomes import ERROR, PASSED
 
 EVENT, SUMMARY = "event", "run-summary"
+
+# "[3/10] (30%): test/sql/x.test took 0.44s": the binary's own progress line, and the only place it
+# says how long one test took. An end event has no duration yet (request R1).
+_TOOK = re.compile(r"^\[\d+/\d+\] \(\d+%\): (.+) took ([0-9]+(?:\.[0-9]+)?)s\s*$", re.M)
 
 # Runs one batch of the wrapper and keeps the process's own output. `{test_list}` is a new file for
 # each batch, so no two processes write the same name.
@@ -120,12 +125,14 @@ def _results(group, texts, wrapper_text, wrapper_code):
     for text in texts:
         _, ended = sqllogic.test_events(text)
         skipped = sqllogic.skip_reasons(text)
+        took = {name: float(seconds) for name, seconds in _TOOK.findall(text)}
         for name, ev in ended.items():
             if name not in group.names:
                 continue
             detail = sqllogic.human(text) if ev.get("status") != "ok" else ""
             result = sqllogic.classify(group, name, ev, detail, skipped.get(name))
             result.evidence = EVENT
+            result.seconds = took.get(name)
             attempts[name] = attempts.get(name, 0) + 1
             result.attempts = attempts[name]
             if attempts[name] > 1 and result.outcome == PASSED:

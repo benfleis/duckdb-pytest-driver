@@ -59,8 +59,10 @@ def main(argv):
     names = [line.strip() for line in open(argv[argv.index("-f") + 1]) if line.strip()]
     config = json.load(open(argv[argv.index("--test-config") + 1]))
     failed = False
-    for name in names:
+    for n, name in enumerate(names):
         temp = f"{config['temp_dir_root']}/run/{name.replace('/', '_')}"
+        started = time.perf_counter()
+        print(f"[{n}/{len(names)}] ({n * 100 // len(names)}%): {name}", flush=True)
         event(event="begin", name=name, temp_dir=temp)
         if "hang" in name:
             time.sleep(60)
@@ -110,6 +112,11 @@ def main(argv):
             )
         else:
             event(event="end", name=name, status="ok", passes=1, fails=0, **{"skip-mode": 0}, temp_dir=temp)
+        # As the binary does: the only place it says how long one test took.
+        print(
+            f"[{n + 1}/{len(names)}] ({(n + 1) * 100 // len(names)}%): {name} took {time.perf_counter() - started:.3f}s",
+            flush=True,
+        )
     if any("stallatexit" in n for n in names):
         time.sleep(60)
     if any("badexit" in n for n in names):

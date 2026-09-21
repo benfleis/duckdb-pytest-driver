@@ -64,6 +64,7 @@ def test_the_run_wrapper_gives_every_case_an_outcome_of_its_own(tree):
         "c_skip": "skipped",
     }
     assert all(c["runner"] == "run" for c in cases.values())
+    assert all(c["seconds"] >= 0 for c in cases.values())  # from the binary's own progress line
     # the output of the process that ran it is what says so, not the wrapper's summary
     assert {c["evidence"] for c in cases.values()} == {"event"}
     assert "Wrong result in query" in cases["b/z_fail.test::z_fail"]["problems"][0]
