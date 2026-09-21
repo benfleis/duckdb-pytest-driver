@@ -1,4 +1,4 @@
-"""`ducktest5 scan|select|run [PATH ...] [--select GROUP ...] [--skip GROUP ...] [--id CASE_ID ...] [--suite NAME ...]`
+"""`ducktest5 scan|select|run [PATH ...] [--select CLAUSE ...] [--skip CLAUSE ...] [--id CASE_ID ...] [--suite NAME ...]`
 
 `scan --env` prints what each selected case would be given -- the extensions, the statements, the
 values, the roots, the process environment, the services -- with the source of every part.
@@ -32,15 +32,15 @@ def main(argv=None):
             "--select",
             action="append",
             default=[],
-            metavar="GROUP",
+            metavar="CLAUSE",
             help="key=v1,v2[;key=v...] (';'=and, '!key=v' negates a term); repeats OR",
         )
         p.add_argument(
             "--skip",
             action="append",
             default=[],
-            metavar="GROUP",
-            help="same GROUP syntax as --select; removes a case from the base; repeats OR",
+            metavar="CLAUSE",
+            help="same CLAUSE syntax as --select; removes a case from the base; repeats OR",
         )
         p.add_argument(
             "--id",

@@ -1,6 +1,6 @@
 """Which cases a run takes.
 
-    ducktest5 run PATH [PATH ...] [--select GROUP ...] [--skip GROUP ...] [--id CASE_ID ...] [--suite NAME ...]
+    ducktest5 run PATH [PATH ...] [--select CLAUSE ...] [--skip CLAUSE ...] [--id CASE_ID ...] [--suite NAME ...]
 
 1. TERM. `key=v1,v2` holds for a case that has any of those values for `key` (for a multi-valued key
    such as `tag`, any of the case's own values is enough). `!key=v1,v2` is the negation of the whole
@@ -10,18 +10,18 @@
    `sql/cloud` is `path=sql/cloud`, `!sql/cloud` is `!path=sql/cloud`. Keys: `tag`, `type`, `case`,
    `path`, `suite`, and the name of any variant axis. An unknown key is an error, and so is a tag, axis
    value or path that no scanned case has -- a term that can never match is a typo.
-2. GROUP. The argument of one `--select` or one `--skip` is a GROUP: one or more TERMs separated by
-   `;`. A group holds for a case when ALL its terms do (AND). Whitespace around `;`, `=` and `,` is
+2. CLAUSE. The argument of one `--select` or one `--skip` is a CLAUSE: one or more TERMs separated by
+   `;`. A clause holds for a case when ALL its terms do (AND). Whitespace around `;`, `=` and `,` is
    ignored. An empty term (`a=1;;b=2`, a trailing `;`) is an error.
-3. `--select`/`--skip` may repeat; repeats OR their groups together -- a case needs only one repeated
-   group to hold.
-4. So selects are a disjunctive normal form (an OR of the AND-groups given), and skips are a second
+3. `--select`/`--skip` may repeat; repeats OR their clauses together -- a case needs only one repeated
+   clause to hold.
+4. So selects are a disjunctive normal form (an OR of the AND-clauses given), and skips are a second
    one, subtracted from what the selects give.
-5. NEGATION-ONLY GROUP = SKIP. A `--select` group whose every term is negated is not a positive
-   selection. By De Morgan it is translated, at parse time, into one skip group per term:
+5. NEGATION-ONLY CLAUSE = SKIP. A `--select` clause whose every term is negated is not a positive
+   selection. By De Morgan it is translated, at parse time, into one skip clause per term:
    `--select '!A;!B'` (keep cases that are neither) becomes the skips `A` and `B`. It keeps the
-   default base, exactly as a lone `--skip` does. A group that mixes positive and negated terms
-   (`a=1;!b=2`) stays a positive group: a=1 AND NOT b=2. Inside a `--skip` group, `!` terms are
+   default base, exactly as a lone `--skip` does. A clause that mixes positive and negated terms
+   (`a=1;!b=2`) stays a positive clause: a=1 AND NOT b=2. Inside a `--skip` clause, `!` terms are
    ordinary -- a skip is already a subtraction, so there is nothing to translate.
 6. `path=GLOB[,GLOB]` matches a case's test file path, with the same glob a rule's `match()` uses:
    `*` stays inside one directory level, `**` crosses, and a pattern with no wildcard also matches
@@ -32,13 +32,13 @@
    id uses, so matching only ever sees one form; a path that normalises outside the project root is an
    error.
 7. SCOPE. Positional PATHs are a union, as in every other tool: a file, a directory, or a glob,
-   relative to the working directory. They set the scope; the select groups then filter within it:
+   relative to the working directory. They set the scope; the select clauses then filter within it:
 
        selected = scope(PATHs, or everything if none)
-                  AND (OR of the positive select groups, or everything if none)
-                  MINUS (OR of the skip groups)
+                  AND (OR of the positive select clauses, or everything if none)
+                  MINUS (OR of the skip clauses)
 
-8. BASE. With no positive selection at all -- no PATH, no positive `--select` group, no `--suite`, no
+8. BASE. With no positive selection at all -- no PATH, no positive `--select` clause, no `--suite`, no
    `--id` -- the base is the project's suite `default` if it has one, else every case whose test is
    `in_default_set`. Skips never change the base.
 9. `--id` names one case exactly, for a re-run. Its path part is relative to the project root, so it
@@ -55,8 +55,8 @@
     and harmless -- these cases are already out.
 12. SUITE. A suite is a named selection of cases; a case can be in any number of suites. `SUITES` in the
     project file gives each one as `{"paths": [...], "select": [...], "skip": [...]}`, with the same
-    GROUP grammar as the command line: the suite holds for a case that is in scope(its paths, or
-    everything) AND (OR of its select groups, or everything) MINUS (OR of its skip groups). `--suite
+    CLAUSE grammar as the command line: the suite holds for a case that is in scope(its paths, or
+    everything) AND (OR of its select clauses, or everything) MINUS (OR of its skip clauses). `--suite
     NAME` (repeatable, a union) is exactly `--select suite=NAME`: `suite=NAME[,NAME2]` is an ordinary
     TERM, and `!suite=NAME` negates it -- usable on the command line and inside another suite's own
     select/skip. A suite that refers to itself, directly or through another suite, is a usage error that
@@ -65,7 +65,7 @@
 13. `select --why` names the reason a case is missing: which skip removed it and where that skip came
     from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- suite 'default'`
     for a suite's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated negation-only
-    group. A case that matches no positive `--select` group says so once, not once per group. A case
+    clause. A case that matches no positive `--select` clause says so once, not once per clause. A case
     kept or dropped because of a `suite=` term names the term as written, never the suite's definition.
 
 Examples:
@@ -160,7 +160,7 @@ def _root_relative(value, origin, ctx, flag, term):
     return value
 
 
-def _split_group_terms(expr, flag):
+def _split_clause_terms(expr, flag):
     terms = [t.strip() for t in expr.split(";")]
     if any(not t for t in terms):
         raise UsageError(f"{flag} {expr!r}: empty term -- terms are key=value, separated by ';'")
@@ -217,8 +217,8 @@ def _parse_term(term, flag, origin, ctx):
     return negated, key, values
 
 
-def _parse_group(expr, flag, origin, ctx):
-    return [_parse_term(t, flag, origin, ctx) for t in _split_group_terms(expr, flag)]
+def _parse_clause(expr, flag, origin, ctx):
+    return [_parse_term(t, flag, origin, ctx) for t in _split_clause_terms(expr, flag)]
 
 
 def _matches(case, key, values, ctx):
@@ -236,7 +236,7 @@ def _matches(case, key, values, ctx):
     return key in case.axis_values and case.axis_values[key].id in values
 
 
-def _group_holds(case, terms, ctx):
+def _clause_holds(case, terms, ctx):
     return all(_matches(case, key, values, ctx) != negated for negated, key, values in terms)
 
 
@@ -249,11 +249,11 @@ def _skip_reason(body, origin, from_select=None):
 
 
 def _classify_select_exprs(exprs, origin, ctx):
-    """Splits `--select`/a suite's `select` groups into positive groups (OR'd) and the skip groups a
-    negation-only group becomes -- by De Morgan, one skip group per term."""
+    """Splits `--select`/a suite's `select` clauses into positive clauses (OR'd) and the skip clauses a
+    negation-only clause becomes -- by De Morgan, one skip clause per term."""
     positive, skips = [], []
     for expr in exprs:
-        terms = _parse_group(expr, "--select", origin, ctx)
+        terms = _parse_clause(expr, "--select", origin, ctx)
         if all(negated for negated, _, _ in terms):
             for negated, key, values in terms:
                 spelling = f"{key}={','.join(values)}"
@@ -264,7 +264,7 @@ def _classify_select_exprs(exprs, origin, ctx):
 
 
 def _classify_skip_exprs(exprs, origin, ctx):
-    return [(_parse_group(expr, "--skip", origin, ctx), _skip_reason(expr, origin)) for expr in exprs]
+    return [(_parse_clause(expr, "--skip", origin, ctx), _skip_reason(expr, origin)) for expr in exprs]
 
 
 def _suite_selection(name, ctx, stack=()):
@@ -295,13 +295,13 @@ def _suite_members(name, ctx):
     """The cases suite `name` selects: scope(its paths) AND (its select) MINUS (its skip). Cached, so a
     suite is matched against every case once per run, not once per case per `suite=` term."""
     if name not in ctx.suite_members:
-        paths, positive_groups, skip_groups = _suite_selection(name, ctx)
+        paths, positive_clauses, skip_clauses = _suite_selection(name, ctx)
         ctx.suite_members[name] = {
             case.id
             for case in ctx.cases
             if (not paths or any(_path_matches(case.test.path, p) for p in paths))
-            and (not positive_groups or any(_group_holds(case, terms, ctx) for terms in positive_groups))
-            and not any(_group_holds(case, group, ctx) for group, _ in skip_groups)
+            and (not positive_clauses or any(_clause_holds(case, terms, ctx) for terms in positive_clauses))
+            and not any(_clause_holds(case, clause, ctx) for clause, _ in skip_clauses)
         }
     return ctx.suite_members[name]
 
@@ -309,8 +309,8 @@ def _suite_members(name, ctx):
 def _suite_asks_for_tag(name, tag, ctx):
     """True when suite `name`, directly or through a suite it refers to, positively asks for `tag` --
     the slow/coverage rule then treats membership in it the way `--select tag=slow` would."""
-    _, positive_groups, _ = _suite_selection(name, ctx)
-    for terms in positive_groups:
+    _, positive_clauses, _ = _suite_selection(name, ctx)
+    for terms in positive_clauses:
         for negated, key, values in terms:
             if negated:
                 continue
@@ -333,20 +333,20 @@ def apply(cases, selection, project, working_dir=None):
     # `--suite NAME` is exactly `--select suite=NAME`: one code path parses and matches it, whichever
     # spelling was used.
     select_exprs = list(selection.select) + [f"suite={name}" for name in selection.suites]
-    positive_groups, skip_groups = _classify_select_exprs(select_exprs, None, ctx)
-    skip_groups += _classify_skip_exprs(selection.skip, None, ctx)
+    positive_clauses, skip_clauses = _classify_select_exprs(select_exprs, None, ctx)
+    skip_clauses += _classify_skip_exprs(selection.skip, None, ctx)
 
     if selection.is_bare() and "default" in project.suites:
         default_suite = project.suites["default"]
         paths += default_suite.get("paths", [])
         default_positive, default_skips = _classify_select_exprs(default_suite.get("select", []), "default", ctx)
-        positive_groups += default_positive
-        skip_groups += default_skips
-        skip_groups += _classify_skip_exprs(default_suite.get("skip", []), "default", ctx)
+        positive_clauses += default_positive
+        skip_clauses += default_skips
+        skip_clauses += _classify_skip_exprs(default_suite.get("skip", []), "default", ctx)
 
     # Resolve every `suite=` term named so far -- and so any cycle among them -- before any case is
     # matched.
-    for terms in positive_groups + [group for group, _ in skip_groups]:
+    for terms in positive_clauses + [clause for clause, _ in skip_clauses]:
         for _, key, values in terms:
             if key == "suite":
                 for v in values:
@@ -362,15 +362,19 @@ def apply(cases, selection, project, working_dir=None):
             raise UsageError(f"path {p!r} holds no test")
 
     bare = selection.is_bare() and "default" not in project.suites
-    only_ids = bool(selection.ids) and not (paths or positive_groups)
+    only_ids = bool(selection.ids) and not (paths or positive_clauses)
     asked_for = {
-        v for terms in positive_groups for negated, key, values in terms if key == "tag" and not negated for v in values
+        v
+        for terms in positive_clauses
+        for negated, key, values in terms
+        if key == "tag" and not negated
+        for v in values
     }
     # A suite brings in a slow/coverage case only when its own select asks for the tag, the way a
     # command line would -- membership in the suite alone does not.
     asked_for |= {
         t
-        for terms in positive_groups
+        for terms in positive_clauses
         for negated, key, values in terms
         if key == "suite" and not negated
         for v in values
@@ -385,8 +389,8 @@ def apply(cases, selection, project, working_dir=None):
             why_not[case.id] = "not named by --id"
         elif paths and not any(_path_matches(case.test.path, p) for p in paths):
             why_not[case.id] = "outside the given paths"
-        elif positive_groups and not any(_group_holds(case, terms, ctx) for terms in positive_groups):
-            why_not[case.id] = "matches no --select group"
+        elif positive_clauses and not any(_clause_holds(case, terms, ctx) for terms in positive_clauses):
+            why_not[case.id] = "matches no --select clause"
         elif bare and not case.test.in_default_set:
             why_not[case.id] = "its test is not in the default set (in_default_set=False)"
         elif (
@@ -395,7 +399,7 @@ def apply(cases, selection, project, working_dir=None):
             and (slow := next((t for t in ("slow", "coverage") if t in case.tags and t not in asked_for), None))
         ):
             why_not[case.id] = f"tag {slow}: runs only when asked for: --slow, --select tag={slow}, or --id"
-        elif (rule := next((r for r in skip_groups if _group_holds(case, r[0], ctx)), None)) is not None:
+        elif (rule := next((r for r in skip_clauses if _clause_holds(case, r[0], ctx)), None)) is not None:
             why_not[case.id] = rule[1]
         else:
             selected.append(case)

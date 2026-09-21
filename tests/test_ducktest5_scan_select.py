@@ -184,9 +184,9 @@ def test_a_bare_run_leaves_slow_out_and_says_why(project):
     assert ids(select(project, select=["tag=slow"])[0]) == ["a/y.test_slow::y"]
 
 
-def test_paths_are_a_union_and_a_groups_terms_must_all_hold(project):
+def test_paths_are_a_union_and_a_clauses_terms_must_all_hold(project):
     assert len(select(project, paths=["test/a/x.test", "test/b/one.test"])[0]) == 3
-    # scope (PATHs) narrows first, the select group filters within it
+    # scope (PATHs) narrows first, the select clause filters within it
     assert ids(select(project, paths=["test/a"], select=["backend=oss"])[0]) == ["a/x.test::x[backend=oss]"]
     # ';' inside one --select is and: type sqllogic and case cmt/plain both hold for nothing here
     assert ids(select(project, select=["type=paired;case=cmt"])[0]) == ["b/paired.py::body[cmt]"]
@@ -196,7 +196,7 @@ def test_paths_are_a_union_and_a_groups_terms_must_all_hold(project):
     ]
 
 
-def test_repeated_select_ors_its_groups(project):
+def test_repeated_select_ors_its_clauses(project):
     # under the old AND-across-options rule this pair would be empty: no case is both backend=oss and tag=mine
     assert ids(select(project, select=["backend=oss", "tag=mine"])[0]) == [
         "a/x.test::x[backend=oss]",
@@ -267,8 +267,8 @@ def test_a_negated_select_is_translated_into_a_skip_at_parse_time(project):
     assert why_not[xid] == "--skip tag=a (from --select !tag=a)"
 
 
-def test_a_skip_group_may_use_bang_terms(project):
-    # today's rule ("--skip !x is an error") is dropped: a skip group may itself carry a negated term
+def test_a_skip_clause_may_use_bang_terms(project):
+    # today's rule ("--skip !x is an error") is dropped: a skip clause may itself carry a negated term
     assert ids(select(project, skip=["!tag=a"])[0]) == ids(select(project, select=["tag=a"])[0])
 
 
@@ -296,14 +296,14 @@ def test_why_line_for_a_command_line_skip(project):
     assert why_not["a/x.test::x[backend=oss]"] == "--skip tag=a"
 
 
-def test_why_line_for_a_command_line_skip_group(project):
+def test_why_line_for_a_command_line_skip_clause(project):
     _, why_not = select(project, skip=["backend=oss;tag=a"])
     assert why_not["a/x.test::x[backend=oss]"] == "--skip backend=oss;tag=a"
 
 
-def test_why_line_says_matches_no_select_group_once(project):
+def test_why_line_says_matches_no_select_clause_once(project):
     _, why_not = select(project, select=["tag=mine", "backend=oss"])
-    assert why_not["b/solo.py::solo"] == "matches no --select group"
+    assert why_not["b/solo.py::solo"] == "matches no --select clause"
 
 
 @pytest.mark.parametrize("expr", ["tag=a", "type=sqllogic", "case=cmt,plain", "backend=oss", "tag=mine"])
@@ -318,7 +318,7 @@ def test_a_negated_select_and_skip_agree_on_top_of_a_positive_selection(project,
     assert ids(with_negation) == ids(with_skip)
 
 
-def test_a_two_term_negation_only_group_becomes_two_skips_by_de_morgan(project):
+def test_a_two_term_negation_only_clause_becomes_two_skips_by_de_morgan(project):
     # !A;!B (keep neither) == --skip A --skip B, and it stays a lone-skip run: the slow case is out
     # via the slow rule, not via either translated skip, so the default base was kept, not widened
     negation, why_not = select(project, select=["!tag=a;!tag=mine"])
@@ -329,8 +329,8 @@ def test_a_two_term_negation_only_group_becomes_two_skips_by_de_morgan(project):
     assert why_not["b/paired.py::body[cmt]"] == "--skip tag=mine (from --select !tag=a;!tag=mine)"
 
 
-def test_a_mixed_group_is_an_ordinary_positive_selection(project):
-    # backend=oss AND NOT tag=mine: a positive group, not a translation -- it narrows the base to just
+def test_a_mixed_clause_is_an_ordinary_positive_selection(project):
+    # backend=oss AND NOT tag=mine: a positive clause, not a translation -- it narrows the base to just
     # the matching cases, unlike a lone --skip of the same clause, which would only subtract from it
     mixed = select(project, select=["backend=oss;!tag=mine"])[0]
     assert ids(mixed) == ["a/x.test::x[backend=oss]"]
@@ -415,7 +415,7 @@ def test_a_suites_skip_applies_on_top_of_its_own_selection(tmp_path):
         "keep/spark.test::spark",
     ]  # smoke's skip removes quiet, not spark
     # smoke's own skip is internal to it -- why says only that the case isn't in the suite, not why not
-    assert why_not["keep/quiet.test::quiet"] == "matches no --select group"
+    assert why_not["keep/quiet.test::quiet"] == "matches no --select clause"
 
 
 def test_a_negation_only_select_keeps_a_named_default_suite_as_the_base(tmp_path):
@@ -446,7 +446,7 @@ def test_a_suites_select_entries_are_ord(project):
     ]
 
 
-def test_a_suites_skip_entry_may_be_a_group(project):
+def test_a_suites_skip_entry_may_be_a_clause(project):
     # trimmed scopes to test/a + test/b, then drops only cases that are both backend=oss and tag=a
     assert ids(select(project, suites=["trimmed"])[0]) == [
         "a/x.test::x[backend=dbx]",
@@ -495,7 +495,7 @@ def test_suite_default_is_a_legal_term(tmp_path):
     assert ids(select((cases, proj), select=["suite=default"])[0]) == ["keep/a.test::a"]
 
 
-def test_suite_term_combines_with_a_negated_suite_term_in_one_group(tmp_path):
+def test_suite_term_combines_with_a_negated_suite_term_in_one_clause(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
@@ -631,7 +631,7 @@ def test_path_selects_a_directory_and_its_glob_form_agree(project):
     assert directory == glob_form == ["a/x.test::x[backend=oss]", "a/x.test::x[backend=dbx]"]
 
 
-def test_path_in_a_group(project):
+def test_path_in_a_clause(project):
     assert ids(select(project, select=["path=a;backend=oss"])[0]) == ["a/x.test::x[backend=oss]"]
 
 
@@ -648,7 +648,7 @@ def test_path_does_not_bring_in_a_slow_case(project):
 def test_a_term_with_no_key_is_a_path_term(project):
     assert ids(select(project, select=["a"])[0]) == ids(select(project, select=["path=a"])[0])
     assert ids(select(project, select=["!a"])[0]) == ids(select(project, select=["!path=a"])[0])
-    # a bare path term sits in a group like any other
+    # a bare path term sits in a clause like any other
     assert ids(select(project, select=["type=sqllogic;a"])[0]) == [
         "a/x.test::x[backend=oss]",
         "a/x.test::x[backend=dbx]",
