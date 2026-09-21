@@ -651,6 +651,21 @@ def test_a_failed_setup_is_an_error_not_a_failure(tmp_path):
     assert outcome == "error" and problems[0].startswith("setup failed")
 
 
+def test_a_body_can_branch_on_a_statement_that_failed_and_the_case_still_passes(tmp_path):
+    seen = []
+
+    def body(ctx):
+        c = ctx.engine("fake")
+        seen.append(c.tries("SELECT 1"))
+        seen.append(c.tries("SELECT boom"))
+
+    case = py_case(body, engines=["fake"])
+    outcome, problems = _run_body(case, ctx_for(case, tmp_path))
+    assert (outcome, problems) == ("passed", [])
+    assert [bool(t) for t in seen] == [True, False]
+    assert (seen[0].rows, seen[1].error) == ([(1,)], "boom")
+
+
 @pytest.mark.parametrize("aborts", [False, True])
 def test_teardowns_run_in_reverse_order_also_after_an_abort(tmp_path, aborts):
     engine = FakeEngine()

@@ -4,6 +4,7 @@
     oks(sql)               statement ok      under test; must succeed
     errs(sql, text)        statement error   under test; must fail, with `text` in the message
     expects(sql, rows)     query + ----      under test; expected rows beside the query
+    tries(sql)             no verdict; the body reads the answer and decides (a retry loop)
     teardown(sql)          runs after the body, even when the test aborted; a failure is an ERROR
 
 A failure aborts the test, as in a .test file. `on_fail="continue"` on `oks`, `errs` or `expects`
@@ -57,6 +58,22 @@ class ExpectationFailed(AssertionError):
 
 class SetupFailed(Exception):
     """Something the test needs, but does not test, failed."""
+
+
+class Tried:
+    """What `tries` gives back: truthy when the statements ran, `error` the engine's message when
+    the last one failed, `columns` and `rows` its result when it did not."""
+
+    def __init__(self, client, sql, *, error=None, columns=(), rows=()):
+        self.client, self.sql, self.error = client, sql, error
+        self.columns, self.rows = list(columns), list(rows)
+
+    def __bool__(self):
+        return self.error is None
+
+    def __repr__(self):
+        what = f"failed: {self.error}" if self.error is not None else f"ok, {len(self.rows)} row(s)"
+        return f"[{self.client}] tried, {what}\n{_indent(self.sql)}"
 
 
 def _indent(text, by="    "):
@@ -137,6 +154,14 @@ class Client:
             failed = statements[exc.statement] if exc.statement is not None else "\n".join(statements)
             raise ExpectationFailed(self.name, failed, f"{what} failed: {exc}") from None
 
+    def _not_from_the_last_statement(self, statements, exc):
+        """An earlier statement, the preamble, a timeout or a client that died: whatever the call
+        asks about the last statement, this failure is no answer to it."""
+        if exc.statement == len(statements) - 1:
+            return
+        failed = statements[exc.statement] if exc.statement is not None else "(not a statement of this call)"
+        raise ExpectationFailed(self.name, failed, f"statement failed: {exc}") from None
+
     def rows(self, sql, params=None, **more):
         return self._must_run(self._statements(sql, params, more), "query")[1]
 
@@ -170,6 +195,18 @@ class Client:
 
     def expects(self, sql, rows, params=None, *, sort=False, on_fail="abort_test", **more):
         self._check(on_fail, self._assert_rows, sql, rows, params, sort=sort, **more)
+
+    def tries(self, sql, params=None, **more):
+        """Run the statements and give back what happened, instead of judging it: for a body that has
+        to branch, such as a retry loop around a commit that can conflict. A statement that failed is
+        not a failed check, and does not abort the test."""
+        statements = self._statements(sql, params, more)
+        try:
+            columns, rows = self._timed_run(statements)
+        except SqlError as exc:
+            self._not_from_the_last_statement(statements, exc)
+            return Tried(self.name, statements[-1], error=str(exc))
+        return Tried(self.name, statements[-1], columns=columns, rows=rows)
 
     def expects_contains(self, sql, rows, params=None, *, on_fail="abort_test", **more):
         """Every row of `rows` is in the result, as often as it is in `rows`; the result may hold more."""
@@ -211,10 +248,7 @@ class Client:
         try:
             self._timed_run(statements)
         except SqlError as exc:
-            if exc.statement != len(statements) - 1:
-                # An earlier statement, the preamble, or the client itself failed: not the error asked for.
-                failed = statements[exc.statement] if exc.statement is not None else "(not a statement of this call)"
-                raise ExpectationFailed(self.name, failed, f"statement failed: {exc}") from None
+            self._not_from_the_last_statement(statements, exc)
             if text not in str(exc):
                 raise ExpectationFailed(self.name, statements[-1], f"failed, but not with {text!r}: {exc}") from None
             return
