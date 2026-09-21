@@ -23,16 +23,13 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass, field, replace
 
 from .binary import UsageError
 from .provision import MASK
+from .provision import SECRET_NAME as _SECRET_NAME
 
 ROOTS = ("data_dir", "local_data_dir", "temp_dir_root", "local_temp_dir_root")
-
-# A name that says the value is a credential. Its value is masked wherever the record is printed.
-_SECRET_NAME = re.compile(r"SECRET|TOKEN|PASSW|CREDENTIAL|_KEY(_ID)?$", re.IGNORECASE)
 
 _LABELS = {
     "require": "require",

@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 from dataclasses import dataclass
 
 from .binary import UsageError
@@ -23,6 +24,10 @@ from .host import wait_until
 
 MANAGED, EXISTING, KEPT = "managed", "existing", "kept"
 MASK = "***"
+
+# A name that says the value is a credential. What a service declares in `secrets` is masked because
+# it said so; this catches the field a service forgot to declare, wherever a block is written down.
+SECRET_NAME = re.compile(r"SECRET|TOKEN|PASSW|CREDENTIAL|_KEY(_ID)?$", re.IGNORECASE)
 
 
 def _key(service_id):
@@ -63,7 +68,10 @@ class Provisioned:
     started: bool = False  # this process started the instance; one it found is not ours to stop
 
     def redacted(self):
-        return {k: (MASK if k in self.service.secrets else v) for k, v in self.block.items()}
+        return {k: (MASK if self.is_secret(k) else v) for k, v in self.block.items()}
+
+    def is_secret(self, field):
+        return field in self.service.secrets or bool(SECRET_NAME.search(field))
 
 
 def provision(service, *, existing=None, keep=False, ready_timeout_s=60):
@@ -138,7 +146,7 @@ def attach_overrides(provisioned):
             # a field the service works out from others is not an override: it does not come back
             if k == "endpoint" or (v != defaults.get(k) and service.block(**{k: v}).get(k) == v)
         }
-    return {k: (MASK if k in service.secrets else v) for k, v in overrides.items()}
+    return {k: (MASK if provisioned.is_secret(k) else v) for k, v in overrides.items()}
 
 
 def attach_argument(provisioned):
