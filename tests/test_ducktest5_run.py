@@ -331,6 +331,33 @@ def test_the_event_line_of_a_failure_holds_the_same_facts(tmp_path):
 
 
 # -----------------------------------------------------------------------------
+# A failure in the init SQL is named, and is not blamed on the body
+#
+
+
+def test_a_failure_in_the_init_sql_is_an_error_that_names_the_variant_and_the_file(tmp_path):
+    case = sql_case("a_initfail.test", {"storage": Variant("s3", init_sql="ATTACH 'nowhere'")})
+    code, run_dir, report, text = go(tmp_path, [case], keep=True)
+    assert (code, report["cases"][0]["outcome"]) == (1, "error")
+    first_line = report["cases"][0]["problems"][0].splitlines()[0]
+    assert first_line == f"in the init SQL of storage=s3 ({run_dir / 'batches' / 'b001' / 'init.sqllogic'}:1)"
+    assert "a_initfail.test:1" not in first_line  # not the body file, where the reader would find nothing
+    assert first_line in text
+
+
+def test_every_variant_that_gave_init_sql_is_named(tmp_path):
+    axis_values = {"backend": Variant("oss", init_sql="SET a = 1"), "storage": Variant("s3", init_sql="SET b = 2")}
+    _, _, report, _ = go(tmp_path, [sql_case("a_initfail.test", axis_values)])
+    assert "in the init SQL of backend=oss, storage=s3 (" in report["cases"][0]["problems"][0]
+
+
+def test_a_failure_in_the_body_stays_a_failure_when_the_batch_has_init_sql(tmp_path):
+    case = sql_case("b_fail.test", {"storage": Variant("s3", init_sql="ATTACH 'nowhere'")})
+    _, _, report, _ = go(tmp_path, [case])
+    assert report["cases"][0]["outcome"] == "failed"
+
+
+# -----------------------------------------------------------------------------
 # What does not come up blocks its cases, and only those
 #
 

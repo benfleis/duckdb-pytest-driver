@@ -10,6 +10,8 @@
     *stallatexit* / *badexit* end ok, then the process hangs / exits 7
     *nap*    takes 0.3 s
     *flakyN* fails until its Nth run, counted in a file under $FAKE_UNITTEST_STATE
+    *initfail* fails on the first statement of the init file, which the binary reports -- as the
+               real one does -- under the body file's name and the init file's line
 
 `-l` lists the names in the file that $FAKE_UNITTEST_LIST names.
 """
@@ -31,6 +33,18 @@ def runs_so_far(name):
     with open(path, "w") as f:
         f.write(str(runs))
     return runs
+
+
+def init_statement(config):
+    """The SQL of the first statement of the batch's init file, and the line its header is on."""
+    lines = open(config["init_sqllogic"]).read().splitlines()
+    header = next(n for n, line in enumerate(lines) if line.startswith(("statement", "query")))
+    sql = []
+    for line in lines[header + 1 :]:
+        if not line.strip():
+            break
+        sql.append(line)
+    return "\n".join(sql), header + 1
 
 
 def main(argv):
@@ -58,9 +72,26 @@ def main(argv):
             event(event="end", name=name, status="ok", passes=1, fails=0, **{"skip-mode": 0}, temp_dir=temp)
             continue
         flaky = re.search(r"flaky(\d+)", name)
-        if "fail" in name or (flaky and runs_so_far(name) < int(flaky.group(1))):
+        if "initfail" in name:
+            sql, line = init_statement(config)
+            print(f"Query unexpectedly failed! ({name}:{line})!\n{sql}\nCatalog Error: no such thing", flush=True)
+            data = f"{name}:{line}"
+            event(
+                event="end", name=name, status="error", passes=0, fails=1, **{"skip-mode": 0}, temp_dir=temp, data=data
+            )
+            failed = True
+        elif "fail" in name or (flaky and runs_so_far(name) < int(flaky.group(1))):
             print(f"Wrong result in query! ({name}:4)\nExpected result:\n2\nActual result:\n1", flush=True)
-            event(event="end", name=name, status="error", passes=0, fails=1, **{"skip-mode": 0}, temp_dir=temp)
+            event(
+                event="end",
+                name=name,
+                status="error",
+                passes=0,
+                fails=1,
+                **{"skip-mode": 0},
+                temp_dir=temp,
+                data=f"{name}:4",
+            )
             failed = True
         elif "giveup" in name:
             print(f"[SKIP_TEST] {name} :: skip on error_message matching 'HTTP'", file=sys.stderr, flush=True)

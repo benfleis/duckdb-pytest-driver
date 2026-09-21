@@ -133,13 +133,22 @@ def _env_for_body(case):
     return {k.upper(): v for k, v in case.values.items()}
 
 
-def _init_sql(case, provisioned):
+def _init_parts(case, provisioned):
+    """(what gave it, SQL) for each axis value that brings init SQL, in the order of the axes."""
     parts = []
-    for v in case.axis_values.values():
+    for axis, v in case.axis_values.items():
         sql = v.init_sql({sid: p.block for sid, p in provisioned.items()}) if callable(v.init_sql) else v.init_sql
         if sql:
-            parts.append(sql.strip().rstrip(";") + ";")
-    return "\n".join(parts)
+            parts.append((f"{axis}={v.id}", sql.strip().rstrip(";") + ";"))
+    return parts
+
+
+def _init_sql(case, provisioned):
+    return "\n".join(sql for _, sql in _init_parts(case, provisioned))
+
+
+def _init_from(case, provisioned):
+    return ", ".join(label for label, _ in _init_parts(case, provisioned))
 
 
 def _batch_key(case, provisioned):
@@ -297,6 +306,7 @@ def run(
                             _init_sql(first, provisioned),
                             timeouts={c.id: c.test.timeout for c in chunk if c.test.timeout},
                             retries={c.id: c.test.retries for c in chunk if c.test.retries},
+                            init_from=_init_from(first, provisioned),
                         ),
                     )
                 )
@@ -491,6 +501,9 @@ def _run_paired(case, unittest_bin, working_dir, temp_dir, provisioned, *, env=N
         case.settings,
         "\n".join(x for x in (_init_sql(case, provisioned), init_sql) if x),
         case.test.timeout or sqllogic.DEFAULT_TIMEOUT_S,
+        init_from=", ".join(
+            x for x in (_init_from(case, provisioned), "run_test(init_sql=...)" if init_sql else "") if x
+        ),
     )
     result = sqllogic.run_batch(unittest_bin, batch, working_dir)[case.id]
     if result.outcome == SKIPPED:

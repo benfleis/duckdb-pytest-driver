@@ -26,6 +26,7 @@ from .outcomes import ERROR, FAILED, PASSED, SKIPPED
 _EVENT = re.compile(r"\[TEST_EVENT\] (\{.*\})")
 _SKIP = re.compile(r"\[SKIP_TEST\] (.*?) :: (.*)")
 _PROGRESS = re.compile(r"^\[\d+/\d+\] \(\d+%\): .*$", re.M)
+_LOCATION = re.compile(r"([^\s():]+):(\d+)")  # "file.test:12", as the binary names where a failure is
 DEFAULT_TIMEOUT_S = 600
 _OUTSIDE_A_TEST = object()  # the process hung while no test was running: at startup, between tests, at exit
 INIT_FILE = "init.sqllogic"
@@ -70,6 +71,7 @@ class Batch:
     timeout_s: float = DEFAULT_TIMEOUT_S  # for one test, counted from the binary's begin event for it
     timeouts: dict = field(default_factory=dict)  # key -> seconds, where a test has its own
     retries: dict = field(default_factory=dict)  # key -> how often a failure may run again
+    init_from: str = ""  # who gave the init SQL, e.g. "storage=s3", to name in a failure in it
 
     def __post_init__(self):
         self.tests = [(t, t) if isinstance(t, str) else tuple(t) for t in self.tests]
@@ -208,7 +210,37 @@ def _invoke(binary, batch, working_dir):
     return text, killed_for, returncode, took
 
 
-def _classify(name, ev, detail, skip_reason=None):
+def _init_statements(path):
+    """{line of a statement header, 1-based: the SQL under it} for a sqllogic file."""
+    blocks, header = {}, None
+    for n, line in enumerate((x.rstrip() for x in open(path).read().splitlines()), 1):
+        if line.split(" ")[0] in ("statement", "query"):
+            header, blocks[n] = n, []
+        elif not line.strip() or line.startswith("----"):
+            header = None
+        elif header:
+            blocks[header].append(line)
+    return {n: "\n".join(sql) for n, sql in blocks.items() if sql}
+
+
+def _in_the_init_sql(batch, detail):
+    """The init file's line the failure is on, or None.
+
+    The binary runs the init file under the body file's name (`command->file_name = script`), so a
+    statement of the init file that fails is reported as `<body>.test:<line of the init file>` and
+    sends the reader to the wrong file. It is ours when the reported line holds a statement of the
+    init file and that statement's text is in what the binary printed."""
+    if not batch.init_sql:
+        return None
+    try:
+        blocks = _init_statements(os.path.join(batch.dir, INIT_FILE))
+    except OSError:
+        return None
+    reported = {int(line) for _, line in _LOCATION.findall(detail)}
+    return next((n for n in sorted(reported & set(blocks)) if blocks[n] in detail), None)
+
+
+def _classify(batch, name, ev, detail, skip_reason=None):
     status = ev.get("status")
     if skip_reason and status != "error":
         return TestResult(name, SKIPPED, detail=skip_reason)
@@ -219,7 +251,17 @@ def _classify(name, ev, detail, skip_reason=None):
         return TestResult(name, PASSED)
     if status == "skip-requirement":
         return TestResult(name, SKIPPED, detail=detail or "a `require` or `require-env` of the file is not met")
-    return TestResult(name, FAILED, detail=(ev.get("data") or "") + ("\n" + detail if detail else ""), kept=kept)
+    detail = (ev.get("data") or "") + ("\n" + detail if detail else "")
+    if line := _in_the_init_sql(batch, detail):
+        where = f" of {batch.init_from}" if batch.init_from else ""
+        # Not FAILED: the body never ran, so it proved nothing.
+        return TestResult(
+            name,
+            ERROR,
+            detail=f"in the init SQL{where} ({os.path.join(batch.dir, INIT_FILE)}:{line})\n{detail}",
+            kept=kept,
+        )
+    return TestResult(name, FAILED, detail=detail, kept=kept)
 
 
 def _sub(batch, tag, names):
@@ -232,6 +274,7 @@ def _sub(batch, tag, names):
         batch.timeout_s,
         batch.timeouts,
         batch.retries,
+        batch.init_from,
     )
 
 
@@ -292,7 +335,9 @@ def _run_once(binary, batch, working_dir):
         elif ev.get("status") == "error" and len(names) > 1:
             alone.append(name)
         else:
-            results[name] = _classify(name, ev, _human(output) if ev.get("status") != "ok" else "", skipped.get(name))
+            results[name] = _classify(
+                batch, name, ev, _human(output) if ev.get("status") != "ok" else "", skipped.get(name)
+            )
             results[name].seconds = took.get(name)
 
     unexplained = None
