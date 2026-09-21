@@ -1,5 +1,6 @@
 """A body with threads, against a real duckdb shell: a warm client per thread, and the retry loop."""
 
+import io
 import os
 import shutil
 
@@ -8,6 +9,8 @@ import pytest
 from ducktest5.ctx import Ctx
 from ducktest5.engines.duckdb import DuckDBSession
 from ducktest5.model import PYTHON, Case, TestDef
+from ducktest5.run import run
+from ducktest5.scan import scan
 
 
 def _shell():
@@ -48,3 +51,52 @@ def test_what_an_own_client_persists_lands_under_the_runs_private_home(ctx, tmp_
     ctx.duckdb(session="own").oks("CREATE PERSISTENT SECRET probe (TYPE s3, KEY_ID 'k', SECRET 'x')")
     assert (tmp_path / "home" / ".duckdb" / "stored_secrets" / "probe.duckdb_secret").exists()
     assert list(users_home.iterdir()) == []
+
+
+# -----------------------------------------------------------------------------
+# The whole thing: a retry loop over threads, run as a project
+#
+
+PROOF = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "concurrent_rw.py")
+
+
+def proof(tmp_path, mutate=lambda text: text):
+    """Run the concurrent-writers test as its own project; `mutate` breaks it on purpose."""
+    root = tmp_path / "test"
+    root.mkdir()
+    (root / "ducktestconf.py").write_text("RULES = []\n")
+    with open(PROOF) as f:
+        (root / "concurrent_rw.py").write_text(mutate(f.read()))
+    cases, project = scan(str(root), working_dir=str(tmp_path))
+    printed = io.StringIO()
+    code = run(
+        cases, project, duckdb_bin=_shell(), working_dir=str(tmp_path), temp_root=str(tmp_path / "runs"), out=printed
+    )
+    return code, printed.getvalue()
+
+
+def test_every_append_gets_in_and_the_ids_have_no_gap(tmp_path):
+    code, printed = proof(tmp_path)
+    assert code == 0, printed
+    assert "PASSED   concurrent_rw.py::concurrent_writers_append_without_a_gap" in printed
+
+
+def test_a_wrong_final_list_shows_both_sides_and_the_diff(tmp_path):
+    code, printed = proof(tmp_path, lambda text: text.replace("range(1, len(ids) + 1)", "range(2, len(ids) + 2)"))
+    assert code == 1
+    assert "assert ids == list(range(2, len(ids) + 2))" in printed
+    assert "diff, - left + right:" in printed
+    assert "concurrent_rw.py:58" in printed  # the line the assert is on, not the one it was raised from
+
+
+def test_an_error_the_body_did_not_expect_is_reported_with_the_statement(tmp_path):
+    # Nothing detaches the file, so every writer's first ATTACH hits the lock -- and the retry
+    # loop no longer takes a lock error for a reason to come back.
+    def break_it(text):
+        return text.replace("        DETACH shared\n", "").replace('"lock" not in', '"cosmic ray" not in')
+
+    code, printed = proof(tmp_path, break_it)
+    assert code == 1
+    assert "ATTACH failed for a reason this test does not expect" in printed
+    assert "[duckdb] tried, failed: IO Error: Could not set lock on file" in printed
+    assert "ATTACH '" in printed and "shared.db' AS shared" in printed
