@@ -29,7 +29,7 @@ from .mnemonic import run_id as make_run_id
 from .model import SQLLOGIC
 from .outcomes import ALL as OUTCOMES
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
-from .provision import KEPT, attach_argument, existing_overrides, provision, release
+from .provision import KEPT, MASK, attach_argument, existing_overrides, provision, release
 
 
 def _write(run_dir, name, doc):
@@ -68,6 +68,64 @@ def _run_body(case, ctx):
                 problems.append(f"teardown failed\n{exc}")
                 outcome = ERROR if outcome == PASSED else outcome
     return outcome, problems
+
+
+def _redacted(value, secrets):
+    if isinstance(value, dict):
+        return {k: _redacted(v, secrets) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redacted(v, secrets) for v in value]
+    text = value if isinstance(value, str) else str(value)
+    for secret in secrets:
+        text = text.replace(secret, MASK)
+    return text
+
+
+def _made_of(case, provisioned, *, batch_dir=None, case_dir=None):
+    """What a failed case was made of, for a reader who did not write it. The init SQL is named by
+    its file, never quoted: it may hold a secret."""
+    secrets = {str(p.block[k]) for p in provisioned.values() for k in p.service.secrets if p.block.get(k)}
+    facts = {}
+    if case.values:
+        facts["values"] = _redacted(case.values, secrets)
+    if case.settings:
+        facts["settings"] = _redacted(case.settings, secrets)
+    if case.axis_values:
+        facts["variants"] = [
+            {"axis": axis, "value": v.id, **({"settings": _redacted(v.settings, secrets)} if v.settings else {})}
+            for axis, v in case.axis_values.items()
+        ]
+    if case.services:
+        facts["services"] = {s: provisioned[s].mode if s in provisioned else "did not come up" for s in case.services}
+    files = {}
+    if batch_dir:
+        files = {
+            "config": os.path.join(batch_dir, "config.json"),
+            "tests": os.path.join(batch_dir, "tests.txt"),
+            "init": os.path.join(batch_dir, sqllogic.INIT_FILE),
+            "output": os.path.join(batch_dir, "output.txt"),
+        }
+    if case_dir:
+        files = {"dir": case_dir}
+    files = {name: path for name, path in files.items() if os.path.exists(path)}
+    if files:
+        facts["files"] = files
+    return facts
+
+
+def _print_made_of(facts, out):
+    if values := facts.get("values"):
+        print("  values: " + ", ".join(f"{k}={v}" for k, v in values.items()), file=out)
+    if settings := facts.get("settings"):
+        print("  settings: " + ", ".join(f"{k}={v}" for k, v in settings.items()), file=out)
+    for variant in facts.get("variants", ()):
+        of_its_own = variant.get("settings")
+        tail = "  (" + ", ".join(f"{k}={v}" for k, v in of_its_own.items()) + ")" if of_its_own else ""
+        print(f"  variant: {variant['axis']}={variant['value']}{tail}", file=out)
+    for service_id, mode in facts.get("services", {}).items():
+        print(f"  service: {service_id} ({mode})", file=out)
+    for name, path in facts.get("files", {}).items():
+        print(f"  {name}: {path}", file=out)
 
 
 def _env_for_body(case):
@@ -120,12 +178,16 @@ def run(
     events = open(os.path.join(run_dir, "04-events.jsonl"), "w")
     results = []
 
-    def done(case, outcome, *, runner, seconds=None, problems=(), kept=(), note="", **more):
+    def done(
+        case, outcome, *, runner, seconds=None, problems=(), kept=(), note="", batch_dir=None, case_dir=None, **more
+    ):
         result = {"id": case.id, "outcome": outcome, "runner": runner}
         if seconds is not None:
             result["seconds"] = seconds
         if problems:
             result["problems"] = list(problems)
+        if outcome in (FAILED, ERROR):
+            result["made_of"] = _made_of(case, provisioned, batch_dir=batch_dir, case_dir=case_dir)
         if kept:
             result["kept"] = list(kept)
         if note:
@@ -254,6 +316,7 @@ def run(
                             ERROR,
                             runner="unittest",
                             problems=[f"the batch could not run: {type(exc).__name__}: {exc}"],
+                            batch_dir=batch.dir,
                         )
                     continue
                 for case in chunk:
@@ -267,6 +330,7 @@ def run(
                         problems=problems,
                         kept=[r.kept] if r.kept else [],
                         note=r.note,
+                        batch_dir=batch.dir,
                         batch=os.path.relpath(batch.dir, run_dir),
                         **({"attempts": r.attempts} if r.attempts > 1 else {}),
                     )
@@ -352,6 +416,7 @@ def run(
                 problems=problems,
                 kept=kept,
                 note=note,
+                case_dir=tried[0][0],
                 seconds_by_client=ctx.seconds_by_client() if ctx else {},
                 **({"attempts": n} if n > 1 else {}),
             )
@@ -392,6 +457,7 @@ def _report(run_dir, run_id, results, boot_errors, out):
             print(f"\n--- {r['id']}", file=out)
             for problem in r.get("problems", ()):
                 print(f"{problem}\n", file=out)
+            _print_made_of(r.get("made_of", {}), out)
             if r.get("kept"):
                 print("  kept: " + "\n        ".join(r["kept"]), file=out)
             print(f"  again: ducktest5 run --id {shlex.quote(r['id'])}", file=out)

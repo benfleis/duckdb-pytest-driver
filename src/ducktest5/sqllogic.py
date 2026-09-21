@@ -28,7 +28,7 @@ _SKIP = re.compile(r"\[SKIP_TEST\] (.*?) :: (.*)")
 _PROGRESS = re.compile(r"^\[\d+/\d+\] \(\d+%\): .*$", re.M)
 DEFAULT_TIMEOUT_S = 600
 _OUTSIDE_A_TEST = object()  # the process hung while no test was running: at startup, between tests, at exit
-_INIT_FILE = "init.sqllogic"
+INIT_FILE = "init.sqllogic"
 
 
 def find_unittest(*, explicit=None, build="debug", working_dir="."):
@@ -103,7 +103,7 @@ class Batch:
             "skip_error_messages": [],
         }
         if self.init_sql:
-            init = os.path.join(self.dir, _INIT_FILE)
+            init = os.path.join(self.dir, INIT_FILE)
             # For the owner only: the init SQL of a variant may hold the secret of a service.
             with open(os.open(init, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
                 f.write("statement ok\n" + self.init_sql.strip().rstrip(";") + ";\n")
@@ -116,8 +116,8 @@ def remove_init_sql(root):
     """Take the init SQL out of every batch under `root`, for a directory that stays after the run:
     it may hold a secret. The file stays, and says how to get its content again."""
     for dirpath, _, filenames in os.walk(root):
-        if _INIT_FILE in filenames:
-            with open(os.path.join(dirpath, _INIT_FILE), "w") as f:
+        if INIT_FILE in filenames:
+            with open(os.path.join(dirpath, INIT_FILE), "w") as f:
                 f.write(
                     "# The init SQL of this batch was removed after the run: it may hold a secret.\n"
                     "# Run the case again with --keep to get it.\n"

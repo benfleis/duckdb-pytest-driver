@@ -265,6 +265,72 @@ def test_init_sql_does_not_stay_in_the_directory_of_a_failed_paired_case(tmp_pat
 
 
 # -----------------------------------------------------------------------------
+# A failure says what the case was made of
+#
+
+
+MADE_OF = Variant(
+    "s3",
+    services=("store",),
+    values={"root": "s3://bucket"},
+    settings={"s3_region": "eu"},
+    init_sql="CREATE SECRET (SECRET 'hunter2')",
+)
+
+
+def test_a_failed_test_case_says_what_it_was_made_of(tmp_path):
+    case = sql_case("b_fail.test", {"storage": MADE_OF})
+    _, run_dir, report, text = go(tmp_path, [case], services=[FakeStore().service()])
+    facts = report["cases"][0]["made_of"]
+    assert facts["values"] == {"root": "s3://bucket"}
+    assert facts["variants"] == [{"axis": "storage", "value": "s3", "settings": {"s3_region": "eu"}}]
+    assert facts["services"] == {"store": "existing"}
+    assert {name: os.path.basename(p) for name, p in facts["files"].items()} == {
+        "config": "config.json",
+        "tests": "tests.txt",
+        "init": "init.sqllogic",
+        "output": "output.txt",
+    }
+    assert all(os.path.isfile(p) for p in facts["files"].values())
+    block = text.split("--- " + case.id)[1]
+    assert "\n  values: root=s3://bucket\n" in block
+    assert "\n  settings: s3_region=eu\n" in block
+    assert "\n  variant: storage=s3  (s3_region=eu)\n" in block
+    assert "\n  service: store (existing)\n" in block
+    assert f"\n  init: {facts['files']['init']}\n" in block
+    assert "\n  again: ducktest5 run --id " in block
+    assert "hunter2" not in text  # the init SQL is named by its file, never printed
+
+
+def test_a_passed_case_says_nothing_of_the_kind(tmp_path):
+    _, _, report, text = go(tmp_path, [sql_case("a.test", {"storage": MADE_OF})], services=[FakeStore().service()])
+    assert "made_of" not in report["cases"][0]
+    assert "variant: " not in text and "config: " not in text
+
+
+def test_a_failed_python_case_names_its_case_directory(tmp_path):
+    case = py_case(writes_and_fails, services=["store"])
+    _, run_dir, report, text = go(tmp_path, [case], services=[FakeStore().service()])
+    facts = report["cases"][0]["made_of"]
+    assert facts["files"] == {"dir": str(run_dir / "cases" / case.dir_name)}
+    assert f"\n  dir: {facts['files']['dir']}\n" in text
+
+
+def test_a_secret_of_a_service_never_reaches_what_the_case_was_made_of(tmp_path):
+    case = sql_case("b_fail.test", values={"token": "s3cr3t"}, services=["store"])
+    _, _, report, text = go(tmp_path, [case], services=[FakeStore().service()])
+    assert report["cases"][0]["made_of"]["values"] == {"token": "***"}
+    assert "s3cr3t" not in text
+
+
+def test_the_event_line_of_a_failure_holds_the_same_facts(tmp_path):
+    case = sql_case("b_fail.test", {"storage": MADE_OF})
+    _, run_dir, report, _ = go(tmp_path, [case], services=[FakeStore().service()])
+    (event,) = [json.loads(line) for line in (run_dir / "04-events.jsonl").read_text().splitlines()]
+    assert event["made_of"] == report["cases"][0]["made_of"]
+
+
+# -----------------------------------------------------------------------------
 # What does not come up blocks its cases, and only those
 #
 

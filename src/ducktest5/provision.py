@@ -22,7 +22,7 @@ from .binary import UsageError
 from .host import wait_until
 
 MANAGED, EXISTING, KEPT = "managed", "existing", "kept"
-_MASK = "***"
+MASK = "***"
 
 
 def _key(service_id):
@@ -47,9 +47,9 @@ def _parse(value):
         return {}
     if value.startswith("{"):
         overrides = json.loads(value)
-        if masked := sorted(k for k, v in overrides.items() if v == _MASK):
+        if masked := sorted(k for k, v in overrides.items() if v == MASK):
             raise UsageError(
-                f"an existing service with {masked} = {_MASK!r}: put the value in, or set it in the environment"
+                f"an existing service with {masked} = {MASK!r}: put the value in, or set it in the environment"
             )
         return overrides
     return {"endpoint": value}
@@ -62,7 +62,7 @@ class Provisioned:
     mode: str
 
     def redacted(self):
-        return {k: (_MASK if k in self.service.secrets else v) for k, v in self.block.items()}
+        return {k: (MASK if k in self.service.secrets else v) for k, v in self.block.items()}
 
 
 def provision(service, *, existing=None, keep=False, ready_timeout_s=60):
@@ -136,6 +136,6 @@ def attach_argument(provisioned):
             if k == "endpoint" or (v != defaults.get(k) and service.block(**{k: v}).get(k) == v)
         }
     masked = sorted(k for k in overrides if k in service.secrets)
-    overrides.update({k: _MASK for k in masked})
-    note = f"  ({_MASK}: a secret, not printed; put the value in, or set it in the environment)" if masked else ""
+    overrides.update({k: MASK for k in masked})
+    note = f"  ({MASK}: a secret, not printed; put the value in, or set it in the environment)" if masked else ""
     return f"--existing-service '{service.id}={json.dumps(overrides)}'{note}"
