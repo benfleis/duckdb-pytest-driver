@@ -29,7 +29,7 @@ import sys
 import time
 import traceback
 
-from . import caseenv, events, phases, sqllogic
+from . import caseenv, events, phases, runners, sqllogic
 from .binary import UsageError
 from .client import SetupFailed
 from .ctx import Ctx
@@ -158,6 +158,7 @@ def run(
     workers=4,
     runner=phases.UNITTEST_RUNNER,
     run_flags="",
+    run_bin=None,
     out=None,
     session_factory=DuckDBSession,
     debugger=None,
@@ -193,6 +194,7 @@ def run(
         keep_services=keep_services,
         provision_here=True,
         clean=True,
+        run_bin=run_bin,
         out=out,
         session_factory=session_factory,
         debugger=debugger,
@@ -221,6 +223,7 @@ def execute(
     keep_services=False,
     provision_here=True,
     clean=False,
+    run_bin=None,
     events_file=None,
     append=False,
     interrupted=(),
@@ -421,6 +424,18 @@ def execute(
         for _, chunk, _batch in batches:
             for case in chunk:
                 begin(case, runner)
+        if runner == phases.RUN_RUNNER and batches:
+            for chunk, group, by_case in runners.run_wrapper(
+                unittest_bin,
+                [(chunk, batch) for _, chunk, batch in batches],
+                working_dir,
+                run_dir=run_dir,
+                workers=workers,
+                run_flags=knobs.get("run_flags", ""),
+                run_bin=run_bin,
+            ):
+                _report_batch(chunk, group, by_case, done, run_dir, runner)
+            batches = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             futures = {
                 pool.submit(sqllogic.run_batch, unittest_bin, batch, working_dir): (chunk, batch)

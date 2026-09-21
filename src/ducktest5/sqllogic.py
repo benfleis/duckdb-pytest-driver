@@ -153,7 +153,7 @@ def remove_init_sql(root):
                 )
 
 
-def _events(output):
+def test_events(output):
     begun, ended = [], {}
     for m in _EVENT.finditer(output):
         try:
@@ -167,13 +167,13 @@ def _events(output):
     return begun, ended
 
 
-def _skip_reasons(output):
+def skip_reasons(output):
     """{test name: reason} from the binary's skip lines. The end event says `ok` for a file that the
     binary gave up on (an error that matches its skip list, a `mode skip`), so the reason is here only."""
     return {name.strip(): reason.strip() for name, reason in _SKIP.findall(output)}
 
 
-def _human(output):
+def human(output):
     """The binary's own text, without the event lines, the skip lines and the progress lines."""
     text = _EVENT.sub("", output)
     text = _SKIP.sub("", text)
@@ -281,7 +281,7 @@ def _in_the_init_sql(batch, detail):
     return next((n for n in sorted(reported & set(blocks)) if blocks[n] in detail), None)
 
 
-def _classify(batch, name, ev, detail, skip_reason=None):
+def classify(batch, name, ev, detail, skip_reason=None):
     status = ev.get("status")
     if skip_reason and status != "error":
         return TestResult(name, SKIPPED, detail=skip_reason)
@@ -356,8 +356,8 @@ def _run_once(binary, batch, working_dir):
     t0 = time.perf_counter()
     output, killed_for, returncode, took = _invoke(binary, batch, working_dir)
     seconds = time.perf_counter() - t0
-    _, ended = _events(output)
-    skipped = _skip_reasons(output)
+    _, ended = test_events(output)
+    skipped = skip_reasons(output)
     results, alone, rest = {}, [], []
     names = batch.names
     for name in names:
@@ -366,15 +366,15 @@ def _run_once(binary, batch, working_dir):
             results[name] = TestResult(
                 name,
                 ERROR,
-                detail=f"still running after {batch.timeout_for(name):.0f}s; the process was killed\n{_human(output)}".strip(),
+                detail=f"still running after {batch.timeout_for(name):.0f}s; the process was killed\n{human(output)}".strip(),
             )
         elif ev is None:
             (rest if killed_for is not None else alone).append(name)
         elif ev.get("status") == "error" and len(names) > 1:
             alone.append(name)
         else:
-            results[name] = _classify(
-                batch, name, ev, _human(output) if ev.get("status") != "ok" else "", skipped.get(name)
+            results[name] = classify(
+                batch, name, ev, human(output) if ev.get("status") != "ok" else "", skipped.get(name)
             )
             results[name].seconds = took.get(name)
 
@@ -391,13 +391,13 @@ def _run_once(binary, batch, working_dir):
     if unexplained:
         for name in names:
             if name not in results or results[name].outcome == PASSED:
-                results[name] = TestResult(name, ERROR, detail=f"{unexplained}\n{_human(output)}".strip())
+                results[name] = TestResult(name, ERROR, detail=f"{unexplained}\n{human(output)}".strip())
         return results
 
     if len(names) == 1 and alone:
         name = alone.pop()
         results[name] = TestResult(
-            name, ERROR, detail=f"the binary ended without an end event for this test\n{_human(output)}".strip()
+            name, ERROR, detail=f"the binary ended without an end event for this test\n{human(output)}".strip()
         )
     if rest and len(rest) < len(names):
         results.update(_run_once(binary, _sub(batch, "rest", rest), working_dir))
@@ -415,7 +415,7 @@ def _run_once(binary, batch, working_dir):
         results[name] = again
     for name in names:  # a name the binary never mentioned at all
         results.setdefault(
-            name, TestResult(name, ERROR, detail=f"the binary reported nothing for this test\n{_human(output)}".strip())
+            name, TestResult(name, ERROR, detail=f"the binary reported nothing for this test\n{human(output)}".strip())
         )
     if len(names) == 1 and results[names[0]].seconds is None:  # no end event: what the process took
         results[names[0]].seconds = round(seconds, 2)

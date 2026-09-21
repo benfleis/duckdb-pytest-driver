@@ -97,6 +97,11 @@ class Report:
     def not_provisioned(self):
         return {s["id"]: s.get("error", "") for s in self.services if s.get("state") == "failed"}
 
+    @property
+    def weak(self):
+        """The cases whose outcome is not the binary's own word but a runner's summary."""
+        return [c for c in self.cases if c.get("evidence") == "run-summary"]
+
     def slowest(self, n=5):
         return sorted((c for c in self.cases if c.get("seconds") is not None), key=lambda c: -c["seconds"])[:n]
 

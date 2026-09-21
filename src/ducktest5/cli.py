@@ -59,6 +59,7 @@ def _binary_options(parser):
     )
     parser.add_argument("--duckdb-bin")
     parser.add_argument("--unittest-bin")
+    parser.add_argument("--run-bin", help="DuckDB's run wrapper, for --runner run (default: beside test/unittest)")
 
 
 def _service_options(parser):
@@ -285,6 +286,7 @@ def main(argv=None):
             workers=args.workers,
             runner=args.runner,
             run_flags=args.run_flags,
+            run_bin=args.run_bin,
             debugger=debugger,
             command=["ducktest5"] + list(argv if argv is not None else sys.argv[1:]),
             selection=asked,
@@ -408,6 +410,7 @@ def _exec(args):
         keep=args.keep,
         existing_services=args.existing_service,
         provision_here=args.provision,
+        run_bin=args.run_bin,
         events_file=args.events,
         append=append,
         interrupted=set(phases.unfinished(history)),
