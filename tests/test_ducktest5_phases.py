@@ -3,7 +3,10 @@ refuses, and that the outcomes are the ones a plain `run` of the same selection 
 
 import json
 import os
+import subprocess
+import sys
 import textwrap
+import time
 
 import pytest
 import yaml
@@ -236,3 +239,56 @@ def test_a_batch_the_plan_does_not_have_is_a_usage_error(tree, capsys):
     assert main(["plan", "--run-dir", "apart"]) == 0
     assert main(["exec", "--run-dir", "apart", "--batch", "b404", *binaries()]) == 2
     assert "no batch b404" in capsys.readouterr().err
+
+
+# -----------------------------------------------------------------------------
+# A run that is stopped from outside
+#
+
+
+def still_running(mark):
+    """The processes whose command line names `mark`, by reading /proc, not by a pattern that would
+    also match the command that asks."""
+    out = []
+    for pid in (n for n in os.listdir("/proc") if n.isdigit()):
+        if int(pid) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                if mark.encode() in f.read():
+                    out.append(int(pid))
+        except OSError:
+            continue
+    return out
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc"), reason="the check for leftovers reads /proc")
+def test_a_run_that_is_stopped_leaves_nothing_running_and_can_be_taken_up_again(tree, tmp_path):
+    (tree / "test/a/hang.test").write_text("")
+    (tree / "test/ducktestconf.py").write_text(
+        textwrap.dedent("""
+            from ducktest5 import match
+            RULES = [match("a/hang.test", timeout=2)]
+        """)
+    )
+    assert main(["scan", "--run-dir", "apart"]) == 0
+    assert main(["plan", "--run-dir", "apart", "--batch-size", "1", "--workers", "4"]) == 0
+    started = subprocess.Popen(
+        [sys.executable, "-m", "ducktest5.cli", "exec", "--run-dir", "apart", *binaries()],
+        cwd=str(tree),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    for _ in range(100):  # until the batches are under way
+        if os.path.isfile(os.path.join("apart", events.EVENTS_FILE)) and ended("apart"):
+            break
+        time.sleep(0.1)
+
+    started.terminate()
+    assert started.wait(timeout=30) == 130
+    assert still_running(str(tmp_path / "apart")) == []
+    assert "a/hang.test::hang" not in outcomes("apart")  # it was running when the run was stopped
+
+    assert main(["exec", "--run-dir", "apart", "--resume", *binaries()]) == 1
+    assert len(outcomes("apart")) == len(phases.ids_of_plan(phases.read_plan("apart")))
+    assert outcomes("apart")["a/hang.test::hang"] == "error"  # it is still what it is: it never ends

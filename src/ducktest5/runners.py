@@ -155,6 +155,15 @@ def _results(group, texts, wrapper_text, wrapper_code):
     return results
 
 
+def _call(args, working_dir, env):
+    """The wrapper as a child of this process, killed with it when the run is stopped."""
+    proc = subprocess.Popen(
+        args, cwd=working_dir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+    )
+    with sqllogic.watched(proc):
+        return proc.communicate()[0] or "", proc.wait()
+
+
 def run_wrapper(unittest_bin, units, working_dir, *, run_dir, workers=4, run_flags="", run_bin=None):
     """Run every batch through the wrapper. `units` is [(cases, batch)] as the exec phase made them;
     returns [(cases, the batch of the wrapper call, {case id: TestResult})], one for each call."""
@@ -185,17 +194,10 @@ def run_wrapper(unittest_bin, units, working_dir, *, run_dir, workers=4, run_fla
             _shim_command(group_dir),
             *shlex.split(run_flags),
         ]
-        done = subprocess.run(
-            args,
-            cwd=working_dir,
-            env=group.case_env.environ(),
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
-        text = (done.stdout or "") + (done.stderr or "")
+        done = _call(args, working_dir, group.case_env.environ())
+        text, code = done
         with open(os.path.join(group_dir, "output.txt"), "w") as f:
             f.write(text)
-        by_name = _results(group, _kept_output(group_dir), text, done.returncode)
+        by_name = _results(group, _kept_output(group_dir), text, code)
         out.append((cases, group, {c.id: by_name[c.test.body_file] for c in cases}))
     return out

@@ -24,6 +24,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -129,6 +130,28 @@ def _only_one_test_case(cases):
         )
     if cases[0].test.type != SQLLOGIC:
         raise UsageError(f"a debugger runs the unittest binary; {cases[0].id} is a Python body -- not supported yet")
+
+
+def _stop_on_signal(restore=None):
+    """SIGTERM kills the binaries this run started and ends the run its own way, so that the event
+    file, the report and what was kept are there and `exec --resume` can take it up again. With
+    `restore` the handler the run found is put back."""
+    if restore is not None:
+        if restore["was"] is not None:
+            signal.signal(signal.SIGTERM, restore["was"])
+        return restore
+    stopped = {"by": None, "was": None}
+
+    def handler(signum, frame):
+        stopped["by"] = signal.Signals(signum).name
+        sqllogic.kill_running()
+        raise KeyboardInterrupt(stopped["by"])
+
+    try:
+        stopped["was"] = signal.signal(signal.SIGTERM, handler)
+    except ValueError:  # not the main thread: the caller keeps its own handlers
+        pass
+    return stopped
 
 
 def _batch_dir(run_dir, batch_id):
@@ -341,6 +364,7 @@ def execute(
 
     duckdb_home = os.path.join(run_dir, "home")
     duckdb_session = session_factory(duckdb_bin, home=duckdb_home)
+    stopped = _stop_on_signal()
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
     code = 1
     try:
@@ -539,7 +563,11 @@ def execute(
                     statements=[s for _, c in tried if c for s in c.statements],
                     **({"attempts": n} if n > 1 else {}),
                 )
+    except KeyboardInterrupt:  # Ctrl-C, or the signal handler above
+        stopped["by"] = stopped["by"] or "interrupt"
+        sqllogic.kill_running()
     finally:
+        _stop_on_signal(restore=stopped)
         duckdb_session.close()
         for handle in handles.values():
             try:
@@ -561,6 +589,8 @@ def execute(
             # passed does, and a run in which nothing passed is not green.
             bad = counts[FAILED] + counts[ERROR] + counts[BLOCKED]
             code = 0 if bad == 0 and counts[PASSED] > 0 else 1
+            if stopped["by"]:
+                code = 130
             writer.emit(
                 RUN_END,
                 at=events.now(),
@@ -568,6 +598,7 @@ def execute(
                 cases=len(ended),
                 seconds=round(time.perf_counter() - started, 2),
                 exit_code=code,
+                stopped=stopped["by"],
             )
         writer.close()
         if not debugged:

@@ -16,6 +16,7 @@ did not run as far as this runner knows, and is never counted as passed.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -36,6 +37,28 @@ _LOCATION = re.compile(r"([^\s():]+):(\d+)")  # "file.test:12", as the binary na
 DEFAULT_TIMEOUT_S = 600
 _OUTSIDE_A_TEST = object()  # the process hung while no test was running: at startup, between tests, at exit
 INIT_FILE = "init.sqllogic"
+
+# The binaries this process started and has not reaped. A run that is stopped from outside kills
+# them, so that nothing of it is left running when it is gone.
+_running = set()
+
+
+def kill_running():
+    for proc in list(_running):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+@contextlib.contextmanager
+def watched(proc):
+    """A binary of this run, for as long as it runs."""
+    _running.add(proc)
+    try:
+        yield proc
+    finally:
+        _running.discard(proc)
 
 
 def find_unittest(*, explicit=None, build="debug", working_dir="."):
@@ -217,6 +240,7 @@ def _invoke(binary, batch, working_dir):
         target=lambda: [lines.put(line) for line in proc.stdout] and None or lines.put(None), daemon=True
     ).start()
     output, running, since, killed_for, took = [], None, time.perf_counter(), None, {}
+    _running.add(proc)
     while True:
         try:
             line = lines.get(timeout=0.2)
@@ -245,6 +269,7 @@ def _invoke(binary, batch, working_dir):
             proc.kill()
             break
     returncode = proc.wait()
+    _running.discard(proc)
     text = "".join(output)
     with open(os.path.join(batch.dir, "output.txt"), "w") as f:
         f.write(text)
