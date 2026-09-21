@@ -1,4 +1,8 @@
-"""`ducktest5 scan|select|run [PATH ...] [--select EXPR ...] [--id CASE_ID ...] [--set NAME]`"""
+"""`ducktest5 scan|select|run [PATH ...] [--select EXPR ...] [--id CASE_ID ...] [--set NAME]`
+
+`scan --env` prints what each selected case would be given -- the extensions, the statements, the
+values, the roots, the process environment, the services -- with the source of every part.
+"""
 
 import argparse
 import os
@@ -6,7 +10,7 @@ import sys
 
 import yaml
 
-from . import sqllogic
+from . import caseenv, sqllogic
 from .binary import UsageError, find_duckdb
 from .run import run
 from .scan import scan
@@ -39,6 +43,12 @@ def main(argv=None):
         p.add_argument("--root", default=None, help="where the tests are (default: ./test, else .)")
         if name == "select":
             p.add_argument("--why", action="store_true", help="also print which rule gave each case what")
+        if name == "scan":
+            p.add_argument(
+                "--env",
+                action="store_true",
+                help="print what each case is given, and where each part came from, instead of the scan record",
+            )
     run_options = commands["run"]
     run_options.add_argument(
         "--build", default="debug", help="build/<BUILD>/ holds duckdb and test/unittest (default: debug)"
@@ -83,6 +93,13 @@ def main(argv=None):
         cases, project = scan(root, working_dir=cwd)
         selected, why_not = apply(cases, Selection(args.paths, args.select, args.id, args.set, args.slow), project)
         if args.command == "scan":
+            if args.env:
+                for c in selected:
+                    print(c.id)
+                    # No service is started here, so what a variant makes out of one is named, not called.
+                    for line in caseenv.resolve(c).lines():
+                        print(f"  {line}")
+                return 0
             yaml.safe_dump([c.record(project) for c in selected], sys.stdout, sort_keys=False, width=100)
             return 0
         if args.command == "select":

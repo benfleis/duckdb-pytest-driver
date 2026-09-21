@@ -64,6 +64,42 @@ def test_scan_prints_the_record_of_each_selected_case(tree, capsys):
     assert "id: a/x.test::x" in capsys.readouterr().out
 
 
+def test_scan_env_prints_what_each_case_is_given_and_where_it_came_from(tree, capsys):
+    (tree / "test" / "ducktestconf.py").write_text(
+        textwrap.dedent("""
+            from ducktest5 import Service, Variant, default, match
+            SERVICES = [Service("store", block=lambda **o: {"endpoint": "http://store"}, alive=lambda b: True)]
+            AXES = {"storage": [Variant(
+                "s3",
+                services=["store"],
+                requires=["httpfs"],
+                settings={"s3_region": "eu"},
+                roots={"data_dir": "s3://bucket/data"},
+                env={"AWS_PROFILE": "ducktest"},
+                env_unset=["AWS_ACCESS_KEY_ID"],
+                values=lambda services: {"root": services["store"]["endpoint"]},
+            )]}
+            EXCLUDE = ["generated"]
+            RULES = [default(tags=["all"], values={"region": "eu"}), match("a/**", variants=["storage"])]
+        """)
+    )
+    assert main(["scan", "test/a/x.test", "--env"]) == 0
+    assert capsys.readouterr().out == textwrap.dedent(
+        """\
+        a/x.test::x[storage=s3]
+          require: httpfs  <- AXES storage=s3
+          set: s3_region=eu  <- AXES storage=s3
+          values: storage=s3  <- AXES storage
+          values: region=eu  <- ducktestconf.py: default
+          root: data_dir=s3://bucket/data  <- AXES storage=s3
+          env: AWS_PROFILE=ducktest  <- AXES storage=s3
+          env unset: AWS_ACCESS_KEY_ID  <- AXES storage=s3
+          service: store  <- AXES storage=s3
+          values: <from service store>  <- AXES storage=s3
+        """
+    )
+
+
 @pytest.mark.parametrize(
     "argv, message",
     [
