@@ -3,8 +3,10 @@
 import os
 
 from .client import Client, SetupFailed, SqlError
-from .engines.duckdb import DEFAULT_TIMEOUT_S, DuckDBPerCall
+from .engines.duckdb import DEFAULT_TIMEOUT_S, DuckDBPerCall, DuckDBSession
 from .steps import step
+
+SESSIONS = ("per_run", "own", "per_call")
 
 
 def _no_reconnect():
@@ -28,6 +30,7 @@ class Ctx:
         remote_parts=(),
         init_sql="",
         run_test=None,
+        session_factory=DuckDBSession,
     ):
         self.id = case.id
         self.case = case.params
@@ -41,6 +44,7 @@ class Ctx:
         self._duckdb_bin = duckdb_bin
         self._duckdb_session = duckdb_session
         self._duckdb_home = duckdb_home
+        self._session_factory = session_factory
         self._engines = {e: engines[e] for e in case.engines}
         self._services = {s: services[s] for s in case.services} if services else {}
         self._remote_parts = remote_parts
@@ -53,28 +57,35 @@ class Ctx:
     def duckdb(self, preamble="", *, table=None, session="per_run", timeout=DEFAULT_TIMEOUT_S):
         """DuckDB as a client. `per_run` (the rule): the run's one shell, on the instance this test
         started fresh; `preamble` runs once, now. The client has `restart()` (new instance, then the
-        test's preambles again) and `respawn()` (new process, the same). `per_call`: a cold process
-        for every call, running `preamble` each time.
+        test's preambles again) and `respawn()` (new process, the same). `own`: the same, on a shell
+        of this client's own, closed when the case ends. `per_call`: a cold process for every call,
+        running `preamble` each time. All three get the same private HOME and the same init SQL of
+        the case's variant.
 
         `timeout`, in seconds, is for each statement (`per_call`: for each call); after it the shell
         is killed and the statement has failed.
 
-        A body that uses threads: the one shell takes one statement at a time, so threads on `per_run`
-        clients are safe and wait for each other. Use `per_call` only when the statements must run
-        in parallel; each call is then its own process, with nothing shared but files."""
+        A body that uses threads: a shell takes one statement at a time, so threads that share a
+        `per_run` client are safe and wait for each other. For statements that must really run at the
+        same time, give each thread a client of its own: `own` is a warm shell each, `per_call` a cold
+        process per call, with nothing shared but files."""
         preamble = "\n".join(x for x in (self._variant_preamble(), preamble) if x)
         if session == "per_call":
             per_call = DuckDBPerCall(self._duckdb_bin, preamble, timeout=timeout, home=self._duckdb_home)
             return self._client("duckdb", per_call.run, table)
-        if session != "per_run":
-            raise ValueError(f"session={session!r}; it is 'per_run' or 'per_call'")
-        shared = self._duckdb_session
+        if session not in SESSIONS:
+            raise ValueError(f"session={session!r}; it is one of {SESSIONS}")
+        shell = self._duckdb_session
+        if session == "own":
+            shell = self._session_factory(self._duckdb_bin, home=self._duckdb_home)
+            shell.begin_test()
+            self.teardowns.append(shell.close)
         try:
-            shared.add_preamble(preamble)
+            shell.add_preamble(preamble)
         except SqlError as exc:
             raise SetupFailed(f"[duckdb] the preamble failed: {exc}") from None
-        client = self._client("duckdb", lambda statements: shared.run(statements, timeout=timeout), table)
-        client.restart, client.respawn, client.reconnect = shared.restart, shared.respawn, _no_reconnect
+        client = self._client("duckdb", lambda statements: shell.run(statements, timeout=timeout), table)
+        client.restart, client.respawn, client.reconnect = shell.restart, shell.respawn, _no_reconnect
         return client
 
     def engine(self, name, *, table=None):

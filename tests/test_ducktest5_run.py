@@ -597,6 +597,7 @@ def test_each_case_has_one_event_line(tmp_path):
 
 
 def ctx_for(case, tmp_path, *, engine=None, session=None, services=None, **kwargs):
+    kwargs.setdefault("session_factory", FakeSession)
     return Ctx(
         case,
         temp_dir=str(tmp_path),
@@ -825,8 +826,36 @@ def test_a_preamble_that_fails_is_a_setup_error(tmp_path):
 
 
 def test_an_unknown_session_kind_is_refused(tmp_path):
-    with pytest.raises(ValueError, match="'per_run' or 'per_call'"):
+    with pytest.raises(ValueError, match="'per_run', 'own', 'per_call'"):
         ctx_for(py_case(passes), tmp_path).duckdb(session="per_test")
+
+
+def test_an_own_session_is_a_warm_shell_of_its_own_closed_when_the_case_ends(tmp_path):
+    made = []
+
+    def factory(binary, *, home=None):
+        session = FakeSession(binary, home=home)
+        session.close = lambda: made_closed.append(session)
+        made.append(session)
+        return session
+
+    made_closed = []
+
+    def body(ctx):
+        shared = ctx.duckdb("LOAD delta;")
+        first = ctx.duckdb("LOAD delta;", session="own")
+        second = ctx.duckdb("LOAD delta;", session="own")
+        first.oks("SELECT 1")
+        second.oks("SELECT 2")
+        shared.oks("SELECT 3")
+
+    code, _, _, _ = go(tmp_path, [py_case(body)], session_factory=factory)
+    assert code == 0
+    run_shell, first, second = made  # the run's shell, then one for each `own` client
+    assert [first.statements, second.statements, run_shell.statements] == [["SELECT 1"], ["SELECT 2"], ["SELECT 3"]]
+    assert [first.preambles, second.preambles] == [run_shell.preambles] * 2
+    assert [first.home, second.home] == [run_shell.home] * 2
+    assert made_closed[:2] == [second, first]  # both before the run's own shell goes away
 
 
 # -----------------------------------------------------------------------------

@@ -414,6 +414,7 @@ def run(
                     remote_parts=(run_id, dir_name),
                     init_sql=_init_sql(case, provisioned),
                     run_test=lambda **kw: _run_paired(case, unittest_bin, working_dir, temp_dir, provisioned, **kw),
+                    session_factory=session_factory,
                 )
             except Exception as exc:
                 return ERROR, [f"the case could not be set up: {type(exc).__name__}: {exc}"], temp_dir, None
