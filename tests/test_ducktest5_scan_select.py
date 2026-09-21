@@ -13,7 +13,12 @@ ROOT_CONF = """
     from ducktest5 import Variant, default, match
 
     AXES = {"backend": [Variant("oss", values={"catalog": "duck"}), Variant("dbx", tags=["needs-credentials"])]}
-    SETS = {"smoke": {"paths": ["test/a", "test/b/one.test"]}, "cmt": {"select": ["case=cmt"]}}
+    SETS = {
+        "smoke": {"paths": ["test/a", "test/b/one.test"]},
+        "cmt": {"select": ["case=cmt"]},
+        "combo": {"select": ["tag=mine", "backend=oss"]},
+        "trimmed": {"paths": ["test/a", "test/b"], "skip": ["backend=oss;tag=a"]},
+    }
     RULES = [default(tags=["all"], values={"region": "eu"}), match("a/**", tags=["a"], timeout=30)]
 """
 
@@ -50,6 +55,31 @@ def project(tmp_path):
                 @test()
                 def solo(ctx): pass
             """,
+        },
+    )
+
+
+@pytest.fixture
+def dnf_project(tmp_path):
+    """A tree with two axes, a python case and a tagged one -- for the disjunctive-normal-form and
+    `path=` selection rules, which need more shape than `project`'s single axis gives."""
+    return tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import Variant, default, match
+                AXES = {"backend": [Variant("oss"), Variant("dbx")], "storage": [Variant("s3"), Variant("gcs")]}
+                RULES = [default(variants=["backend", "storage"]), match("spark/**", tags=["spark"])]
+            """,
+            "test/sql/cloud/a.test": "",
+            "test/sql/cloud/sub/b.test": "",
+            "test/sql/local/c.test": "",
+            "test/py/d.py": """
+                from ducktest5 import test
+                @test()
+                def d(ctx): pass
+            """,
+            "test/spark/e.test": "",
         },
     )
 
@@ -154,11 +184,22 @@ def test_a_bare_run_leaves_slow_out_and_says_why(project):
     assert ids(select(project, select=["tag=slow"])[0]) == ["a/y.test_slow::y"]
 
 
-def test_paths_are_a_union_and_selects_must_all_hold(project):
+def test_paths_are_a_union_and_a_groups_terms_must_all_hold(project):
     assert len(select(project, paths=["test/a/x.test", "test/b/one.test"])[0]) == 3
+    # scope (PATHs) narrows first, the select group filters within it
     assert ids(select(project, paths=["test/a"], select=["backend=oss"])[0]) == ["a/x.test::x[backend=oss]"]
-    assert ids(select(project, select=["not:tag=a", "type=sqllogic"])[0]) == ["b/one.test::one"]
+    # ';' inside one --select is and: type sqllogic and case cmt/plain both hold for nothing here
+    assert ids(select(project, select=["type=paired;case=cmt"])[0]) == ["b/paired.py::body[cmt]"]
     assert ids(select(project, select=["case=cmt,plain"])[0]) == [
+        "b/paired.py::body[cmt]",
+        "b/paired.py::body[plain]",
+    ]
+
+
+def test_repeated_select_ors_its_groups(project):
+    # under the old AND-across-options rule this pair would be empty: no case is both backend=oss and tag=mine
+    assert ids(select(project, select=["backend=oss", "tag=mine"])[0]) == [
+        "a/x.test::x[backend=oss]",
         "b/paired.py::body[cmt]",
         "b/paired.py::body[plain]",
     ]
@@ -199,14 +240,19 @@ def test_an_id_is_added_to_what_paths_and_selects_give(project):
         ({"select": ["tag=smok"]}, "no scanned case has tag"),
         ({"select": ["backend=gcs"]}, "axis 'backend' has no value"),
         ({"select": ["backnd=oss"]}, "unknown key 'backnd'"),
-        ({"select": ["slow"]}, "write key=value"),
+        ({"select": ["tag="]}, "write key=value"),
         ({"paths": ["test/nowhere"]}, "holds no test"),
         ({"ids": ["a/x.test::x"]}, "no such case"),
         ({"set_name": "nightly"}, "the project has sets"),
         ({"skip": ["tag=smok"]}, "no scanned case has tag"),
         ({"skip": ["backnd=oss"]}, "unknown key 'backnd'"),
-        ({"skip": ["not:tag=a"]}, "a skip is already a negation"),
-        ({"skip": ["!tag=a"]}, "a skip is already a negation"),
+        ({"select": ["not:tag=a"]}, "write !tag=a"),
+        ({"skip": ["not:tag=a"]}, "write !tag=a"),
+        ({"select": ["tag=!a"]}, "write !tag=a"),
+        ({"skip": ["tag=!a"]}, "write !tag=a"),
+        ({"select": ["tag=a;;tag=mine"]}, "empty term"),
+        ({"select": ["tag=a;"]}, "empty term"),
+        ({"skip": ["tag=a;"]}, "empty term"),
     ],
 )
 def test_a_selection_that_can_never_match_is_an_error(project, kwargs, message):
@@ -216,12 +262,14 @@ def test_a_selection_that_can_never_match_is_an_error(project, kwargs, message):
 
 def test_a_negated_select_is_translated_into_a_skip_at_parse_time(project):
     xid = "a/x.test::x[backend=oss]"
-    for form in ("not:tag=a", "!tag=a"):
-        assert ids(select(project, select=[form])[0]) == ids(select(project, skip=["tag=a"])[0])
-    _, why_not = select(project, select=["not:tag=a"])
-    assert why_not[xid] == "--skip tag=a (from --select not:tag=a)"
+    assert ids(select(project, select=["!tag=a"])[0]) == ids(select(project, skip=["tag=a"])[0])
     _, why_not = select(project, select=["!tag=a"])
     assert why_not[xid] == "--skip tag=a (from --select !tag=a)"
+
+
+def test_a_skip_group_may_use_bang_terms(project):
+    # today's rule ("--skip !x is an error") is dropped: a skip group may itself carry a negated term
+    assert ids(select(project, skip=["!tag=a"])[0]) == ids(select(project, select=["tag=a"])[0])
 
 
 def test_skip_combines_with_a_positive_select(project):
@@ -240,6 +288,7 @@ def test_skip_with_a_multi_valued_key_removes_any_match(project):
 def test_an_id_beats_a_skip(project):
     xid = "a/x.test::x[backend=oss]"
     assert xid in ids(select(project, skip=["tag=a"], ids=[xid])[0])
+    assert xid in ids(select(project, skip=["backend=oss;tag=a"], ids=[xid])[0])
 
 
 def test_why_line_for_a_command_line_skip(project):
@@ -247,16 +296,52 @@ def test_why_line_for_a_command_line_skip(project):
     assert why_not["a/x.test::x[backend=oss]"] == "--skip tag=a"
 
 
+def test_why_line_for_a_command_line_skip_group(project):
+    _, why_not = select(project, skip=["backend=oss;tag=a"])
+    assert why_not["a/x.test::x[backend=oss]"] == "--skip backend=oss;tag=a"
+
+
+def test_why_line_says_matches_no_select_group_once(project):
+    _, why_not = select(project, select=["tag=mine", "backend=oss"])
+    assert why_not["b/solo.py::solo"] == "matches no --select group"
+
+
 @pytest.mark.parametrize("expr", ["tag=a", "type=sqllogic", "case=cmt,plain", "backend=oss", "tag=mine"])
 def test_a_negated_select_and_the_equivalent_skip_choose_the_same_cases(project, expr):
-    assert ids(select(project, select=[f"not:{expr}"])[0]) == ids(select(project, skip=[expr])[0])
+    assert ids(select(project, select=[f"!{expr}"])[0]) == ids(select(project, skip=[expr])[0])
 
 
 @pytest.mark.parametrize("expr", ["tag=a", "backend=oss", "case=cmt"])
 def test_a_negated_select_and_skip_agree_on_top_of_a_positive_selection(project, expr):
-    with_negation = select(project, paths=["test/a", "test/b"], select=[f"not:{expr}"])[0]
+    with_negation = select(project, paths=["test/a", "test/b"], select=[f"!{expr}"])[0]
     with_skip = select(project, paths=["test/a", "test/b"], skip=[expr])[0]
     assert ids(with_negation) == ids(with_skip)
+
+
+def test_a_two_term_negation_only_group_becomes_two_skips_by_de_morgan(project):
+    # !A;!B (keep neither) == --skip A --skip B, and it stays a lone-skip run: the slow case is out
+    # via the slow rule, not via either translated skip, so the default base was kept, not widened
+    negation, why_not = select(project, select=["!tag=a;!tag=mine"])
+    two_skips, _ = select(project, skip=["tag=a", "tag=mine"])
+    assert ids(negation) == ids(two_skips) == ["b/one.test::one", "b/solo.py::solo"]
+    assert "runs only when asked for" in why_not["a/y.test_slow::y"]
+    assert why_not["a/x.test::x[backend=oss]"] == "--skip tag=a (from --select !tag=a;!tag=mine)"
+    assert why_not["b/paired.py::body[cmt]"] == "--skip tag=mine (from --select !tag=a;!tag=mine)"
+
+
+def test_a_mixed_group_is_an_ordinary_positive_selection(project):
+    # backend=oss AND NOT tag=mine: a positive group, not a translation -- it narrows the base to just
+    # the matching cases, unlike a lone --skip of the same clause, which would only subtract from it
+    mixed = select(project, select=["backend=oss;!tag=mine"])[0]
+    assert ids(mixed) == ["a/x.test::x[backend=oss]"]
+    lone_skip = select(project, skip=["backend=oss;!tag=mine"])[0]
+    assert ids(lone_skip) == [
+        "a/x.test::x[backend=dbx]",
+        "b/one.test::one",
+        "b/paired.py::body[cmt]",
+        "b/paired.py::body[plain]",
+        "b/solo.py::solo",
+    ]
 
 
 def test_a_lone_skip_keeps_a_default_set_as_the_base(tmp_path):
@@ -327,6 +412,127 @@ def test_a_named_sets_skip_applies_on_top_of_its_own_selection(tmp_path):
     via_set, why_not = apply(cases, Selection(set_name="smoke"), proj)
     assert ids(via_set) == ["keep/plain.test::plain", "keep/spark.test::spark"]  # smoke's skip removes quiet, not spark
     assert why_not["keep/quiet.test::quiet"] == "skip tag=quiet  <- set 'smoke'"
+
+
+def test_a_negation_only_select_keeps_a_named_default_set_as_the_base(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                SETS = {"default": {"paths": ["test/keep"]}}
+                RULES = [match("keep/spark.test", tags=["spark"]), match("keep/other.test", tags=["quiet"])]
+            """,
+            "test/keep/spark.test": "",
+            "test/keep/other.test": "",
+            "test/outside/far.test": "",
+        },
+    )
+    selected, why_not = apply(cases, Selection(select=["!tag=spark"]), proj)
+    assert ids(selected) == ["keep/other.test::other"]  # base is the default set's paths, not every case
+    assert why_not["keep/spark.test::spark"] == "--skip tag=spark (from --select !tag=spark)"
+    assert why_not["outside/far.test::far"] == "outside the given paths"
+
+
+def test_a_sets_select_entries_are_ord(project):
+    assert ids(select(project, set_name="combo")[0]) == [
+        "a/x.test::x[backend=oss]",
+        "b/paired.py::body[cmt]",
+        "b/paired.py::body[plain]",
+    ]
+
+
+def test_a_sets_skip_entry_may_be_a_group(project):
+    # trimmed scopes to test/a + test/b, then drops only cases that are both backend=oss and tag=a
+    assert ids(select(project, set_name="trimmed")[0]) == [
+        "a/x.test::x[backend=dbx]",
+        "b/one.test::one",
+        "b/paired.py::body[cmt]",
+        "b/paired.py::body[plain]",
+        "b/solo.py::solo",
+    ]
+
+
+def test_path_selects_a_directory_and_its_glob_form_agree(project):
+    directory = ids(select(project, select=["path=a"])[0])
+    glob_form = ids(select(project, select=["path=a/**"])[0])
+    assert directory == glob_form == ["a/x.test::x[backend=oss]", "a/x.test::x[backend=dbx]"]
+
+
+def test_path_in_a_group(project):
+    assert ids(select(project, select=["path=a;backend=oss"])[0]) == ["a/x.test::x[backend=oss]"]
+
+
+def test_path_with_no_match_is_an_error(project):
+    with pytest.raises(UsageError, match="matches no scanned case"):
+        select(project, select=["path=nowhere/at/all"])
+
+
+def test_path_does_not_bring_in_a_slow_case(project):
+    _, why_not = select(project, select=["path=a/y.test_slow"])
+    assert "runs only when asked for" in why_not["a/y.test_slow::y"]
+
+
+def test_a_term_with_no_key_is_a_path_term(project):
+    assert ids(select(project, select=["a"])[0]) == ids(select(project, select=["path=a"])[0])
+    assert ids(select(project, select=["!a"])[0]) == ids(select(project, select=["!path=a"])[0])
+    # a bare path term sits in a group like any other
+    assert ids(select(project, select=["type=sqllogic;a"])[0]) == [
+        "a/x.test::x[backend=oss]",
+        "a/x.test::x[backend=dbx]",
+    ]
+
+
+def test_a_bare_path_with_an_embedded_equals_is_an_error(project):
+    with pytest.raises(UsageError, match="a bare path can't contain '='"):
+        select(project, select=["a/x.test=oss"])
+
+
+def test_a_command_line_path_term_is_relative_to_the_working_directory(tmp_path):
+    tree(tmp_path, {"test/a/x.test": "", "test/b/y.test": ""})
+    root, sub = str(tmp_path / "test"), str(tmp_path / "test" / "a")
+    cases_from_root, proj_from_root = scan(root, working_dir=root)
+    cases_from_sub, proj_from_sub = scan(root, working_dir=sub)
+    from_root = apply(cases_from_root, Selection(select=["a"]), proj_from_root, working_dir=root)[0]
+    from_sub = apply(cases_from_sub, Selection(select=["."]), proj_from_sub, working_dir=sub)[0]
+    assert ids(from_root) == ids(from_sub) == ["a/x.test::x"]
+
+
+def test_a_path_term_outside_the_project_root_is_an_error(tmp_path):
+    cases, proj = tree(tmp_path, {"test/a.test": ""})
+    with pytest.raises(UsageError, match="is outside the project root"):
+        apply(cases, Selection(select=["../elsewhere"]), proj, working_dir=str(tmp_path / "test"))
+
+
+def test_a_named_sets_path_term_is_not_affected_by_the_working_directory(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": 'SETS = {"onlya": {"select": ["path=a"]}}',
+            "test/a/x.test": "",
+            "test/b/y.test": "",
+        },
+    )
+    from_root = apply(cases, Selection(set_name="onlya"), proj, working_dir=str(tmp_path / "test"))[0]
+    from_sub = apply(cases, Selection(set_name="onlya"), proj, working_dir=str(tmp_path / "test" / "b"))[0]
+    assert ids(from_root) == ids(from_sub) == ["a/x.test::x"]
+
+
+def test_docstring_examples(dnf_project):
+    all_ids = ids(dnf_project[0])
+
+    python_on_s3, _ = select(dnf_project, select=["type=python;storage=s3"])
+    assert ids(python_on_s3) == [i for i in all_ids if "py/d.py" in i and "storage=s3" in i]
+
+    python_or_s3, _ = select(dnf_project, select=["type=python", "storage=s3"])
+    assert set(ids(python_or_s3)) == {i for i in all_ids if "py/d.py" in i or "storage=s3" in i}
+
+    dropped_both, _ = select(dnf_project, skip=["backend=oss;storage=s3"])
+    assert set(ids(dropped_both)) == set(all_ids) - {i for i in all_ids if "backend=oss" in i and "storage=s3" in i}
+
+    without_spark, _ = select(dnf_project, select=["!tag=spark"])
+    same_as_skip, _ = select(dnf_project, skip=["tag=spark"])
+    assert ids(without_spark) == ids(same_as_skip) == [i for i in all_ids if "spark/e.test" not in i]
 
 
 def test_a_star_stays_inside_one_directory_and_two_stars_cross(tmp_path):

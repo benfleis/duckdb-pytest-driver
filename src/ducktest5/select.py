@@ -1,44 +1,73 @@
 """Which cases a run takes.
 
-    ducktest5 run PATH [PATH ...] [--select EXPR ...] [--skip EXPR ...] [--id CASE_ID ...] [--set NAME]
+    ducktest5 run PATH [PATH ...] [--select GROUP ...] [--skip GROUP ...] [--id CASE_ID ...] [--set NAME]
 
-Selects pick a base; skips always come after. That is why there are two words: a selection decides
-what set of cases you start from, a skip only ever removes from it -- a lone `--skip` still runs the
-default set, minus what it names.
+1. TERM. `key=v1,v2` holds for a case that has any of those values for `key` (for a multi-valued key
+   such as `tag`, any of the case's own values is enough). `!key=v1,v2` is the negation of the whole
+   term: it holds when the case has none of those values. `!` starts a term and nowhere else --
+   `key=!v1` and `key=v1,!v2` are errors that name the right spelling (`!key=v1`); the old `not:key=v`
+   prefix is gone the same way, with the same hint. A term with no `key=` is a `path` term (below):
+   `sql/cloud` is `path=sql/cloud`, `!sql/cloud` is `!path=sql/cloud`. Keys: `tag`, `type`, `case`,
+   `path`, and the name of any variant axis. An unknown key is an error, and so is a tag, axis value
+   or path that no scanned case has -- a term that can never match is a typo.
+2. GROUP. The argument of one `--select` or one `--skip` is a GROUP: one or more TERMs separated by
+   `;`. A group holds for a case when ALL its terms do (AND). Whitespace around `;`, `=` and `,` is
+   ignored. An empty term (`a=1;;b=2`, a trailing `;`) is an error.
+3. `--select`/`--skip` may repeat; repeats OR their groups together -- a case needs only one repeated
+   group to hold.
+4. So selects are a disjunctive normal form (an OR of the AND-groups given), and skips are a second
+   one, subtracted from what the selects give.
+5. NEGATION-ONLY GROUP = SKIP. A `--select` group whose every term is negated is not a positive
+   selection. By De Morgan it is translated, at parse time, into one skip group per term:
+   `--select '!A;!B'` (keep cases that are neither) becomes the skips `A` and `B`. It keeps the
+   default base, exactly as a lone `--skip` does. A group that mixes positive and negated terms
+   (`a=1;!b=2`) stays a positive group: a=1 AND NOT b=2. Inside a `--skip` group, `!` terms are
+   ordinary -- a skip is already a subtraction, so there is nothing to translate.
+6. `path=GLOB[,GLOB]` matches a case's test file path, with the same glob a rule's `match()` uses:
+   `*` stays inside one directory level, `**` crosses, and a pattern with no wildcard also matches
+   everything below it -- `path=sql/cloud` is `path=sql/cloud/**`. Like a directory PATH, it does not
+   bring in a slow or coverage case. On the command line a path term is relative to the working
+   directory, exactly like a positional PATH; inside a project file (a named set's own entries) it is
+   relative to the project root. Both are normalised, at parse time, to the root-relative form a case
+   id uses, so matching only ever sees one form; a path that normalises outside the project root is an
+   error.
+7. SCOPE. Positional PATHs are a union, as in every other tool: a file, a directory, or a glob,
+   relative to the working directory. They set the scope; the select groups then filter within it:
 
-1. POSITIVE selection sets the base: PATHs, `--select key=v1,v2` (not negated), and `--set NAME`.
-   PATHs are a union, as in every other tool: a file, a directory, or a glob, relative to the working
-   directory. Every positive `--select` must hold (AND). Keys: `tag`, `type`, `case`, and the name of
-   any variant axis; an unknown key is an error, and so is a tag or an axis value that no scanned case
-   has: a selection that can never match is a typo. A set contributes its own paths and selects, the
-   same as a PATH or `--select` given on the command line. With no positive selection at all, the base
-   is the project's set `default` if it has one, else every case whose test is `in_default_set`.
-2. SKIPS remove cases from the base; they never change it. `--skip EXPR` (repeatable) uses the same
-   `key=v1,v2` syntax and validation as `--select`. A case is removed if ANY skip matches it (for `tag`
-   and other multi-valued keys: if the case has any of the listed values).
-3. `--select not:key=v1,v2` and `--select !key=v1,v2` are translated, at parse time, into exactly
-   `--skip key=v1,v2` -- they are not a positive selection (rule 1), and after translation nothing else
-   knows they were ever a negation. `--skip not:...` or `--skip !...` is an error: a skip is already a
-   negation.
-4. A named set (`SETS` in the project file) is `{"paths": [...], "select": [...], "skip": [...]}`. Its
-   skips apply in addition to any given on the command line. A negated entry inside its `select` list
-   translates the same way as on the command line. The set `default` may have skips too.
-5. `--id` names one case exactly, for a re-run. Its path part is relative to the project root, so it
+       selected = scope(PATHs, or everything if none)
+                  AND (OR of the positive select groups, or everything if none)
+                  MINUS (OR of the skip groups)
+
+8. BASE. With no positive selection at all -- no PATH, no positive `--select` group, no `--set`, no
+   `--id` -- the base is the project's set `default` if it has one, else every case whose test is
+   `in_default_set`. Skips never change the base.
+9. `--id` names one case exactly, for a re-run. Its path part is relative to the project root, so it
    reads and works the same from every directory. Quote it in a shell. A case named by `--id` always
    runs: no `--select`, no `--skip`, no tag and no PATH takes it out. With `--id` alone, only the named
    cases run; with PATHs, `--select` or `--set` as well, the named cases are added to what those give
    (a union).
-6. `in_default_set=False` takes a test out of that last run only: the run with nothing given, in a
-   project that has no set `default`. With a set `default`, or with any PATH, `--select`, `--id` or
-   `--set`, it has no effect.
-7. A case with the tag `slow` or `coverage` (a `.test_slow`, a `.test_coverage`) runs only when asked
-   for: `--slow` (these too), `--select tag=slow` (only these), its `--id`, or its file named exactly
-   as a PATH. A directory or a glob does not bring it in. `--skip tag=slow` is legal and harmless --
-   these cases are already out.
-8. `select --why` names the reason a case is missing: which `--select` failed, or which skip removed
-   it and where that skip came from, e.g. `--skip tag=spark` for a command-line `--skip`,
-   `skip tag=spark  <- set 'default'` for a set's skip, and `--skip tag=spark (from --select
-   not:tag=spark)` for a translated negation.
+10. `in_default_set=False` takes a test out of that last run only: the run with nothing given, in a
+    project that has no set `default`. With a set `default`, or with any PATH, `--select`, `--id` or
+    `--set`, it has no effect.
+11. A case with the tag `slow` or `coverage` (a `.test_slow`, a `.test_coverage`) runs only when asked
+    for: `--slow` (these too), `--select tag=slow` (only these), its `--id`, or its file named exactly
+    as a PATH. A directory, a glob or a `path=` term does not bring it in. `--skip tag=slow` is legal
+    and harmless -- these cases are already out.
+12. A named set (`SETS` in the project file) is `{"paths": [...], "select": [...], "skip": [...]}`.
+    Every entry of `select` and of `skip` is a GROUP, with the same grammar as the command line; a
+    set's entries OR into the command line's the same way repeats do, and its paths join the scope
+    union. The set `default` may have skips (and selects) too.
+13. `select --why` names the reason a case is missing: which skip removed it and where that skip came
+    from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- set 'default'`
+    for a set's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated negation-only
+    group. A case that matches no positive `--select` group says so once, not once per group.
+
+Examples:
+
+    --select 'type=python;storage=s3'                      python cases on s3
+    --select type=python --select storage=s3               python cases, and all s3 cases
+    --skip 'backend=oss;storage=s3'                         drop only what is both
+    --select '!tag=spark'                                   the default run without spark cases (same as --skip tag=spark)
 """
 
 from __future__ import annotations
@@ -48,10 +77,11 @@ import os
 from dataclasses import dataclass, field
 
 from .binary import UsageError
+from .conf import _glob
 
 
-def _is_negated(expr):
-    return expr.startswith("not:") or expr.startswith("!")
+def _is_negation_only(expr):
+    return all(t.strip().startswith("!") for t in expr.split(";"))
 
 
 @dataclass
@@ -64,7 +94,7 @@ class Selection:
     skip: list = field(default_factory=list)
 
     def is_bare(self):
-        positive_select = any(not _is_negated(e) for e in self.select)
+        positive_select = any(not _is_negation_only(e) for e in self.select)
         return not (self.paths or positive_select or self.ids or self.set_name)
 
 
@@ -83,50 +113,113 @@ def _path_matches(case_path, wanted):
     )
 
 
-def _split_negation(expr):
-    if expr.startswith("not:"):
-        return True, expr[4:]
-    if expr.startswith("!"):
-        return True, expr[1:]
-    return False, expr
+def _path_term_matches(case_root_path, pattern):
+    """`path=` uses the project's own glob (conf.py's `match()`); a pattern with no wildcard also
+    stands for everything below it, as if `/**` had been appended."""
+    if set(pattern) & {"*", "?"}:
+        return _glob(pattern).fullmatch(case_root_path) is not None
+    stripped = pattern.rstrip("/")
+    return case_root_path == stripped or case_root_path.startswith(stripped + "/")
 
 
-def _parse_kv(expr, body, flag, axes, known_tags, known_cases):
-    """`body` is `expr` with any not:/! prefix already stripped."""
-    key, sep, raw = body.partition("=")
-    if not sep or not raw:
-        raise UsageError(f"{flag} {expr!r}: write key=value[,value] or not:key=value")
-    values = raw.split(",")
+def _looks_like_path(s):
+    return "/" in s or any(c in "*?" for c in s)
+
+
+@dataclass
+class _Ctx:
+    axes: dict
+    known_tags: set
+    known_cases: set
+    cases: list
+    project_root: str
+    working_dir: str
+
+
+def _root_relative(value, origin, ctx, flag, term):
+    """A command-line path term (origin is None) is typed relative to the working directory, exactly
+    like a positional PATH; a named set's own entry (origin is its name) is already relative to the
+    project root. Both become root-relative here, the one form the matcher and `path=`'s validation see."""
+    if origin is None:
+        abs_path = os.path.normpath(os.path.join(ctx.working_dir, value))
+        value = os.path.relpath(abs_path, ctx.project_root).replace(os.sep, "/")
+    if value == ".." or value.startswith("../"):
+        raise UsageError(f"{flag} {term!r}: path {value!r} is outside the project root")
+    return value
+
+
+def _split_group_terms(expr, flag):
+    terms = [t.strip() for t in expr.split(";")]
+    if any(not t for t in terms):
+        raise UsageError(f"{flag} {expr!r}: empty term -- terms are key=value, separated by ';'")
+    return terms
+
+
+def _parse_term(term, flag, origin, ctx):
+    negated = term.startswith("!")
+    body = term[1:].strip() if negated else term
+    if body.startswith("not:"):
+        raise UsageError(f"{flag} {term!r}: 'not:' is gone; write !{body[4:].strip()}")
+    if not body:
+        raise UsageError(f"{flag} {term!r}: write key=value[,value] or !key=value")
+    key, sep, raw = body.partition("=") if "=" in body else ("path", "", body)
+    key = key.strip()
+    if sep and not raw.strip():
+        raise UsageError(f"{flag} {term!r}: write key=value[,value] or !key=value")
+    values = [v.strip() for v in raw.split(",")]
+    bad = next((v for v in values if v.startswith("!")), None)
+    if bad is not None:
+        raise UsageError(f"{flag} {term!r}: '!' only starts a term; write !{key}={bad[1:]}")
     if key == "tag":
-        unknown = [v for v in values if v not in known_tags]
+        unknown = [v for v in values if v not in ctx.known_tags]
         if unknown:
-            raise UsageError(f"{flag} {expr!r}: no scanned case has tag {unknown}; known tags: {sorted(known_tags)}")
-    elif key in axes:
-        unknown = [v for v in values if v not in axes[key]]
+            raise UsageError(
+                f"{flag} {term!r}: no scanned case has tag {unknown}; known tags: {sorted(ctx.known_tags)}"
+            )
+    elif key == "path":
+        values = [_root_relative(v, origin, ctx, flag, term) for v in values]
+        unknown = [v for v in values if not any(_path_term_matches(c.test.root_path, v) for c in ctx.cases)]
         if unknown:
-            raise UsageError(f"{flag} {expr!r}: axis {key!r} has no value {unknown}; it has {sorted(axes[key])}")
+            raise UsageError(f"{flag} {term!r}: path {unknown} matches no scanned case")
+    elif key in ctx.axes:
+        unknown = [v for v in values if v not in ctx.axes[key]]
+        if unknown:
+            raise UsageError(f"{flag} {term!r}: axis {key!r} has no value {unknown}; it has {sorted(ctx.axes[key])}")
     elif key == "type":
         if unknown := [v for v in values if v not in ("sqllogic", "paired", "python")]:
-            raise UsageError(f"{flag} {expr!r}: no type {unknown}; types are sqllogic, paired, python")
+            raise UsageError(f"{flag} {term!r}: no type {unknown}; types are sqllogic, paired, python")
     elif key == "case":
-        if unknown := [v for v in values if v not in known_cases]:
-            raise UsageError(f"{flag} {expr!r}: no test has a case {unknown}")
+        if unknown := [v for v in values if v not in ctx.known_cases]:
+            raise UsageError(f"{flag} {term!r}: no test has a case {unknown}")
+    elif _looks_like_path(term):
+        raise UsageError(f"{flag} {term!r}: a bare path can't contain '='; write path={key}")
     else:
         raise UsageError(
-            f"{flag} {expr!r}: unknown key {key!r}; keys are tag, type, case" + "".join(f", {a}" for a in axes)
+            f"{flag} {term!r}: unknown key {key!r}; keys are tag, type, case, path"
+            + "".join(f", {a}" for a in ctx.axes)
         )
-    return key, values
+    return negated, key, values
+
+
+def _parse_group(expr, flag, origin, ctx):
+    return [_parse_term(t, flag, origin, ctx) for t in _split_group_terms(expr, flag)]
 
 
 def _matches(case, key, values):
-    """True if `case` has any of `values` for `key` -- "must hold" for a select, "removes" for a skip."""
+    """True when `case` has any of `values` for `key` -- "holds" for a positive term, "removes" for a skip term."""
     if key == "tag":
         return any(v in case.tags for v in values)
     if key == "type":
         return case.test.type in values
     if key == "case":
         return case.case_id in values
+    if key == "path":
+        return any(_path_term_matches(case.test.root_path, v) for v in values)
     return key in case.axis_values and case.axis_values[key].id in values
+
+
+def _group_holds(case, terms):
+    return all(_matches(case, key, values) != negated for negated, key, values in terms)
 
 
 def _skip_reason(body, origin, from_select=None):
@@ -137,61 +230,53 @@ def _skip_reason(body, origin, from_select=None):
     return f"{where} (from {how} {from_select})"
 
 
-def _split_selects(exprs, origin, axes, known_tags, known_cases):
-    """Splits `--select`/a set's `select` EXPRs into positive filters and the skips a negation becomes."""
+def _classify_select_exprs(exprs, origin, ctx):
+    """Splits `--select`/a set's `select` groups into positive groups (OR'd) and the skip groups a
+    negation-only group becomes -- by De Morgan, one skip group per term."""
     positive, skips = [], []
     for expr in exprs:
-        negated, body = _split_negation(expr)
-        key, values = _parse_kv(expr, body, "--select", axes, known_tags, known_cases)
-        if negated:
-            skips.append((key, values, _skip_reason(body, origin, from_select=expr)))
+        terms = _parse_group(expr, "--select", origin, ctx)
+        if all(negated for negated, _, _ in terms):
+            for negated, key, values in terms:
+                spelling = f"{key}={','.join(values)}"
+                skips.append(([(False, key, values)], _skip_reason(spelling, origin, from_select=expr)))
         else:
-            positive.append((expr, key, values))
+            positive.append(terms)
     return positive, skips
 
 
-def _split_skips(exprs, origin, axes, known_tags, known_cases):
-    """Parses `--skip`/a set's `skip` EXPRs; a skip may not itself be a negation."""
-    skips = []
-    for expr in exprs:
-        negated, body = _split_negation(expr)
-        if negated:
-            raise UsageError(f"--skip {expr!r}: a skip is already a negation; write --skip {body}")
-        key, values = _parse_kv(expr, body, "--skip", axes, known_tags, known_cases)
-        skips.append((key, values, _skip_reason(expr, origin)))
-    return skips
+def _classify_skip_exprs(exprs, origin, ctx):
+    return [(_parse_group(expr, "--skip", origin, ctx), _skip_reason(expr, origin)) for expr in exprs]
 
 
-def apply(cases, selection, project):
-    """Returns (selected, why_not) where why_not maps a case id to the reason it was left out."""
+def apply(cases, selection, project, working_dir=None):
+    """Returns (selected, why_not) where why_not maps a case id to the reason it was left out.
+    `working_dir` anchors command-line `path=`/bare-path terms; it defaults to the project root."""
     axes = {axis: set(values) for axis, values in project.axes.items()}
     known_tags = {t for c in cases for t in c.tags}
     known_cases = {c.case_id for c in cases if c.case_id is not None}
+    ctx = _Ctx(axes, known_tags, known_cases, cases, project.root, working_dir or project.root)
 
     paths = list(selection.paths)
-    positive, skip_rules = _split_selects(selection.select, None, axes, known_tags, known_cases)
-    skip_rules += _split_skips(selection.skip, None, axes, known_tags, known_cases)
+    positive_groups, skip_groups = _classify_select_exprs(selection.select, None, ctx)
+    skip_groups += _classify_skip_exprs(selection.skip, None, ctx)
 
     if selection.set_name:
         named = project.sets.get(selection.set_name)
         if named is None:
             raise UsageError(f"--set {selection.set_name!r}: the project has sets {sorted(project.sets)}")
         paths += named.get("paths", [])
-        set_positive, set_skips = _split_selects(
-            named.get("select", []), selection.set_name, axes, known_tags, known_cases
-        )
-        positive += set_positive
-        skip_rules += set_skips
-        skip_rules += _split_skips(named.get("skip", []), selection.set_name, axes, known_tags, known_cases)
+        set_positive, set_skips = _classify_select_exprs(named.get("select", []), selection.set_name, ctx)
+        positive_groups += set_positive
+        skip_groups += set_skips
+        skip_groups += _classify_skip_exprs(named.get("skip", []), selection.set_name, ctx)
     elif selection.is_bare() and "default" in project.sets:
         default_set = project.sets["default"]
         paths += default_set.get("paths", [])
-        default_positive, default_skips = _split_selects(
-            default_set.get("select", []), "default", axes, known_tags, known_cases
-        )
-        positive += default_positive
-        skip_rules += default_skips
-        skip_rules += _split_skips(default_set.get("skip", []), "default", axes, known_tags, known_cases)
+        default_positive, default_skips = _classify_select_exprs(default_set.get("select", []), "default", ctx)
+        positive_groups += default_positive
+        skip_groups += default_skips
+        skip_groups += _classify_skip_exprs(default_set.get("skip", []), "default", ctx)
 
     if selection.ids:
         known = {c.id for c in cases}
@@ -203,8 +288,10 @@ def apply(cases, selection, project):
             raise UsageError(f"path {p!r} holds no test")
 
     bare = selection.is_bare() and "default" not in project.sets
-    only_ids = bool(selection.ids) and not (paths or positive)
-    asked_for = {v for _, key, values in positive if key == "tag" for v in values}
+    only_ids = bool(selection.ids) and not (paths or positive_groups)
+    asked_for = {
+        v for terms in positive_groups for negated, key, values in terms if key == "tag" and not negated for v in values
+    }
     selected, why_not = [], {}
     for case in cases:
         if case.id in selection.ids:
@@ -213,10 +300,8 @@ def apply(cases, selection, project):
             why_not[case.id] = "not named by --id"
         elif paths and not any(_path_matches(case.test.path, p) for p in paths):
             why_not[case.id] = "outside the given paths"
-        elif (
-            failed := next((expr for expr, key, values in positive if not _matches(case, key, values)), None)
-        ) is not None:
-            why_not[case.id] = f"--select {failed}"
+        elif positive_groups and not any(_group_holds(case, terms) for terms in positive_groups):
+            why_not[case.id] = "matches no --select group"
         elif bare and not case.test.in_default_set:
             why_not[case.id] = "its test is not in the default set (in_default_set=False)"
         elif (
@@ -225,8 +310,8 @@ def apply(cases, selection, project):
             and (slow := next((t for t in ("slow", "coverage") if t in case.tags and t not in asked_for), None))
         ):
             why_not[case.id] = f"tag {slow}: runs only when asked for: --slow, --select tag={slow}, or --id"
-        elif (rule := next((r for r in skip_rules if _matches(case, r[0], r[1])), None)) is not None:
-            why_not[case.id] = rule[2]
+        elif (rule := next((r for r in skip_groups if _group_holds(case, r[0])), None)) is not None:
+            why_not[case.id] = rule[1]
         else:
             selected.append(case)
     return selected, why_not
