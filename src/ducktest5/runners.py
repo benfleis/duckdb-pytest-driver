@@ -42,8 +42,9 @@ from .outcomes import ERROR, PASSED
 EVENT, SUMMARY = "event", "run-summary"
 
 # "[3/10] (30%): test/sql/x.test took 0.44s": the binary's own progress line, and the only place it
-# says how long one test took. An end event has no duration yet (request R1).
-_TOOK = re.compile(r"^\[\d+/\d+\] \(\d+%\): (.+) took ([0-9]+(?:\.[0-9]+)?)s\s*$", re.M)
+# says how long one test took (an end event has no duration yet: request R1). It is not matched at
+# the start of a line: the line has no newline of its own, so what stderr writes lands in the middle.
+_TOOK = re.compile(r"\[\d+/\d+\] \(\d+%\): (\S+) took ([0-9]+(?:\.[0-9]+)?)s")
 
 # Runs one batch of the wrapper and keeps the process's own output. `{test_list}` is a new file for
 # each batch, so no two processes write the same name.
