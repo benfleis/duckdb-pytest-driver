@@ -151,3 +151,88 @@ def test_exec_refuses_a_plan_that_already_has_events(tree, capsys):
     phases_of("apart")
     assert main(["exec", "--run-dir", "apart", *binaries()]) == 2
     assert "--resume" in capsys.readouterr().err
+
+
+# -----------------------------------------------------------------------------
+# Resume, and a slice of a plan for each machine
+#
+
+
+def ended(run_dir):
+    return [e for e in events.read(str(run_dir)) if e["event"] == events.CASE_END]
+
+
+def started(run_dir):
+    return [e["id"] for e in events.read(str(run_dir)) if e["event"] == events.CASE_START]
+
+
+def test_resume_runs_only_the_cases_that_have_no_end_yet(tree, capsys):
+    assert main(["scan", "--run-dir", "apart"]) == 0
+    assert main(["plan", "--run-dir", "apart", "--batch-size", "1"]) == 0
+    assert main(["exec", "--run-dir", "apart", "--batch", "b001", *binaries()]) == 0
+    assert started("apart") == ["a/x.test::x"]
+
+    assert main(["exec", "--run-dir", "apart", "--resume", *binaries()]) == 1
+    assert started("apart").count("a/x.test::x") == 1  # it had an end, so it did not run again
+    assert len(ended("apart")) == 4
+    assert outcomes("apart") == {
+        "a/x.test::x": "passed",
+        "a/y.test::y": "passed",
+        "b/z_fail.test::z_fail": "failed",
+        "b/body.py::passes": "passed",
+    }
+
+
+def test_a_case_that_was_stopped_half_way_runs_again_and_its_event_says_so(tree):
+    assert main(["scan", "--run-dir", "apart"]) == 0
+    assert main(["plan", "--run-dir", "apart", "--batch-size", "1"]) == 0
+    with open(os.path.join("apart", events.EVENTS_FILE), "w") as f:
+        f.write(json.dumps({"event": events.CASE_START, "run": "apart", "id": "a/x.test::x"}) + "\n")
+
+    assert main(["exec", "--run-dir", "apart", "--resume", *binaries()]) == 1
+    (again,) = [e for e in ended("apart") if e["id"] == "a/x.test::x"]
+    assert again["outcome"] == "passed"
+    assert again["note"] == "the run before this one was stopped while this case was running"
+
+
+def test_only_failed_runs_what_failed_again_and_the_later_outcome_wins(tree, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_UNITTEST_STATE", str(tmp_path / "state"))
+    (tmp_path / "state").mkdir()
+    (tree / "test/a/flaky2.test").write_text("")
+
+    assert main(["scan", "--run-dir", "apart"]) == 0
+    assert main(["plan", "--run-dir", "apart", "--batch-size", "1"]) == 0
+    assert main(["exec", "--run-dir", "apart", *binaries()]) == 1
+    assert outcomes("apart")["a/flaky2.test::flaky2"] == "failed"
+
+    assert main(["exec", "--run-dir", "apart", "--only-failed", *binaries()]) == 1
+    assert started("apart").count("a/flaky2.test::flaky2") == 2
+    assert outcomes("apart")["a/flaky2.test::flaky2"] == "passed"  # a later event wins
+    assert outcomes("apart")["b/z_fail.test::z_fail"] == "failed"
+
+
+def test_two_execs_over_one_plan_write_beside_each_other(tree, capsys):
+    assert main(["scan", "--run-dir", "apart"]) == 0
+    assert main(["plan", "--run-dir", "apart", "--batch-size", "1"]) == 0
+    here = os.path.join("apart", "04-events.here.jsonl")
+    there = os.path.join("apart", "04-events.there.jsonl")
+    assert main(["exec", "--run-dir", "apart", "--batch", "b001", "--events", here, *binaries()]) == 0
+    assert main(["exec", "--run-dir", "apart", "--id", "b/z_fail.test::z_fail", "--events", there, *binaries()]) == 1
+    assert not os.path.exists(os.path.join("apart", events.EVENTS_FILE))
+
+    capsys.readouterr()
+    assert main(["report", "--run-dir", here, "--run-dir", there, "--format", "json"]) == 1
+    merged = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert {e["id"]: e["outcome"] for e in merged if e["event"] == events.CASE_END} == {
+        "a/x.test::x": "passed",
+        "b/z_fail.test::z_fail": "failed",
+    }
+    # the run directory is the run: a report of it reads every slice written beside the other
+    assert outcomes("apart") == {"a/x.test::x": "passed", "b/z_fail.test::z_fail": "failed"}
+
+
+def test_a_batch_the_plan_does_not_have_is_a_usage_error(tree, capsys):
+    assert main(["scan", "--run-dir", "apart"]) == 0
+    assert main(["plan", "--run-dir", "apart"]) == 0
+    assert main(["exec", "--run-dir", "apart", "--batch", "b404", *binaries()]) == 2
+    assert "no batch b404" in capsys.readouterr().err

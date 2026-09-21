@@ -38,6 +38,7 @@ from .run import execute, run
 from .scan import scan
 from .select import Selection, apply
 
+
 def _report_options(parser):
     """The options that say where a report goes; `run`, `exec` and `report` take the same ones."""
     parser.add_argument("--format", default="text", choices=FORMATS, help="what standard output gets (default: text)")
