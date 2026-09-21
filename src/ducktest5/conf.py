@@ -7,7 +7,7 @@ subtree (`default`) or about a pattern relative to its file (`match`); a pattern
 How rules combine, in one order: the root file first, then each file on the way down to the test; in a
 file, the rules as listed; then the test's own `@test(...)`. Along that order, list fields (tags,
 services, engines, variants) add up, dict fields (values, settings) update by key, and single values
-(in_default_set, timeout, retries) are replaced. `why` records which rule gave what.
+(timeout, retries) are replaced. `why` records which rule gave what.
 
 `retries=N` lets a test that ended FAILED or ERROR run again, alone, up to N times; it is PASSED when an
 attempt passes, and the report says which attempt. It is for a test that can fail for reasons that are
@@ -28,7 +28,7 @@ from .declare import CONF_FILE, Engine, Service, Variant
 
 _LISTS = ("tags", "services", "engines", "variants")
 _DICTS = ("values", "settings")
-_SINGLES = ("in_default_set", "timeout", "retries")
+_SINGLES = ("timeout", "retries")
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,6 @@ class Settled:
     variants: list = field(default_factory=list)
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
-    in_default_set: bool = True
     timeout: float | None = None
     retries: int = 0
     why: list = field(default_factory=list)

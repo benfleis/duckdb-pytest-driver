@@ -396,41 +396,6 @@ def test_a_lone_skip_runs_everything_else_including_slow(project):
     assert "a/y.test_slow::y" in ids(select(project, skip=["tag=mine"])[0])
 
 
-def test_a_bare_run_leaves_in_default_set_false_cases_out(tmp_path):
-    cases, proj = tree(
-        tmp_path,
-        {
-            "test/ducktestconf.py": """
-                from ducktest5 import match
-                RULES = [match("special.test", in_default_set=False, tags=["special"]), match("normal.test")]
-            """,
-            "test/special.test": "",
-            "test/normal.test": "",
-        },
-    )
-    selected, why_not = apply(cases, Selection(), proj)
-    assert ids(selected) == ["normal.test::normal"]
-    assert why_not["special.test::special"] == "not in suite 'default': in_default_set=False"
-    # once anything at all is given, the built-in default plays no part, and in_default_set has no effect
-    with_path = apply(cases, Selection(paths=["test/special.test"]), proj)[0]
-    assert ids(with_path) == ["special.test::special"]
-
-
-def test_a_project_default_suite_ignores_in_default_set(tmp_path):
-    cases, proj = tree(
-        tmp_path,
-        {
-            "test/ducktestconf.py": """
-                from ducktest5 import match
-                SUITES = {"default": {}}
-                RULES = [match("special.test", in_default_set=False)]
-            """,
-            "test/special.test": "",
-        },
-    )
-    assert ids(apply(cases, Selection(), proj)[0]) == ["special.test::special"]
-
-
 def test_a_suites_skip_applies_on_top_of_its_own_selection(tmp_path):
     cases, proj = tree(
         tmp_path,

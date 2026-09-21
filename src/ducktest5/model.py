@@ -35,7 +35,6 @@ class TestDef:
     variants: list = field(default_factory=list)
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
-    in_default_set: bool = True
     timeout: float | None = None
     retries: int = 0  # how often a FAILED or ERROR may run again
     why: list = field(default_factory=list)
@@ -105,7 +104,7 @@ class Case:
                 "case": self.case_id,
                 "variants": {a: v.id for a, v in self.axis_values.items()},
             },
-            "selection": {"tags": self.tags, "in_default_set": self.test.in_default_set},
+            "selection": {"tags": self.tags},
             "preconditions": {
                 "services": self.services,
                 "engines": [{"id": e, "version": project.engines[e].version} for e in self.engines],

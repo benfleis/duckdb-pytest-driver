@@ -41,20 +41,16 @@
 8. BASE. The suite `all` is every scanned case, slow and coverage cases included; it always exists, and
    a project may not define a suite named `all`. The suite `default` is what a bare run takes -- no
    PATH, no `--select`, no `--skip`, no `--suite`, no `--id` -- and is the project's own suite `default`
-   when it has one, else the built-in definition: select `suite=all`, skip `tag=slow,coverage`, minus
-   any test whose `in_default_set` is `False`. Anything at all on the command line replaces the default
-   entirely, not just narrows it -- `--skip tag=spark` alone runs everything else, slow cases included,
-   because a skip on the command line already means the base is `all`, not `default`; write `--suite
-   default --skip tag=spark` for the default minus spark.
+   when it has one, else the built-in definition: select `suite=all`, skip `tag=slow,coverage`. Anything
+   at all on the command line replaces the default entirely, not just narrows it -- `--skip tag=spark`
+   alone runs everything else, slow cases included, because a skip on the command line already means
+   the base is `all`, not `default`; write `--suite default --skip tag=spark` for the default minus spark.
 9. `--id` names one case exactly, for a re-run. Its path part is relative to the project root, so it
    reads and works the same from every directory. Quote it in a shell. A case named by `--id` always
    runs: no `--select`, no `--skip`, no tag and no PATH takes it out. With `--id` alone, only the named
    cases run; with PATHs, `--select` or `--suite` as well, the named cases are added to what those give
    (a union).
-10. `in_default_set=False` takes a test out of the built-in default only -- the base a bare run takes
-    when the project has no suite `default`. A project's own suite `default` ignores it, like any suite;
-    so does any PATH, `--select`, `--id`, `--suite`, or `--skip` on the command line.
-11. SUITE. A suite is a named selection of cases; a case can be in any number of suites. `SUITES` in the
+10. SUITE. A suite is a named selection of cases; a case can be in any number of suites. `SUITES` in the
     project file gives each one as `{"paths": [...], "select": [...], "skip": [...]}`, with the same
     CLAUSE grammar as the command line: the suite holds for a case that is in scope(its paths, or
     everything) AND (OR of its select clauses, or everything) MINUS (OR of its skip clauses). `--suite
@@ -62,15 +58,14 @@
     TERM, and `!suite=NAME` negates it -- usable on the command line and inside another suite's own
     select/skip, the same as `suite=all` or `suite=default` is. A suite that refers to itself, directly
     or through another suite, is a usage error that prints the cycle.
-12. `select --explain` names the reason a case is missing: which skip removed it and where that skip
+11. `select --explain` names the reason a case is missing: which skip removed it and where that skip
     came from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- suite
     'default'` for a suite's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated
     negation-only clause. A case that matches no positive `--select` clause says so once, not once per
     clause -- unless that whole positive selection is a single `suite=NAME` term, when it instead reads
     `not in suite 'NAME'`, the same whether the case is outside the suite or was dropped by the suite's
     own skip; a project-defined suite's definition is never expanded here. A case the built-in default
-    drops adds why: `not in suite 'default': tag slow` (or `coverage`, or `in_default_set=False`), so a
-    bare run explains itself.
+    drops adds why: `not in suite 'default': tag slow` (or `coverage`), so a bare run explains itself.
 
 Examples:
 
@@ -302,19 +297,16 @@ def _suite_selection(name, ctx, stack=()):
 
 
 def _suite_members(name, ctx):
-    """The cases suite `name` selects: scope(its paths) AND (its select) MINUS (its skip) -- and, for the
-    built-in `default`, minus any test with `in_default_set=False` too, which no clause can express.
-    Cached, so a suite is matched against every case once per run, not once per case per `suite=` term."""
+    """The cases suite `name` selects: scope(its paths) AND (its select) MINUS (its skip). Cached, so a
+    suite is matched against every case once per run, not once per case per `suite=` term."""
     if name not in ctx.suite_members:
         paths, positive_clauses, skip_clauses = _suite_selection(name, ctx)
-        builtin_default = name == "default" and "default" not in ctx.suites
         ctx.suite_members[name] = {
             case.id
             for case in ctx.cases
             if (not paths or any(_path_matches(case.test.path, p) for p in paths))
             and (not positive_clauses or any(_clause_holds(case, terms, ctx) for terms in positive_clauses))
             and not any(_clause_holds(case, clause, ctx) for clause, _ in skip_clauses)
-            and not (builtin_default and not case.test.in_default_set)
         }
     return ctx.suite_members[name]
 
@@ -328,11 +320,7 @@ def _sole_suite_term(positive_clauses):
 
 
 def _default_exclusion_reason(case):
-    if "slow" in case.tags:
-        return "tag slow"
-    if "coverage" in case.tags:
-        return "tag coverage"
-    return "in_default_set=False"
+    return "tag slow" if "slow" in case.tags else "tag coverage"
 
 
 def _not_in_positive_reason(case, positive_clauses, ctx):
