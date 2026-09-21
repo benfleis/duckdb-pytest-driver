@@ -8,8 +8,8 @@
    `key=!v1` and `key=v1,!v2` are errors that name the right spelling (`!key=v1`); the old `not:key=v`
    prefix is gone the same way, with the same hint. A term with no `key=` is a `path` term (below):
    `sql/cloud` is `path=sql/cloud`, `!sql/cloud` is `!path=sql/cloud`. Keys: `tag`, `type`, `case`,
-   `path`, and the name of any variant axis. An unknown key is an error, and so is a tag, axis value
-   or path that no scanned case has -- a term that can never match is a typo.
+   `path`, `suite`, and the name of any variant axis. An unknown key is an error, and so is a tag, axis
+   value or path that no scanned case has -- a term that can never match is a typo.
 2. GROUP. The argument of one `--select` or one `--skip` is a GROUP: one or more TERMs separated by
    `;`. A group holds for a case when ALL its terms do (AND). Whitespace around `;`, `=` and `,` is
    ignored. An empty term (`a=1;;b=2`, a trailing `;`) is an error.
@@ -27,7 +27,7 @@
    `*` stays inside one directory level, `**` crosses, and a pattern with no wildcard also matches
    everything below it -- `path=sql/cloud` is `path=sql/cloud/**`. Like a directory PATH, it does not
    bring in a slow or coverage case. On the command line a path term is relative to the working
-   directory, exactly like a positional PATH; inside a project file (a named set's own entries) it is
+   directory, exactly like a positional PATH; inside a project file (a suite's own entries) it is
    relative to the project root. Both are normalised, at parse time, to the root-relative form a case
    id uses, so matching only ever sees one form; a path that normalises outside the project root is an
    error.
@@ -53,15 +53,20 @@
     for: `--slow` (these too), `--select tag=slow` (only these), its `--id`, or its file named exactly
     as a PATH. A directory, a glob or a `path=` term does not bring it in. `--skip tag=slow` is legal
     and harmless -- these cases are already out.
-12. A suite (`SUITES` in the project file) is a named selection of cases; a case can be in any number
-    of suites. Each entry is `{"paths": [...], "select": [...], "skip": [...]}`. Every entry of `select`
-    and of `skip` is a GROUP, with the same grammar as the command line; a suite's entries OR into the
-    command line's the same way repeats do, and its paths join the scope union. The suite `default` may
-    have skips (and selects) too.
+12. SUITE. A suite is a named selection of cases; a case can be in any number of suites. `SUITES` in the
+    project file gives each one as `{"paths": [...], "select": [...], "skip": [...]}`, with the same
+    GROUP grammar as the command line: the suite holds for a case that is in scope(its paths, or
+    everything) AND (OR of its select groups, or everything) MINUS (OR of its skip groups). `--suite
+    NAME` (repeatable, a union) is exactly `--select suite=NAME`: `suite=NAME[,NAME2]` is an ordinary
+    TERM, and `!suite=NAME` negates it -- usable on the command line and inside another suite's own
+    select/skip. A suite that refers to itself, directly or through another suite, is a usage error that
+    prints the cycle. Like `path=`, `suite=` alone does not bring in a slow or coverage case; a suite
+    brings one in only when its own select asks for it (`tag=slow`), the same as a command line would.
 13. `select --why` names the reason a case is missing: which skip removed it and where that skip came
     from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- suite 'default'`
     for a suite's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated negation-only
-    group. A case that matches no positive `--select` group says so once, not once per group.
+    group. A case that matches no positive `--select` group says so once, not once per group. A case
+    kept or dropped because of a `suite=` term names the term as written, never the suite's definition.
 
 Examples:
 
@@ -69,6 +74,7 @@ Examples:
     --select type=python --select storage=s3               python cases, and all s3 cases
     --skip 'backend=oss;storage=s3'                         drop only what is both
     --select '!tag=spark'                                   the default run without spark cases (same as --skip tag=spark)
+    --select 'suite=smoke;!suite=databricks'                smoke cases that are not in databricks
 """
 
 from __future__ import annotations
@@ -135,11 +141,16 @@ class _Ctx:
     cases: list
     project_root: str
     working_dir: str
+    suites: dict
+    # Per-run memoisation: a suite is parsed and matched against every case at most once, however many
+    # `suite=` terms name it.
+    suite_defs: dict = field(default_factory=dict)
+    suite_members: dict = field(default_factory=dict)
 
 
 def _root_relative(value, origin, ctx, flag, term):
     """A command-line path term (origin is None) is typed relative to the working directory, exactly
-    like a positional PATH; a named set's own entry (origin is its name) is already relative to the
+    like a positional PATH; a suite's own entry (origin is its name) is already relative to the
     project root. Both become root-relative here, the one form the matcher and `path=`'s validation see."""
     if origin is None:
         abs_path = os.path.normpath(os.path.join(ctx.working_dir, value))
@@ -182,6 +193,10 @@ def _parse_term(term, flag, origin, ctx):
         unknown = [v for v in values if not any(_path_term_matches(c.test.root_path, v) for c in ctx.cases)]
         if unknown:
             raise UsageError(f"{flag} {term!r}: path {unknown} matches no scanned case")
+    elif key == "suite":
+        unknown = [v for v in values if v not in ctx.suites]
+        if unknown:
+            raise UsageError(f"{flag} {term!r}: no suite {unknown}; known suites: {sorted(ctx.suites)}")
     elif key in ctx.axes:
         unknown = [v for v in values if v not in ctx.axes[key]]
         if unknown:
@@ -196,7 +211,7 @@ def _parse_term(term, flag, origin, ctx):
         raise UsageError(f"{flag} {term!r}: a bare path can't contain '='; write path={key}")
     else:
         raise UsageError(
-            f"{flag} {term!r}: unknown key {key!r}; keys are tag, type, case, path"
+            f"{flag} {term!r}: unknown key {key!r}; keys are tag, type, case, path, suite"
             + "".join(f", {a}" for a in ctx.axes)
         )
     return negated, key, values
@@ -206,7 +221,7 @@ def _parse_group(expr, flag, origin, ctx):
     return [_parse_term(t, flag, origin, ctx) for t in _split_group_terms(expr, flag)]
 
 
-def _matches(case, key, values):
+def _matches(case, key, values, ctx):
     """True when `case` has any of `values` for `key` -- "holds" for a positive term, "removes" for a skip term."""
     if key == "tag":
         return any(v in case.tags for v in values)
@@ -216,11 +231,13 @@ def _matches(case, key, values):
         return case.case_id in values
     if key == "path":
         return any(_path_term_matches(case.test.root_path, v) for v in values)
+    if key == "suite":
+        return any(case.id in _suite_members(v, ctx) for v in values)
     return key in case.axis_values and case.axis_values[key].id in values
 
 
-def _group_holds(case, terms):
-    return all(_matches(case, key, values) != negated for negated, key, values in terms)
+def _group_holds(case, terms, ctx):
+    return all(_matches(case, key, values, ctx) != negated for negated, key, values in terms)
 
 
 def _skip_reason(body, origin, from_select=None):
@@ -232,7 +249,7 @@ def _skip_reason(body, origin, from_select=None):
 
 
 def _classify_select_exprs(exprs, origin, ctx):
-    """Splits `--select`/a set's `select` groups into positive groups (OR'd) and the skip groups a
+    """Splits `--select`/a suite's `select` groups into positive groups (OR'd) and the skip groups a
     negation-only group becomes -- by De Morgan, one skip group per term."""
     positive, skips = [], []
     for expr in exprs:
@@ -250,36 +267,90 @@ def _classify_skip_exprs(exprs, origin, ctx):
     return [(_parse_group(expr, "--skip", origin, ctx), _skip_reason(expr, origin)) for expr in exprs]
 
 
+def _suite_selection(name, ctx, stack=()):
+    """Parses suite `name`'s own select/skip once per run. A `suite=` reference that leads back to
+    `name` is a cycle, caught here -- before any case is matched -- rather than by recursing forever."""
+    if name in ctx.suite_defs:
+        return ctx.suite_defs[name]
+    if name in stack:
+        cycle = stack[stack.index(name) :] + (name,)
+        raise UsageError(f"suite cycle: {' -> '.join(cycle)}")
+    suite = ctx.suites[name]
+    paths = suite.get("paths", [])
+    for p in paths:
+        if not any(_path_matches(c.test.path, p) for c in ctx.cases):
+            raise UsageError(f"suite {name!r}: path {p!r} holds no test")
+    positive, skips = _classify_select_exprs(suite.get("select", []), name, ctx)
+    skips += _classify_skip_exprs(suite.get("skip", []), name, ctx)
+    for terms in positive + [g for g, _ in skips]:
+        for _, key, values in terms:
+            if key == "suite":
+                for v in values:
+                    _suite_selection(v, ctx, stack + (name,))
+    ctx.suite_defs[name] = (paths, positive, skips)
+    return ctx.suite_defs[name]
+
+
+def _suite_members(name, ctx):
+    """The cases suite `name` selects: scope(its paths) AND (its select) MINUS (its skip). Cached, so a
+    suite is matched against every case once per run, not once per case per `suite=` term."""
+    if name not in ctx.suite_members:
+        paths, positive_groups, skip_groups = _suite_selection(name, ctx)
+        ctx.suite_members[name] = {
+            case.id
+            for case in ctx.cases
+            if (not paths or any(_path_matches(case.test.path, p) for p in paths))
+            and (not positive_groups or any(_group_holds(case, terms, ctx) for terms in positive_groups))
+            and not any(_group_holds(case, group, ctx) for group, _ in skip_groups)
+        }
+    return ctx.suite_members[name]
+
+
+def _suite_asks_for_tag(name, tag, ctx):
+    """True when suite `name`, directly or through a suite it refers to, positively asks for `tag` --
+    the slow/coverage rule then treats membership in it the way `--select tag=slow` would."""
+    _, positive_groups, _ = _suite_selection(name, ctx)
+    for terms in positive_groups:
+        for negated, key, values in terms:
+            if negated:
+                continue
+            if key == "tag" and tag in values:
+                return True
+            if key == "suite" and any(_suite_asks_for_tag(v, tag, ctx) for v in values):
+                return True
+    return False
+
+
 def apply(cases, selection, project, working_dir=None):
     """Returns (selected, why_not) where why_not maps a case id to the reason it was left out.
     `working_dir` anchors command-line `path=`/bare-path terms; it defaults to the project root."""
     axes = {axis: set(values) for axis, values in project.axes.items()}
     known_tags = {t for c in cases for t in c.tags}
     known_cases = {c.case_id for c in cases if c.case_id is not None}
-    ctx = _Ctx(axes, known_tags, known_cases, cases, project.root, working_dir or project.root)
+    ctx = _Ctx(axes, known_tags, known_cases, cases, project.root, working_dir or project.root, project.suites)
 
     paths = list(selection.paths)
-    positive_groups, skip_groups = _classify_select_exprs(selection.select, None, ctx)
+    # `--suite NAME` is exactly `--select suite=NAME`: one code path parses and matches it, whichever
+    # spelling was used.
+    select_exprs = list(selection.select) + [f"suite={name}" for name in selection.suites]
+    positive_groups, skip_groups = _classify_select_exprs(select_exprs, None, ctx)
     skip_groups += _classify_skip_exprs(selection.skip, None, ctx)
 
-    if selection.suites:
-        unknown = [name for name in selection.suites if name not in project.suites]
-        if unknown:
-            raise UsageError(f"--suite {unknown}: the project has suites {sorted(project.suites)}")
-        for name in selection.suites:
-            suite = project.suites[name]
-            paths += suite.get("paths", [])
-            suite_positive, suite_skips = _classify_select_exprs(suite.get("select", []), name, ctx)
-            positive_groups += suite_positive
-            skip_groups += suite_skips
-            skip_groups += _classify_skip_exprs(suite.get("skip", []), name, ctx)
-    elif selection.is_bare() and "default" in project.suites:
+    if selection.is_bare() and "default" in project.suites:
         default_suite = project.suites["default"]
         paths += default_suite.get("paths", [])
         default_positive, default_skips = _classify_select_exprs(default_suite.get("select", []), "default", ctx)
         positive_groups += default_positive
         skip_groups += default_skips
         skip_groups += _classify_skip_exprs(default_suite.get("skip", []), "default", ctx)
+
+    # Resolve every `suite=` term named so far -- and so any cycle among them -- before any case is
+    # matched.
+    for terms in positive_groups + [group for group, _ in skip_groups]:
+        for _, key, values in terms:
+            if key == "suite":
+                for v in values:
+                    _suite_selection(v, ctx)
 
     if selection.ids:
         known = {c.id for c in cases}
@@ -295,6 +366,17 @@ def apply(cases, selection, project, working_dir=None):
     asked_for = {
         v for terms in positive_groups for negated, key, values in terms if key == "tag" and not negated for v in values
     }
+    # A suite brings in a slow/coverage case only when its own select asks for the tag, the way a
+    # command line would -- membership in the suite alone does not.
+    asked_for |= {
+        t
+        for terms in positive_groups
+        for negated, key, values in terms
+        if key == "suite" and not negated
+        for v in values
+        for t in ("slow", "coverage")
+        if _suite_asks_for_tag(v, t, ctx)
+    }
     selected, why_not = [], {}
     for case in cases:
         if case.id in selection.ids:
@@ -303,7 +385,7 @@ def apply(cases, selection, project, working_dir=None):
             why_not[case.id] = "not named by --id"
         elif paths and not any(_path_matches(case.test.path, p) for p in paths):
             why_not[case.id] = "outside the given paths"
-        elif positive_groups and not any(_group_holds(case, terms) for terms in positive_groups):
+        elif positive_groups and not any(_group_holds(case, terms, ctx) for terms in positive_groups):
             why_not[case.id] = "matches no --select group"
         elif bare and not case.test.in_default_set:
             why_not[case.id] = "its test is not in the default set (in_default_set=False)"
@@ -313,7 +395,7 @@ def apply(cases, selection, project, working_dir=None):
             and (slow := next((t for t in ("slow", "coverage") if t in case.tags and t not in asked_for), None))
         ):
             why_not[case.id] = f"tag {slow}: runs only when asked for: --slow, --select tag={slow}, or --id"
-        elif (rule := next((r for r in skip_groups if _group_holds(case, r[0])), None)) is not None:
+        elif (rule := next((r for r in skip_groups if _group_holds(case, r[0], ctx)), None)) is not None:
             why_not[case.id] = rule[1]
         else:
             selected.append(case)

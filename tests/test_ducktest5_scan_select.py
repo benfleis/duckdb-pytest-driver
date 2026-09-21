@@ -243,7 +243,7 @@ def test_an_id_is_added_to_what_paths_and_selects_give(project):
         ({"select": ["tag="]}, "write key=value"),
         ({"paths": ["test/nowhere"]}, "holds no test"),
         ({"ids": ["a/x.test::x"]}, "no such case"),
-        ({"suites": ["nightly"]}, "the project has suites"),
+        ({"suites": ["nightly"]}, "no suite \\['nightly'\\]; known suites:"),
         ({"skip": ["tag=smok"]}, "no scanned case has tag"),
         ({"skip": ["backnd=oss"]}, "unknown key 'backnd'"),
         ({"select": ["not:tag=a"]}, "write !tag=a"),
@@ -414,7 +414,8 @@ def test_a_suites_skip_applies_on_top_of_its_own_selection(tmp_path):
         "keep/plain.test::plain",
         "keep/spark.test::spark",
     ]  # smoke's skip removes quiet, not spark
-    assert why_not["keep/quiet.test::quiet"] == "skip tag=quiet  <- suite 'smoke'"
+    # smoke's own skip is internal to it -- why says only that the case isn't in the suite, not why not
+    assert why_not["keep/quiet.test::quiet"] == "matches no --select group"
 
 
 def test_a_negation_only_select_keeps_a_named_default_suite_as_the_base(tmp_path):
@@ -454,6 +455,174 @@ def test_a_suites_skip_entry_may_be_a_group(project):
         "b/paired.py::body[plain]",
         "b/solo.py::solo",
     ]
+
+
+def test_suites_is_read_and_sets_is_the_named_error(tmp_path):
+    with pytest.raises(UsageError, match="SETS is now SUITES"):
+        tree(tmp_path, {"test/ducktestconf.py": "SETS = {}", "test/a.test": ""})
+    cases, proj = tree(tmp_path / "ok", {"test/ducktestconf.py": 'SUITES = {"x": {}}', "test/a.test": ""})
+    assert proj.suites == {"x": {}}
+
+
+def test_repeated_suite_unions_the_suites(project):
+    combo = select(project, suites=["cmt", "smoke"])[0]
+    assert set(ids(combo)) == set(ids(select(project, suites=["cmt"])[0])) | set(
+        ids(select(project, suites=["smoke"])[0])
+    )
+
+
+@pytest.mark.parametrize("name", ["smoke", "cmt", "combo", "trimmed"])
+def test_suite_option_equals_the_select_key(project, name):
+    via_option = select(project, suites=[name])
+    via_select = select(project, select=[f"suite={name}"])
+    assert ids(via_option[0]) == ids(via_select[0])
+    assert via_option[1] == via_select[1]
+
+
+def test_suite_default_is_a_legal_term(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                SUITES = {"default": {"paths": ["test/keep"]}}
+                RULES = [match("keep/a.test", tags=["a"]), match("outside/b.test", tags=["b"])]
+            """,
+            "test/keep/a.test": "",
+            "test/outside/b.test": "",
+        },
+    )
+    assert ids(select((cases, proj), select=["suite=default"])[0]) == ["keep/a.test::a"]
+
+
+def test_suite_term_combines_with_a_negated_suite_term_in_one_group(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                SUITES = {"smoke": {"select": ["tag=smoke"]}, "databricks": {"select": ["tag=databricks"]}}
+                RULES = [
+                    match("a.test", tags=["smoke"]),
+                    match("b.test", tags=["smoke", "databricks"]),
+                    match("c.test", tags=["databricks"]),
+                ]
+            """,
+            "test/a.test": "",
+            "test/b.test": "",
+            "test/c.test": "",
+        },
+    )
+    selected, _ = select((cases, proj), select=["suite=smoke;!suite=databricks"])
+    assert ids(selected) == ["a.test::a"]  # in smoke, not in databricks
+
+
+def test_a_negated_suite_term_alone_keeps_the_default_suite_as_the_base(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                SUITES = {"default": {"paths": ["test/keep"]}, "spark": {"select": ["tag=spark"]}}
+                RULES = [match("keep/spark.test", tags=["spark"]), match("keep/other.test", tags=["quiet"])]
+            """,
+            "test/keep/spark.test": "",
+            "test/keep/other.test": "",
+            "test/outside/far.test": "",
+        },
+    )
+    selected, why_not = select((cases, proj), select=["!suite=spark"])
+    assert ids(selected) == ["keep/other.test::other"]  # base is the default suite's paths, not every case
+    assert why_not["keep/spark.test::spark"] == "--skip suite=spark (from --select !suite=spark)"
+
+
+def test_why_line_for_a_suite_skip(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                SUITES = {"spark": {"select": ["tag=spark"]}}
+                RULES = [match("a.test", tags=["spark"]), match("b.test", tags=["other"])]
+            """,
+            "test/a.test": "",
+            "test/b.test": "",
+        },
+    )
+    _, why_not = select((cases, proj), skip=["suite=spark"])
+    assert why_not["a.test::a"] == "--skip suite=spark"
+
+
+def test_a_suite_may_refer_to_another_suite(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                SUITES = {
+                    "core": {"select": ["tag=core"]},
+                    "nightly": {"select": ["suite=core", "tag=extra"]},
+                }
+                RULES = [match("a.test", tags=["core"]), match("b.test", tags=["extra"]), match("c.test", tags=["other"])]
+            """,
+            "test/a.test": "",
+            "test/b.test": "",
+            "test/c.test": "",
+        },
+    )
+    assert ids(select((cases, proj), suites=["nightly"])[0]) == ["a.test::a", "b.test::b"]
+
+
+def test_a_suite_cycle_is_an_error_that_prints_it(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                SUITES = {
+                    "smoke": {"select": ["suite=nightly"]},
+                    "nightly": {"select": ["suite=smoke"]},
+                }
+            """,
+            "test/a.test": "",
+        },
+    )
+    with pytest.raises(UsageError, match=r"smoke -> nightly -> smoke"):
+        select((cases, proj), suites=["smoke"])
+
+
+def test_a_case_in_two_suites_is_selected_once(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                SUITES = {"a": {"select": ["tag=x"]}, "b": {"select": ["tag=y"]}}
+                RULES = [match("both.test", tags=["x", "y"])]
+            """,
+            "test/both.test": "",
+        },
+    )
+    selected, _ = select((cases, proj), suites=["a", "b"])
+    assert ids(selected) == ["both.test::both"]  # not doubled
+
+
+def test_a_suites_own_tag_slow_ask_reaches_a_case_through_it(tmp_path):
+    # the same rule as `--select tag=slow`: a suite brings in a slow case only when it asks for the tag
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                SUITES = {"nightly": {"select": ["tag=slow"]}, "smoke": {"paths": ["test"]}}
+            """,
+            "test/a.test": "",
+            "test/b.test_slow": "",
+        },
+    )
+    via_nightly, _ = select((cases, proj), suites=["nightly"])
+    assert ids(via_nightly) == ["b.test_slow::b"]
+    via_smoke, why_not = select((cases, proj), suites=["smoke"])
+    assert ids(via_smoke) == ["a.test::a"]
+    assert "runs only when asked for" in why_not["b.test_slow::b"]
 
 
 def test_path_selects_a_directory_and_its_glob_form_agree(project):
