@@ -301,3 +301,64 @@ def test_runs_append_and_a_run_loaded_twice_is_not_counted_twice(tmp_path):
     duck.load(db, [str(second)], duckdb_bin=shell())
     assert query(db, "SELECT count(*) FROM runs") == [["2"]]
     assert query(db, duck.EXAMPLES["changed"]) == [["sql/rows.test::rows", "failed", "passed"]]
+
+
+# -----------------------------------------------------------------------------
+# `ducktest5 report`: an old run, and several merged
+#
+
+
+LATER = "2026-09-21T11-00-00Z--brass-otter-02"
+
+
+def second_run(tmp_path):
+    """The same run again, an hour later, with the case that failed passing this time."""
+    text = open(EVENTS).read().replace("2026-09-21T10-00-00Z--amber-koala-01", LATER)
+    path = tmp_path / "later.jsonl"
+    path.write_text(text.replace("T10:00:0", "T11:00:0").replace('"outcome": "failed"', '"outcome": "passed"'))
+    return str(path)
+
+
+def report_command(args, capsys):
+    from ducktest5.cli import main
+
+    code = main(["report"] + args)
+    return code, capsys.readouterr().out
+
+
+def test_report_renders_an_old_run_without_recomputing_anything(capsys):
+    code, printed = report_command(["--run-dir", EVENTS, "--level", "terse"], capsys)
+    assert code == 1
+    assert printed == open(os.path.join(GOLDENS, "terse.txt")).read()
+
+
+def test_a_missing_event_file_is_a_usage_error(tmp_path, capsys):
+    assert report_command(["--run-dir", str(tmp_path)], capsys)[0] == 2
+
+
+def test_several_run_dirs_merge_and_a_later_run_wins_a_shared_case(tmp_path, capsys):
+    code, printed = report_command(["--run-dir", EVENTS, "--run-dir", second_run(tmp_path), "--level", "terse"], capsys)
+    assert "case: sql/rows.test::rows" not in printed  # it passed in the later run
+    assert code == 1  # the error and the blocked case are still there
+    assert printed.count(f"run: {LATER}") == 3  # every case left says which run it came from
+    assert printed.splitlines()[-1].startswith("summary: 3 passed, 0 failed, 1 error, 1 blocked, 1 skipped")
+
+
+def test_a_merged_report_names_the_run_of_every_case(tmp_path, capsys):
+    _, printed = report_command(["--run-dir", EVENTS, "--run-dir", second_run(tmp_path)], capsys)
+    assert f"<{LATER}>" in printed and "<2026-09-21T10-00-00Z--amber-koala-01>" not in printed
+
+
+def test_report_writes_the_files_it_is_asked_for(tmp_path, capsys):
+    out_json, out_xml = str(tmp_path / "r.json"), str(tmp_path / "r.xml")
+    report_command(["--run-dir", EVENTS, "--report-json", out_json, "--junit", out_xml, "--format", "junit"], capsys)
+    assert json.loads(open(out_json).read())["counts"]["failed"] == 1
+    assert ET.parse(out_xml).getroot().tag == "testsuites"
+
+
+@needs_duckdb
+def test_report_loads_the_events_with_the_shell_the_run_recorded(tmp_path, capsys, monkeypatch):
+    db = str(tmp_path / "history.duckdb")
+    monkeypatch.setattr(duck, "load", lambda path, files, *, duckdb_bin: open(path, "w").write(duckdb_bin or ""))
+    report_command(["--run-dir", EVENTS, "--duckdb", db], capsys)
+    assert open(db).read() == "/repo/build/debug/duckdb"  # the `binaries` of run_start

@@ -2,6 +2,10 @@
 
 `scan --env` prints what each selected case would be given -- the extensions, the statements, the
 values, the roots, the process environment, the services -- with the source of every part.
+
+`ducktest5 report --run-dir DIR [DIR ...]` prints an old run again. Nothing is recomputed: every
+format reads `04-events.jsonl` and only that. Several run dirs merge into one report, a later one
+winning a case id they share, so "what does the whole matrix say" is one command.
 """
 
 import argparse
@@ -10,11 +14,29 @@ import sys
 
 import yaml
 
-from . import caseenv, sqllogic
+from . import caseenv, events, sqllogic
 from .binary import UsageError, find_duckdb
+from .reports import FORMATS, LEVELS, Report, render, write_files
+from .reports.live import wants_colour
 from .run import run
 from .scan import scan
 from .select import Selection, apply
+
+
+def _report_options(parser):
+    """The options that say where a report goes; `run` and `report` take the same ones."""
+    parser.add_argument("--format", default="text", choices=FORMATS, help="what standard output gets (default: text)")
+    parser.add_argument("--level", default="normal", choices=LEVELS, help="how much text says (default: normal)")
+    parser.add_argument("--junit", metavar="FILE", help="also write JUnit XML there, for CI annotations")
+    parser.add_argument("--report-json", metavar="FILE", help="also write the run as one JSON document there")
+    parser.add_argument(
+        "--duckdb", metavar="FILE", help="also load the events into that DuckDB file; runs append to it"
+    )
+    parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
+
+
+def _color(choice, out):
+    return wants_colour(out) if choice == "auto" else choice == "always"
 
 
 def main(argv=None):
@@ -94,12 +116,30 @@ def main(argv=None):
         metavar="CMD",
         help="what to put before the binary, instead of 'lldb --' (also $DUCKTEST_DEBUGGER); implies --lldb",
     )
+    _report_options(run_options)
+
+    report_options = sub.add_parser("report", help="print a run that already happened, in any format")
+    report_options.add_argument(
+        "--run-dir",
+        action="append",
+        default=[],
+        required=True,
+        metavar="DIR",
+        help="a run directory or an event file; repeats merge, a later one winning a shared case id",
+    )
+    report_options.add_argument(
+        "--duckdb-bin", help="the duckdb shell for --duckdb (default: the one the run recorded)"
+    )
+    _report_options(report_options)
+
     args = parser.parse_args(argv)
     debugger = None
     if getattr(args, "lldb", False) or getattr(args, "debugger", None):
         debugger = args.debugger or os.environ.get("DUCKTEST_DEBUGGER") or "lldb --"
 
     try:
+        if args.command == "report":
+            return _report(args)
         cwd = os.getcwd()
         root = args.root or ("test" if os.path.isdir("test") else ".")
         cases, project = scan(root, working_dir=cwd)
@@ -159,10 +199,44 @@ def main(argv=None):
             batch_size=args.batch_size,
             workers=args.workers,
             debugger=debugger,
+            command=["ducktest5"] + list(argv if argv is not None else sys.argv[1:]),
+            selection={
+                "paths": args.paths,
+                "select": args.select,
+                "skip": args.skip,
+                "ids": args.id,
+                "suites": args.suite,
+            },
+            format=args.format,
+            level=args.level,
+            color=_color(args.color, sys.stdout),
+            report_json=args.report_json,
+            junit_file=args.junit,
+            duckdb_file=args.duckdb,
         )
     except UsageError as exc:
         print(f"ducktest5: {exc}", file=sys.stderr)
         return 2
+
+
+def _report(args):
+    """An old run, read back. Its exit code is the run's own, so re-reporting a red run is red."""
+    for path in args.run_dir:
+        target = path if os.path.isfile(path) else os.path.join(path, events.EVENTS_FILE)
+        if not os.path.isfile(target):
+            raise UsageError(f"no {events.EVENTS_FILE} in {path}")
+    report = Report.of(events.load(args.run_dir))
+    files = [p if os.path.isfile(p) else os.path.join(p, events.EVENTS_FILE) for p in args.run_dir]
+    render(report, sys.stdout, format=args.format, level=args.level, color=_color(args.color, sys.stdout))
+    write_files(
+        report,
+        files,
+        report_json=args.report_json,
+        junit_file=args.junit,
+        duckdb=args.duckdb,
+        duckdb_bin=args.duckdb_bin,
+    )
+    return report.exit_code
 
 
 if __name__ == "__main__":
