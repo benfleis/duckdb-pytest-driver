@@ -11,6 +11,7 @@ import itertools
 import os
 import sys
 
+from . import asserts
 from .binary import UsageError
 from .conf import load_project
 from .declare import CONF_FILE
@@ -22,7 +23,7 @@ _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 def _load(path, name):
     """Import one test file. Its own directory is importable while it loads, so that a test can
     import a helper beside it; a failure says which file it was."""
-    spec = importlib.util.spec_from_file_location(name, path)
+    spec = importlib.util.spec_from_file_location(name, path, loader=asserts.loader(name, path))
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     sys.path.insert(0, os.path.dirname(path))
@@ -69,6 +70,7 @@ def _suffix_tags(path):
 def scan(start, *, working_dir="."):
     """Returns (cases, project): every case under the project root, in a stable order."""
     project = load_project(start)
+    asserts.rewrite_under(project.root)
     bodies, scripts = _walk(project.root, project.excludes)
     body_by_stem = {}
     for b in bodies:
