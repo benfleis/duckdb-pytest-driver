@@ -12,6 +12,8 @@
     *flakyN* fails until its Nth run, counted in a file under $FAKE_UNITTEST_STATE
     *initfail* fails on the first statement of the init file, which the binary reports -- as the
                real one does -- under the body file's name and the init file's line
+    *initfailN* the same, on the Nth statement of the init file
+    *showenv* prints the process environment it was started with, for the names in $FAKE_UNITTEST_ENV
 
 `-l` lists the names in the file that $FAKE_UNITTEST_LIST names.
 """
@@ -35,10 +37,11 @@ def runs_so_far(name):
     return runs
 
 
-def init_statement(config):
-    """The SQL of the first statement of the batch's init file, and the line its header is on."""
+def init_statement(config, which=1):
+    """The SQL of the `which`th statement of the batch's init file, and the line its header is on."""
     lines = open(config["init_sqllogic"]).read().splitlines()
-    header = next(n for n, line in enumerate(lines) if line.startswith(("statement", "query")))
+    headers = [n for n, line in enumerate(lines) if line.startswith(("statement", "query"))]
+    header = headers[which - 1]
     sql = []
     for line in lines[header + 1 :]:
         if not line.strip():
@@ -68,12 +71,16 @@ def main(argv):
             return 139
         if "env" in name:
             print("ENV " + json.dumps({e["env_name"]: e["env_value"] for e in config["test_env"]}), flush=True)
+        if "showenv" in name:
+            watched = os.environ.get("FAKE_UNITTEST_ENV", "AWS_PROFILE,AWS_ACCESS_KEY_ID").split(",")
+            print("PROCESS_ENV " + json.dumps({k: os.environ.get(k) for k in watched}), flush=True)
         if "onlyinbatch" in name and len(names) == 1:
             event(event="end", name=name, status="ok", passes=1, fails=0, **{"skip-mode": 0}, temp_dir=temp)
             continue
         flaky = re.search(r"flaky(\d+)", name)
         if "initfail" in name:
-            sql, line = init_statement(config)
+            which = re.search(r"initfail(\d+)", name)
+            sql, line = init_statement(config, int(which.group(1)) if which else 1)
             print(f"Query unexpectedly failed! ({name}:{line})!\n{sql}\nCatalog Error: no such thing", flush=True)
             data = f"{name}:{line}"
             event(

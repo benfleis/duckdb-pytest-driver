@@ -25,19 +25,19 @@ class Ctx:
         duckdb_bin,
         duckdb_session,
         engines,
+        case_env,
         duckdb_home=None,
         services=None,
         remote_parts=(),
-        init_sql="",
         run_test=None,
         session_factory=DuckDBSession,
     ):
         self.id = case.id
         self.case = case.params
         self.variant = {axis: v for axis, v in case.axis_values.items()}
-        self.values = case.values
-        self._settings = case.settings
-        self._init_sql = init_sql
+        self.environment = case_env
+        self.values = case_env.value_map
+        self.roots = case_env.root_paths
         self._run_test = run_test
         self._location_on = next((v.location_on for v in case.axis_values.values() if v.location_on), None)
         self.temp_dir = temp_dir
@@ -52,15 +52,18 @@ class Ctx:
         self.failed_checks = []
         self.teardowns = []
         self.clients = []
-        self.clients = []
 
     def duckdb(self, preamble="", *, table=None, session="per_run", timeout=DEFAULT_TIMEOUT_S):
         """DuckDB as a client. `per_run` (the rule): the run's one shell, on the instance this test
         started fresh; `preamble` runs once, now. The client has `restart()` (new instance, then the
         test's preambles again) and `respawn()` (new process, the same). `own`: the same, on a shell
         of this client's own, closed when the case ends. `per_call`: a cold process for every call,
-        running `preamble` each time. All three get the same private HOME and the same init SQL of
-        the case's variant.
+        running `preamble` each time. All three get the same private HOME and the same case
+        environment: the extensions loaded, the settings set, then the init SQL.
+
+        A case whose environment sets or unsets process variables gets a shell of its own even when
+        `per_run` was asked for: the run's one shell was started before the case was known and
+        cannot change its environment.
 
         `timeout`, in seconds, is for each statement (`per_call`: for each call); after it the shell
         is killed and the statement has failed.
@@ -69,15 +72,16 @@ class Ctx:
         `per_run` client are safe and wait for each other. For statements that must really run at the
         same time, give each thread a client of its own: `own` is a warm shell each, `per_call` a cold
         process per call, with nothing shared but files."""
-        preamble = "\n".join(x for x in (self._variant_preamble(), preamble) if x)
-        if session == "per_call":
-            per_call = DuckDBPerCall(self._duckdb_bin, preamble, timeout=timeout, home=self._duckdb_home)
-            return self._client("duckdb", per_call.run, table)
         if session not in SESSIONS:
             raise ValueError(f"session={session!r}; it is one of {SESSIONS}")
+        preamble = "\n".join(x for x in (self._case_preamble(), preamble) if x)
+        environ = self.environment.environ()
+        if session == "per_call":
+            per_call = DuckDBPerCall(self._duckdb_bin, preamble, timeout=timeout, home=self._duckdb_home, env=environ)
+            return self._client("duckdb", per_call.run, table)
         shell = self._duckdb_session
-        if session == "own":
-            shell = self._session_factory(self._duckdb_bin, home=self._duckdb_home)
+        if session == "own" or environ is not None:
+            shell = self._session_factory(self._duckdb_bin, home=self._duckdb_home, env=environ)
             shell.begin_test()
             self.teardowns.append(shell.close)
         try:
@@ -93,10 +97,9 @@ class Ctx:
             raise KeyError(f"engine {name!r} is not declared by this test (engines={sorted(self._engines)})")
         return self._client(name, self._engines[name].run, table)
 
-    def _variant_preamble(self):
-        """What the case's variant values bring for DuckDB: init SQL, then settings."""
-        sets = [f"SET {k} = '{str(v).replace(chr(39), chr(39) * 2)}';" for k, v in self._settings.items()]
-        return "\n".join([self._init_sql, *sets]).strip()
+    def _case_preamble(self):
+        """The case environment as SQL, in the order the `.test` init file has it."""
+        return "\n".join([f"LOAD {x};" for x in self.environment.extensions] + [self.environment.sql]).strip()
 
     def run_test(self, *, env=None, init_sql=""):
         """For a paired test: run the `.test` file of this body's stem through the unittest binary.
@@ -126,10 +129,12 @@ class Ctx:
 
     def location(self, name, *, on=None):
         """A place for a table the body creates; nothing is created here. By default a path under
-        this test's temp dir; with `on=<service>`, a URI under this run's prefix on that service."""
+        this test's temp dir, or under the case environment's `temp_dir_root` where a variant gives
+        one; with `on=<service>`, a URI under this run's prefix on that service."""
         on = on or self._location_on
         if on is None:
-            return os.path.join(self.temp_dir, name)
+            root = self.roots.get("temp_dir_root")
+            return os.path.join(root, *self._remote_parts, name) if root else os.path.join(self.temp_dir, name)
         provisioned = self._services[on] if on in self._services else self.service(on)
         uri = provisioned.service.location(provisioned.block, *self._remote_parts, name)
         self.remote_locations.append((on, uri))

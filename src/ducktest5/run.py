@@ -25,7 +25,7 @@ import traceback
 
 import yaml
 
-from . import sqllogic
+from . import caseenv, sqllogic
 from .binary import UsageError
 from .client import SetupFailed
 from .ctx import Ctx
@@ -34,7 +34,7 @@ from .mnemonic import run_id as make_run_id
 from .model import SQLLOGIC
 from .outcomes import ALL as OUTCOMES
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
-from .provision import KEPT, MASK, attach_argument, existing_overrides, provision, release
+from .provision import KEPT, attach_argument, existing_overrides, provision, release
 
 
 def _write(run_dir, name, doc):
@@ -80,33 +80,11 @@ def _run_body(case, ctx):
     return outcome, problems
 
 
-def _redacted(value, secrets):
-    if isinstance(value, dict):
-        return {k: _redacted(v, secrets) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redacted(v, secrets) for v in value]
-    text = value if isinstance(value, str) else str(value)
-    for secret in secrets:
-        text = text.replace(secret, MASK)
-    return text
-
-
-def _made_of(case, provisioned, *, batch_dir=None, case_dir=None):
-    """What a failed case was made of, for a reader who did not write it. The init SQL is named by
-    its file, never quoted: it may hold a secret."""
-    secrets = {str(p.block[k]) for p in provisioned.values() for k in p.service.secrets if p.block.get(k)}
-    facts = {}
-    if case.values:
-        facts["values"] = _redacted(case.values, secrets)
-    if case.settings:
-        facts["settings"] = _redacted(case.settings, secrets)
-    if case.axis_values:
-        facts["variants"] = [
-            {"axis": axis, "value": v.id, **({"settings": _redacted(v.settings, secrets)} if v.settings else {})}
-            for axis, v in case.axis_values.items()
-        ]
-    if case.services:
-        facts["services"] = {s: provisioned[s].mode if s in provisioned else "did not come up" for s in case.services}
+def _made_of(case_env, *, batch_dir=None, case_dir=None):
+    """What a failed case was made of, for a reader who did not write it: its case environment, with
+    where every part came from, and the files that hold the rest. The init SQL is named by its
+    source and its file, never quoted: it may hold a secret."""
+    facts = {"environment": case_env.record()}
     files = {}
     if batch_dir:
         files = {
@@ -124,41 +102,11 @@ def _made_of(case, provisioned, *, batch_dir=None, case_dir=None):
 
 
 def _print_made_of(facts, out):
-    if values := facts.get("values"):
-        print("  values: " + ", ".join(f"{k}={v}" for k, v in values.items()), file=out)
-    if settings := facts.get("settings"):
-        print("  settings: " + ", ".join(f"{k}={v}" for k, v in settings.items()), file=out)
-    for variant in facts.get("variants", ()):
-        of_its_own = variant.get("settings")
-        tail = "  (" + ", ".join(f"{k}={v}" for k, v in of_its_own.items()) + ")" if of_its_own else ""
-        print(f"  variant: {variant['axis']}={variant['value']}{tail}", file=out)
-    for service_id, mode in facts.get("services", {}).items():
-        print(f"  service: {service_id} ({mode})", file=out)
+    for part in facts.get("environment", ()):
+        head = f"{part['what']}: {part['is']}" if part["is"] else part["what"]
+        print(f"  {head}  <- {part['from']}", file=out)
     for name, path in facts.get("files", {}).items():
         print(f"  {name}: {path}", file=out)
-
-
-def _env_for_body(case):
-    """What a `.test` body sees as `{NAME}`: the case's values, upper-cased as a .test writes them."""
-    return {k.upper(): v for k, v in case.values.items()}
-
-
-def _init_parts(case, provisioned):
-    """(what gave it, SQL) for each axis value that brings init SQL, in the order of the axes."""
-    parts = []
-    for axis, v in case.axis_values.items():
-        sql = v.init_sql({sid: p.block for sid, p in provisioned.items()}) if callable(v.init_sql) else v.init_sql
-        if sql:
-            parts.append((f"{axis}={v.id}", sql.strip().rstrip(";") + ";"))
-    return parts
-
-
-def _init_sql(case, provisioned):
-    return "\n".join(sql for _, sql in _init_parts(case, provisioned))
-
-
-def _init_from(case, provisioned):
-    return ", ".join(label for label, _ in _init_parts(case, provisioned))
 
 
 def _only_one_test_case(cases):
@@ -170,17 +118,6 @@ def _only_one_test_case(cases):
         )
     if cases[0].test.type != SQLLOGIC:
         raise UsageError(f"a debugger runs the unittest binary; {cases[0].id} is a Python body -- not supported yet")
-
-
-def _batch_key(case, provisioned):
-    return json.dumps(
-        [
-            sorted(_env_for_body(case).items()),
-            sorted(case.settings.items()),
-            _init_sql(case, provisioned),
-        ],
-        default=str,
-    )
 
 
 def run(
@@ -220,7 +157,7 @@ def run(
         if problems:
             result["problems"] = list(problems)
         if outcome in (FAILED, ERROR):
-            result["made_of"] = _made_of(case, provisioned, batch_dir=batch_dir, case_dir=case_dir)
+            result["made_of"] = _made_of(case_env(case), batch_dir=batch_dir, case_dir=case_dir)
         if kept:
             result["kept"] = list(kept)
         if note:
@@ -249,6 +186,14 @@ def run(
         print(f"{outcome.upper():8} {case.id}{tail}" + (f"  [{note}]" if note else ""), file=out, flush=True)
 
     provisioned, boot_errors, handles, debugged = {}, {}, {}, False
+    resolved = {}
+
+    def case_env(case):
+        """The case's environment, computed once: after provisioning, before anything runs."""
+        if id(case) not in resolved:
+            resolved[id(case)] = caseenv.resolve(case, provisioned)
+        return resolved[id(case)]
+
     duckdb_home = os.path.join(run_dir, "home")
     duckdb_session = session_factory(duckdb_bin, home=duckdb_home)
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
@@ -295,9 +240,11 @@ def run(
         sqllogic_cases = [c for c in runnable if c.test.type == SQLLOGIC]
         if sqllogic_cases and unittest_bin is None:
             raise UsageError("the selection holds .test files, and no unittest binary was found")
+        # A batch is a group of cases with one environment: everything the process is given is in
+        # the key, so any difference between two cases gives them a process each.
         groups = {}
         for c in sqllogic_cases:
-            groups.setdefault(_batch_key(c, provisioned), []).append(c)
+            groups.setdefault(case_env(c).key(), []).append(c)
         batches = []
         for group in groups.values():
             # One file once in a batch: the binary reports by file name. A case with a service runs
@@ -325,12 +272,9 @@ def run(
                         sqllogic.Batch(
                             os.path.join(run_dir, "batches", f"b{len(batches) + 1:03d}"),
                             [(c.id, c.test.body_file) for c in chunk],
-                            _env_for_body(first),
-                            first.settings,
-                            _init_sql(first, provisioned),
+                            case_env(first),
                             timeouts={c.id: c.test.timeout for c in chunk if c.test.timeout},
                             retries={c.id: c.test.retries for c in chunk if c.test.retries},
-                            init_from=_init_from(first, provisioned),
                         ),
                     )
                 )
@@ -342,7 +286,7 @@ def run(
             debugged = True
             code = subprocess.call(args, cwd=working_dir)  # the terminal is the debugger's
             print(f"\nbatch kept: {batch.dir}", file=out, flush=True)
-            if batch.init_sql:
+            if batch.case_env.init_sql:
                 print(
                     f"  {sqllogic.INIT_FILE} there may hold a secret; remove the directory when you are done", file=out
                 )
@@ -412,8 +356,8 @@ def run(
                     engines=handles,
                     services=provisioned,
                     remote_parts=(run_id, dir_name),
-                    init_sql=_init_sql(case, provisioned),
-                    run_test=lambda **kw: _run_paired(case, unittest_bin, working_dir, temp_dir, provisioned, **kw),
+                    case_env=case_env(case),
+                    run_test=lambda **kw: _run_paired(case, case_env(case), unittest_bin, working_dir, temp_dir, **kw),
                     session_factory=session_factory,
                 )
             except Exception as exc:
@@ -530,20 +474,15 @@ def _report(run_dir, run_id, results, boot_errors, out):
     print(f"\n{summary} -- {run_dir}", file=out)
 
 
-def _run_paired(case, unittest_bin, working_dir, temp_dir, provisioned, *, env=None, init_sql=""):
+def _run_paired(case, case_env, unittest_bin, working_dir, temp_dir, *, env=None, init_sql=""):
     """`ctx.run_test()`: the `.test` file beside a Python body, as a batch of one."""
     if unittest_bin is None:
         raise UsageError(f"{case.id} runs {case.test.body_file}, and no unittest binary was found")
     batch = sqllogic.Batch(
         os.path.join(temp_dir, "run_test"),
         [(case.id, case.test.body_file)],
-        {**_env_for_body(case), **(env or {})},
-        case.settings,
-        "\n".join(x for x in (_init_sql(case, provisioned), init_sql) if x),
+        case_env.plus(values=env, init_sql=init_sql),
         case.test.timeout or sqllogic.DEFAULT_TIMEOUT_S,
-        init_from=", ".join(
-            x for x in (_init_from(case, provisioned), "run_test(init_sql=...)" if init_sql else "") if x
-        ),
     )
     result = sqllogic.run_batch(unittest_bin, batch, working_dir)[case.id]
     if result.outcome == SKIPPED:

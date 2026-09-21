@@ -95,14 +95,19 @@ class Settled:
     timeout: float | None = None
     retries: int = 0
     why: list = field(default_factory=list)
+    sources: dict = field(default_factory=dict)  # (field, key) -> the rule that gave that one entry
 
     def apply(self, fields, source):
         for name, value in fields.items():
             if name in _LISTS:
                 target = getattr(self, name)
-                target += [v for v in value if v not in target]
+                for v in value:
+                    if v not in target:
+                        target.append(v)
+                        self.sources[(name, v)] = source
             elif name in _DICTS:
                 getattr(self, name).update(value)
+                self.sources.update({(name, k): source for k in value})
             else:
                 setattr(self, name, value)
             self.why.append(f"{name}={value!r}  <- {source}")

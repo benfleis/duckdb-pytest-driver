@@ -5,6 +5,7 @@ import textwrap
 import pytest
 
 from ducktest5.binary import UsageError
+from ducktest5.caseenv import resolve
 from ducktest5.scan import scan
 from ducktest5.select import Selection, apply
 
@@ -99,7 +100,10 @@ def test_the_axis_parts_of_an_id_come_in_the_order_of_axes(tmp_path):
 def test_rules_apply_from_the_root_down_and_the_test_itself_last(project):
     x = next(c for c in project[0] if c.id == "a/x.test::x[backend=oss]")
     assert x.test.tags == ["all", "a"]
-    assert x.values == {"region": "us", "catalog": "duck"}  # the deeper file replaced `region`; the variant added
+    # the deeper file replaced `region`, the variant added `catalog`, and the axis brings its own id
+    assert resolve(x).value_map == {"backend": "oss", "region": "us", "catalog": "duck"}
+    assert resolve(x).values["region"].source == "a/ducktestconf.py: default"
+    assert resolve(x).values["catalog"].source == "AXES backend=oss"
     assert x.test.timeout == 5  # a single value: the last rule that set it
     assert any("a/ducktestconf.py: match 'x.test'" in line for line in x.test.why)
     paired = next(c for c in project[0] if c.id == "b/paired.py::body[cmt]")

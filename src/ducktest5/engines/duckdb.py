@@ -46,13 +46,14 @@ class _Home:
     """The HOME of a client's shell processes: the directory given, else a temporary one that goes
     away with the client."""
 
-    def __init__(self, path=None):
+    def __init__(self, path=None, env=None):
         self._temporary = None if path else tempfile.TemporaryDirectory(prefix="ducktest-home-")
         self.path = os.path.abspath(path or self._temporary.name)
+        self._env = env  # the case environment's, where it has one; else this process's
 
     def env(self):
         os.makedirs(self.path, exist_ok=True)  # DuckDB fails on a home directory that is set and absent
-        return {**os.environ, "HOME": self.path}
+        return {**(os.environ if self._env is None else self._env), "HOME": self.path}
 
 
 _ERROR_LINE = re.compile(r"^(?:[A-Za-z]+(?: [A-Za-z]+)* )?Error:", re.M)
@@ -80,12 +81,12 @@ DEFAULT_TIMEOUT_S = 120  # for one statement
 
 
 class DuckDBSession:
-    def __init__(self, binary, *, timeout=DEFAULT_TIMEOUT_S, home=None):
+    def __init__(self, binary, *, timeout=DEFAULT_TIMEOUT_S, home=None, env=None):
         self.binary = binary
         self._timeout = timeout
         # One call at a time: two threads would else start two shells, or read each other's output.
         self._busy = threading.RLock()
-        self._home = _Home(home)
+        self._home = _Home(home, env)
         self._process = None
         self._lines = None
         self._calls = 0
@@ -203,11 +204,11 @@ class DuckDBPerCall:
     each, so under `-bail` the last marker reached names the statement that failed. `timeout` is for
     the whole call."""
 
-    def __init__(self, binary, preamble="", *, timeout=DEFAULT_TIMEOUT_S, home=None):
+    def __init__(self, binary, preamble="", *, timeout=DEFAULT_TIMEOUT_S, home=None, env=None):
         self.binary = binary
         self.preamble = preamble
         self._timeout = timeout
-        self._home = _Home(home)
+        self._home = _Home(home, env)
 
     def run(self, statements):
         script = [self.preamble]

@@ -157,4 +157,4 @@ def _settle(test, project, working_dir):
         setattr(test, name, merged)
     test.values, test.settings = settled.values, settled.settings
     test.in_default_set, test.timeout, test.retries = settled.in_default_set, settled.timeout, settled.retries
-    test.why = settled.why
+    test.why, test.sources = settled.why, settled.sources

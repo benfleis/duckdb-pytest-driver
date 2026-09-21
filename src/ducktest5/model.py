@@ -12,6 +12,8 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from .caseenv import resolve
+
 SQLLOGIC, PAIRED, PYTHON = "sqllogic", "paired", "python"
 BODY_SUFFIXES = (".test", ".test_slow", ".test_coverage")
 
@@ -37,9 +39,14 @@ class TestDef:
     timeout: float | None = None
     retries: int = 0  # how often a FAILED or ERROR may run again
     why: list = field(default_factory=list)
+    sources: dict = field(default_factory=dict)  # (field, key) -> the rule that gave that one entry
 
     def __post_init__(self):
         self.root_path = self.root_path or self.path
+
+    def source_of(self, field_name, key):
+        """Which rule gave one entry; what no rule gave, the test declared itself."""
+        return self.sources.get((field_name, key), "@test")
 
 
 @dataclass
@@ -81,20 +88,6 @@ class Case:
         return self._with_variants(self.test.engines, "engines")
 
     @property
-    def values(self):
-        merged = dict(self.test.values)
-        for v in self.axis_values.values():
-            merged.update(v.values)
-        return merged
-
-    @property
-    def settings(self):
-        merged = dict(self.test.settings)
-        for v in self.axis_values.values():
-            merged.update(v.settings)
-        return merged
-
-    @property
     def dir_name(self):
         """A directory name that says which case it holds, and is its own: two tests of one file
         name in two directories must not share it."""
@@ -119,8 +112,8 @@ class Case:
             },
             "runtime": {
                 "case": _plain(self.params),
-                "values": _plain(self.values),
-                "settings": self.settings,
+                # Before provisioning, so what a variant makes out of a service's block is not in it.
+                "environment": resolve(self).record(),
                 "timeout": self.test.timeout,
                 "retries": self.test.retries,
             },

@@ -6,6 +6,7 @@ import shutil
 
 import pytest
 
+from ducktest5.caseenv import resolve
 from ducktest5.ctx import Ctx
 from ducktest5.engines.duckdb import DuckDBSession
 from ducktest5.model import PYTHON, Case, TestDef
@@ -27,7 +28,13 @@ def ctx(tmp_path):
     shared = DuckDBSession(_shell(), home=home)
     shared.begin_test()
     context = Ctx(
-        case, temp_dir=str(tmp_path), duckdb_bin=_shell(), duckdb_session=shared, duckdb_home=home, engines={}
+        case,
+        temp_dir=str(tmp_path),
+        duckdb_bin=_shell(),
+        duckdb_session=shared,
+        duckdb_home=home,
+        engines={},
+        case_env=resolve(case),
     )
     yield context
     for teardown in reversed(context.teardowns):

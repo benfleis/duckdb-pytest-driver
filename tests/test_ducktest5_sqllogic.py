@@ -7,6 +7,7 @@ import os
 import pytest
 
 from ducktest5 import sqllogic
+from ducktest5.caseenv import CaseEnv, Entry
 from ducktest5.sqllogic import ERROR, FAILED, PASSED, SKIPPED, Batch
 
 FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
@@ -17,12 +18,15 @@ def run(tmp_path, names, **kwargs):
 
 
 def test_a_batch_is_two_files(tmp_path):
-    run(tmp_path, ["a.test", "b.test"], env={"CATALOG": "duck"}, settings={"threads": 2}, init_sql="SELECT 1")
+    case_env = CaseEnv(
+        values={"catalog": Entry("duck", "@test", name="catalog")},
+        init_sql=[Entry("SELECT 1;", "@test", kind="sql", shown="")],
+    )
+    run(tmp_path, ["a.test", "b.test"], case_env=case_env)
     batch = tmp_path / "b001"
     assert (batch / "tests.txt").read_text() == "a.test\nb.test\n"
     config = json.loads((batch / "config.json").read_text())
     assert config["test_env"] == [{"env_name": "CATALOG", "env_value": "duck"}]
-    assert config["settings"] == [{"name": "threads", "value": "2"}]
     assert open(config["init_sqllogic"]).read() == "statement ok\nSELECT 1;\n"
     assert os.stat(config["init_sqllogic"]).st_mode & 0o777 == 0o600  # it may hold a secret
 

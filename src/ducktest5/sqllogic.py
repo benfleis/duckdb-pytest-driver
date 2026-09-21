@@ -3,7 +3,12 @@
 A batch is two files in its own directory, and that is the whole contract with the binary:
 
     tests.txt     one test path per line (the binary's exact `-f` mode: only these are registered)
-    config.json   the `--test-config` file: env for `{NAME}` in the body, settings, init SQL, temp root
+    config.json   the `--test-config` file: `{NAME}` for the body, the roots, the init file
+
+Everything in them comes from the case environment the batch was made with, and every test in a
+batch has the same one. The binary applies the config before it runs anything, so an extension is
+not there yet; the init file is where a setting and a secret type of an extension can be reached,
+after a `require` for it.
 
 Every test must end with an event from the binary that says how it ended. A test with no such event
 did not run as far as this runner knows, and is never counted as passed.
@@ -21,6 +26,7 @@ import time
 from dataclasses import dataclass, field
 
 from .binary import UsageError
+from .caseenv import CaseEnv
 from .outcomes import ERROR, FAILED, PASSED, SKIPPED
 
 _EVENT = re.compile(r"\[TEST_EVENT\] (\{.*\})")
@@ -59,23 +65,40 @@ class TestResult:
     attempts: int = 1
 
 
+def init_file_text(case_env):
+    """The init file, and {line of a statement header: what asked for that statement}.
+
+    The requires come first, as `require`, which is the binary's own way to load an extension: a
+    `SET` or a secret type of one fails before that. Then the statements, one block each, so a
+    failure can be traced back to the one thing that asked for it."""
+    lines, sources = [], {}
+    for entry in case_env.requires:
+        lines += [f"require {entry.value}", ""]
+    for entry in case_env.init_sql:
+        lines.append("statement ok")
+        sources[len(lines)] = entry.source
+        lines += [line for line in entry.value.splitlines() if line.strip()] + [""]
+    while lines and lines[-1] == "":
+        lines.pop()
+    return ("\n".join(lines) + "\n" if lines else ""), sources
+
+
 @dataclass
 class Batch:
     dir: str
     # (key, test name) pairs. The binary knows a test by its name; the caller knows it by the key, and
     # gets its result, and gives its timeout and retries, by the key. A bare name is its own key.
     tests: list
-    env: dict = field(default_factory=dict)
-    settings: dict = field(default_factory=dict)
-    init_sql: str = ""
+    case_env: object = None  # the CaseEnv every test in this batch is given
     timeout_s: float = DEFAULT_TIMEOUT_S  # for one test, counted from the binary's begin event for it
     timeouts: dict = field(default_factory=dict)  # key -> seconds, where a test has its own
     retries: dict = field(default_factory=dict)  # key -> how often a failure may run again
-    init_from: str = ""  # who gave the init SQL, e.g. "storage=s3", to name in a failure in it
 
     def __post_init__(self):
         self.tests = [(t, t) if isinstance(t, str) else tuple(t) for t in self.tests]
         self._key = {name: key for key, name in self.tests}
+        self.case_env = self.case_env if self.case_env is not None else CaseEnv()
+        self.init_sources = {}  # line of the init file -> source; filled by write()
         if len(self._key) != len(self.tests):
             # The binary reports by name, so two cases of one file could not be told apart.
             raise ValueError(f"a test can be in a batch once: {self.names}")
@@ -97,18 +120,19 @@ class Batch:
         config = {
             "description": "a ducktest batch",
             "temp_dir_root": os.path.join(self.dir, "tmp"),
-            "test_env": [{"env_name": k, "env_value": str(v)} for k, v in sorted(self.env.items())],
-            "settings": [{"name": k, "value": str(v)} for k, v in sorted(self.settings.items())],
+            "test_env": [{"env_name": k, "env_value": str(v)} for k, v in sorted(self.case_env.names.items())],
             # By default the binary ends a file early, as not failed, when an error mentions 'HTTP' or
             # 'Unable to connect'. Here an error is a failure; a test that may fail for reasons that are
             # not its own asks for `retries`.
             "skip_error_messages": [],
         }
-        if self.init_sql:
+        config.update(self.case_env.root_paths)
+        text, self.init_sources = init_file_text(self.case_env)
+        if text:
             init = os.path.join(self.dir, INIT_FILE)
             # For the owner only: the init SQL of a variant may hold the secret of a service.
             with open(os.open(init, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
-                f.write("statement ok\n" + self.init_sql.strip().rstrip(";") + ";\n")
+                f.write(text)
             config["init_sqllogic"] = init
         with open(os.path.join(self.dir, "config.json"), "w") as f:
             json.dump(config, f, indent=1)
@@ -177,7 +201,13 @@ def _invoke(binary, batch, working_dir):
     batch.write()
     args = batch_args(binary, batch, working_dir)
     proc = subprocess.Popen(
-        args, cwd=working_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+        args,
+        cwd=working_dir,
+        env=batch.case_env.environ(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
     )
     lines = queue.Queue()
     threading.Thread(
@@ -238,7 +268,7 @@ def _in_the_init_sql(batch, detail):
     statement of the init file that fails is reported as `<body>.test:<line of the init file>` and
     sends the reader to the wrong file. It is ours when the reported line holds a statement of the
     init file and that statement's text is in what the binary printed."""
-    if not batch.init_sql:
+    if not batch.init_sources:
         return None
     try:
         blocks = _init_statements(os.path.join(batch.dir, INIT_FILE))
@@ -261,12 +291,12 @@ def _classify(batch, name, ev, detail, skip_reason=None):
         return TestResult(name, SKIPPED, detail=detail or "a `require` or `require-env` of the file is not met")
     detail = (ev.get("data") or "") + ("\n" + detail if detail else "")
     if line := _in_the_init_sql(batch, detail):
-        where = f" of {batch.init_from}" if batch.init_from else ""
+        where = batch.init_sources.get(line)
         # Not FAILED: the body never ran, so it proved nothing.
         return TestResult(
             name,
             ERROR,
-            detail=f"in the init SQL{where} ({os.path.join(batch.dir, INIT_FILE)}:{line})\n{detail}",
+            detail=f"in the init SQL of {where} ({os.path.join(batch.dir, INIT_FILE)}:{line})\n{detail}",
             kept=kept,
         )
     return TestResult(name, FAILED, detail=detail, kept=kept)
@@ -276,13 +306,10 @@ def _sub(batch, tag, names):
     return Batch(
         os.path.join(batch.dir, tag),
         [(batch._key[name], name) for name in names],
-        batch.env,
-        batch.settings,
-        batch.init_sql,
+        batch.case_env,
         batch.timeout_s,
         batch.timeouts,
         batch.retries,
-        batch.init_from,
     )
 
 

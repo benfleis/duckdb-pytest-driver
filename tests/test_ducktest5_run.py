@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from ducktest5.binary import UsageError
+from ducktest5.caseenv import resolve
 from ducktest5.client import SqlError
 from ducktest5.conf import Project
 from ducktest5.ctx import Ctx
@@ -80,9 +81,9 @@ class FakeStore:
 class FakeSession:
     """Stands in for the run's DuckDB shell: keeps the text it was given."""
 
-    def __init__(self, binary=None, *, home=None, preamble_fails=False):
+    def __init__(self, binary=None, *, home=None, env=None, preamble_fails=False):
         self.preambles, self.statements, self.preamble_fails, self.home = [], [], preamble_fails, home
-        self.timeouts = []
+        self.env, self.timeouts = env, []
 
     def begin_test(self):
         self.preambles = []
@@ -189,12 +190,16 @@ def batch_of(report):
 
 def test_cases_of_one_file_never_share_a_batch(tmp_path):
     axis = {"a": Variant("a", tags=("x",)), "b": Variant("b", tags=("y",))}
-    cases = [sql_case("t.test", {"k": axis["a"]}), sql_case("t.test", {"k": axis["b"]}), sql_case("u.test")]
+    cases = [
+        sql_case("t.test", {"k": axis["a"]}),
+        sql_case("t.test", {"k": axis["b"]}),
+        sql_case("u.test", {"k": axis["a"]}),
+    ]
     code, run_dir, report, _ = go(tmp_path, cases, keep=True)
     assert code == 0
     batches = batch_of(report)
     assert batches["t[k=a]"] != batches["t[k=b]"]
-    assert batches["u"] == batches["t[k=a]"]  # same values and settings: it rides along
+    assert batches["u[k=a]"] == batches["t[k=a]"]  # the same environment: it rides along
     assert (run_dir / batches["t[k=a]"] / "tests.txt").read_text() == "t.test\nu.test\n"
     assert (run_dir / batches["t[k=b]"] / "tests.txt").read_text() == "t.test\n"
 
@@ -212,8 +217,10 @@ def test_cases_with_other_values_or_settings_go_in_other_batches(tmp_path):
     assert len({batches["a"], batches["c_env"], batches["d"]}) == 3
     config = json.loads((run_dir / batches["c_env"] / "config.json").read_text())
     assert config["test_env"] == [{"env_name": "CATALOG", "env_value": "duck"}]
+    # a setting is delivered as SET in the init file, never as the binary's own `settings`
     config = json.loads((run_dir / batches["d"] / "config.json").read_text())
-    assert config["settings"] == [{"name": "threads", "value": "2"}]
+    assert "settings" not in config
+    assert (run_dir / batches["d"] / "init.sqllogic").read_text() == "statement ok\nSET threads = '2';\n"
 
 
 def test_a_batch_holds_at_most_batch_size_files_and_a_slow_file_runs_alone(tmp_path):
@@ -239,6 +246,58 @@ def test_a_variant_init_sql_is_the_batch_init_file(tmp_path):
     _, run_dir, report, _ = go(tmp_path, [sql_case("a.test", {"k": variant})], services=[store.service()], keep=True)
     init = run_dir / report["cases"][0]["batch"] / "init.sqllogic"
     assert init.read_text() == "statement ok\nATTACH 'http://store';\n"
+
+
+def test_requires_settings_and_init_sql_reach_the_init_file_in_that_order(tmp_path):
+    variant = Variant(
+        "curl",
+        requires=("httpfs", "json"),
+        settings={"httpfs_client_implementation": "curl"},
+        init_sql="CREATE SECRET s (TYPE S3)",
+    )
+    _, run_dir, report, _ = go(tmp_path, [sql_case("a.test", {"client": variant})], keep=True)
+    init = run_dir / report["cases"][0]["batch"] / "init.sqllogic"
+    assert init.read_text() == (
+        "require httpfs\n\nrequire json\n\n"
+        "statement ok\nSET httpfs_client_implementation = 'curl';\n\n"
+        "statement ok\nCREATE SECRET s (TYPE S3);\n"
+    )
+
+
+def test_a_variant_gives_the_binary_its_roots(tmp_path):
+    variant = Variant("http", roots={"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"})
+    _, run_dir, report, _ = go(tmp_path, [sql_case("a.test", {"storage": variant})], keep=True)
+    config = json.loads((run_dir / report["cases"][0]["batch"] / "config.json").read_text())
+    assert config["temp_dir_root"] == "http://origin/temp"
+    assert config["local_temp_dir_root"] == "/www/temp"
+
+
+def test_a_root_the_binary_does_not_have_is_a_usage_error(tmp_path):
+    with pytest.raises(UsageError, match="root 'tmp' is not one of"):
+        go(tmp_path, [sql_case("a.test", {"storage": Variant("http", roots={"tmp": "/x"})})])
+
+
+def test_a_variant_sets_and_unsets_variables_in_the_environment_of_the_unittest_process(tmp_path, monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "LEAKED-FROM-THE-CALLER")
+    variant = Variant("env", env={"AWS_PROFILE": "ducktest"}, env_unset=("AWS_ACCESS_KEY_ID",))
+    _, run_dir, report, _ = go(tmp_path, [sql_case("a_showenv.test", {"auth": variant})], keep=True)
+    output = (run_dir / report["cases"][0]["batch"] / "output.txt").read_text()
+    printed = json.loads(output.split("PROCESS_ENV ")[1].splitlines()[0])
+    assert printed == {"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None}
+
+
+def test_cases_with_other_environments_never_share_a_unittest_process(tmp_path):
+    axis = {
+        "plain": Variant("plain"),
+        "loaded": Variant("loaded", requires=("httpfs",)),
+        "rooted": Variant("rooted", roots={"data_dir": "/d"}),
+        "noisy": Variant("noisy", env={"AWS_PROFILE": "p"}),
+    }
+    cases = [sql_case(f"t{n}.test", {"k": v}) for n, v in enumerate(axis.values())]
+    _, _, report, _ = go(tmp_path, cases + [sql_case("t9.test", {"k": axis["plain"]})], keep=True)
+    batches = batch_of(report)
+    assert len(set(batches.values())) == 4  # one for each environment; the two plain ones ride along
+    assert batches["t0[k=plain]"] == batches["t9[k=plain]"]
 
 
 SECRET = Variant("s3", init_sql="CREATE SECRET (SECRET 'hunter2')")
@@ -321,6 +380,7 @@ def test_the_debugger_gets_the_binary_and_the_batch_a_normal_run_would_have_used
     assert config["test_env"] == [
         {"env_name": "CATALOG", "env_value": "duck"},
         {"env_name": "ROOT", "env_value": "s3://bucket"},
+        {"env_name": "STORAGE", "env_value": "s3"},
     ]
     assert config["init_sqllogic"] == f"{batch_dir}/{'init.sqllogic'}"
     assert f"\nbatch kept: {batch_dir}\n" in text  # it stays, for a second look or a second debugger
@@ -365,9 +425,13 @@ def test_a_failed_test_case_says_what_it_was_made_of(tmp_path):
     case = sql_case("b_fail.test", {"storage": MADE_OF})
     _, run_dir, report, text = go(tmp_path, [case], services=[FakeStore().service()])
     facts = report["cases"][0]["made_of"]
-    assert facts["values"] == {"root": "s3://bucket"}
-    assert facts["variants"] == [{"axis": "storage", "value": "s3", "settings": {"s3_region": "eu"}}]
-    assert facts["services"] == {"store": "existing"}
+    assert facts["environment"] == [
+        {"what": "set", "is": "s3_region=eu", "from": "AXES storage=s3"},
+        {"what": "init sql", "is": "", "from": "AXES storage=s3"},
+        {"what": "values", "is": "storage=s3", "from": "AXES storage"},
+        {"what": "values", "is": "root=s3://bucket", "from": "AXES storage=s3"},
+        {"what": "service", "is": "store (existing)", "from": "AXES storage=s3"},
+    ]
     assert {name: os.path.basename(p) for name, p in facts["files"].items()} == {
         "config": "config.json",
         "tests": "tests.txt",
@@ -376,19 +440,38 @@ def test_a_failed_test_case_says_what_it_was_made_of(tmp_path):
     }
     assert all(os.path.isfile(p) for p in facts["files"].values())
     block = text.split("--- " + case.id)[1]
-    assert "\n  values: root=s3://bucket\n" in block
-    assert "\n  settings: s3_region=eu\n" in block
-    assert "\n  variant: storage=s3  (s3_region=eu)\n" in block
-    assert "\n  service: store (existing)\n" in block
+    assert "\n  values: root=s3://bucket  <- AXES storage=s3\n" in block
+    assert "\n  set: s3_region=eu  <- AXES storage=s3\n" in block
+    assert "\n  init sql  <- AXES storage=s3\n" in block
+    assert "\n  service: store (existing)  <- AXES storage=s3\n" in block
     assert f"\n  init: {facts['files']['init']}\n" in block
     assert "\n  again: ducktest5 run --id " in block
-    assert "hunter2" not in text  # the init SQL is named by its file, never printed
+    assert "hunter2" not in text  # the init SQL is named by its source, never printed
+
+
+def test_a_failure_says_what_the_environment_of_the_process_was(tmp_path):
+    variant = Variant(
+        "env",
+        requires=("httpfs",),
+        roots={"data_dir": "s3://bucket/data"},
+        env={"AWS_PROFILE": "ducktest", "AWS_SECRET_ACCESS_KEY": "hunter2"},
+        env_unset=("AZURE_CLIENT_SECRET",),
+    )
+    case = sql_case("b_fail.test", {"auth": variant})
+    _, _, _, text = go(tmp_path, [case])
+    block = text.split("--- " + case.id)[1]
+    assert "\n  require: httpfs  <- AXES auth=env\n" in block
+    assert "\n  root: data_dir=s3://bucket/data  <- AXES auth=env\n" in block
+    assert "\n  env: AWS_PROFILE=ducktest  <- AXES auth=env\n" in block
+    assert "\n  env: AWS_SECRET_ACCESS_KEY=***  <- AXES auth=env\n" in block  # the name says it is one
+    assert "\n  env unset: AZURE_CLIENT_SECRET  <- AXES auth=env\n" in block
+    assert "hunter2" not in text
 
 
 def test_a_passed_case_says_nothing_of_the_kind(tmp_path):
     _, _, report, text = go(tmp_path, [sql_case("a.test", {"storage": MADE_OF})], services=[FakeStore().service()])
     assert "made_of" not in report["cases"][0]
-    assert "variant: " not in text and "config: " not in text
+    assert "values: " not in text and "config: " not in text
 
 
 def test_a_failed_python_case_names_its_case_directory(tmp_path):
@@ -402,7 +485,7 @@ def test_a_failed_python_case_names_its_case_directory(tmp_path):
 def test_a_secret_of_a_service_never_reaches_what_the_case_was_made_of(tmp_path):
     case = sql_case("b_fail.test", values={"token": "s3cr3t"}, services=["store"])
     _, _, report, text = go(tmp_path, [case], services=[FakeStore().service()])
-    assert report["cases"][0]["made_of"]["values"] == {"token": "***"}
+    assert {"what": "values", "is": "token=***", "from": "@test"} in report["cases"][0]["made_of"]["environment"]
     assert "s3cr3t" not in text
 
 
@@ -423,15 +506,22 @@ def test_a_failure_in_the_init_sql_is_an_error_that_names_the_variant_and_the_fi
     code, run_dir, report, text = go(tmp_path, [case], keep=True)
     assert (code, report["cases"][0]["outcome"]) == (1, "error")
     first_line = report["cases"][0]["problems"][0].splitlines()[0]
-    assert first_line == f"in the init SQL of storage=s3 ({run_dir / 'batches' / 'b001' / 'init.sqllogic'}:1)"
+    assert first_line == f"in the init SQL of AXES storage=s3 ({run_dir / 'batches' / 'b001' / 'init.sqllogic'}:1)"
     assert "a_initfail.test:1" not in first_line  # not the body file, where the reader would find nothing
     assert first_line in text
 
 
-def test_every_variant_that_gave_init_sql_is_named(tmp_path):
+def test_the_failing_statement_of_the_init_sql_names_its_own_source(tmp_path):
     axis_values = {"backend": Variant("oss", init_sql="SET a = 1"), "storage": Variant("s3", init_sql="SET b = 2")}
-    _, _, report, _ = go(tmp_path, [sql_case("a_initfail.test", axis_values)])
-    assert "in the init SQL of backend=oss, storage=s3 (" in report["cases"][0]["problems"][0]
+    _, _, report, _ = go(tmp_path, [sql_case("a_initfail2.test", axis_values)], keep=True)
+    assert "in the init SQL of AXES storage=s3 (" in report["cases"][0]["problems"][0]
+
+
+def test_a_setting_that_fails_in_the_init_sql_names_the_rule_that_asked_for_it(tmp_path):
+    case = sql_case("a_initfail.test", settings={"threads": 2})
+    case.test.sources = {("settings", "threads"): "ducktestconf.py: default"}
+    _, _, report, _ = go(tmp_path, [case])
+    assert "in the init SQL of ducktestconf.py: default (" in report["cases"][0]["problems"][0]
 
 
 def test_a_failure_in_the_body_stays_a_failure_when_the_batch_has_init_sql(tmp_path):
@@ -600,6 +690,7 @@ def test_each_case_has_one_event_line(tmp_path):
 
 def ctx_for(case, tmp_path, *, engine=None, session=None, services=None, **kwargs):
     kwargs.setdefault("session_factory", FakeSession)
+    kwargs.setdefault("case_env", resolve(case, services))
     return Ctx(
         case,
         temp_dir=str(tmp_path),
@@ -798,24 +889,59 @@ def test_a_service_the_test_did_not_declare_is_refused(tmp_path):
 #
 
 
-def test_variant_init_sql_and_settings_come_before_the_bodys_own_preamble(tmp_path):
+def test_the_case_environment_comes_before_the_bodys_own_preamble_in_the_order_of_the_init_file(tmp_path):
     seen = []
 
     def body(ctx):
-        ctx.duckdb("LOAD delta;")
+        ctx.duckdb("SELECT 1;")
         seen.extend(ctx._duckdb_session.preambles)
 
     variant = Variant(
         "s3",
         services=("store",),
+        requires=("httpfs",),
         settings={"threads": 2, "s3_region": "it's"},
         init_sql=lambda blocks: f"CREATE SECRET (ENDPOINT '{blocks['store']['endpoint']}')",
     )
     code, _, _, _ = go(tmp_path, [py_case(body, {"k": variant})], services=[FakeStore().service()])
     assert code == 0
     assert seen == [
-        "CREATE SECRET (ENDPOINT 'http://store');\nSET threads = '2';\nSET s3_region = 'it''s';\nLOAD delta;"
+        "LOAD httpfs;\nSET threads = '2';\nSET s3_region = 'it''s';\n"
+        "CREATE SECRET (ENDPOINT 'http://store');\nSELECT 1;"
     ]
+
+
+def test_a_python_body_reads_the_roots_and_puts_what_it_makes_under_the_temp_root(tmp_path):
+    seen = {}
+
+    def body(ctx):
+        seen["roots"] = ctx.roots
+        seen["location"] = ctx.location("tbl")
+
+    variant = Variant("http", roots={"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"})
+    case = py_case(body, {"storage": variant})
+    assert go(tmp_path, [case])[0] == 0
+    assert seen["roots"] == {"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"}
+    assert seen["location"].startswith("http://origin/temp/") and seen["location"].endswith(f"/{case.dir_name}/tbl")
+
+
+def test_a_case_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(tmp_path):
+    made, seen = [], {}
+
+    def factory(binary, *, home=None, env=None):
+        made.append(FakeSession(binary, home=home, env=env))
+        return made[-1]
+
+    def body(ctx):
+        seen["shared"] = ctx.duckdb() is not None
+        seen["is_the_runs_shell"] = ctx._duckdb_session in made[1:]
+
+    variant = Variant("no-key", env={"AWS_PROFILE": "ducktest"}, env_unset=("AWS_ACCESS_KEY_ID",))
+    assert go(tmp_path, [py_case(body, {"auth": variant})], session_factory=factory)[0] == 0
+    run_shell, own = made  # the run's own shell, then the one this case had to have
+    assert (run_shell.env, own.env["AWS_PROFILE"]) == (None, "ducktest")
+    assert "AWS_ACCESS_KEY_ID" not in own.env
+    assert seen["is_the_runs_shell"] is False
 
 
 def test_a_preamble_that_fails_is_a_setup_error(tmp_path):
@@ -835,8 +961,8 @@ def test_an_unknown_session_kind_is_refused(tmp_path):
 def test_an_own_session_is_a_warm_shell_of_its_own_closed_when_the_case_ends(tmp_path):
     made = []
 
-    def factory(binary, *, home=None):
-        session = FakeSession(binary, home=home)
+    def factory(binary, *, home=None, env=None):
+        session = FakeSession(binary, home=home, env=env)
         session.close = lambda: made_closed.append(session)
         made.append(session)
         return session

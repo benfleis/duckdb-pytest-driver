@@ -55,19 +55,39 @@ class Service:
 @dataclass(frozen=True)
 class Variant:
     """One alternative on a variant axis, with everything it brings. The list of what it may hold is
-    closed on purpose: services and engines the case then needs, `values` for `{name}` in SQL,
-    DuckDB `settings`, `init_sql` to run before the body (text, or a function of the provisioned
-    services' blocks), `tags`, and `location_on`: the service on which `ctx.location()` puts what the
-    body creates."""
+    closed on purpose; what a value gives goes into the case environment, and both kinds of body are
+    given it the same way, in this order:
+
+    `requires`   extensions to load before anything else. A setting, a function or a secret type of
+                 an extension does not exist until it is loaded.
+    `settings`   DuckDB settings, delivered as `SET` after the requires -- never as the binary's own
+                 `settings`, which it applies before any extension is there.
+    `init_sql`   statements after those: text, or a function of the provisioned services' blocks.
+    `values`     what a body writes as `{name}`: a dict, or a function of the blocks. The axis name
+                 itself is always a value, so a body can write `{storage}` for the id of this value.
+    `roots`      the binary's roots, any of `data_dir`, `local_data_dir`, `temp_dir_root`,
+                 `local_temp_dir_root` (a dict, or a function of the blocks). A remote root and its
+                 local mirror are one storage seen two ways. A Python body reads them as `ctx.roots`,
+                 and `ctx.location()` puts what it makes under `temp_dir_root`.
+    `env`        the process environment of the engine that runs the case, and `env_unset` what to
+                 take out of it: for what DuckDB or a library inside it reads with getenv (AWS_*,
+                 AZURE_*, HTTP_PROXY). The absence of a variable is a fact a literal cannot express.
+
+    `services` and `engines` are what the case then needs, `tags` name it for a selection, and
+    `location_on` is the service on which `ctx.location()` puts what the body creates."""
 
     id: str
     services: tuple = ()
     engines: tuple = ()
-    values: dict = field(default_factory=dict)
+    values: object = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     init_sql: object = None
     tags: tuple = ()
     location_on: str | None = None
+    requires: tuple = ()
+    roots: object = None
+    env: dict = field(default_factory=dict)
+    env_unset: tuple = ()
 
 
 @dataclass(frozen=True)
