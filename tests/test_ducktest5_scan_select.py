@@ -179,7 +179,7 @@ def select(project, **kwargs):
 def test_a_bare_run_is_the_built_in_default_and_says_why(project):
     selected, why_not = select(project)
     assert "a/y.test_slow::y" not in ids(selected) and len(selected) == 6
-    assert why_not["a/y.test_slow::y"] == "matches no --select clause"
+    assert why_not["a/y.test_slow::y"] == "not in suite 'default': tag slow"
     assert "a/y.test_slow::y" in ids(select(project, suites=["all"])[0])
     assert ids(select(project, select=["tag=slow"])[0]) == ["a/y.test_slow::y"]
 
@@ -367,8 +367,8 @@ def test_a_bare_run_uses_a_project_default_suite(tmp_path):
     )
     bare, why_not = apply(cases, Selection(), proj)
     assert ids(bare) == ["keep/other.test::other"]  # the default suite's own skip already removed spark
-    assert why_not["keep/spark.test::spark"] == "matches no --select clause"
-    assert why_not["outside/far.test::far"] == "matches no --select clause"
+    assert why_not["keep/spark.test::spark"] == "not in suite 'default'"  # the suite's own skip stays internal
+    assert why_not["outside/far.test::far"] == "not in suite 'default'"
 
 
 def test_a_skip_given_alone_replaces_the_default_entirely(tmp_path):
@@ -410,7 +410,7 @@ def test_a_bare_run_leaves_in_default_set_false_cases_out(tmp_path):
     )
     selected, why_not = apply(cases, Selection(), proj)
     assert ids(selected) == ["normal.test::normal"]
-    assert why_not["special.test::special"] == "matches no --select clause"
+    assert why_not["special.test::special"] == "not in suite 'default': in_default_set=False"
     # once anything at all is given, the built-in default plays no part, and in_default_set has no effect
     with_path = apply(cases, Selection(paths=["test/special.test"]), proj)[0]
     assert ids(with_path) == ["special.test::special"]
@@ -457,8 +457,8 @@ def test_a_suites_skip_applies_on_top_of_its_own_selection(tmp_path):
         "keep/plain.test::plain",
         "keep/spark.test::spark",
     ]  # smoke's skip removes quiet, not spark
-    # smoke's own skip is internal to it -- why says only that the case isn't in the suite, not why not
-    assert why_not["keep/quiet.test::quiet"] == "matches no --select clause"
+    # smoke's own skip is internal to it -- why names the suite, not the skip that dropped the case from it
+    assert why_not["keep/quiet.test::quiet"] == "not in suite 'smoke'"
 
 
 def test_a_negation_only_select_alone_replaces_the_default_entirely(tmp_path):

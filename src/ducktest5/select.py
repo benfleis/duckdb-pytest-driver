@@ -62,11 +62,15 @@
     TERM, and `!suite=NAME` negates it -- usable on the command line and inside another suite's own
     select/skip, the same as `suite=all` or `suite=default` is. A suite that refers to itself, directly
     or through another suite, is a usage error that prints the cycle.
-12. `select --why` names the reason a case is missing: which skip removed it and where that skip came
-    from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- suite 'default'`
-    for a suite's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated negation-only
-    clause. A case that matches no positive `--select` clause says so once, not once per clause. A case
-    kept or dropped because of a `suite=` term names the term as written, never the suite's definition.
+12. `select --explain` names the reason a case is missing: which skip removed it and where that skip
+    came from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- suite
+    'default'` for a suite's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated
+    negation-only clause. A case that matches no positive `--select` clause says so once, not once per
+    clause -- unless that whole positive selection is a single `suite=NAME` term, when it instead reads
+    `not in suite 'NAME'`, the same whether the case is outside the suite or was dropped by the suite's
+    own skip; a project-defined suite's definition is never expanded here. A case the built-in default
+    drops adds why: `not in suite 'default': tag slow` (or `coverage`, or `in_default_set=False`), so a
+    bare run explains itself.
 
 Examples:
 
@@ -315,6 +319,34 @@ def _suite_members(name, ctx):
     return ctx.suite_members[name]
 
 
+def _sole_suite_term(positive_clauses):
+    """The values of a positive selection that is a single un-negated `suite=` term, else None."""
+    if len(positive_clauses) != 1 or len(positive_clauses[0]) != 1:
+        return None
+    negated, key, values = positive_clauses[0][0]
+    return None if negated or key != "suite" else values
+
+
+def _default_exclusion_reason(case):
+    if "slow" in case.tags:
+        return "tag slow"
+    if "coverage" in case.tags:
+        return "tag coverage"
+    return "in_default_set=False"
+
+
+def _not_in_positive_reason(case, positive_clauses, ctx):
+    """The line for a case that matches no positive `--select` clause -- generic, unless the whole
+    positive selection is a single `suite=NAME` term, when it names the suite instead."""
+    values = _sole_suite_term(positive_clauses)
+    if values is None:
+        return "matches no --select clause"
+    reason = "not in suite " + " or ".join(repr(v) for v in values)
+    if values == ["default"] and "default" not in ctx.suites:
+        reason += f": {_default_exclusion_reason(case)}"
+    return reason
+
+
 def apply(cases, selection, project, working_dir=None):
     """Returns (selected, why_not) where why_not maps a case id to the reason it was left out.
     `working_dir` anchors command-line `path=`/bare-path terms; it defaults to the project root."""
@@ -362,7 +394,7 @@ def apply(cases, selection, project, working_dir=None):
         elif paths and not any(_path_matches(case.test.path, p) for p in paths):
             why_not[case.id] = "outside the given paths"
         elif positive_clauses and not any(_clause_holds(case, terms, ctx) for terms in positive_clauses):
-            why_not[case.id] = "matches no --select clause"
+            why_not[case.id] = _not_in_positive_reason(case, positive_clauses, ctx)
         elif (rule := next((r for r in skip_clauses if _clause_holds(case, r[0], ctx)), None)) is not None:
             why_not[case.id] = rule[1]
         else:

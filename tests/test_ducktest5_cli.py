@@ -39,9 +39,9 @@ def run_args(*more):
     return ["run", "--duckdb-bin", FAKE, "--unittest-bin", FAKE, "--temp-dir-root", "runs", *more]
 
 
-def test_select_says_what_runs_what_does_not_and_with_why_which_rule_gave_what(tree, capsys):
+def test_select_says_what_runs_what_does_not_and_with_explain_which_rule_gave_what(tree, capsys):
     # test/a is a directory PATH: it brings in the slow case under it too
-    assert main(["select", "test/a", "--why"]) == 0
+    assert main(["select", "test/a", "--explain"]) == 0
     assert capsys.readouterr().out == textwrap.dedent(
         """\
         run   a/x.test::x
@@ -57,13 +57,13 @@ def test_select_says_what_runs_what_does_not_and_with_why_which_rule_gave_what(t
     )
 
 
-def test_select_without_why_prints_no_rules(tree, capsys):
+def test_select_without_explain_prints_no_rules(tree, capsys):
     main(["select"])
     assert "<-" not in capsys.readouterr().out
 
 
 def test_skip_removes_a_case_and_says_which_skip(tree, capsys):
-    assert main(["select", "test/a", "--skip", "tag=all", "--why"]) == 0
+    assert main(["select", "test/a", "--skip", "tag=all", "--explain"]) == 0
     assert capsys.readouterr().out == textwrap.dedent(
         """\
         skip  a/x.test::x  -- --skip tag=all
@@ -145,9 +145,10 @@ def test_an_unknown_option_is_refused_by_the_parser(tree):
     assert refused.value.code == 2
 
 
-def test_slow_is_gone(tree):
+@pytest.mark.parametrize("option", ["--slow", "--why"])
+def test_slow_and_why_are_gone(tree, option):
     with pytest.raises(SystemExit) as refused:
-        main(["select", "--slow"])
+        main(["select", option])
     assert refused.value.code == 2
 
 

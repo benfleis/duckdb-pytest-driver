@@ -54,7 +54,7 @@ def main(argv=None):
         )
         p.add_argument("--root", default=None, help="where the tests are (default: ./test, else .)")
         if name == "select":
-            p.add_argument("--why", action="store_true", help="also print which rule gave each case what")
+            p.add_argument("--explain", action="store_true", help="also print which rule gave each case what")
         if name == "scan":
             p.add_argument(
                 "--env",
@@ -118,7 +118,7 @@ def main(argv=None):
         if args.command == "select":
             for c in selected:
                 print(f"run   {c.id}")
-                if args.why:
+                if args.explain:
                     for line in c.test.why:
                         print(f"        {line}")
             for c in cases:
