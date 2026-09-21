@@ -308,8 +308,10 @@ def _scan(args, working_dir):
 
 
 def _cases_by_id(args, ids, working_dir):
-    """The Cases a phase file names, scanned again from the tree. A file of a phase holds ids, not
-    bodies: a Python body is only in the tree, and a `.test` case must be the file of that name."""
+    """(the Cases a phase file names, every case of the tree, the project). A file of a phase holds
+    ids, not bodies: a Python body is only in the tree, and a `.test` case must be the file of that
+    name. The whole tree comes back too, because the check against the binary is of the tree, not of
+    the cases one invocation runs."""
     cases, project = _scan(args, working_dir)
     by_id = {c.id: c for c in cases}
     if missing := [i for i in ids if i not in by_id]:
@@ -317,7 +319,7 @@ def _cases_by_id(args, ids, working_dir):
             f"{len(missing)} case(s) of the run directory are not in {project.root} any more:\n  "
             + "\n  ".join(missing[:10])
         )
-    return [by_id[i] for i in ids], project
+    return [by_id[i] for i in ids], cases, project
 
 
 def _binaries(args, selected, cases, project, working_dir):
@@ -343,7 +345,7 @@ def _binaries(args, selected, cases, project, working_dir):
 
 def _plan(args):
     cwd = os.getcwd()
-    cases, _ = _cases_by_id(args, phases.ids_of_tests(phases.read_tests(args.run_dir)), cwd)
+    cases, _, _ = _cases_by_id(args, phases.ids_of_tests(phases.read_tests(args.run_dir)), cwd)
     doc = phases.build_plan(
         cases, batch_size=args.batch_size, workers=args.workers, runner=args.runner, run_flags=args.run_flags
     )
@@ -354,7 +356,7 @@ def _plan(args):
 
 def _provision(args):
     cwd = os.getcwd()
-    cases, project = _cases_by_id(args, phases.ids_of_plan(phases.read_plan(args.run_dir)), cwd)
+    cases, _, project = _cases_by_id(args, phases.ids_of_plan(phases.read_plan(args.run_dir)), cwd)
     provisioned, errors = phases.provision_services(
         {s for c in cases for s in c.services},
         project,
@@ -397,8 +399,8 @@ def _exec(args):
     if not slice_of["batches"]:
         print("no case left to run")
         return 0
-    cases, project = _cases_by_id(args, phases.ids_of_plan(slice_of), cwd)
-    duckdb_bin, unittest_bin = _binaries(args, cases, cases, project, cwd)
+    cases, every, project = _cases_by_id(args, phases.ids_of_plan(slice_of), cwd)
+    duckdb_bin, unittest_bin = _binaries(args, cases, every, project, cwd)
     return execute(
         cases,
         project,

@@ -140,6 +140,7 @@ def _stop_on_signal(restore=None):
         if restore["was"] is not None:
             signal.signal(signal.SIGTERM, restore["was"])
         return restore
+    sqllogic.start_running()
     stopped = {"by": None, "was": None}
 
     def handler(signum, frame):

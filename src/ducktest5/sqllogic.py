@@ -39,16 +39,23 @@ _OUTSIDE_A_TEST = object()  # the process hung while no test was running: at sta
 INIT_FILE = "init.sqllogic"
 
 # The binaries this process started and has not reaped. A run that is stopped from outside kills
-# them, so that nothing of it is left running when it is gone.
+# them, so that nothing of it is left running when it is gone, and starts no more.
 _running = set()
+_stopped = threading.Event()
 
 
 def kill_running():
+    _stopped.set()
     for proc in list(_running):
         try:
             proc.kill()
         except Exception:
             pass
+
+
+def start_running():
+    """A new run in this process may start binaries again."""
+    _stopped.clear()
 
 
 @contextlib.contextmanager
@@ -224,6 +231,10 @@ def _invoke(binary, batch, working_dir):
     """Run the batch and watch it: a test that is still running after its timeout gets the process
     killed. Returns (output, what was running when it was killed or None, the exit code, and
     {test name: seconds between its begin and end events})."""
+    if _stopped.is_set():
+        # The run was stopped: the cases of this batch end with no event, which is what a resume
+        # takes up again.
+        raise RuntimeError("the run was stopped")
     batch.write()
     args = batch_args(binary, batch, working_dir)
     proc = subprocess.Popen(
@@ -354,7 +365,7 @@ def run_batch(binary, batch, working_dir):
     for name, first in list(results.items()):
         allowed = 1 + batch.retries_for(name)
         result, attempt = first, first.attempts
-        while result.outcome in (FAILED, ERROR) and attempt < allowed:
+        while result.outcome in (FAILED, ERROR) and attempt < allowed and not _stopped.is_set():
             attempt += 1
             result = _run_once(binary, _sub(batch, f"attempt{attempt}-{_safe(name)}", [name]), working_dir)[name]
         if result.outcome == PASSED and attempt > 1:
@@ -424,6 +435,8 @@ def _run_once(binary, batch, working_dir):
         results[name] = TestResult(
             name, ERROR, detail=f"the binary ended without an end event for this test\n{human(output)}".strip()
         )
+    if _stopped.is_set():
+        return results
     if rest and len(rest) < len(names):
         results.update(_run_once(binary, _sub(batch, "rest", rest), working_dir))
     for name in alone:
