@@ -16,6 +16,8 @@ from ducktest5.client import SqlError
 from ducktest5.conf import Project
 from ducktest5.ctx import Ctx
 from ducktest5.declare import Engine, Service, Variant
+from ducktest5.events import CASE_END
+from ducktest5.events import read as read_events
 from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Case, TestDef
 from ducktest5.provision import EXISTING, Provisioned
 from ducktest5.run import _run_body, run
@@ -135,6 +137,11 @@ def go(tmp_path, cases, *, engines=(), services=(), unittest_bin=FAKE, **kwargs)
 
 def outcomes(report):
     return {c["id"].split("::")[-1]: c["outcome"] for c in report["cases"]}
+
+
+def case_events(run_dir):
+    """The `case_end` lines of a run: one per case, whatever else the stream holds."""
+    return [e for e in read_events(str(run_dir)) if e["event"] == CASE_END]
 
 
 @pytest.fixture
@@ -492,7 +499,7 @@ def test_a_secret_of_a_service_never_reaches_what_the_case_was_made_of(tmp_path)
 def test_the_event_line_of_a_failure_holds_the_same_facts(tmp_path):
     case = sql_case("b_fail.test", {"storage": MADE_OF})
     _, run_dir, report, _ = go(tmp_path, [case], services=[FakeStore().service()])
-    (event,) = [json.loads(line) for line in (run_dir / "04-events.jsonl").read_text().splitlines()]
+    (event,) = case_events(run_dir)
     assert event["made_of"] == report["cases"][0]["made_of"]
 
 
@@ -675,9 +682,10 @@ def test_the_report_is_written_and_services_are_released_when_the_run_raises(tmp
 def test_each_case_has_one_event_line(tmp_path):
     variant = Variant("oss")
     _, run_dir, _, _ = go(tmp_path, [sql_case("a.test", {"backend": variant}), py_case(fails)])
-    events = [json.loads(line) for line in (run_dir / "04-events.jsonl").read_text().splitlines()]
-    assert all(isinstance(e["seconds"], float) for e in events)
-    assert [(e["id"], e["outcome"], e["runner"], e["variants"]) for e in events] == [
+    ended = case_events(run_dir)
+    assert all(isinstance(e["seconds"], float) for e in ended)
+    # a case with no variant carries no `variants`: what is not there was not known, never empty
+    assert [(e["id"], e["outcome"], e["runner"], e.get("variants", {})) for e in ended] == [
         ("a.test::a[backend=oss]", "passed", "unittest", {"backend": "oss"}),
         ("test/body.py::fails", "failed", "python", {}),
     ]
@@ -710,7 +718,7 @@ def test_failed_checks_are_reported_before_the_abort_and_the_outcome_is_failed(t
         raise ValueError("then the body broke")
 
     case = py_case(body, engines=["fake"])
-    outcome, problems = _run_body(case, ctx_for(case, tmp_path))
+    outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path))
     assert outcome == "failed"
     assert ["2" in problems[0], "3" in problems[1], "then the body broke" in problems[2]] == [True] * 3
     assert f"at {__file__}:" in problems[0]
@@ -731,7 +739,7 @@ def test_a_failed_check_stays_a_failure_when_a_setup_fails_after_it(tmp_path):
         c.setup("SELECT boom")
 
     case = py_case(body, engines=["fake"])
-    outcome, problems = _run_body(case, ctx_for(case, tmp_path))
+    outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path))
     assert outcome == "failed"
     assert "wrong result" in problems[0] and problems[1].startswith("setup failed")
 
@@ -741,7 +749,7 @@ def test_a_failed_setup_is_an_error_not_a_failure(tmp_path):
         ctx.engine("fake").setup("SELECT boom")
 
     case = py_case(body, engines=["fake"])
-    outcome, problems = _run_body(case, ctx_for(case, tmp_path))
+    outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path))
     assert outcome == "error" and problems[0].startswith("setup failed")
 
 
@@ -754,7 +762,7 @@ def test_a_body_can_branch_on_a_statement_that_failed_and_the_case_still_passes(
         seen.append(c.tries("SELECT boom"))
 
     case = py_case(body, engines=["fake"])
-    outcome, problems = _run_body(case, ctx_for(case, tmp_path))
+    outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path))
     assert (outcome, problems) == ("passed", [])
     assert [bool(t) for t in seen] == [True, False]
     assert (seen[0].rows, seen[1].error) == ([(1,)], "boom")
@@ -771,7 +779,7 @@ def test_teardowns_run_in_reverse_order_also_after_an_abort(tmp_path, aborts):
         c.oks("SELECT boom" if aborts else "SELECT 1")
 
     case = py_case(body, engines=["fake"])
-    outcome, _ = _run_body(case, ctx_for(case, tmp_path, engine=engine))
+    outcome, _, _ = _run_body(case, ctx_for(case, tmp_path, engine=engine))
     assert outcome == ("failed" if aborts else "passed")
     assert engine.statements[-2:] == ["DROP second", "DROP first"]
 
@@ -785,7 +793,7 @@ def test_a_teardown_that_fails_is_an_error_and_the_others_still_run(tmp_path):
         c.teardown("DROP boom")
 
     case = py_case(body, engines=["fake"])
-    outcome, problems = _run_body(case, ctx_for(case, tmp_path, engine=engine))
+    outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path, engine=engine))
     assert outcome == "error" and problems[0].startswith("teardown failed")
     assert engine.statements[-1] == "DROP last"
 
@@ -995,8 +1003,7 @@ def test_a_flaky_file_is_passed_with_its_attempts_in_the_event_line_and_its_outp
     cases = [sql_case("a.test"), sql_case("b_flaky2.test", retries=1), sql_case("c_flaky2.test")]
     code, run_dir, report, text = go(tmp_path, cases)
     assert outcomes(report) == {"a": "passed", "b_flaky2": "passed", "c_flaky2": "failed"}
-    events = [json.loads(line) for line in (run_dir / "04-events.jsonl").read_text().splitlines()]
-    assert [e.get("attempts") for e in events] == [None, 2, None]
+    assert sorted(e.get("attempts") for e in case_events(run_dir) if e.get("attempts")) == [2]
     assert "[passed on attempt 2 of 2]" in text
 
 
@@ -1065,3 +1072,28 @@ def test_the_scan_record_names_the_version_of_an_engine(tmp_path):
     project = Project(str(tmp_path), {"fake": FakeEngine().engine()}, {}, {}, {}, ())
     record = py_case(passes, engines=["fake"]).record(project)
     assert record["preconditions"]["engines"] == [{"id": "fake", "version": "fake:1"}]
+
+
+# -----------------------------------------------------------------------------
+# The side outputs of a run: live on the terminal, files beside it
+#
+
+
+def test_a_run_writes_the_report_files_it_is_asked_for(tmp_path):
+    import xml.etree.ElementTree as ET
+
+    out_json, out_xml = str(tmp_path / "r.json"), str(tmp_path / "r.xml")
+    _, run_dir, _, text = go(
+        tmp_path, [sql_case("a.test"), sql_case("b_fail.test")], report_json=out_json, junit_file=out_xml
+    )
+    assert "PASSED   a.test::a" in text  # the live output still goes to the terminal
+    assert json.loads(open(out_json).read()) == json.loads((run_dir / "05-report.json").read_text())
+    root = ET.parse(out_xml).getroot()
+    assert sorted(s.attrib["name"] for s in root) == ["a.test", "b_fail.test"]
+
+
+def test_a_terse_run_prints_blocks_and_one_summary_line_instead_of_the_live_output(tmp_path):
+    _, _, _, text = go(tmp_path, [sql_case("a.test"), sql_case("b_fail.test")], level="terse")
+    assert "PASSED" not in text
+    assert text.splitlines()[0] == "case: b_fail.test::b_fail"
+    assert text.splitlines()[-1].startswith("summary: 1 passed, 1 failed, 0 error, 0 blocked, 0 skipped in ")

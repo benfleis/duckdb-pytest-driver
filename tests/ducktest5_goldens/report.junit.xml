@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites name="ducktest5" tests="6" failures="1" errors="2" skipped="1" time="6.1">
+  <testsuite name="test/sql/read.test" tests="1" failures="0" errors="0" skipped="0" time="0.41">
+    <testcase name="sql/read.test::read" classname="test/sql/read.test" time="0.41">
+      <properties>
+        <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
+        <property name="runner" value="unittest" />
+        <property name="type" value="sqllogic" />
+      </properties>
+    </testcase>
+  </testsuite>
+  <testsuite name="test/sql/rows.test" tests="1" failures="1" errors="0" skipped="0" time="1.25">
+    <testcase name="sql/rows.test::rows" classname="test/sql/rows.test" time="1.25">
+      <properties>
+        <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
+        <property name="runner" value="unittest" />
+        <property name="type" value="sqllogic" />
+      </properties>
+      <failure message="Wrong result in query! (test/sql/rows.test:12)!" type="FAILED">--- sql/rows.test::rows
+  run: 2026-09-21T10-00-00Z--amber-koala-01
+  test/sql/rows.test:12
+
+  Wrong result in query! (test/sql/rows.test:12)!
+  sql:
+    SELECT id FROM t ORDER BY id;
+  expected:
+    1
+    2
+  actual:
+    1
+    3
+
+  values: storage=s3  &lt;- AXES storage
+  service: store (existing)  &lt;- AXES storage=s3
+  config: /runs/2026-09-21T10-00-00Z--amber-koala-01/batches/b002/config.json
+  kept: /runs/2026-09-21T10-00-00Z--amber-koala-01/batches/b002/tmp
+  again: ducktest5 run --id sql/rows.test::rows</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="test/sql/needs_env.test" tests="1" failures="0" errors="0" skipped="1" time="0.33">
+    <testcase name="sql/needs_env.test::needs_env" classname="test/sql/needs_env.test" time="0.33">
+      <properties>
+        <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
+        <property name="runner" value="unittest" />
+        <property name="type" value="sqllogic" />
+      </properties>
+      <skipped message="require-env DAT_PATH" />
+    </testcase>
+  </testsuite>
+  <testsuite name="test/sql/flaky.test" tests="1" failures="0" errors="0" skipped="0" time="2.6">
+    <testcase name="sql/flaky.test::flaky" classname="test/sql/flaky.test" time="2.6">
+      <properties>
+        <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
+        <property name="runner" value="unittest" />
+        <property name="type" value="sqllogic" />
+        <property name="attempts" value="2" />
+        <property name="note" value="passed on attempt 2 of 2" />
+      </properties>
+    </testcase>
+  </testsuite>
+  <testsuite name="test/py/write.py" tests="1" failures="0" errors="1" skipped="0" time="0.9">
+    <testcase name="py/write.py::write_then_read" classname="test/py/write.py" time="0.9">
+      <properties>
+        <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
+        <property name="runner" value="python" />
+        <property name="type" value="python" />
+      </properties>
+      <error message="setup failed" type="ERROR">--- py/write.py::write_then_read
+  run: 2026-09-21T10-00-00Z--amber-koala-01
+  /repo/test/py/write.py:14
+
+  setup failed
+  [duckdb] statement failed: Catalog Error: Table with name t does not exist
+      SELECT * FROM t;
+
+  require: httpfs  &lt;- AXES storage=s3
+  dir: /runs/2026-09-21T10-00-00Z--amber-koala-01/cases/write_then_read@write.py-ab12cd
+  kept: /runs/2026-09-21T10-00-00Z--amber-koala-01/cases/write_then_read@write.py-ab12cd
+  again: ducktest5 run --id py/write.py::write_then_read</error>
+    </testcase>
+  </testsuite>
+  <testsuite name="test/py/spark.py" tests="1" failures="0" errors="1" skipped="0" time="0">
+    <testcase name="py/spark.py::roundtrip[backend=oss]" classname="test/py/spark.py" time="0">
+      <properties>
+        <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
+        <property name="runner" value="-" />
+        <property name="type" value="python" />
+        <property name="variant.backend" value="oss" />
+        <property name="note" value="spark did not come up" />
+      </properties>
+      <error message="blocked" type="BLOCKED">--- py/spark.py::roundtrip[backend=oss]
+  run: 2026-09-21T10-00-00Z--amber-koala-01
+
+  spark did not come up
+
+  service: store (existing)  &lt;- @test
+  again: ducktest5 run --id 'py/spark.py::roundtrip[backend=oss]'</error>
+    </testcase>
+  </testsuite>
+</testsuites>
