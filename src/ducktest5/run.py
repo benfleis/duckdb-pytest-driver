@@ -53,6 +53,11 @@ def _run_body(case, ctx):
     try:
         try:
             body(ctx)
+        except UsageError as exc:
+            outcome, problems = (
+                ERROR,
+                [f"usage error of the test, not of the command line\n{_describe_failure(exc, body)}"],
+            )
         except SetupFailed as exc:
             outcome, problems = ERROR, [f"setup failed\n{_describe_failure(exc, body)}"]
         except Exception as exc:

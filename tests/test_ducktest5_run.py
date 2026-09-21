@@ -634,6 +634,29 @@ def test_a_paired_test_runs_its_file_through_the_binary(tmp_path, body_file, out
         assert 'ENV {"CATALOG": "duck", "EXTRA": "x"}' in output
 
 
+def asks_for_a_binary_that_is_not_there(ctx):
+    ctx.run_test()
+
+
+def gives_rows_the_wrong_shape(ctx):
+    ctx.duckdb().expects("SELECT 1", 1)
+
+
+@pytest.mark.parametrize(
+    "body, text",
+    [
+        (asks_for_a_binary_that_is_not_there, "no unittest binary was found"),
+        (gives_rows_the_wrong_shape, "is not rows"),
+    ],
+)
+def test_a_usage_error_in_a_body_is_an_error_of_the_test_and_the_run_goes_on(tmp_path, body, text):
+    cases = [py_case(body), py_case(passes, path="test/next.py")]
+    _, _, report, _ = go(tmp_path, cases, unittest_bin=None)
+    assert [c["outcome"] for c in report["cases"]] == ["error", "passed"]
+    problem = report["cases"][0]["problems"][0]
+    assert problem.startswith("usage error of the test, not of the command line\n") and text in problem
+
+
 def test_run_test_in_a_body_with_no_file_says_what_it_is_for(tmp_path):
     with pytest.raises(RuntimeError, match="a .test file of the same stem"):
         ctx_for(py_case(passes), tmp_path).run_test()
