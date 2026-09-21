@@ -60,6 +60,7 @@ class Provisioned:
     service: object
     block: dict
     mode: str
+    started: bool = False  # this process started the instance; one it found is not ours to stop
 
     def redacted(self):
         return {k: (MASK if k in self.service.secrets else v) for k, v in self.block.items()}
@@ -67,6 +68,7 @@ class Provisioned:
 
 def provision(service, *, existing=None, keep=False, ready_timeout_s=60):
     """Returns a Provisioned, or raises with the reason the service is not there."""
+    started = False
     if existing is not None or service.start is None:
         block = service.block(**(existing or {}))
         if not service.alive(block):
@@ -86,6 +88,7 @@ def provision(service, *, existing=None, keep=False, ready_timeout_s=60):
             )
         else:
             service.start(block)
+            started = True
             mode = KEPT if keep else MANAGED
             try:
                 wait_until(
@@ -104,7 +107,7 @@ def provision(service, *, existing=None, keep=False, ready_timeout_s=60):
             if mode == MANAGED and service.stop:
                 service.stop(block)  # else the next run is refused: "already answers"
             raise
-    return Provisioned(service, block, mode)
+    return Provisioned(service, block, mode, started)
 
 
 def release(provisioned):
@@ -122,10 +125,10 @@ def _no_ducktest_environment():
         os.environ.update(saved)
 
 
-def attach_argument(provisioned):
-    """What the next run passes to find a kept instance: the endpoint, and every other field that
-    is not what the service gives with no DUCKTEST_* variable set, so that a shell without those
-    variables finds the same instance, bucket and all. A secret is never printed."""
+def attach_overrides(provisioned):
+    """What finds this instance again: the endpoint, and every other field that is not what the
+    service gives with no DUCKTEST_* variable set, so that a shell without those variables finds the
+    same instance, bucket and all. A secret is masked: it is never written down."""
     service, block = provisioned.service, provisioned.block
     with _no_ducktest_environment():
         defaults = service.block()
@@ -135,7 +138,12 @@ def attach_argument(provisioned):
             # a field the service works out from others is not an override: it does not come back
             if k == "endpoint" or (v != defaults.get(k) and service.block(**{k: v}).get(k) == v)
         }
-    masked = sorted(k for k in overrides if k in service.secrets)
-    overrides.update({k: MASK for k in masked})
+    return {k: (MASK if k in service.secrets else v) for k, v in overrides.items()}
+
+
+def attach_argument(provisioned):
+    """The `--existing-service` argument for a kept instance, as a line to print."""
+    overrides = attach_overrides(provisioned)
+    masked = sorted(k for k, v in overrides.items() if v == MASK)
     note = f"  ({MASK}: a secret, not printed; put the value in, or set it in the environment)" if masked else ""
-    return f"--existing-service '{service.id}={json.dumps(overrides)}'{note}"
+    return f"--existing-service '{provisioned.service.id}={json.dumps(overrides)}'{note}"

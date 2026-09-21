@@ -570,8 +570,16 @@ def test_an_engine_is_told_about_the_services_it_uses_and_is_stopped(tmp_path):
 
 def test_secrets_of_a_service_are_not_in_the_provision_record(tmp_path):
     _, run_dir, _, _ = go(tmp_path, [py_case(passes, services=["store"])], services=[FakeStore().service()])
-    record = yaml.safe_load((run_dir / "03-provision.yaml").read_text())
-    assert record == {"store": {"mode": EXISTING, "block": {"endpoint": "http://store", "secret_key": "***"}}}
+    record = yaml.safe_load((run_dir / "03-provision.yaml").read_text())["services"]
+    assert record == {
+        "store": {
+            "mode": EXISTING,
+            "outlives_the_process": False,
+            "owned": False,
+            "block": {"endpoint": "http://store", "secret_key": "***"},
+            "attach": {"endpoint": "http://store"},
+        }
+    }
 
 
 # -----------------------------------------------------------------------------

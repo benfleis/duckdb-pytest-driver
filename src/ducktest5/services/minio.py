@@ -122,4 +122,5 @@ def minio_service(id="minio"):
         clean=_clean,
         location=_location,
         secrets=("access_key", "secret_key"),
+        outlives_the_process=True,  # a container: it stays up when the run that started it ends
     )

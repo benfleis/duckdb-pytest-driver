@@ -1,10 +1,14 @@
-"""provision -> exec -> cleanup -> report, over the cases a selection gave.
+"""exec: the plan's batches, run, as one event for each case; and `run`, which is every phase.
 
-`.test` cases go to the unittest binary in batches, several processes at a time; Python bodies run in
-this process, one after another. What was decided and what happened is in the run dir:
-`01-tests.yaml`, `03-provision.yaml` (secrets redacted), `04-events.jsonl` (one line for each case),
-`05-report.yaml` and `05-report.json`. Whatever goes wrong outside a body is an ERROR of the cases it
-hit, never the end of the run, and services are released on every way out.
+`ducktest5 run` is `scan`, `plan`, `provision`, `exec`, `cleanup` and `report` in one process, and
+each of them is the function the subcommand of the same name calls (`phases.py`). What was decided
+and what happened is in the run dir: `01-tests.yaml`, `02-plan.yaml`, `03-provision.yaml`,
+`04-events.jsonl` (one line for each case), `05-report.yaml` and `05-report.json`. Whatever goes
+wrong outside a body is an ERROR of the cases it hit, never the end of the run, and services are
+released on every way out.
+
+`.test` batches go to the unittest binary, several processes at a time, or to DuckDB's own `run`
+wrapper (`--runner run`, `runners.py`); Python bodies run in this process, one after another.
 
 The run prints nothing itself. It writes events and hands each one to the renderers that watch, so
 the terminal, a file and `ducktest5 report` of the same run all say the same thing (`events.py`,
@@ -20,15 +24,12 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import time
 import traceback
 
-import yaml
-
-from . import caseenv, events, sqllogic
+from . import caseenv, events, phases, sqllogic
 from .binary import UsageError
 from .client import SetupFailed
 from .ctx import Ctx
@@ -38,14 +39,9 @@ from .mnemonic import run_id as make_run_id
 from .model import SQLLOGIC
 from .outcomes import ALL as OUTCOMES
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
-from .provision import KEPT, attach_argument, existing_overrides, provision, release
+from .provision import KEPT, attach_argument
 from .reports import Report, render, write_files
 from .reports.live import Live
-
-
-def _write(run_dir, name, doc):
-    with open(os.path.join(run_dir, name), "w") as f:
-        yaml.safe_dump(doc, f, sort_keys=False, width=100)
 
 
 def _describe_failure(exc, body):
@@ -135,6 +131,18 @@ def _only_one_test_case(cases):
         raise UsageError(f"a debugger runs the unittest binary; {cases[0].id} is a Python body -- not supported yet")
 
 
+def _batch_dir(run_dir, batch_id):
+    """Where a batch writes. A second exec over one plan (a resume, a re-run of what failed) does
+    not write over what the first left: it takes the next free name."""
+    base = os.path.join(run_dir, "batches", batch_id)
+    if not os.path.exists(base):
+        return base
+    n = 2
+    while os.path.exists(f"{base}-again{n}"):
+        n += 1
+    return f"{base}-again{n}"
+
+
 def run(
     cases,
     project,
@@ -148,6 +156,8 @@ def run(
     keep_services=False,
     batch_size=10,
     workers=4,
+    runner=phases.UNITTEST_RUNNER,
+    run_flags="",
     out=None,
     session_factory=DuckDBSession,
     debugger=None,
@@ -160,19 +170,101 @@ def run(
     junit_file=None,
     duckdb_file=None,
 ):
-    out = out or sys.stdout  # looked up now: a caller may have replaced it since import
+    """Every phase, in one process and one run directory."""
     if debugger is not None:
         _only_one_test_case(cases)
-    engines = project.engines
-    run_id = make_run_id()
-    run_dir = os.path.join(os.path.abspath(temp_root), run_id)
+    run_dir = os.path.join(os.path.abspath(temp_root), make_run_id())
     os.makedirs(run_dir)
-    _write(run_dir, "01-tests.yaml", [c.record(project) for c in cases])
+    phases.write_tests(run_dir, cases, project, working_dir=working_dir, selection=selection)
+    plan = phases.build_plan(
+        cases, batch_size=batch_size, workers=workers, runner=runner, run_flags=run_flags, keep=keep
+    )
+    phases.write_plan(run_dir, plan)
+    return execute(
+        cases,
+        project,
+        plan=plan,
+        run_dir=run_dir,
+        duckdb_bin=duckdb_bin,
+        unittest_bin=unittest_bin,
+        working_dir=working_dir,
+        keep=keep,
+        existing_services=existing_services,
+        keep_services=keep_services,
+        provision_here=True,
+        clean=True,
+        out=out,
+        session_factory=session_factory,
+        debugger=debugger,
+        command=command,
+        selection=selection,
+        format=format,
+        level=level,
+        color=color,
+        report_json=report_json,
+        junit_file=junit_file,
+        duckdb_file=duckdb_file,
+    )
+
+
+def execute(
+    cases,
+    project,
+    *,
+    plan,
+    run_dir,
+    duckdb_bin,
+    unittest_bin=None,
+    working_dir=".",
+    keep=False,
+    existing_services=(),
+    keep_services=False,
+    provision_here=True,
+    clean=False,
+    events_file=None,
+    append=False,
+    interrupted=(),
+    out=None,
+    session_factory=DuckDBSession,
+    debugger=None,
+    command=None,
+    selection=None,
+    format="text",
+    level="normal",
+    color=None,
+    report_json=None,
+    junit_file=None,
+    duckdb_file=None,
+):
+    """The exec phase: the batches of `plan`, run, as events in `04-events.jsonl`.
+
+    `cases` holds the Case of every id the plan names. With `provision_here` the services are
+    started and released here, as `run` does; without it they are attached to, from `03` or from
+    `--existing-service`. `interrupted` names cases a run before this one left half-run, so that
+    their event says so."""
+    out = out or sys.stdout  # looked up now: a caller may have replaced it since import
+    by_id = {c.id: c for c in cases}
+    if missing := [i for i in phases.ids_of_plan(plan) if i not in by_id]:
+        raise UsageError(
+            f"{len(missing)} case(s) of the plan are not in the test tree any more (was it changed since `plan`?):\n  "
+            + "\n  ".join(missing[:10])
+        )
+    cases = [by_id[i] for i in phases.ids_of_plan(plan)]
+    run_id = phases.run_id_of(run_dir)
+    engines = project.engines
+    knobs = plan.get("knobs") or {}
+    workers = knobs.get("workers", 4)
+    runner = knobs.get("runner", phases.UNITTEST_RUNNER)
 
     verbose = level == "verbose"
     # Text at normal or verbose is the live renderer; anything else is rendered once, at the end.
     live = Live(out, color=color, total=len(cases), level=level) if format == "text" and level != "terse" else None
-    writer = events.Writer(os.path.join(run_dir, events.EVENTS_FILE), run_id, listeners=[live] if live else [])
+    writer = events.Writer(
+        events_file or os.path.join(run_dir, events.EVENTS_FILE),
+        run_id,
+        listeners=[live] if live else [],
+        append=append,
+    )
     started = time.perf_counter()
     writer.emit(
         RUN_START,
@@ -187,8 +279,8 @@ def run(
         cases=len(cases),
     )
 
-    def begin(case, runner):
-        writer.emit(CASE_START, at=round(time.perf_counter() - started, 2), runner=runner, **_identity(case))
+    def begin(case, runner_name):
+        writer.emit(CASE_START, at=round(time.perf_counter() - started, 2), runner=runner_name, **_identity(case))
 
     def done(
         case,
@@ -201,6 +293,7 @@ def run(
         note="",
         batch_dir=None,
         case_dir=None,
+        dirs=(),
         failure=None,
         statements=(),
         reason=None,
@@ -210,6 +303,8 @@ def run(
         if seconds is not None:
             line["seconds"] = seconds
         line.update({k: v for k, v in more.items() if v not in (None, (), {})})
+        if case.id in interrupted:
+            note = "; ".join(x for x in ("the run before this one was stopped while this case was running", note) if x)
         if problems:
             line["problems"] = list(problems)
         if failure:
@@ -218,6 +313,8 @@ def run(
             line["reason"] = reason
         if note:
             line["note"] = note
+        if dirs:  # where the cleanup phase finds what this case left
+            line["dirs"] = [os.path.relpath(d, run_dir) for d in dirs]
         if outcome != PASSED or verbose:
             line["made_of"] = _made_of(case_env(case), batch_dir=batch_dir, case_dir=case_dir)
             line["again"] = f"ducktest5 run --id {shlex.quote(case.id)}"
@@ -236,6 +333,9 @@ def run(
             resolved[id(case)] = caseenv.resolve(case, provisioned)
         return resolved[id(case)]
 
+    def service_event(service_id, *, kind="service", **fields):
+        writer.emit(SERVICE, id=service_id, kind=kind, **fields)
+
     duckdb_home = os.path.join(run_dir, "home")
     duckdb_session = session_factory(duckdb_bin, home=duckdb_home)
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
@@ -243,45 +343,38 @@ def run(
     try:
         # provision: each service some selected case needs, then each engine. One that does not come
         # up blocks its cases; the rest of the run goes on.
-        for service_id in sorted({s for c in cases for s in c.services}):
-            writer.emit(SERVICE, id=service_id, kind="service", state="starting")
-            t0 = time.perf_counter()
-            try:
-                provisioned[service_id] = provision(
-                    project.services[service_id],
-                    existing=existing_overrides(service_id, existing_services),
-                    keep=keep_services,
-                )
-                writer.emit(
-                    SERVICE,
-                    id=service_id,
-                    kind="service",
-                    state="up",
-                    mode=provisioned[service_id].mode,
-                    seconds=round(time.perf_counter() - t0, 2),
-                    block=provisioned[service_id].redacted(),
-                )
-            except Exception as exc:
-                boot_errors[service_id] = f"{type(exc).__name__}: {exc}"
-                writer.emit(SERVICE, id=service_id, kind="service", state="failed", error=boot_errors[service_id])
-        _write(
-            run_dir, "03-provision.yaml", {k: {"mode": p.mode, "block": p.redacted()} for k, p in provisioned.items()}
-        )
+        needed = {s for c in cases for s in c.services}
+        if provision_here:
+            provisioned, boot_errors = phases.provision_services(
+                needed,
+                project,
+                existing_services=existing_services,
+                keep_services=keep_services,
+                on=service_event,
+            )
+            phases.write_provision(run_dir, provisioned, boot_errors, keep_services=keep_services, force=True)
+        else:
+            provisioned, boot_errors = phases.services_for_exec(
+                needed,
+                project,
+                doc=phases.read_provision(run_dir),
+                existing_services=existing_services,
+                on=service_event,
+            )
 
         # An engine boots only when a case that can still run needs it.
         for engine_id in sorted({e for c in cases if not blocked(c) for e in c.engines}):
             log = os.path.join(run_dir, f"engine-{engine_id}.log")
             version = engines[engine_id].version
-            writer.emit(SERVICE, id=engine_id, kind="engine", state="starting", version=version, log=log)
+            service_event(engine_id, kind="engine", state="starting", version=version, log=log)
             t0 = time.perf_counter()
             try:
                 handles[engine_id] = engines[engine_id].boot(log)
                 for service_id in engines[engine_id].uses:
                     if service_id in provisioned:
                         handles[engine_id].use_service(service_id, provisioned[service_id].block)
-                writer.emit(
-                    SERVICE,
-                    id=engine_id,
+                service_event(
+                    engine_id,
                     kind="engine",
                     state="up",
                     version=version,
@@ -290,62 +383,29 @@ def run(
                 )
             except Exception as exc:
                 boot_errors[engine_id] = f"{type(exc).__name__}: {exc} (log: {log})"
-                writer.emit(
-                    SERVICE, id=engine_id, kind="engine", state="failed", version=version, error=boot_errors[engine_id]
-                )
+                service_event(engine_id, kind="engine", state="failed", version=version, error=boot_errors[engine_id])
 
-        runnable = []
+        runnable = {}
         for case in cases:
             if by := blocked(case):
                 begin(case, "-")
                 done(case, BLOCKED, runner="-", blocked_by=by, note=f"{by[0]} did not come up")
             else:
-                runnable.append(case)
+                runnable[case.id] = case
 
-        # .test bodies with no Python: batches through the unittest binary, several at a time.
-        sqllogic_cases = [c for c in runnable if c.test.type == SQLLOGIC]
-        if sqllogic_cases and unittest_bin is None:
-            raise UsageError("the selection holds .test files, and no unittest binary was found")
-        # A batch is a group of cases with one environment: everything the process is given is in
-        # the key, so any difference between two cases gives them a process each.
-        groups = {}
-        for c in sqllogic_cases:
-            groups.setdefault(case_env(c).key(), []).append(c)
+        # .test bodies with no Python: batches through the unittest binary, several at a time, or
+        # through DuckDB's own `run` wrapper.
         batches = []
-        for group in groups.values():
-            # One file once in a batch: the binary reports by file name. A case with a service runs
-            # alone: a failure in a batch of several runs again for its text, and that second run would
-            # see what the first left on the service.
-            alone = lambda c: "slow" in c.tags or bool(c.services)  # noqa: E731
-            chunks, slow = [], [[c] for c in group if alone(c)]
-            for c in (c for c in group if not alone(c)):
-                chunk = next(
-                    (
-                        k
-                        for k in chunks
-                        if len(k) < batch_size and c.test.body_file not in {x.test.body_file for x in k}
-                    ),
-                    None,
-                )
-                if chunk is None:
-                    chunks.append(chunk := [])
-                chunk.append(c)
-            for chunk in chunks + slow:
-                first = chunk[0]
-                batches.append(
-                    (
-                        chunk,
-                        sqllogic.Batch(
-                            os.path.join(run_dir, "batches", f"b{len(batches) + 1:03d}"),
-                            [(c.id, c.test.body_file) for c in chunk],
-                            case_env(first),
-                            timeouts={c.id: c.test.timeout for c in chunk if c.test.timeout},
-                            retries={c.id: c.test.retries for c in chunk if c.test.retries},
-                        ),
-                    )
-                )
+        for entry in plan.get("batches") or []:
+            chunk = [runnable[i] for i in entry["cases"] if i in runnable]
+            if not chunk or entry["runner"] == phases.PYTHON_RUNNER:
+                continue
+            if unittest_bin is None:
+                raise UsageError("the selection holds .test files, and no unittest binary was found")
+            batches.append((entry, chunk, _batch_of(run_dir, entry, chunk, case_env)))
+
         if debugger is not None and batches:
-            ((_, batch),) = batches
+            ((_, _, batch),) = batches
             batch.write()
             args = shlex.split(debugger) + sqllogic.batch_args(unittest_bin, batch, working_dir)
             print("\n" + " ".join(shlex.quote(a) for a in args) + "\n", file=out, flush=True)
@@ -358,12 +418,14 @@ def run(
                 )
             return code
 
+        for _, chunk, _batch in batches:
+            for case in chunk:
+                begin(case, runner)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            futures = {}
-            for chunk, batch in batches:
-                for case in chunk:
-                    begin(case, "unittest")
-                futures[pool.submit(sqllogic.run_batch, unittest_bin, batch, working_dir)] = (chunk, batch)
+            futures = {
+                pool.submit(sqllogic.run_batch, unittest_bin, batch, working_dir): (chunk, batch)
+                for _, chunk, batch in batches
+            }
             for future in concurrent.futures.as_completed(futures):
                 chunk, batch = futures[future]
                 try:
@@ -373,35 +435,12 @@ def run(
                         done(
                             case,
                             ERROR,
-                            runner="unittest",
+                            runner=runner,
                             problems=[f"the batch could not run: {type(exc).__name__}: {exc}"],
                             batch_dir=batch.dir,
                         )
                     continue
-                for case in chunk:
-                    r = by_case[case.id]
-                    problems = [r.detail] if r.detail and r.outcome != PASSED else []
-                    done(
-                        case,
-                        r.outcome,
-                        runner="unittest",
-                        seconds=r.seconds,
-                        problems=problems,
-                        failure=events.binary_failure(r.detail) if r.outcome in (FAILED, ERROR) else None,
-                        reason=r.detail if r.outcome == SKIPPED else None,
-                        kept=[r.kept] if r.kept else [],
-                        note=r.note,
-                        batch_dir=batch.dir,
-                        batch=os.path.relpath(batch.dir, run_dir),
-                        **({"attempts": r.attempts} if r.attempts > 1 else {}),
-                    )
-                # What a failed attempt printed stays, also when a later attempt passed.
-                if keep:
-                    continue
-                if all(r.outcome == PASSED and r.attempts == 1 for r in by_case.values()):
-                    shutil.rmtree(batch.dir, ignore_errors=True)
-                else:
-                    sqllogic.remove_init_sql(batch.dir)
+                _report_batch(chunk, batch, by_case, done, run_dir, runner)
 
         # Python bodies, in this process, one after another.
         def attempt(case, n):
@@ -434,59 +473,57 @@ def run(
                 return ERROR, problems, {"summary": problems[0]}, temp_dir, None
             return *_run_body(case, ctx), temp_dir, ctx
 
-        for case in runnable:
-            if case.test.type == SQLLOGIC:
+        for entry in plan.get("batches") or []:
+            if entry["runner"] != phases.PYTHON_RUNNER:
                 continue
-            begin(case, "python")
-            t0 = time.perf_counter()
-            allowed, tried, first = 1 + case.test.retries, [], None
-            for n in range(1, allowed + 1):
-                outcome, problems, failure, temp_dir, ctx = attempt(case, n)
-                tried.append((temp_dir, ctx))
-                if outcome not in (FAILED, ERROR):
-                    break
-                first = first or (outcome, problems, failure)
-            note = ""
-            if outcome in (FAILED, ERROR):
-                outcome, problems, failure = first
-            elif n > 1:
-                note = f"passed on attempt {n} of {allowed}"
-            kept = []
-            if outcome == PASSED and not keep:
-                for temp_dir, _ in tried:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                for service_id, uri in (x for _, c in tried if c for x in c.remote_locations):
-                    try:
-                        provisioned[service_id].service.clean(provisioned[service_id].block, uri)
-                    except Exception as exc:
-                        outcome = ERROR
-                        problems.append(
-                            f"what the case wrote at {uri} could not be removed: {type(exc).__name__}: {exc}"
-                        )
-                        failure = {"summary": problems[-1]}
-                        kept.append(uri)
-            else:
-                kept = [
-                    *(temp_dir for temp_dir, _ in tried if os.path.isdir(temp_dir)),
-                    *(uri for _, c in tried if c for _, uri in c.remote_locations),
-                ]
-                if not keep:
-                    for temp_dir, _ in tried:
-                        sqllogic.remove_init_sql(temp_dir)
-            done(
-                case,
-                outcome,
-                runner="python",
-                seconds=round(time.perf_counter() - t0, 2),
-                problems=problems,
-                failure=failure if outcome != PASSED else None,
-                kept=kept,
-                note=note,
-                case_dir=tried[0][0],
-                seconds_by_client=ctx.seconds_by_client() if ctx else {},
-                statements=[s for _, c in tried if c for s in c.statements],
-                **({"attempts": n} if n > 1 else {}),
-            )
+            for case in (runnable[i] for i in entry["cases"] if i in runnable):
+                begin(case, phases.PYTHON_RUNNER)
+                t0 = time.perf_counter()
+                allowed, tried, first = 1 + case.test.retries, [], None
+                for n in range(1, allowed + 1):
+                    outcome, problems, failure, temp_dir, ctx = attempt(case, n)
+                    tried.append((temp_dir, ctx))
+                    if outcome not in (FAILED, ERROR):
+                        break
+                    first = first or (outcome, problems, failure)
+                note = ""
+                if outcome in (FAILED, ERROR):
+                    outcome, problems, failure = first
+                elif n > 1:
+                    note = f"passed on attempt {n} of {allowed}"
+                kept = []
+                if outcome == PASSED and not keep:
+                    # What the case wrote on a service is its own; the files it left are the cleanup phase's.
+                    for service_id, uri in (x for _, c in tried if c for x in c.remote_locations):
+                        try:
+                            provisioned[service_id].service.clean(provisioned[service_id].block, uri)
+                        except Exception as exc:
+                            outcome = ERROR
+                            problems.append(
+                                f"what the case wrote at {uri} could not be removed: {type(exc).__name__}: {exc}"
+                            )
+                            failure = {"summary": problems[-1]}
+                            kept.append(uri)
+                else:
+                    kept = [
+                        *(temp_dir for temp_dir, _ in tried if os.path.isdir(temp_dir)),
+                        *(uri for _, c in tried if c for _, uri in c.remote_locations),
+                    ]
+                done(
+                    case,
+                    outcome,
+                    runner=phases.PYTHON_RUNNER,
+                    seconds=round(time.perf_counter() - t0, 2),
+                    problems=problems,
+                    failure=failure if outcome != PASSED else None,
+                    kept=kept,
+                    note=note,
+                    case_dir=tried[0][0],
+                    dirs=[d for d, _ in tried],
+                    seconds_by_client=ctx.seconds_by_client() if ctx else {},
+                    statements=[s for _, c in tried if c for s in c.statements],
+                    **({"attempts": n} if n > 1 else {}),
+                )
     finally:
         duckdb_session.close()
         for handle in handles.values():
@@ -494,13 +531,14 @@ def run(
                 handle.stop()
             except Exception:
                 pass
-        for p in provisioned.values():
-            try:
-                release(p)
-            except Exception as exc:
-                writer.emit(SERVICE, id=p.service.id, kind="service", state="stop_failed", error=str(exc))
-            if p.mode == KEPT:
-                writer.emit(SERVICE, id=p.service.id, kind="service", state="kept", attach=attach_argument(p))
+        if provision_here:
+            phases.release_all(
+                provisioned,
+                on_error=lambda p, exc: service_event(p.service.id, state="stop_failed", error=str(exc)),
+            )
+            for p in provisioned.values():
+                if p.mode == KEPT:
+                    service_event(p.service.id, state="kept", attach=attach_argument(p))
         if not debugged:  # the debugger ran the case, so nothing here has an outcome to report
             ended = [e for e in writer.events if e.get("event") == CASE_END]
             counts = {o: sum(e["outcome"] == o for e in ended) for o in OUTCOMES}
@@ -518,14 +556,19 @@ def run(
             )
         writer.close()
         if not debugged:
-            report = Report.of(writer.events)
+            if clean:
+                phases.cleanup(run_dir, project=project, keep=keep, existing_services=existing_services)
+            sources = events.files_in(run_dir)
+            if writer.path not in sources:  # an event file beside another run's, as a slice writes
+                sources.append(writer.path)
+            report = Report.of(events.load(sources))
             if live:
                 live.finish(report)
             else:
                 render(report, out, format=format, level=level, color=bool(color))
             write_files(
                 report,
-                [writer.path],
+                sources,
                 run_dir=run_dir,
                 report_json=report_json,
                 junit_file=junit_file,
@@ -533,6 +576,58 @@ def run(
                 duckdb_bin=duckdb_bin,
             )
     return code
+
+
+def _batch_of(run_dir, entry, chunk, case_env):
+    """One plan batch as the two files the binary takes. The batch key is worked out again here,
+    with the services of this process: a plan that puts two environments in one batch is refused,
+    not run."""
+    keys = {case_env(c).key() for c in chunk}
+    if len(keys) > 1:
+        raise UsageError(
+            f"batch {entry['id']} of the plan holds {len(keys)} case environments; a batch is one environment. "
+            "Make the plan again with `ducktest5 plan --force`."
+        )
+    return sqllogic.Batch(
+        _batch_dir(run_dir, entry["id"]),
+        [(c.id, c.test.body_file) for c in chunk],
+        case_env(chunk[0]),
+        entry.get("timeout") or sqllogic.DEFAULT_TIMEOUT_S,
+        timeouts={i: t for i, t in (entry.get("timeouts") or {}).items()},
+        retries={i: n for i, n in (entry.get("retries") or {}).items()},
+    )
+
+
+def _report_batch(chunk, batch, by_case, done, run_dir, runner):
+    """One event for each case of a batch the binary or the wrapper has run."""
+    for case in chunk:
+        r = by_case.get(case.id)
+        if r is None:
+            done(
+                case,
+                ERROR,
+                runner=runner,
+                problems=[f"the {runner} runner reported nothing for this case"],
+                batch_dir=batch.dir,
+                batch=os.path.relpath(batch.dir, run_dir),
+            )
+            continue
+        problems = [r.detail] if r.detail and r.outcome != PASSED else []
+        done(
+            case,
+            r.outcome,
+            runner=runner,
+            seconds=r.seconds,
+            problems=problems,
+            failure=events.binary_failure(r.detail) if r.outcome in (FAILED, ERROR) else None,
+            reason=r.detail if r.outcome == SKIPPED else None,
+            kept=[r.kept] if r.kept else [],
+            note=r.note,
+            batch_dir=batch.dir,
+            batch=os.path.relpath(batch.dir, run_dir),
+            evidence=r.evidence,
+            **({"attempts": r.attempts} if r.attempts > 1 else {}),
+        )
 
 
 def _identity(case):

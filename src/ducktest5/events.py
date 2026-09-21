@@ -169,11 +169,11 @@ class Writer:
     A renderer sees exactly what the file holds, so a live run and `ducktest5 report` of it later
     cannot disagree. Every line is flushed: a run that is killed still explains itself."""
 
-    def __init__(self, path, run_id, *, listeners=()):
+    def __init__(self, path, run_id, *, listeners=(), append=False):
         self.run_id = run_id
         self.path = path
         self.events = []  # what was written, so the run can report without reading its own file back
-        self._file = open(path, "w")
+        self._file = open(path, "a" if append else "w")
         self._listeners = list(listeners)
 
     def emit(self, event, **fields):
@@ -189,20 +189,31 @@ class Writer:
         self._file.close()
 
 
+def files_in(path):
+    """The event files of a run directory, oldest name first: `04-events.jsonl` and any slice beside
+    it, which is what two machines that share one plan write (`exec --events FILE`)."""
+    if not os.path.isdir(path):
+        return [path]
+    stem, suffix = EVENTS_FILE.split(".", 1)
+    names = [n for n in os.listdir(path) if n.startswith(stem) and n.endswith("." + suffix)]
+    return [os.path.join(path, n) for n in sorted(names, key=lambda n: (n != EVENTS_FILE, n))]
+
+
 def read(path):
     """The events of one file, or of one run directory. A half-written last line is dropped: a run
     that was killed mid-line is still readable."""
-    if os.path.isdir(path):
-        path = os.path.join(path, EVENTS_FILE)
     out = []
-    with open(path) as f:
-        for line in f:
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(event, dict):
-                out.append(event)
+    for name in files_in(path):
+        if not os.path.isfile(name):
+            continue
+        with open(name) as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict):
+                    out.append(event)
     return out
 
 
