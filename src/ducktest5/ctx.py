@@ -52,6 +52,7 @@ class Ctx:
         self.failed_checks = []
         self.teardowns = []
         self.clients = []
+        self.statements = []  # {client, sql, seconds} per call, for a verbose report
 
     def duckdb(self, preamble="", *, table=None, session="per_run", timeout=DEFAULT_TIMEOUT_S):
         """DuckDB as a client. `per_run` (the rule): the run's one shell, on the instance this test
@@ -110,7 +111,13 @@ class Ctx:
 
     def _client(self, name, run, table):
         client = Client(
-            name, run, table=table, values=self.values, record=self.failed_checks.append, defer=self.teardowns.append
+            name,
+            run,
+            table=table,
+            values=self.values,
+            record=self.failed_checks.append,
+            defer=self.teardowns.append,
+            log=self.statements.append,
         )
         self.clients.append(client)
         return client

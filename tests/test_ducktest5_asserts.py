@@ -2,7 +2,6 @@
 
 import importlib.util
 import io
-import json
 import sys
 import textwrap
 import traceback
@@ -11,8 +10,15 @@ import pytest
 import yaml
 
 from ducktest5 import asserts
+from ducktest5.events import CASE_END
+from ducktest5.events import read as read_events
 from ducktest5.run import run
 from ducktest5.scan import scan
+
+
+def case_events(run_dir):
+    """The `case_end` lines of a run: one per case, whatever else the stream holds."""
+    return [e for e in read_events(str(run_dir)) if e["event"] == CASE_END]
 
 
 def load(tmp_path, source, name="probe"):
@@ -180,6 +186,9 @@ def test_the_failure_text_reaches_the_terminal_the_report_and_the_events(tmp_pat
     assert "assert ids == list(range(1, len(ids) + 1))" in problem
     assert "diff, - left + right" in problem
     assert problem.endswith("body.py:7")
-    assert problem in printed.getvalue()
-    (event,) = [json.loads(line) for line in (run_dir / "04-events.jsonl").read_text().splitlines()]
+    # the terminal shows the message and the place, laid out; the event keeps the text as it was
+    assert "assert ids == list(range(1, len(ids) + 1))" in printed.getvalue()
+    assert "body.py:7" in printed.getvalue()
+    (event,) = case_events(run_dir)
     assert event["problems"] == [problem]
+    assert event["failure"]["where"].endswith("body.py:7")

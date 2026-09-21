@@ -51,9 +51,13 @@ class SqlError(Exception):
 
 
 class ExpectationFailed(AssertionError):
-    def __init__(self, client, sql, problem):
+    """`expected` and `actual` are the rows as text where the check compared rows; a report lays
+    them out side by side instead of leaving the reader to find them in the message."""
+
+    def __init__(self, client, sql, problem, *, expected=None, actual=None):
         super().__init__(f"[{client}] {problem}\n{_indent(sql)}")
         self.stack = traceback.extract_stack()[:-1]  # a recorded check has no traceback to read later
+        self.sql, self.expected, self.actual = sql, expected, actual
 
 
 class SetupFailed(Exception):
@@ -94,17 +98,18 @@ def _as_text(rows):
 
 
 class Client:
-    def __init__(self, name, run, *, table=None, values=None, record=None, defer=None):
+    def __init__(self, name, run, *, table=None, values=None, record=None, defer=None, log=None):
         """`run(statements)` runs them in order and returns `(column_names, rows)` of the last,
         rows as tuples; it raises SqlError, with the failed statement's index, on the first error.
         `record(failure)` takes a failure under `on_fail="continue"`; `defer(callable)` takes a
-        teardown. Without them such a failure raises and a teardown runs at once."""
+        teardown. Without them such a failure raises and a teardown runs at once. `log(entry)` takes
+        one `{client, sql, seconds}` for every call, which a verbose report prints."""
         self.name = name
         self._run = run
         self._params = {**(values or {}), **({"t": table} if table else {})}
         self._record = record
         self._defer = defer
-        self.seconds = 0.0  # spent inside `run`, so a report can say which client the time went to
+        self._log = log
         self.seconds = 0.0  # spent inside `run`, so a report can say which client the time went to
 
     def _check(self, on_fail, assertion, *args, **params):
@@ -145,7 +150,10 @@ class Client:
         try:
             return self._run(statements)
         finally:
-            self.seconds += time.perf_counter() - t0
+            took = time.perf_counter() - t0
+            self.seconds += took
+            if self._log:
+                self._log({"client": self.name, "sql": "\n".join(statements), "seconds": round(took, 3)})
 
     def _must_run(self, statements, what):
         try:
@@ -230,6 +238,8 @@ class Client:
             self.name,
             statements[-1],
             f"wrong result{hint}\n  expected:\n{_indent(format_rows(expected))}\n  actual:\n{_indent(format_rows(actual))}\n  query:",
+            expected=format_rows(expected),
+            actual=format_rows(actual),
         )
 
     def _assert_contains(self, sql, rows, params=None, **more):
@@ -241,6 +251,8 @@ class Client:
                 self.name,
                 statements[-1],
                 f"rows missing\n  missing:\n{_indent(format_rows(missing))}\n  actual:\n{_indent(format_rows(actual))}\n  query:",
+                expected=format_rows(missing),
+                actual=format_rows(actual),
             )
 
     def _assert_error(self, sql, text, params=None, **more):
