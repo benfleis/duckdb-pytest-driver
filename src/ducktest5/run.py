@@ -337,7 +337,7 @@ def run(
         if debugger is not None and batches:
             ((_, batch),) = batches
             batch.write()
-            args = shlex.split(debugger) + sqllogic.batch_args(unittest_bin, batch)
+            args = shlex.split(debugger) + sqllogic.batch_args(unittest_bin, batch, working_dir)
             print("\n" + " ".join(shlex.quote(a) for a in args) + "\n", file=out, flush=True)
             debugged = True
             code = subprocess.call(args, cwd=working_dir)  # the terminal is the debugger's

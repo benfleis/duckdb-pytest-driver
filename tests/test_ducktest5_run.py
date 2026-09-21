@@ -309,7 +309,9 @@ def test_the_debugger_gets_the_binary_and_the_batch_a_normal_run_would_have_used
     argv = started()["argv"]
     batch_dir = os.path.dirname(argv[argv.index("-f") + 1])
     assert code == 0
-    assert argv == ["--", FAKE, "-f", f"{batch_dir}/tests.txt", "--test-config", f"{batch_dir}/config.json"] + [
+    assert argv == ["--", FAKE, "--test-dir", str(tmp_path), "-f", f"{batch_dir}/tests.txt"] + [
+        "--test-config",
+        f"{batch_dir}/config.json",
         "--emit-test-events",
         "--emit-on-skip",
     ]

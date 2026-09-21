@@ -107,7 +107,7 @@ def test_lldb_starts_the_debugger_on_the_one_selected_case(tree, monkeypatch, ca
     monkeypatch.setenv("DUCKTEST_DEBUGGER", f"{sys.executable} {DEBUGGER} --")
     assert main(run_args("--lldb", "--id", "a/x.test::x", "--no-binary-check")) == 0
     argv = json.loads(record.read_text())["argv"]
-    assert argv[:3] == ["--", FAKE, "-f"]
+    assert argv[:4] == ["--", FAKE, "--test-dir", str(tree)]
     assert "batch kept: " in capsys.readouterr().out
 
 

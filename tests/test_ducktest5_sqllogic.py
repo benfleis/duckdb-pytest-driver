@@ -27,6 +27,11 @@ def test_a_batch_is_two_files(tmp_path):
     assert os.stat(config["init_sqllogic"]).st_mode & 0o777 == 0o600  # it may hold a secret
 
 
+def test_the_binary_is_told_where_the_tests_are(tmp_path):
+    args = sqllogic.batch_args("unittest", Batch(str(tmp_path / "b001"), ["a.test"]), str(tmp_path / "tree"))
+    assert args[1:3] == ["--test-dir", str(tmp_path / "tree")]
+
+
 def test_no_batch_lets_the_binary_forgive_a_connection_error(tmp_path):
     run(tmp_path, ["a.test"])
     assert json.loads((tmp_path / "b001" / "config.json").read_text())["skip_error_messages"] == []

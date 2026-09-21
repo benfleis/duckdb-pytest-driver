@@ -154,10 +154,13 @@ def _human(output):
     return "\n".join(line.rstrip() for line in text.splitlines() if line.strip()).strip()
 
 
-def batch_args(binary, batch):
+def batch_args(binary, batch, working_dir="."):
     """How the binary is started for a batch; a debugger is given the same."""
     return [
         binary,
+        # else the binary resolves every test path against the source root it was built in
+        "--test-dir",
+        os.path.abspath(working_dir),
         "-f",
         os.path.join(batch.dir, "tests.txt"),
         "--test-config",
@@ -172,7 +175,7 @@ def _invoke(binary, batch, working_dir):
     killed. Returns (output, what was running when it was killed or None, the exit code, and
     {test name: seconds between its begin and end events})."""
     batch.write()
-    args = batch_args(binary, batch)
+    args = batch_args(binary, batch, working_dir)
     proc = subprocess.Popen(
         args, cwd=working_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
     )
