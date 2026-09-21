@@ -152,3 +152,12 @@ def test_a_missing_wrapper_is_a_usage_error_that_names_the_other_runner(tree, ca
         == 2
     )
     assert "--runner unittest" in capsys.readouterr().err
+
+
+def test_the_wrapper_is_given_paths_that_do_not_depend_on_where_it_runs(tree):
+    # It runs from the DuckDB source root, so a run directory given relative to the caller is not its own.
+    assert main(["scan", "test/a", "--run-dir", "apart"]) == 0
+    assert main(["plan", "--run-dir", "apart", "--runner", "run"]) == 0
+    assert main(["exec", "--run-dir", "apart", *binaries()]) == 0
+    assert {c["outcome"] for c in cases_of("apart").values()} == {"passed"}
+    assert {c["evidence"] for c in cases_of("apart").values()} == {"event"}

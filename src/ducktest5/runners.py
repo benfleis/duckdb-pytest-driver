@@ -153,7 +153,8 @@ def run_wrapper(unittest_bin, units, working_dir, *, run_dir, workers=4, run_fla
     wrapper = find_wrapper(unittest_bin, explicit=run_bin)
     out = []
     for n, (cases, case_env) in enumerate(_groups(units), 1):
-        group_dir = os.path.join(run_dir, "run", f"g{n:03d}")
+        # Absolute: the wrapper runs from the DuckDB source root, not from where ducktest was started.
+        group_dir = os.path.abspath(os.path.join(run_dir, "run", f"g{n:03d}"))
         group = sqllogic.Batch(group_dir, [(c.id, c.test.body_file) for c in cases], case_env)
         group.write()
         flags = [

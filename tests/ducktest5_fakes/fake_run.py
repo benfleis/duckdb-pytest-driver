@@ -47,6 +47,7 @@ def main(argv):
     parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--retry", type=int, default=0)
     args = parser.parse_args(argv)
+    os.chdir(tempfile.gettempdir())  # the real one runs from the DuckDB source root, not from the caller's directory
 
     names = [line.strip() for line in open(args.test_list) if line.strip()]
     batches = [names[i : i + args.batch_size] for i in range(0, len(names), args.batch_size)]
