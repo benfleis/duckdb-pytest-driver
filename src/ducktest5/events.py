@@ -30,7 +30,8 @@ case's own line, so no renderer has to open another file.
                   error          why it did not come up
                   log            the engine's log file
 
-    case_start    id             the case id, `path::name[case,axis=value]`
+    case_start    id             the case id, `path::name[case,axis=value]`; written when the batch
+                                 of the case starts, so what has no `case_end` is what was under way
                   test           `path::name`, the test this case comes from
                   type           sqllogic | paired | python
                   file           the test's file, relative to the working directory
@@ -55,10 +56,14 @@ case's own line, so no renderer has to open another file.
                   made_of        the case environment and the files that hold the rest
                   statements     what a Python body ran: client, sql, seconds
                   batch          the batch directory of a `.test` case, relative to the run dir
+                  dirs           what the case wrote under the run dir, for the cleanup phase
+                  evidence       how the outcome is known: `event` (the binary said so) or
+                                 `run-summary` (a runner that forwards no event; weaker, no seconds)
                   kept           paths and URIs the run left behind for a second look
                   again          the command that runs this one case again
 
-    run_end       counts         outcome -> how many cases
+    run_end       stopped        the signal that ended the run early, where one did
+                  counts         outcome -> how many cases
                   cases          how many cases ended
                   seconds        wall time of the whole run
                   exit_code      what the command returned
@@ -76,6 +81,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 
 from .provision import MASK
 
@@ -175,14 +181,16 @@ class Writer:
         self.events = []  # what was written, so the run can report without reading its own file back
         self._file = open(path, "a" if append else "w")
         self._listeners = list(listeners)
+        self._lock = threading.Lock()  # the batches write from their own threads
 
     def emit(self, event, **fields):
         line = {"event": event, "run": self.run_id, **{k: v for k, v in fields.items() if v not in (None, (), {})}}
-        self.events.append(line)
-        self._file.write(json.dumps(line, default=str) + "\n")
-        self._file.flush()
-        for listener in self._listeners:
-            listener(line)
+        with self._lock:
+            self.events.append(line)
+            self._file.write(json.dumps(line, default=str) + "\n")
+            self._file.flush()
+            for listener in self._listeners:
+                listener(line)
         return line
 
     def close(self):

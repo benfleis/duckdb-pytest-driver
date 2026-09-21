@@ -446,10 +446,17 @@ def execute(
                 )
             return code
 
-        for _, chunk, _batch in batches:
+        def start_and_run(chunk, batch):
+            """A case starts when its batch does, so a run that is stopped says which cases were
+            under way and a resume takes exactly those up again."""
             for case in chunk:
                 begin(case, runner)
+            return sqllogic.run_batch(unittest_bin, batch, working_dir)
+
         if runner == phases.RUN_RUNNER and batches:
+            for _, chunk, batch in batches:
+                for case in chunk:
+                    begin(case, runner)
             for chunk, group, by_case in runners.run_wrapper(
                 unittest_bin,
                 [(chunk, batch) for _, chunk, batch in batches],
@@ -462,10 +469,7 @@ def execute(
                 _report_batch(chunk, group, by_case, done, run_dir, runner)
             batches = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            futures = {
-                pool.submit(sqllogic.run_batch, unittest_bin, batch, working_dir): (chunk, batch)
-                for _, chunk, batch in batches
-            }
+            futures = {pool.submit(start_and_run, chunk, batch): (chunk, batch) for _, chunk, batch in batches}
             for future in concurrent.futures.as_completed(futures):
                 chunk, batch = futures[future]
                 try:
