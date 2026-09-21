@@ -449,6 +449,8 @@ def execute(
         def start_and_run(chunk, batch):
             """A case starts when its batch does, so a run that is stopped says which cases were
             under way and a resume takes exactly those up again."""
+            if sqllogic.stopped():  # a batch still in the queue when the run was stopped never began
+                raise RuntimeError("the run was stopped")
             for case in chunk:
                 begin(case, runner)
             return sqllogic.run_batch(unittest_bin, batch, working_dir)

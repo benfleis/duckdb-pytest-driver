@@ -58,6 +58,10 @@ def start_running():
     _stopped.clear()
 
 
+def stopped():
+    return _stopped.is_set()
+
+
 @contextlib.contextmanager
 def watched(proc):
     """A binary of this run, for as long as it runs."""
@@ -252,6 +256,8 @@ def _invoke(binary, batch, working_dir):
     ).start()
     output, running, since, killed_for, took = [], None, time.perf_counter(), None, {}
     _running.add(proc)
+    if _stopped.is_set():  # the run was stopped between the check above and the start
+        proc.kill()
     while True:
         try:
             line = lines.get(timeout=0.2)
