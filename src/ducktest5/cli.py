@@ -1,4 +1,4 @@
-"""`ducktest5 scan|select|run [PATH ...] [--select EXPR ...] [--id CASE_ID ...] [--set NAME]`
+"""`ducktest5 scan|select|run [PATH ...] [--select EXPR ...] [--skip EXPR ...] [--id CASE_ID ...] [--set NAME]`
 
 `scan --env` prints what each selected case would be given -- the extensions, the statements, the
 values, the roots, the process environment, the services -- with the source of every part.
@@ -30,6 +30,13 @@ def main(argv=None):
         p.add_argument("paths", nargs="*", metavar="PATH", help="files, directories or globs; several are a union")
         p.add_argument(
             "--select", action="append", default=[], metavar="EXPR", help="key=v1,v2 or not:key=v; every one must hold"
+        )
+        p.add_argument(
+            "--skip",
+            action="append",
+            default=[],
+            metavar="EXPR",
+            help="key=v1,v2; removes a case from the base (not:key=v is the same as --skip key=v)",
         )
         p.add_argument(
             "--id",
@@ -91,7 +98,10 @@ def main(argv=None):
         cwd = os.getcwd()
         root = args.root or ("test" if os.path.isdir("test") else ".")
         cases, project = scan(root, working_dir=cwd)
-        selected, why_not = apply(cases, Selection(args.paths, args.select, args.id, args.set, args.slow), project)
+        selection = Selection(
+            paths=args.paths, select=args.select, ids=args.id, set_name=args.set, slow=args.slow, skip=args.skip
+        )
+        selected, why_not = apply(cases, selection, project)
         if args.command == "scan":
             if args.env:
                 for c in selected:

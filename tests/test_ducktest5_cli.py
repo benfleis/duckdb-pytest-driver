@@ -59,6 +59,19 @@ def test_select_without_why_prints_no_rules(tree, capsys):
     assert "<-" not in capsys.readouterr().out
 
 
+def test_skip_removes_a_case_and_says_which_skip(tree, capsys):
+    assert main(["select", "test/a", "--skip", "tag=all", "--why"]) == 0
+    assert capsys.readouterr().out == textwrap.dedent(
+        """\
+        skip  a/x.test::x  -- --skip tag=all
+        skip  a/y.test_slow::y  -- tag slow: runs only when asked for: --slow, --select tag=slow, or --id
+        skip  b/z_fail.test::z_fail  -- outside the given paths
+
+        0 of 3 cases
+        """
+    )
+
+
 def test_scan_prints_the_record_of_each_selected_case(tree, capsys):
     assert main(["scan", "test/a/x.test"]) == 0
     assert "id: a/x.test::x" in capsys.readouterr().out
@@ -107,6 +120,7 @@ def test_scan_env_prints_what_each_case_is_given_and_where_it_came_from(tree, ca
         (["select", "--select", "tag=typo"], "no scanned case has tag ['typo']"),
         (["select", "--id", "a/x.test::nope"], "--id: no such case"),
         (["select", "--set", "nightly"], "--set 'nightly': the project has sets []"),
+        (["select", "--skip", "not:tag=all"], "a skip is already a negation"),
         (["run", "--select", "not:tag=all"], "no case selected"),
         (["run", "test/a"], "duckdb shell not found"),
         (["run", "test/a", "--duckdb-bin", FAKE, "--unittest-bin", "absent"], "unittest binary not found"),

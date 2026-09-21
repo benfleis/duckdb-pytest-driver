@@ -203,11 +203,130 @@ def test_an_id_is_added_to_what_paths_and_selects_give(project):
         ({"paths": ["test/nowhere"]}, "holds no test"),
         ({"ids": ["a/x.test::x"]}, "no such case"),
         ({"set_name": "nightly"}, "the project has sets"),
+        ({"skip": ["tag=smok"]}, "no scanned case has tag"),
+        ({"skip": ["backnd=oss"]}, "unknown key 'backnd'"),
+        ({"skip": ["not:tag=a"]}, "a skip is already a negation"),
+        ({"skip": ["!tag=a"]}, "a skip is already a negation"),
     ],
 )
 def test_a_selection_that_can_never_match_is_an_error(project, kwargs, message):
     with pytest.raises(UsageError, match=message):
         select(project, **kwargs)
+
+
+def test_a_negated_select_is_translated_into_a_skip_at_parse_time(project):
+    xid = "a/x.test::x[backend=oss]"
+    for form in ("not:tag=a", "!tag=a"):
+        assert ids(select(project, select=[form])[0]) == ids(select(project, skip=["tag=a"])[0])
+    _, why_not = select(project, select=["not:tag=a"])
+    assert why_not[xid] == "--skip tag=a (from --select not:tag=a)"
+    _, why_not = select(project, select=["!tag=a"])
+    assert why_not[xid] == "--skip tag=a (from --select !tag=a)"
+
+
+def test_skip_combines_with_a_positive_select(project):
+    # type=sqllogic gives x[oss], x[dbx], y.test_slow (already out, it is slow) and one; tag=a removes the x's
+    assert ids(select(project, select=["type=sqllogic"], skip=["tag=a"])[0]) == ["b/one.test::one"]
+
+
+def test_two_skips_union_their_removals(project):
+    assert ids(select(project, skip=["tag=a", "tag=mine"])[0]) == ["b/one.test::one", "b/solo.py::solo"]
+
+
+def test_skip_with_a_multi_valued_key_removes_any_match(project):
+    assert ids(select(project, skip=["tag=a,mine"])[0]) == ["b/one.test::one", "b/solo.py::solo"]
+
+
+def test_an_id_beats_a_skip(project):
+    xid = "a/x.test::x[backend=oss]"
+    assert xid in ids(select(project, skip=["tag=a"], ids=[xid])[0])
+
+
+def test_why_line_for_a_command_line_skip(project):
+    _, why_not = select(project, skip=["tag=a"])
+    assert why_not["a/x.test::x[backend=oss]"] == "--skip tag=a"
+
+
+@pytest.mark.parametrize("expr", ["tag=a", "type=sqllogic", "case=cmt,plain", "backend=oss", "tag=mine"])
+def test_a_negated_select_and_the_equivalent_skip_choose_the_same_cases(project, expr):
+    assert ids(select(project, select=[f"not:{expr}"])[0]) == ids(select(project, skip=[expr])[0])
+
+
+@pytest.mark.parametrize("expr", ["tag=a", "backend=oss", "case=cmt"])
+def test_a_negated_select_and_skip_agree_on_top_of_a_positive_selection(project, expr):
+    with_negation = select(project, paths=["test/a", "test/b"], select=[f"not:{expr}"])[0]
+    with_skip = select(project, paths=["test/a", "test/b"], skip=[expr])[0]
+    assert ids(with_negation) == ids(with_skip)
+
+
+def test_a_lone_skip_keeps_a_default_set_as_the_base(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                SETS = {"default": {"paths": ["test/keep"], "skip": ["tag=spark"]}}
+                RULES = [match("keep/spark.test", tags=["spark"]), match("keep/other.test", tags=["quiet"])]
+            """,
+            "test/keep/spark.test": "",
+            "test/keep/other.test": "",
+            "test/outside/far.test": "",
+        },
+    )
+    bare, why_not = apply(cases, Selection(), proj)
+    assert ids(bare) == ["keep/other.test::other"]  # the default set's own skip already removed spark
+    assert why_not["keep/spark.test::spark"] == "skip tag=spark  <- set 'default'"
+    only_skip, why_not = apply(cases, Selection(skip=["tag=quiet"]), proj)
+    assert ids(only_skip) == []  # base stays the default set's paths, not every case
+    assert why_not["outside/far.test::far"] == "outside the given paths"
+
+
+def test_a_lone_skip_keeps_in_default_set_false_cases_out(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                RULES = [
+                    match("special.test", in_default_set=False, tags=["special"]),
+                    match("normal.test", tags=["normal"]),
+                    match("quiet.test", tags=["quiet"]),
+                ]
+            """,
+            "test/special.test": "",
+            "test/normal.test": "",
+            "test/quiet.test": "",
+        },
+    )
+    selected, why_not = apply(cases, Selection(skip=["tag=quiet"]), proj)
+    assert ids(selected) == ["normal.test::normal"]
+    assert why_not["special.test::special"] == "its test is not in the default set (in_default_set=False)"
+
+
+def test_a_named_sets_skip_applies_on_top_of_its_own_selection(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                SETS = {
+                    "default": {"paths": ["test/keep"], "skip": ["tag=spark"]},
+                    "smoke": {"paths": ["test/keep"], "skip": ["tag=quiet"]},
+                }
+                RULES = [
+                    match("keep/spark.test", tags=["spark"]),
+                    match("keep/quiet.test", tags=["quiet"]),
+                    match("keep/plain.test", tags=["plain"]),
+                ]
+            """,
+            "test/keep/spark.test": "",
+            "test/keep/quiet.test": "",
+            "test/keep/plain.test": "",
+        },
+    )
+    via_set, why_not = apply(cases, Selection(set_name="smoke"), proj)
+    assert ids(via_set) == ["keep/plain.test::plain", "keep/spark.test::spark"]  # smoke's skip removes quiet, not spark
+    assert why_not["keep/quiet.test::quiet"] == "skip tag=quiet  <- set 'smoke'"
 
 
 def test_a_star_stays_inside_one_directory_and_two_stars_cross(tmp_path):
