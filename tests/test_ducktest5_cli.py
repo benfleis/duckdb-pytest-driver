@@ -119,7 +119,7 @@ def test_scan_env_prints_what_each_case_is_given_and_where_it_came_from(tree, ca
         (["select", "test/nowhere"], "path 'test/nowhere' holds no test"),
         (["select", "--select", "tag=typo"], "no scanned case has tag ['typo']"),
         (["select", "--id", "a/x.test::nope"], "--id: no such case"),
-        (["select", "--set", "nightly"], "--set 'nightly': the project has sets []"),
+        (["select", "--suite", "nightly"], "--suite ['nightly']: the project has suites []"),
         (["select", "--skip", "not:tag=all"], "write !tag=all"),
         (["select", "--select", "tag=!all"], "write !tag=all"),
         (["run", "--select", "!tag=all"], "no case selected"),

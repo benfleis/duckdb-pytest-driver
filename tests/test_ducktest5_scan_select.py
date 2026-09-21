@@ -13,7 +13,7 @@ ROOT_CONF = """
     from ducktest5 import Variant, default, match
 
     AXES = {"backend": [Variant("oss", values={"catalog": "duck"}), Variant("dbx", tags=["needs-credentials"])]}
-    SETS = {
+    SUITES = {
         "smoke": {"paths": ["test/a", "test/b/one.test"]},
         "cmt": {"select": ["case=cmt"]},
         "combo": {"select": ["tag=mine", "backend=oss"]},
@@ -205,13 +205,13 @@ def test_repeated_select_ors_its_groups(project):
     ]
 
 
-def test_a_set_is_paths_and_selects_with_a_name(project):
-    assert ids(select(project, set_name="smoke")[0]) == [
+def test_a_suite_is_paths_and_selects_with_a_name(project):
+    assert ids(select(project, suites=["smoke"])[0]) == [
         "a/x.test::x[backend=oss]",
         "a/x.test::x[backend=dbx]",
         "b/one.test::one",
     ]
-    assert ids(select(project, set_name="cmt")[0]) == ["b/paired.py::body[cmt]"]
+    assert ids(select(project, suites=["cmt"])[0]) == ["b/paired.py::body[cmt]"]
 
 
 def test_an_id_is_taken_verbatim(project):
@@ -225,7 +225,7 @@ def test_an_id_is_added_to_what_paths_and_selects_give(project):
     assert why_not["b/solo.py::solo"] == "outside the given paths"
     # no select, path or tag takes out a case that is named by id
     assert ids(select(project, select=["type=python"], ids=[slow])[0]) == [slow, "b/solo.py::solo"]
-    assert ids(select(project, set_name="cmt", ids=[slow])[0]) == [slow, "b/paired.py::body[cmt]"]
+    assert ids(select(project, suites=["cmt"], ids=[slow])[0]) == [slow, "b/paired.py::body[cmt]"]
     # and the slow rule still holds for the cases that are not named
     assert ids(select(project, paths=["test/a"], select=["backend=oss"], ids=[plain])[0]) == [
         "a/x.test::x[backend=oss]",
@@ -243,7 +243,7 @@ def test_an_id_is_added_to_what_paths_and_selects_give(project):
         ({"select": ["tag="]}, "write key=value"),
         ({"paths": ["test/nowhere"]}, "holds no test"),
         ({"ids": ["a/x.test::x"]}, "no such case"),
-        ({"set_name": "nightly"}, "the project has sets"),
+        ({"suites": ["nightly"]}, "the project has suites"),
         ({"skip": ["tag=smok"]}, "no scanned case has tag"),
         ({"skip": ["backnd=oss"]}, "unknown key 'backnd'"),
         ({"select": ["not:tag=a"]}, "write !tag=a"),
@@ -344,13 +344,13 @@ def test_a_mixed_group_is_an_ordinary_positive_selection(project):
     ]
 
 
-def test_a_lone_skip_keeps_a_default_set_as_the_base(tmp_path):
+def test_a_lone_skip_keeps_a_default_suite_as_the_base(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
             "test/ducktestconf.py": """
                 from ducktest5 import match
-                SETS = {"default": {"paths": ["test/keep"], "skip": ["tag=spark"]}}
+                SUITES = {"default": {"paths": ["test/keep"], "skip": ["tag=spark"]}}
                 RULES = [match("keep/spark.test", tags=["spark"]), match("keep/other.test", tags=["quiet"])]
             """,
             "test/keep/spark.test": "",
@@ -359,10 +359,10 @@ def test_a_lone_skip_keeps_a_default_set_as_the_base(tmp_path):
         },
     )
     bare, why_not = apply(cases, Selection(), proj)
-    assert ids(bare) == ["keep/other.test::other"]  # the default set's own skip already removed spark
-    assert why_not["keep/spark.test::spark"] == "skip tag=spark  <- set 'default'"
+    assert ids(bare) == ["keep/other.test::other"]  # the default suite's own skip already removed spark
+    assert why_not["keep/spark.test::spark"] == "skip tag=spark  <- suite 'default'"
     only_skip, why_not = apply(cases, Selection(skip=["tag=quiet"]), proj)
-    assert ids(only_skip) == []  # base stays the default set's paths, not every case
+    assert ids(only_skip) == []  # base stays the default suite's paths, not every case
     assert why_not["outside/far.test::far"] == "outside the given paths"
 
 
@@ -388,13 +388,13 @@ def test_a_lone_skip_keeps_in_default_set_false_cases_out(tmp_path):
     assert why_not["special.test::special"] == "its test is not in the default set (in_default_set=False)"
 
 
-def test_a_named_sets_skip_applies_on_top_of_its_own_selection(tmp_path):
+def test_a_suites_skip_applies_on_top_of_its_own_selection(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
             "test/ducktestconf.py": """
                 from ducktest5 import match
-                SETS = {
+                SUITES = {
                     "default": {"paths": ["test/keep"], "skip": ["tag=spark"]},
                     "smoke": {"paths": ["test/keep"], "skip": ["tag=quiet"]},
                 }
@@ -409,18 +409,21 @@ def test_a_named_sets_skip_applies_on_top_of_its_own_selection(tmp_path):
             "test/keep/plain.test": "",
         },
     )
-    via_set, why_not = apply(cases, Selection(set_name="smoke"), proj)
-    assert ids(via_set) == ["keep/plain.test::plain", "keep/spark.test::spark"]  # smoke's skip removes quiet, not spark
-    assert why_not["keep/quiet.test::quiet"] == "skip tag=quiet  <- set 'smoke'"
+    via_suite, why_not = apply(cases, Selection(suites=["smoke"]), proj)
+    assert ids(via_suite) == [
+        "keep/plain.test::plain",
+        "keep/spark.test::spark",
+    ]  # smoke's skip removes quiet, not spark
+    assert why_not["keep/quiet.test::quiet"] == "skip tag=quiet  <- suite 'smoke'"
 
 
-def test_a_negation_only_select_keeps_a_named_default_set_as_the_base(tmp_path):
+def test_a_negation_only_select_keeps_a_named_default_suite_as_the_base(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
             "test/ducktestconf.py": """
                 from ducktest5 import match
-                SETS = {"default": {"paths": ["test/keep"]}}
+                SUITES = {"default": {"paths": ["test/keep"]}}
                 RULES = [match("keep/spark.test", tags=["spark"]), match("keep/other.test", tags=["quiet"])]
             """,
             "test/keep/spark.test": "",
@@ -429,22 +432,22 @@ def test_a_negation_only_select_keeps_a_named_default_set_as_the_base(tmp_path):
         },
     )
     selected, why_not = apply(cases, Selection(select=["!tag=spark"]), proj)
-    assert ids(selected) == ["keep/other.test::other"]  # base is the default set's paths, not every case
+    assert ids(selected) == ["keep/other.test::other"]  # base is the default suite's paths, not every case
     assert why_not["keep/spark.test::spark"] == "--skip tag=spark (from --select !tag=spark)"
     assert why_not["outside/far.test::far"] == "outside the given paths"
 
 
-def test_a_sets_select_entries_are_ord(project):
-    assert ids(select(project, set_name="combo")[0]) == [
+def test_a_suites_select_entries_are_ord(project):
+    assert ids(select(project, suites=["combo"])[0]) == [
         "a/x.test::x[backend=oss]",
         "b/paired.py::body[cmt]",
         "b/paired.py::body[plain]",
     ]
 
 
-def test_a_sets_skip_entry_may_be_a_group(project):
+def test_a_suites_skip_entry_may_be_a_group(project):
     # trimmed scopes to test/a + test/b, then drops only cases that are both backend=oss and tag=a
-    assert ids(select(project, set_name="trimmed")[0]) == [
+    assert ids(select(project, suites=["trimmed"])[0]) == [
         "a/x.test::x[backend=dbx]",
         "b/one.test::one",
         "b/paired.py::body[cmt]",
@@ -504,17 +507,17 @@ def test_a_path_term_outside_the_project_root_is_an_error(tmp_path):
         apply(cases, Selection(select=["../elsewhere"]), proj, working_dir=str(tmp_path / "test"))
 
 
-def test_a_named_sets_path_term_is_not_affected_by_the_working_directory(tmp_path):
+def test_a_suites_path_term_is_not_affected_by_the_working_directory(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": 'SETS = {"onlya": {"select": ["path=a"]}}',
+            "test/ducktestconf.py": 'SUITES = {"onlya": {"select": ["path=a"]}}',
             "test/a/x.test": "",
             "test/b/y.test": "",
         },
     )
-    from_root = apply(cases, Selection(set_name="onlya"), proj, working_dir=str(tmp_path / "test"))[0]
-    from_sub = apply(cases, Selection(set_name="onlya"), proj, working_dir=str(tmp_path / "test" / "b"))[0]
+    from_root = apply(cases, Selection(suites=["onlya"]), proj, working_dir=str(tmp_path / "test"))[0]
+    from_sub = apply(cases, Selection(suites=["onlya"]), proj, working_dir=str(tmp_path / "test" / "b"))[0]
     assert ids(from_root) == ids(from_sub) == ["a/x.test::x"]
 
 

@@ -1,7 +1,7 @@
 """`ducktestconf.py`: configuration for a directory and everything below it.
 
 The file at the root of the scanned tree is the project file; it may also declare ENGINES, SERVICES,
-AXES, SETS and EXCLUDE. Any directory may have its own file with RULES. A rule speaks about the whole
+AXES, SUITES and EXCLUDE. Any directory may have its own file with RULES. A rule speaks about the whole
 subtree (`default`) or about a pattern relative to its file (`match`); a pattern may name one file.
 
 How rules combine, in one order: the root file first, then each file on the way down to the test; in a
@@ -119,7 +119,7 @@ class Project:
     engines: dict
     services: dict
     axes: dict
-    sets: dict
+    suites: dict
     exclude: tuple
     _rules_by_dir: dict = field(default_factory=dict)
     _used: set = field(default_factory=set)
@@ -200,6 +200,8 @@ def load_project(start):
             continue
         path = os.path.join(dirpath, CONF_FILE)
         module = _load(path, "ducktestconf_" + os.path.relpath(dirpath, root).replace(os.sep, "_").replace(".", "root"))
+        if hasattr(module, "SETS"):
+            raise UsageError(f"{path}: SETS is now SUITES")
         rules = list(getattr(module, "RULES", ()))
         if not all(isinstance(r, Rule) for r in rules):
             raise UsageError(f"{path}: RULES must hold default(...) and match(...) rules")
@@ -208,11 +210,11 @@ def load_project(start):
             project.engines = {e.id: e for e in getattr(module, "ENGINES", ())}
             project.services = {s.id: s for s in getattr(module, "SERVICES", ())}
             project.axes = {axis: {v.id: v for v in values} for axis, values in getattr(module, "AXES", {}).items()}
-            project.sets = dict(getattr(module, "SETS", {}))
+            project.suites = dict(getattr(module, "SUITES", {}))
             project.exclude = tuple(getattr(module, "EXCLUDE", ()))
             _check(path, project)
         else:
-            for name in ("ENGINES", "SERVICES", "AXES", "SETS", "EXCLUDE"):
+            for name in ("ENGINES", "SERVICES", "AXES", "SUITES", "EXCLUDE"):
                 if hasattr(module, name):
                     raise UsageError(f"{path}: {name} belongs in the root {CONF_FILE} only; this file may hold RULES")
         _prune(project, root, dirpath, dirnames)

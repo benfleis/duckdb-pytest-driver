@@ -1,4 +1,4 @@
-"""`ducktest5 scan|select|run [PATH ...] [--select GROUP ...] [--skip GROUP ...] [--id CASE_ID ...] [--set NAME]`
+"""`ducktest5 scan|select|run [PATH ...] [--select GROUP ...] [--skip GROUP ...] [--id CASE_ID ...] [--suite NAME ...]`
 
 `scan --env` prints what each selected case would be given -- the extensions, the statements, the
 values, the roots, the process environment, the services -- with the source of every part.
@@ -49,7 +49,9 @@ def main(argv=None):
             metavar="CASE_ID",
             help="a case id, verbatim (its path is relative to the project root); it runs whatever else is given",
         )
-        p.add_argument("--set", metavar="NAME", help="a named set of the project")
+        p.add_argument(
+            "--suite", action="append", default=[], metavar="NAME", help="a suite of the project; repeats union"
+        )
         p.add_argument("--slow", action="store_true", help="also take cases with the tag slow or coverage")
         p.add_argument("--root", default=None, help="where the tests are (default: ./test, else .)")
         if name == "select":
@@ -103,7 +105,7 @@ def main(argv=None):
         root = args.root or ("test" if os.path.isdir("test") else ".")
         cases, project = scan(root, working_dir=cwd)
         selection = Selection(
-            paths=args.paths, select=args.select, ids=args.id, set_name=args.set, slow=args.slow, skip=args.skip
+            paths=args.paths, select=args.select, ids=args.id, suites=args.suite, slow=args.slow, skip=args.skip
         )
         selected, why_not = apply(cases, selection, project, working_dir=cwd)
         if args.command == "scan":

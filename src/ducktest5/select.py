@@ -1,6 +1,6 @@
 """Which cases a run takes.
 
-    ducktest5 run PATH [PATH ...] [--select GROUP ...] [--skip GROUP ...] [--id CASE_ID ...] [--set NAME]
+    ducktest5 run PATH [PATH ...] [--select GROUP ...] [--skip GROUP ...] [--id CASE_ID ...] [--suite NAME ...]
 
 1. TERM. `key=v1,v2` holds for a case that has any of those values for `key` (for a multi-valued key
    such as `tag`, any of the case's own values is enough). `!key=v1,v2` is the negation of the whole
@@ -38,28 +38,29 @@
                   AND (OR of the positive select groups, or everything if none)
                   MINUS (OR of the skip groups)
 
-8. BASE. With no positive selection at all -- no PATH, no positive `--select` group, no `--set`, no
-   `--id` -- the base is the project's set `default` if it has one, else every case whose test is
+8. BASE. With no positive selection at all -- no PATH, no positive `--select` group, no `--suite`, no
+   `--id` -- the base is the project's suite `default` if it has one, else every case whose test is
    `in_default_set`. Skips never change the base.
 9. `--id` names one case exactly, for a re-run. Its path part is relative to the project root, so it
    reads and works the same from every directory. Quote it in a shell. A case named by `--id` always
    runs: no `--select`, no `--skip`, no tag and no PATH takes it out. With `--id` alone, only the named
-   cases run; with PATHs, `--select` or `--set` as well, the named cases are added to what those give
+   cases run; with PATHs, `--select` or `--suite` as well, the named cases are added to what those give
    (a union).
 10. `in_default_set=False` takes a test out of that last run only: the run with nothing given, in a
-    project that has no set `default`. With a set `default`, or with any PATH, `--select`, `--id` or
-    `--set`, it has no effect.
+    project that has no suite `default`. With a suite `default`, or with any PATH, `--select`, `--id` or
+    `--suite`, it has no effect.
 11. A case with the tag `slow` or `coverage` (a `.test_slow`, a `.test_coverage`) runs only when asked
     for: `--slow` (these too), `--select tag=slow` (only these), its `--id`, or its file named exactly
     as a PATH. A directory, a glob or a `path=` term does not bring it in. `--skip tag=slow` is legal
     and harmless -- these cases are already out.
-12. A named set (`SETS` in the project file) is `{"paths": [...], "select": [...], "skip": [...]}`.
-    Every entry of `select` and of `skip` is a GROUP, with the same grammar as the command line; a
-    set's entries OR into the command line's the same way repeats do, and its paths join the scope
-    union. The set `default` may have skips (and selects) too.
+12. A suite (`SUITES` in the project file) is a named selection of cases; a case can be in any number
+    of suites. Each entry is `{"paths": [...], "select": [...], "skip": [...]}`. Every entry of `select`
+    and of `skip` is a GROUP, with the same grammar as the command line; a suite's entries OR into the
+    command line's the same way repeats do, and its paths join the scope union. The suite `default` may
+    have skips (and selects) too.
 13. `select --why` names the reason a case is missing: which skip removed it and where that skip came
-    from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- set 'default'`
-    for a set's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated negation-only
+    from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- suite 'default'`
+    for a suite's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated negation-only
     group. A case that matches no positive `--select` group says so once, not once per group.
 
 Examples:
@@ -89,13 +90,13 @@ class Selection:
     paths: list = field(default_factory=list)
     select: list = field(default_factory=list)
     ids: list = field(default_factory=list)
-    set_name: str | None = None
+    suites: list = field(default_factory=list)
     slow: bool = False
     skip: list = field(default_factory=list)
 
     def is_bare(self):
         positive_select = any(not _is_negation_only(e) for e in self.select)
-        return not (self.paths or positive_select or self.ids or self.set_name)
+        return not (self.paths or positive_select or self.ids or self.suites)
 
 
 def _path_matches(case_path, wanted):
@@ -223,7 +224,7 @@ def _group_holds(case, terms):
 
 
 def _skip_reason(body, origin, from_select=None):
-    where = f"--skip {body}" if origin is None else f"skip {body}  <- set {origin!r}"
+    where = f"--skip {body}" if origin is None else f"skip {body}  <- suite {origin!r}"
     if from_select is None:
         return where
     how = "--select" if origin is None else "select"
@@ -261,22 +262,24 @@ def apply(cases, selection, project, working_dir=None):
     positive_groups, skip_groups = _classify_select_exprs(selection.select, None, ctx)
     skip_groups += _classify_skip_exprs(selection.skip, None, ctx)
 
-    if selection.set_name:
-        named = project.sets.get(selection.set_name)
-        if named is None:
-            raise UsageError(f"--set {selection.set_name!r}: the project has sets {sorted(project.sets)}")
-        paths += named.get("paths", [])
-        set_positive, set_skips = _classify_select_exprs(named.get("select", []), selection.set_name, ctx)
-        positive_groups += set_positive
-        skip_groups += set_skips
-        skip_groups += _classify_skip_exprs(named.get("skip", []), selection.set_name, ctx)
-    elif selection.is_bare() and "default" in project.sets:
-        default_set = project.sets["default"]
-        paths += default_set.get("paths", [])
-        default_positive, default_skips = _classify_select_exprs(default_set.get("select", []), "default", ctx)
+    if selection.suites:
+        unknown = [name for name in selection.suites if name not in project.suites]
+        if unknown:
+            raise UsageError(f"--suite {unknown}: the project has suites {sorted(project.suites)}")
+        for name in selection.suites:
+            suite = project.suites[name]
+            paths += suite.get("paths", [])
+            suite_positive, suite_skips = _classify_select_exprs(suite.get("select", []), name, ctx)
+            positive_groups += suite_positive
+            skip_groups += suite_skips
+            skip_groups += _classify_skip_exprs(suite.get("skip", []), name, ctx)
+    elif selection.is_bare() and "default" in project.suites:
+        default_suite = project.suites["default"]
+        paths += default_suite.get("paths", [])
+        default_positive, default_skips = _classify_select_exprs(default_suite.get("select", []), "default", ctx)
         positive_groups += default_positive
         skip_groups += default_skips
-        skip_groups += _classify_skip_exprs(default_set.get("skip", []), "default", ctx)
+        skip_groups += _classify_skip_exprs(default_suite.get("skip", []), "default", ctx)
 
     if selection.ids:
         known = {c.id for c in cases}
@@ -287,7 +290,7 @@ def apply(cases, selection, project, working_dir=None):
         if not any(_path_matches(c.test.path, p) for c in cases):
             raise UsageError(f"path {p!r} holds no test")
 
-    bare = selection.is_bare() and "default" not in project.sets
+    bare = selection.is_bare() and "default" not in project.suites
     only_ids = bool(selection.ids) and not (paths or positive_groups)
     asked_for = {
         v for terms in positive_groups for negated, key, values in terms if key == "tag" and not negated for v in values
