@@ -40,16 +40,19 @@ def run_args(*more):
 
 
 def test_select_says_what_runs_what_does_not_and_with_why_which_rule_gave_what(tree, capsys):
+    # test/a is a directory PATH: it brings in the slow case under it too
     assert main(["select", "test/a", "--why"]) == 0
     assert capsys.readouterr().out == textwrap.dedent(
         """\
         run   a/x.test::x
                 tags=['all']  <- ducktestconf.py: default
                 timeout=30  <- ducktestconf.py: match 'a/**'
-        skip  a/y.test_slow::y  -- tag slow: runs only when asked for: --slow, --select tag=slow, or --id
+        run   a/y.test_slow::y
+                tags=['all']  <- ducktestconf.py: default
+                timeout=30  <- ducktestconf.py: match 'a/**'
         skip  b/z_fail.test::z_fail  -- outside the given paths
 
-        1 of 3 cases
+        2 of 3 cases
         """
     )
 
@@ -64,7 +67,7 @@ def test_skip_removes_a_case_and_says_which_skip(tree, capsys):
     assert capsys.readouterr().out == textwrap.dedent(
         """\
         skip  a/x.test::x  -- --skip tag=all
-        skip  a/y.test_slow::y  -- tag slow: runs only when asked for: --slow, --select tag=slow, or --id
+        skip  a/y.test_slow::y  -- --skip tag=all
         skip  b/z_fail.test::z_fail  -- outside the given paths
 
         0 of 3 cases
@@ -139,6 +142,12 @@ def test_a_usage_error_is_one_line_and_exit_code_2(tree, capsys, argv, message):
 def test_an_unknown_option_is_refused_by_the_parser(tree):
     with pytest.raises(SystemExit) as refused:
         main(["select", "--keep"])  # a run option
+    assert refused.value.code == 2
+
+
+def test_slow_is_gone(tree):
+    with pytest.raises(SystemExit) as refused:
+        main(["select", "--slow"])
     assert refused.value.code == 2
 
 

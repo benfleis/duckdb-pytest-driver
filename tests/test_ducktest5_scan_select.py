@@ -176,11 +176,11 @@ def select(project, **kwargs):
     return apply(cases, Selection(**kwargs), proj)
 
 
-def test_a_bare_run_leaves_slow_out_and_says_why(project):
+def test_a_bare_run_is_the_built_in_default_and_says_why(project):
     selected, why_not = select(project)
     assert "a/y.test_slow::y" not in ids(selected) and len(selected) == 6
-    assert "--slow" in why_not["a/y.test_slow::y"]
-    assert "a/y.test_slow::y" in ids(select(project, slow=True)[0])
+    assert why_not["a/y.test_slow::y"] == "matches no --select clause"
+    assert "a/y.test_slow::y" in ids(select(project, suites=["all"])[0])
     assert ids(select(project, select=["tag=slow"])[0]) == ["a/y.test_slow::y"]
 
 
@@ -206,9 +206,11 @@ def test_repeated_select_ors_its_clauses(project):
 
 
 def test_a_suite_is_paths_and_selects_with_a_name(project):
+    # the smoke suite's paths are directories/files, and a directory brings in the slow case under it
     assert ids(select(project, suites=["smoke"])[0]) == [
         "a/x.test::x[backend=oss]",
         "a/x.test::x[backend=dbx]",
+        "a/y.test_slow::y",
         "b/one.test::one",
     ]
     assert ids(select(project, suites=["cmt"])[0]) == ["b/paired.py::body[cmt]"]
@@ -226,12 +228,13 @@ def test_an_id_is_added_to_what_paths_and_selects_give(project):
     # no select, path or tag takes out a case that is named by id
     assert ids(select(project, select=["type=python"], ids=[slow])[0]) == [slow, "b/solo.py::solo"]
     assert ids(select(project, suites=["cmt"], ids=[slow])[0]) == [slow, "b/paired.py::body[cmt]"]
-    # and the slow rule still holds for the cases that are not named
+    # a --select clause still narrows within the given paths for the cases that are not named
     assert ids(select(project, paths=["test/a"], select=["backend=oss"], ids=[plain])[0]) == [
         "a/x.test::x[backend=oss]",
         plain,
     ]
-    assert slow in select(project, paths=["test/a"], ids=[plain])[1]
+    # a directory PATH brings in the slow case under it -- no --select given here to narrow it out
+    assert slow in ids(select(project, paths=["test/a"], ids=[plain])[0])
 
 
 @pytest.mark.parametrize(
@@ -319,12 +322,12 @@ def test_a_negated_select_and_skip_agree_on_top_of_a_positive_selection(project,
 
 
 def test_a_two_term_negation_only_clause_becomes_two_skips_by_de_morgan(project):
-    # !A;!B (keep neither) == --skip A --skip B, and it stays a lone-skip run: the slow case is out
-    # via the slow rule, not via either translated skip, so the default base was kept, not widened
+    # !A;!B (keep neither) == --skip A --skip B; a/y.test_slow also carries tag a (from the a/** rule),
+    # so it is dropped the same ordinary way, not by any slow-specific rule
     negation, why_not = select(project, select=["!tag=a;!tag=mine"])
     two_skips, _ = select(project, skip=["tag=a", "tag=mine"])
     assert ids(negation) == ids(two_skips) == ["b/one.test::one", "b/solo.py::solo"]
-    assert "runs only when asked for" in why_not["a/y.test_slow::y"]
+    assert why_not["a/y.test_slow::y"] == "--skip tag=a (from --select !tag=a;!tag=mine)"
     assert why_not["a/x.test::x[backend=oss]"] == "--skip tag=a (from --select !tag=a;!tag=mine)"
     assert why_not["b/paired.py::body[cmt]"] == "--skip tag=mine (from --select !tag=a;!tag=mine)"
 
@@ -335,16 +338,20 @@ def test_a_mixed_clause_is_an_ordinary_positive_selection(project):
     mixed = select(project, select=["backend=oss;!tag=mine"])[0]
     assert ids(mixed) == ["a/x.test::x[backend=oss]"]
     lone_skip = select(project, skip=["backend=oss;!tag=mine"])[0]
-    assert ids(lone_skip) == [
-        "a/x.test::x[backend=dbx]",
-        "b/one.test::one",
-        "b/paired.py::body[cmt]",
-        "b/paired.py::body[plain]",
-        "b/solo.py::solo",
-    ]
+    assert (
+        ids(lone_skip)
+        == [
+            "a/x.test::x[backend=dbx]",
+            "a/y.test_slow::y",  # a --skip given: the base is `all`; y has no `backend` axis, so the clause never holds for it
+            "b/one.test::one",
+            "b/paired.py::body[cmt]",
+            "b/paired.py::body[plain]",
+            "b/solo.py::solo",
+        ]
+    )
 
 
-def test_a_lone_skip_keeps_a_default_suite_as_the_base(tmp_path):
+def test_a_bare_run_uses_a_project_default_suite(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
@@ -360,32 +367,68 @@ def test_a_lone_skip_keeps_a_default_suite_as_the_base(tmp_path):
     )
     bare, why_not = apply(cases, Selection(), proj)
     assert ids(bare) == ["keep/other.test::other"]  # the default suite's own skip already removed spark
-    assert why_not["keep/spark.test::spark"] == "skip tag=spark  <- suite 'default'"
-    only_skip, why_not = apply(cases, Selection(skip=["tag=quiet"]), proj)
-    assert ids(only_skip) == []  # base stays the default suite's paths, not every case
-    assert why_not["outside/far.test::far"] == "outside the given paths"
+    assert why_not["keep/spark.test::spark"] == "matches no --select clause"
+    assert why_not["outside/far.test::far"] == "matches no --select clause"
 
 
-def test_a_lone_skip_keeps_in_default_set_false_cases_out(tmp_path):
+def test_a_skip_given_alone_replaces_the_default_entirely(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
             "test/ducktestconf.py": """
                 from ducktest5 import match
-                RULES = [
-                    match("special.test", in_default_set=False, tags=["special"]),
-                    match("normal.test", tags=["normal"]),
-                    match("quiet.test", tags=["quiet"]),
-                ]
+                SUITES = {"default": {"paths": ["test/keep"], "skip": ["tag=spark"]}}
+                RULES = [match("keep/spark.test", tags=["spark"]), match("keep/other.test", tags=["quiet"])]
+            """,
+            "test/keep/spark.test": "",
+            "test/keep/other.test": "",
+            "test/outside/far.test": "",
+        },
+    )
+    # a --skip on the command line, even alone, means the base is `all`, not the suite `default` -- so
+    # spark.test (which the default suite's own skip would drop) and far.test (outside its paths) both run
+    selected, why_not = apply(cases, Selection(skip=["tag=quiet"]), proj)
+    assert set(ids(selected)) == {"keep/spark.test::spark", "outside/far.test::far"}
+    assert why_not == {"keep/other.test::other": "--skip tag=quiet"}
+
+
+def test_a_lone_skip_runs_everything_else_including_slow(project):
+    assert "a/y.test_slow::y" in ids(select(project, skip=["tag=mine"])[0])
+
+
+def test_a_bare_run_leaves_in_default_set_false_cases_out(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                RULES = [match("special.test", in_default_set=False, tags=["special"]), match("normal.test")]
             """,
             "test/special.test": "",
             "test/normal.test": "",
-            "test/quiet.test": "",
         },
     )
-    selected, why_not = apply(cases, Selection(skip=["tag=quiet"]), proj)
+    selected, why_not = apply(cases, Selection(), proj)
     assert ids(selected) == ["normal.test::normal"]
-    assert why_not["special.test::special"] == "its test is not in the default set (in_default_set=False)"
+    assert why_not["special.test::special"] == "matches no --select clause"
+    # once anything at all is given, the built-in default plays no part, and in_default_set has no effect
+    with_path = apply(cases, Selection(paths=["test/special.test"]), proj)[0]
+    assert ids(with_path) == ["special.test::special"]
+
+
+def test_a_project_default_suite_ignores_in_default_set(tmp_path):
+    cases, proj = tree(
+        tmp_path,
+        {
+            "test/ducktestconf.py": """
+                from ducktest5 import match
+                SUITES = {"default": {}}
+                RULES = [match("special.test", in_default_set=False)]
+            """,
+            "test/special.test": "",
+        },
+    )
+    assert ids(apply(cases, Selection(), proj)[0]) == ["special.test::special"]
 
 
 def test_a_suites_skip_applies_on_top_of_its_own_selection(tmp_path):
@@ -418,7 +461,7 @@ def test_a_suites_skip_applies_on_top_of_its_own_selection(tmp_path):
     assert why_not["keep/quiet.test::quiet"] == "matches no --select clause"
 
 
-def test_a_negation_only_select_keeps_a_named_default_suite_as_the_base(tmp_path):
+def test_a_negation_only_select_alone_replaces_the_default_entirely(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
@@ -432,10 +475,10 @@ def test_a_negation_only_select_keeps_a_named_default_suite_as_the_base(tmp_path
             "test/outside/far.test": "",
         },
     )
+    # translated to a skip, it behaves like any --skip: the base is `all`, not the suite `default`
     selected, why_not = apply(cases, Selection(select=["!tag=spark"]), proj)
-    assert ids(selected) == ["keep/other.test::other"]  # base is the default suite's paths, not every case
+    assert set(ids(selected)) == {"keep/other.test::other", "outside/far.test::far"}
     assert why_not["keep/spark.test::spark"] == "--skip tag=spark (from --select !tag=spark)"
-    assert why_not["outside/far.test::far"] == "outside the given paths"
 
 
 def test_a_suites_select_entries_are_ord(project):
@@ -447,9 +490,11 @@ def test_a_suites_select_entries_are_ord(project):
 
 
 def test_a_suites_skip_entry_may_be_a_clause(project):
-    # trimmed scopes to test/a + test/b, then drops only cases that are both backend=oss and tag=a
+    # trimmed scopes to test/a + test/b (directories, so the slow case under a is in scope), then drops
+    # only cases that are both backend=oss and tag=a -- y has no backend axis, so it is not dropped
     assert ids(select(project, suites=["trimmed"])[0]) == [
         "a/x.test::x[backend=dbx]",
+        "a/y.test_slow::y",
         "b/one.test::one",
         "b/paired.py::body[cmt]",
         "b/paired.py::body[plain]",
@@ -457,11 +502,16 @@ def test_a_suites_skip_entry_may_be_a_clause(project):
     ]
 
 
-def test_suites_is_read_and_sets_is_the_named_error(tmp_path):
-    with pytest.raises(UsageError, match="SETS is now SUITES"):
-        tree(tmp_path, {"test/ducktestconf.py": "SETS = {}", "test/a.test": ""})
+def test_suites_is_read_and_an_unrelated_top_level_name_is_ignored(tmp_path):
+    cases, proj = tree(tmp_path, {"test/ducktestconf.py": "SETS = {}", "test/a.test": ""})
+    assert proj.suites == {}
     cases, proj = tree(tmp_path / "ok", {"test/ducktestconf.py": 'SUITES = {"x": {}}', "test/a.test": ""})
     assert proj.suites == {"x": {}}
+
+
+def test_a_project_suite_named_all_is_an_error(tmp_path):
+    with pytest.raises(UsageError, match="may not define a suite named 'all'"):
+        tree(tmp_path, {"test/ducktestconf.py": 'SUITES = {"all": {}}', "test/a.test": ""})
 
 
 def test_repeated_suite_unions_the_suites(project):
@@ -517,7 +567,7 @@ def test_suite_term_combines_with_a_negated_suite_term_in_one_clause(tmp_path):
     assert ids(selected) == ["a.test::a"]  # in smoke, not in databricks
 
 
-def test_a_negated_suite_term_alone_keeps_the_default_suite_as_the_base(tmp_path):
+def test_a_negated_suite_term_alone_replaces_the_default_entirely(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
@@ -532,7 +582,7 @@ def test_a_negated_suite_term_alone_keeps_the_default_suite_as_the_base(tmp_path
         },
     )
     selected, why_not = select((cases, proj), select=["!suite=spark"])
-    assert ids(selected) == ["keep/other.test::other"]  # base is the default suite's paths, not every case
+    assert set(ids(selected)) == {"keep/other.test::other", "outside/far.test::far"}  # base is `all`, not `default`
     assert why_not["keep/spark.test::spark"] == "--skip suite=spark (from --select !suite=spark)"
 
 
@@ -606,29 +656,40 @@ def test_a_case_in_two_suites_is_selected_once(tmp_path):
     assert ids(selected) == ["both.test::both"]  # not doubled
 
 
-def test_a_suites_own_tag_slow_ask_reaches_a_case_through_it(tmp_path):
-    # the same rule as `--select tag=slow`: a suite brings in a slow case only when it asks for the tag
+def test_a_suite_all_has_everything(project):
+    cases, _ = project
+    assert set(ids(select(project, suites=["all"])[0])) == set(ids(cases))
+
+
+def test_suite_all_and_suite_default_are_ordinary_terms(project):
+    assert ids(select(project, select=["suite=all"])[0]) == ids(select(project, suites=["all"])[0])
+    assert ids(select(project, select=["suite=default"])[0]) == ids(select(project)[0])
+
+
+def test_a_suite_may_refer_to_suite_all_or_suite_default(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
             "test/ducktestconf.py": """
-                SUITES = {"nightly": {"select": ["tag=slow"]}, "smoke": {"paths": ["test"]}}
+                SUITES = {"everything": {"select": ["suite=all"]}, "base": {"select": ["suite=default"]}}
             """,
             "test/a.test": "",
             "test/b.test_slow": "",
         },
     )
-    via_nightly, _ = select((cases, proj), suites=["nightly"])
-    assert ids(via_nightly) == ["b.test_slow::b"]
-    via_smoke, why_not = select((cases, proj), suites=["smoke"])
-    assert ids(via_smoke) == ["a.test::a"]
-    assert "runs only when asked for" in why_not["b.test_slow::b"]
+    assert set(ids(select((cases, proj), suites=["everything"])[0])) == set(ids(cases))
+    assert ids(select((cases, proj), suites=["base"])[0]) == ["a.test::a"]  # default: slow left out
+
+
+def test_a_directory_path_brings_in_a_slow_case(project):
+    assert "a/y.test_slow::y" in ids(select(project, paths=["test/a"])[0])
 
 
 def test_path_selects_a_directory_and_its_glob_form_agree(project):
+    # a directory PATH and a `path=` glob agree, and both bring in the slow case under them
     directory = ids(select(project, select=["path=a"])[0])
     glob_form = ids(select(project, select=["path=a/**"])[0])
-    assert directory == glob_form == ["a/x.test::x[backend=oss]", "a/x.test::x[backend=dbx]"]
+    assert directory == glob_form == ["a/x.test::x[backend=oss]", "a/x.test::x[backend=dbx]", "a/y.test_slow::y"]
 
 
 def test_path_in_a_clause(project):
@@ -640,18 +701,18 @@ def test_path_with_no_match_is_an_error(project):
         select(project, select=["path=nowhere/at/all"])
 
 
-def test_path_does_not_bring_in_a_slow_case(project):
-    _, why_not = select(project, select=["path=a/y.test_slow"])
-    assert "runs only when asked for" in why_not["a/y.test_slow::y"]
+def test_a_path_term_brings_in_a_slow_case(project):
+    assert ids(select(project, select=["path=a/y.test_slow"])[0]) == ["a/y.test_slow::y"]
 
 
 def test_a_term_with_no_key_is_a_path_term(project):
     assert ids(select(project, select=["a"])[0]) == ids(select(project, select=["path=a"])[0])
     assert ids(select(project, select=["!a"])[0]) == ids(select(project, select=["!path=a"])[0])
-    # a bare path term sits in a clause like any other
+    # a bare path term sits in a clause like any other, and brings in the slow case under it
     assert ids(select(project, select=["type=sqllogic;a"])[0]) == [
         "a/x.test::x[backend=oss]",
         "a/x.test::x[backend=dbx]",
+        "a/y.test_slow::y",
     ]
 
 

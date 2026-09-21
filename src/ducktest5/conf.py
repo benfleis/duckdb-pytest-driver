@@ -200,8 +200,6 @@ def load_project(start):
             continue
         path = os.path.join(dirpath, CONF_FILE)
         module = _load(path, "ducktestconf_" + os.path.relpath(dirpath, root).replace(os.sep, "_").replace(".", "root"))
-        if hasattr(module, "SETS"):
-            raise UsageError(f"{path}: SETS is now SUITES")
         rules = list(getattr(module, "RULES", ()))
         if not all(isinstance(r, Rule) for r in rules):
             raise UsageError(f"{path}: RULES must hold default(...) and match(...) rules")
@@ -211,6 +209,8 @@ def load_project(start):
             project.services = {s.id: s for s in getattr(module, "SERVICES", ())}
             project.axes = {axis: {v.id: v for v in values} for axis, values in getattr(module, "AXES", {}).items()}
             project.suites = dict(getattr(module, "SUITES", {}))
+            if "all" in project.suites:
+                raise UsageError(f"{path}: a project may not define a suite named 'all' -- it always exists, built in")
             project.exclude = tuple(getattr(module, "EXCLUDE", ()))
             _check(path, project)
         else:

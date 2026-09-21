@@ -52,7 +52,6 @@ def main(argv=None):
         p.add_argument(
             "--suite", action="append", default=[], metavar="NAME", help="a suite of the project; repeats union"
         )
-        p.add_argument("--slow", action="store_true", help="also take cases with the tag slow or coverage")
         p.add_argument("--root", default=None, help="where the tests are (default: ./test, else .)")
         if name == "select":
             p.add_argument("--why", action="store_true", help="also print which rule gave each case what")
@@ -104,9 +103,7 @@ def main(argv=None):
         cwd = os.getcwd()
         root = args.root or ("test" if os.path.isdir("test") else ".")
         cases, project = scan(root, working_dir=cwd)
-        selection = Selection(
-            paths=args.paths, select=args.select, ids=args.id, suites=args.suite, slow=args.slow, skip=args.skip
-        )
+        selection = Selection(paths=args.paths, select=args.select, ids=args.id, suites=args.suite, skip=args.skip)
         selected, why_not = apply(cases, selection, project, working_dir=cwd)
         if args.command == "scan":
             if args.env:

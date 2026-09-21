@@ -19,18 +19,18 @@
    one, subtracted from what the selects give.
 5. NEGATION-ONLY CLAUSE = SKIP. A `--select` clause whose every term is negated is not a positive
    selection. By De Morgan it is translated, at parse time, into one skip clause per term:
-   `--select '!A;!B'` (keep cases that are neither) becomes the skips `A` and `B`. It keeps the
-   default base, exactly as a lone `--skip` does. A clause that mixes positive and negated terms
-   (`a=1;!b=2`) stays a positive clause: a=1 AND NOT b=2. Inside a `--skip` clause, `!` terms are
-   ordinary -- a skip is already a subtraction, so there is nothing to translate.
+   `--select '!A;!B'` (keep cases that are neither) becomes the skips `A` and `B`. It is then exactly a
+   lone `--skip A --skip B` -- see BASE below for what that does to the base. A clause that mixes
+   positive and negated terms (`a=1;!b=2`) stays a positive clause: a=1 AND NOT b=2. Inside a `--skip`
+   clause, `!` terms are ordinary -- a skip is already a subtraction, so there is nothing to translate.
 6. `path=GLOB[,GLOB]` matches a case's test file path, with the same glob a rule's `match()` uses:
    `*` stays inside one directory level, `**` crosses, and a pattern with no wildcard also matches
-   everything below it -- `path=sql/cloud` is `path=sql/cloud/**`. Like a directory PATH, it does not
-   bring in a slow or coverage case. On the command line a path term is relative to the working
-   directory, exactly like a positional PATH; inside a project file (a suite's own entries) it is
-   relative to the project root. Both are normalised, at parse time, to the root-relative form a case
-   id uses, so matching only ever sees one form; a path that normalises outside the project root is an
-   error.
+   everything below it -- `path=sql/cloud` is `path=sql/cloud/**`. Like a directory PATH, a `path=`
+   term brings in any slow or coverage case under it. On the command line a path term is relative to
+   the working directory, exactly like a positional PATH; inside a project file (a suite's own entries)
+   it is relative to the project root. Both are normalised, at parse time, to the root-relative form a
+   case id uses, so matching only ever sees one form; a path that normalises outside the project root is
+   an error.
 7. SCOPE. Positional PATHs are a union, as in every other tool: a file, a directory, or a glob,
    relative to the working directory. They set the scope; the select clauses then filter within it:
 
@@ -38,31 +38,31 @@
                   AND (OR of the positive select clauses, or everything if none)
                   MINUS (OR of the skip clauses)
 
-8. BASE. With no positive selection at all -- no PATH, no positive `--select` clause, no `--suite`, no
-   `--id` -- the base is the project's suite `default` if it has one, else every case whose test is
-   `in_default_set`. Skips never change the base.
+8. BASE. The suite `all` is every scanned case, slow and coverage cases included; it always exists, and
+   a project may not define a suite named `all`. The suite `default` is what a bare run takes -- no
+   PATH, no `--select`, no `--skip`, no `--suite`, no `--id` -- and is the project's own suite `default`
+   when it has one, else the built-in definition: select `suite=all`, skip `tag=slow,coverage`, minus
+   any test whose `in_default_set` is `False`. Anything at all on the command line replaces the default
+   entirely, not just narrows it -- `--skip tag=spark` alone runs everything else, slow cases included,
+   because a skip on the command line already means the base is `all`, not `default`; write `--suite
+   default --skip tag=spark` for the default minus spark.
 9. `--id` names one case exactly, for a re-run. Its path part is relative to the project root, so it
    reads and works the same from every directory. Quote it in a shell. A case named by `--id` always
    runs: no `--select`, no `--skip`, no tag and no PATH takes it out. With `--id` alone, only the named
    cases run; with PATHs, `--select` or `--suite` as well, the named cases are added to what those give
    (a union).
-10. `in_default_set=False` takes a test out of that last run only: the run with nothing given, in a
-    project that has no suite `default`. With a suite `default`, or with any PATH, `--select`, `--id` or
-    `--suite`, it has no effect.
-11. A case with the tag `slow` or `coverage` (a `.test_slow`, a `.test_coverage`) runs only when asked
-    for: `--slow` (these too), `--select tag=slow` (only these), its `--id`, or its file named exactly
-    as a PATH. A directory, a glob or a `path=` term does not bring it in. `--skip tag=slow` is legal
-    and harmless -- these cases are already out.
-12. SUITE. A suite is a named selection of cases; a case can be in any number of suites. `SUITES` in the
+10. `in_default_set=False` takes a test out of the built-in default only -- the base a bare run takes
+    when the project has no suite `default`. A project's own suite `default` ignores it, like any suite;
+    so does any PATH, `--select`, `--id`, `--suite`, or `--skip` on the command line.
+11. SUITE. A suite is a named selection of cases; a case can be in any number of suites. `SUITES` in the
     project file gives each one as `{"paths": [...], "select": [...], "skip": [...]}`, with the same
     CLAUSE grammar as the command line: the suite holds for a case that is in scope(its paths, or
     everything) AND (OR of its select clauses, or everything) MINUS (OR of its skip clauses). `--suite
     NAME` (repeatable, a union) is exactly `--select suite=NAME`: `suite=NAME[,NAME2]` is an ordinary
     TERM, and `!suite=NAME` negates it -- usable on the command line and inside another suite's own
-    select/skip. A suite that refers to itself, directly or through another suite, is a usage error that
-    prints the cycle. Like `path=`, `suite=` alone does not bring in a slow or coverage case; a suite
-    brings one in only when its own select asks for it (`tag=slow`), the same as a command line would.
-13. `select --why` names the reason a case is missing: which skip removed it and where that skip came
+    select/skip, the same as `suite=all` or `suite=default` is. A suite that refers to itself, directly
+    or through another suite, is a usage error that prints the cycle.
+12. `select --why` names the reason a case is missing: which skip removed it and where that skip came
     from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- suite 'default'`
     for a suite's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated negation-only
     clause. A case that matches no positive `--select` clause says so once, not once per clause. A case
@@ -73,7 +73,9 @@ Examples:
     --select 'type=python;storage=s3'                      python cases on s3
     --select type=python --select storage=s3               python cases, and all s3 cases
     --skip 'backend=oss;storage=s3'                         drop only what is both
-    --select '!tag=spark'                                   the default run without spark cases (same as --skip tag=spark)
+    --skip tag=spark                                        everything except spark cases -- slow cases included
+    --select '!tag=spark'                                   the same, by De Morgan
+    --suite default --skip tag=spark                        the default run, minus spark cases
     --select 'suite=smoke;!suite=databricks'                smoke cases that are not in databricks
 """
 
@@ -87,22 +89,16 @@ from .binary import UsageError
 from .conf import _glob
 
 
-def _is_negation_only(expr):
-    return all(t.strip().startswith("!") for t in expr.split(";"))
-
-
 @dataclass
 class Selection:
     paths: list = field(default_factory=list)
     select: list = field(default_factory=list)
     ids: list = field(default_factory=list)
     suites: list = field(default_factory=list)
-    slow: bool = False
     skip: list = field(default_factory=list)
 
     def is_bare(self):
-        positive_select = any(not _is_negation_only(e) for e in self.select)
-        return not (self.paths or positive_select or self.ids or self.suites)
+        return not (self.paths or self.select or self.skip or self.suites or self.ids)
 
 
 def _path_matches(case_path, wanted):
@@ -194,7 +190,7 @@ def _parse_term(term, flag, origin, ctx):
         if unknown:
             raise UsageError(f"{flag} {term!r}: path {unknown} matches no scanned case")
     elif key == "suite":
-        unknown = [v for v in values if v not in ctx.suites]
+        unknown = [v for v in values if v not in ctx.suites and v not in ("all", "default")]
         if unknown:
             raise UsageError(f"{flag} {term!r}: no suite {unknown}; known suites: {sorted(ctx.suites)}")
     elif key in ctx.axes:
@@ -268,9 +264,19 @@ def _classify_skip_exprs(exprs, origin, ctx):
 
 
 def _suite_selection(name, ctx, stack=()):
-    """Parses suite `name`'s own select/skip once per run. A `suite=` reference that leads back to
-    `name` is a cycle, caught here -- before any case is matched -- rather than by recursing forever."""
+    """Parses suite `name`'s own select/skip once per run -- including the built-in suites `all` (always
+    every case) and `default` (when the project does not define its own). A `suite=` reference that leads
+    back to `name` is a cycle, caught here -- before any case is matched -- rather than by recursing
+    forever."""
     if name in ctx.suite_defs:
+        return ctx.suite_defs[name]
+    if name == "all":
+        ctx.suite_defs[name] = ([], [], [])
+        return ctx.suite_defs[name]
+    if name == "default" and "default" not in ctx.suites:
+        positive = [[(False, "suite", ["all"])]]
+        skips = [([(False, "tag", ["slow", "coverage"])], "skip tag=slow,coverage  <- suite 'default'")]
+        ctx.suite_defs[name] = ([], positive, skips)
         return ctx.suite_defs[name]
     if name in stack:
         cycle = stack[stack.index(name) :] + (name,)
@@ -292,33 +298,21 @@ def _suite_selection(name, ctx, stack=()):
 
 
 def _suite_members(name, ctx):
-    """The cases suite `name` selects: scope(its paths) AND (its select) MINUS (its skip). Cached, so a
-    suite is matched against every case once per run, not once per case per `suite=` term."""
+    """The cases suite `name` selects: scope(its paths) AND (its select) MINUS (its skip) -- and, for the
+    built-in `default`, minus any test with `in_default_set=False` too, which no clause can express.
+    Cached, so a suite is matched against every case once per run, not once per case per `suite=` term."""
     if name not in ctx.suite_members:
         paths, positive_clauses, skip_clauses = _suite_selection(name, ctx)
+        builtin_default = name == "default" and "default" not in ctx.suites
         ctx.suite_members[name] = {
             case.id
             for case in ctx.cases
             if (not paths or any(_path_matches(case.test.path, p) for p in paths))
             and (not positive_clauses or any(_clause_holds(case, terms, ctx) for terms in positive_clauses))
             and not any(_clause_holds(case, clause, ctx) for clause, _ in skip_clauses)
+            and not (builtin_default and not case.test.in_default_set)
         }
     return ctx.suite_members[name]
-
-
-def _suite_asks_for_tag(name, tag, ctx):
-    """True when suite `name`, directly or through a suite it refers to, positively asks for `tag` --
-    the slow/coverage rule then treats membership in it the way `--select tag=slow` would."""
-    _, positive_clauses, _ = _suite_selection(name, ctx)
-    for terms in positive_clauses:
-        for negated, key, values in terms:
-            if negated:
-                continue
-            if key == "tag" and tag in values:
-                return True
-            if key == "suite" and any(_suite_asks_for_tag(v, tag, ctx) for v in values):
-                return True
-    return False
 
 
 def apply(cases, selection, project, working_dir=None):
@@ -329,20 +323,17 @@ def apply(cases, selection, project, working_dir=None):
     known_cases = {c.case_id for c in cases if c.case_id is not None}
     ctx = _Ctx(axes, known_tags, known_cases, cases, project.root, working_dir or project.root, project.suites)
 
-    paths = list(selection.paths)
-    # `--suite NAME` is exactly `--select suite=NAME`: one code path parses and matches it, whichever
-    # spelling was used.
-    select_exprs = list(selection.select) + [f"suite={name}" for name in selection.suites]
-    positive_clauses, skip_clauses = _classify_select_exprs(select_exprs, None, ctx)
-    skip_clauses += _classify_skip_exprs(selection.skip, None, ctx)
-
-    if selection.is_bare() and "default" in project.suites:
-        default_suite = project.suites["default"]
-        paths += default_suite.get("paths", [])
-        default_positive, default_skips = _classify_select_exprs(default_suite.get("select", []), "default", ctx)
-        positive_clauses += default_positive
-        skip_clauses += default_skips
-        skip_clauses += _classify_skip_exprs(default_suite.get("skip", []), "default", ctx)
+    if selection.is_bare():
+        paths = []
+        positive_clauses = [[(False, "suite", ["default"])]]
+        skip_clauses = []
+    else:
+        paths = list(selection.paths)
+        # `--suite NAME` is exactly `--select suite=NAME`: one code path parses and matches it, whichever
+        # spelling was used.
+        select_exprs = list(selection.select) + [f"suite={name}" for name in selection.suites]
+        positive_clauses, skip_clauses = _classify_select_exprs(select_exprs, None, ctx)
+        skip_clauses += _classify_skip_exprs(selection.skip, None, ctx)
 
     # Resolve every `suite=` term named so far -- and so any cycle among them -- before any case is
     # matched.
@@ -361,26 +352,7 @@ def apply(cases, selection, project, working_dir=None):
         if not any(_path_matches(c.test.path, p) for c in cases):
             raise UsageError(f"path {p!r} holds no test")
 
-    bare = selection.is_bare() and "default" not in project.suites
     only_ids = bool(selection.ids) and not (paths or positive_clauses)
-    asked_for = {
-        v
-        for terms in positive_clauses
-        for negated, key, values in terms
-        if key == "tag" and not negated
-        for v in values
-    }
-    # A suite brings in a slow/coverage case only when its own select asks for the tag, the way a
-    # command line would -- membership in the suite alone does not.
-    asked_for |= {
-        t
-        for terms in positive_clauses
-        for negated, key, values in terms
-        if key == "suite" and not negated
-        for v in values
-        for t in ("slow", "coverage")
-        if _suite_asks_for_tag(v, t, ctx)
-    }
     selected, why_not = [], {}
     for case in cases:
         if case.id in selection.ids:
@@ -391,14 +363,6 @@ def apply(cases, selection, project, working_dir=None):
             why_not[case.id] = "outside the given paths"
         elif positive_clauses and not any(_clause_holds(case, terms, ctx) for terms in positive_clauses):
             why_not[case.id] = "matches no --select clause"
-        elif bare and not case.test.in_default_set:
-            why_not[case.id] = "its test is not in the default set (in_default_set=False)"
-        elif (
-            not selection.slow
-            and case.test.body_file not in paths  # a slow file named exactly is asked for
-            and (slow := next((t for t in ("slow", "coverage") if t in case.tags and t not in asked_for), None))
-        ):
-            why_not[case.id] = f"tag {slow}: runs only when asked for: --slow, --select tag={slow}, or --id"
         elif (rule := next((r for r in skip_clauses if _clause_holds(case, r[0], ctx)), None)) is not None:
             why_not[case.id] = rule[1]
         else:
