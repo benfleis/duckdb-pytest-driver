@@ -62,7 +62,20 @@ def main(argv=None):
     run_options.add_argument(
         "--keep-services", action="store_true", help="find each service or start it, and leave it running"
     )
+    run_options.add_argument(
+        "--lldb",
+        action="store_true",
+        help="prepare the one selected .test case as usual, then start a debugger on the binary instead of running it",
+    )
+    run_options.add_argument(
+        "--debugger",
+        metavar="CMD",
+        help="what to put before the binary, instead of 'lldb --' (also $DUCKTEST_DEBUGGER); implies --lldb",
+    )
     args = parser.parse_args(argv)
+    debugger = None
+    if getattr(args, "lldb", False) or getattr(args, "debugger", None):
+        debugger = args.debugger or os.environ.get("DUCKTEST_DEBUGGER") or "lldb --"
 
     try:
         cwd = os.getcwd()
@@ -115,6 +128,7 @@ def main(argv=None):
             keep_services=args.keep_services,
             batch_size=args.batch_size,
             workers=args.workers,
+            debugger=debugger,
         )
     except UsageError as exc:
         print(f"ducktest5: {exc}", file=sys.stderr)

@@ -5,6 +5,10 @@ this process, one after another. What was decided and what happened is in the ru
 `01-tests.yaml`, `03-provision.yaml` (secrets redacted), `04-events.jsonl` (one line for each case),
 `05-report.yaml`. Whatever goes wrong outside a body is an ERROR of the cases it hit, never the end
 of the run, and services are released on every way out.
+
+With `debugger` (`--lldb`) the one selected `.test` case is prepared as usual -- services, batch dir,
+`config.json`, init file -- and then handed to the debugger in the foreground instead of being run.
+The batch dir stays behind for a second look, or a second debugger.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 import traceback
@@ -156,6 +161,17 @@ def _init_from(case, provisioned):
     return ", ".join(label for label, _ in _init_parts(case, provisioned))
 
 
+def _only_one_test_case(cases):
+    """A debugger takes over the terminal, so there is one process to take over."""
+    if len(cases) != 1:
+        listed = [c.id for c in cases[:10]] + ([f"... and {len(cases) - 10} more"] if len(cases) > 10 else [])
+        raise UsageError(
+            f"a debugger needs exactly one .test case; the selection gives {len(cases)}:\n  " + "\n  ".join(listed)
+        )
+    if cases[0].test.type != SQLLOGIC:
+        raise UsageError(f"a debugger runs the unittest binary; {cases[0].id} is a Python body -- not supported yet")
+
+
 def _batch_key(case, provisioned):
     return json.dumps(
         [
@@ -182,8 +198,11 @@ def run(
     workers=4,
     out=None,
     session_factory=DuckDBSession,
+    debugger=None,
 ):
     out = out or sys.stdout  # looked up now: a caller may have replaced it since import
+    if debugger is not None:
+        _only_one_test_case(cases)
     engines = project.engines
     run_id = make_run_id()
     run_dir = os.path.join(os.path.abspath(temp_root), run_id)
@@ -229,7 +248,7 @@ def run(
         )
         print(f"{outcome.upper():8} {case.id}{tail}" + (f"  [{note}]" if note else ""), file=out, flush=True)
 
-    provisioned, boot_errors, handles = {}, {}, {}
+    provisioned, boot_errors, handles, debugged = {}, {}, {}, False
     duckdb_home = os.path.join(run_dir, "home")
     duckdb_session = session_factory(duckdb_bin, home=duckdb_home)
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
@@ -315,6 +334,20 @@ def run(
                         ),
                     )
                 )
+        if debugger is not None and batches:
+            ((_, batch),) = batches
+            batch.write()
+            args = shlex.split(debugger) + sqllogic.batch_args(unittest_bin, batch)
+            print("\n" + " ".join(shlex.quote(a) for a in args) + "\n", file=out, flush=True)
+            debugged = True
+            code = subprocess.call(args, cwd=working_dir)  # the terminal is the debugger's
+            print(f"\nbatch kept: {batch.dir}", file=out, flush=True)
+            if batch.init_sql:
+                print(
+                    f"  {sqllogic.INIT_FILE} there may hold a secret; remove the directory when you are done", file=out
+                )
+            return code
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             futures = {
                 pool.submit(sqllogic.run_batch, unittest_bin, batch, working_dir): (chunk, batch)
@@ -450,7 +483,8 @@ def run(
                 print(f"service {p.service.id} could not be stopped: {exc}", file=out)
             if p.mode == KEPT:
                 print(f"service {p.service.id} left running; next run: {attach_argument(p)}", file=out)
-        _report(run_dir, run_id, results, boot_errors, out)
+        if not debugged:  # the debugger ran the case, so nothing here has an outcome to report
+            _report(run_dir, run_id, results, boot_errors, out)
 
     counts = {o: sum(r["outcome"] == o for r in results) for o in OUTCOMES}
     # Green means it ran: a skip inside the binary does not fail the run, anything else not passed does,

@@ -154,12 +154,9 @@ def _human(output):
     return "\n".join(line.rstrip() for line in text.splitlines() if line.strip()).strip()
 
 
-def _invoke(binary, batch, working_dir):
-    """Run the batch and watch it: a test that is still running after its timeout gets the process
-    killed. Returns (output, what was running when it was killed or None, the exit code, and
-    {test name: seconds between its begin and end events})."""
-    batch.write()
-    args = [
+def batch_args(binary, batch):
+    """How the binary is started for a batch; a debugger is given the same."""
+    return [
         binary,
         "-f",
         os.path.join(batch.dir, "tests.txt"),
@@ -168,6 +165,14 @@ def _invoke(binary, batch, working_dir):
         "--emit-test-events",
         "--emit-on-skip",
     ]
+
+
+def _invoke(binary, batch, working_dir):
+    """Run the batch and watch it: a test that is still running after its timeout gets the process
+    killed. Returns (output, what was running when it was killed or None, the exit code, and
+    {test name: seconds between its begin and end events})."""
+    batch.write()
+    args = batch_args(binary, batch)
     proc = subprocess.Popen(
         args, cwd=working_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
     )

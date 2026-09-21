@@ -4,6 +4,8 @@ session and the fake unittest binary."""
 import io
 import json
 import os
+import re
+import sys
 
 import pytest
 import yaml
@@ -18,6 +20,7 @@ from ducktest5.provision import EXISTING, Provisioned
 from ducktest5.run import _run_body, run
 
 FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
+FAKE_DEBUGGER = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_debugger.py")
 
 
 class FakeEngine:
@@ -262,6 +265,84 @@ def test_init_sql_does_not_stay_in_the_directory_of_a_failed_paired_case(tmp_pat
     _, run_dir, report, _ = go(tmp_path, [case])
     assert (run_dir / "cases" / case.dir_name / "run_test" / "init.sqllogic").exists()
     assert files_with_the_secret(run_dir) == []
+
+
+# -----------------------------------------------------------------------------
+# --lldb: the batch as usual, then the debugger instead of the run
+#
+
+
+@pytest.fixture
+def debugger(tmp_path, monkeypatch):
+    """The fake debugger, and what it recorded once it has been started."""
+    record = tmp_path / "debugger.json"
+    monkeypatch.setenv("FAKE_DEBUGGER_RECORD", str(record))
+
+    def started():
+        return json.loads(record.read_text())
+
+    return f"{sys.executable} {FAKE_DEBUGGER} --", started
+
+
+def debug(tmp_path, cases, command, *, services=(), **kwargs):
+    project = Project(str(tmp_path), {}, {s.id: s for s in services}, {}, {}, ())
+    out = io.StringIO()
+    code = run(
+        cases,
+        project,
+        duckdb_bin="no-duckdb",
+        unittest_bin=FAKE,
+        working_dir=str(tmp_path),
+        temp_root=str(tmp_path / "runs"),
+        out=out,
+        session_factory=FakeSession,
+        debugger=command,
+        **kwargs,
+    )
+    return code, out.getvalue()
+
+
+def test_the_debugger_gets_the_binary_and_the_batch_a_normal_run_would_have_used(tmp_path, debugger):
+    command, started = debugger
+    case = sql_case("a.test", {"storage": MADE_OF}, values={"catalog": "duck"})
+    code, text = debug(tmp_path, [case], command, services=[FakeStore().service()])
+    argv = started()["argv"]
+    batch_dir = os.path.dirname(argv[argv.index("-f") + 1])
+    assert code == 0
+    assert argv == ["--", FAKE, "-f", f"{batch_dir}/tests.txt", "--test-config", f"{batch_dir}/config.json"] + [
+        "--emit-test-events",
+        "--emit-on-skip",
+    ]
+    assert started()["cwd"] == str(tmp_path)
+    assert open(f"{batch_dir}/tests.txt").read() == "a.test\n"
+    config = json.loads(open(f"{batch_dir}/config.json").read())
+    assert config["test_env"] == [
+        {"env_name": "CATALOG", "env_value": "duck"},
+        {"env_name": "ROOT", "env_value": "s3://bucket"},
+    ]
+    assert config["init_sqllogic"] == f"{batch_dir}/{'init.sqllogic'}"
+    assert f"\nbatch kept: {batch_dir}\n" in text  # it stays, for a second look or a second debugger
+    assert "may hold a secret" in text
+    assert "passed" not in text  # nothing ran here, so there is nothing to report
+
+
+def test_the_exit_code_of_the_debugger_is_the_exit_code_of_the_run(tmp_path, debugger, monkeypatch):
+    monkeypatch.setenv("FAKE_DEBUGGER_EXIT", "3")
+    assert debug(tmp_path, [sql_case("a.test")], debugger[0])[0] == 3
+
+
+@pytest.mark.parametrize(
+    "cases, message",
+    [
+        ([sql_case("a.test"), sql_case("b.test")], "exactly one .test case; the selection gives 2:\n  a.test::a"),
+        ([], "exactly one .test case; the selection gives 0"),
+        ([py_case(passes)], "is a Python body -- not supported yet"),
+    ],
+)
+def test_a_debugger_needs_one_test_case_and_says_what_was_selected(tmp_path, debugger, cases, message):
+    with pytest.raises(UsageError, match=re.escape(message)):
+        debug(tmp_path, cases, debugger[0])
+    assert not (tmp_path / "runs").exists()  # refused before the run dir is made
 
 
 # -----------------------------------------------------------------------------

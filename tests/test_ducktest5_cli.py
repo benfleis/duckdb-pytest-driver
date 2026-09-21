@@ -1,6 +1,8 @@
 """ducktest5's command line, on a small tree, with the fake unittest binary."""
 
+import json
 import os
+import sys
 import textwrap
 
 import pytest
@@ -8,6 +10,7 @@ import pytest
 from ducktest5.cli import main
 
 FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
+DEBUGGER = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_debugger.py")
 
 FILES = {
     "test/ducktestconf.py": """
@@ -96,6 +99,22 @@ def test_an_id_names_the_same_case_from_any_directory(tree, monkeypatch, capsys)
     monkeypatch.chdir(tree / "test" / "a")
     assert main(run_args("--id", "b/z_fail.test::z_fail", "--no-binary-check")) == 1
     assert capsys.readouterr().out.count("FAILED   b/z_fail.test::z_fail") == 2
+
+
+def test_lldb_starts_the_debugger_on_the_one_selected_case(tree, monkeypatch, capsys):
+    record = tree / "debugger.json"
+    monkeypatch.setenv("FAKE_DEBUGGER_RECORD", str(record))
+    monkeypatch.setenv("DUCKTEST_DEBUGGER", f"{sys.executable} {DEBUGGER} --")
+    assert main(run_args("--lldb", "--id", "a/x.test::x", "--no-binary-check")) == 0
+    argv = json.loads(record.read_text())["argv"]
+    assert argv[:3] == ["--", FAKE, "-f"]
+    assert "batch kept: " in capsys.readouterr().out
+
+
+def test_lldb_on_more_than_one_case_is_a_usage_error_that_lists_them(tree, capsys):
+    assert main(run_args("--lldb", "test", "--no-binary-check")) == 2
+    err = capsys.readouterr().err
+    assert "exactly one .test case" in err and "a/x.test::x" in err and "b/z_fail.test::z_fail" in err
 
 
 def test_an_excluded_file_that_the_binary_knows_is_not_a_stale_build(tree, monkeypatch, capsys):
