@@ -123,6 +123,28 @@ def test_the_key_does_not_change_with_the_rule_that_gave_a_value():
     assert resolve(plain).key() == resolve(named).key()
 
 
+def test_a_service_that_did_not_come_up_leaves_its_parts_pending_not_called():
+    variant = Variant(
+        "s3",
+        services=("store",),
+        values=lambda blocks: {"root": blocks["store"]["endpoint"]},
+        init_sql=lambda blocks: f"ATTACH '{blocks['store']['endpoint']}'",
+    )
+    env = resolve(case({"storage": variant}), provisioned={})  # provisioning ran; store is not in it
+    assert "root" not in env.value_map
+    assert "values: <from service store>  <- AXES storage=s3" in env.lines()
+    assert "service: store (did not come up)  <- AXES storage=s3" in env.lines()
+
+
+def test_a_callable_that_raises_is_a_usage_error_naming_the_variant():
+    def boom(blocks):
+        raise RuntimeError("no bucket configured")
+
+    variant = Variant("s3", services=("store",), values=boom)
+    with pytest.raises(UsageError, match=r"AXES storage=s3.*values.*no bucket configured"):
+        resolve(case({"storage": variant}), provisioned())
+
+
 def test_a_python_body_adds_values_and_sql_for_the_test_file_beside_it():
     env = resolve(case({"storage": Variant("s3", init_sql="SET a = 1")}))
     more = env.plus(values={"TABLE": "id_name"}, init_sql="CREATE SECRET s")

@@ -16,7 +16,8 @@ of a `.test` case is made of it.
 
 Every entry carries the source that asked for it, so `scan --env` and a failed case can say where
 each part came from. A part a variant computes from the services' blocks is not known before
-provisioning; `resolve()` with no services lists those in `pending` instead.
+provisioning, nor once provisioning has run if a service it needs did not come up; `resolve()`
+lists those in `pending` instead of calling the variant's code with an incomplete `blocks`.
 """
 
 from __future__ import annotations
@@ -243,12 +244,31 @@ def resolve(case, provisioned=None):
             env.env_unset[name] = Entry(name, where, kind="unset")
         for service_id in v.services:
             env.services.setdefault(service_id, _service_entry(service_id, provisioned, where))
-        sql = v.init_sql(blocks) if callable(v.init_sql) and blocks is not None else v.init_sql
-        if callable(sql):
-            env.init_sql.append(Entry("", where, kind="sql", shown=""))  # a function of blocks we do not have
-        elif sql:
-            env.init_sql.append(Entry(sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
+        if callable(v.init_sql):
+            if _ready(v, blocks):
+                sql = _call(v.init_sql, blocks, where, "init sql")
+                if sql:
+                    env.init_sql.append(Entry(sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
+            else:
+                env.init_sql.append(Entry("", where, kind="sql", shown=""))  # a function of blocks we do not have
+        elif v.init_sql:
+            env.init_sql.append(Entry(v.init_sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
     return env
+
+
+def _ready(variant, blocks):
+    """Whether every service the variant declares is up: only then can its callables be called
+    without one missing from `blocks` raising a `KeyError` inside someone else's lambda."""
+    return blocks is not None and all(service_id in blocks for service_id in variant.services)
+
+
+def _call(fn, blocks, where, field_name):
+    """A variant's callable `values`/`roots`/`init_sql`, called; its own exception becomes a usage
+    error naming what asked for it, never a traceback out of `resolve()`."""
+    try:
+        return fn(blocks)
+    except Exception as exc:
+        raise UsageError(f"{where}: {field_name} could not be computed: {type(exc).__name__}: {exc}") from exc
 
 
 def _given(variant, field_name, blocks, env, where):
@@ -256,8 +276,8 @@ def _given(variant, field_name, blocks, env, where):
     given = getattr(variant, field_name)
     if not callable(given):
         return dict(given or {})
-    if blocks is None:
+    if not _ready(variant, blocks):
         kind = "value" if field_name == "values" else "root"
         env.pending.append(Entry(field_name, where, kind=kind, shown=_from_services(variant)))
         return {}
-    return dict(given(blocks) or {})
+    return dict(_call(given, blocks, where, field_name) or {})

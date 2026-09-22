@@ -553,6 +553,28 @@ def test_a_service_that_is_down_blocks_its_cases_and_their_engine_is_not_booted(
     assert "'store' did not come up: 1 cases blocked" in text
 
 
+def test_a_service_whose_start_raises_blocks_only_cases_with_a_callable_variant(tmp_path):
+    def start(block):
+        raise RuntimeError("minio image unpullable: exit 125")
+
+    broken = Service("minio", block=lambda **o: {"endpoint": "http://minio"}, alive=lambda block: False, start=start)
+    variant = Variant(
+        "s3",
+        services=("minio",),
+        values=lambda blocks: {"root": blocks["minio"]["endpoint"]},
+        init_sql=lambda blocks: f"ATTACH '{blocks['minio']['endpoint']}'",
+    )
+    cases = [sql_case("a.test", {"storage": variant}), sql_case("b.test")]
+    code, run_dir, report, text = go(tmp_path, cases, services=[broken])
+    assert outcomes(report) == {"a[storage=s3]": "blocked", "b": "passed"}
+    assert report["cases"][0]["blocked_by"] == ["minio"]
+    made_of = report["cases"][0]["made_of"]["environment"]
+    assert {"what": "values", "is": "<from service minio>", "from": "AXES storage=s3"} in made_of
+    assert {"what": "service", "is": "minio (did not come up)", "from": "AXES storage=s3"} in made_of
+    assert "'minio' did not come up: 1 cases blocked" in text
+    assert code == 1
+
+
 def test_an_engine_that_does_not_boot_blocks_its_cases(tmp_path):
     engine = FakeEngine(boots=False)
     cases = [py_case(passes, engines=["fake"]), sql_case("a.test")]
