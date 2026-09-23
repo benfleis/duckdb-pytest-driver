@@ -18,6 +18,11 @@ What a worker owns, and never shares:
   for a service were gone. A clone inherits them, and shares the JVM, the context and the cache:
   still one boot for every case that needs the engine.
 
+On a suite of 43 cases that drive Spark and DuckDB in turn, this is 400 s of wall time at one
+worker, 271 s at two and 196 s at four, for the same outcome of every case. Four workers are not
+four times as fast: the engine is one local Spark with two task slots, and that is what they queue
+for.
+
 `.test` batches and Python cases share one budget of `--workers` slots -- a batch or a case takes
 one, whichever is ready for it first -- and take them in plan order. Two cases that name the same
 mutex never overlap: a case takes all its named locks, in sorted order, so no two can take theirs in
