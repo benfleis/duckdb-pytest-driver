@@ -55,11 +55,12 @@ class Ctx:
         self.statements = []  # {client, sql, seconds} per call, for a verbose report
 
     def duckdb(self, preamble="", *, table=None, session="per_run", timeout=DEFAULT_TIMEOUT_S):
-        """DuckDB as a client. `per_run` (the rule): the run's one shell, on the instance this test
-        started fresh; `preamble` runs once, now. The client has `restart()` (new instance, then the
-        test's preambles again) and `respawn()` (new process, the same). `per_client`: the same, on a
-        shell of this client's own, closed when the case ends. `per_call`: a cold process for every
-        call, running `preamble` each time. All three get the same private HOME and the same case
+        """DuckDB as a client. `per_run` (the rule): the shell of the worker that runs this case, on
+        the instance this test started fresh; `preamble` runs once, now. The client has `restart()`
+        (new instance, then the test's preambles again) and `respawn()` (new process, the same).
+        `per_client`: the same, on a shell of this client's own, closed when the case ends. `per_call`:
+        a cold process for every call, running `preamble` each time. All three get the same private
+        HOME and the same case
         environment: the extensions loaded, the settings set, then the init SQL.
 
         A case whose environment sets or unsets process variables gets a shell of its own even when

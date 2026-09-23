@@ -6,8 +6,11 @@ subtree (`default`) or about a pattern relative to its file (`match`); a pattern
 
 How rules combine, in one order: the root file first, then each file on the way down to the test; in a
 file, the rules as listed; then the test's own `@test(...)`. Along that order, list fields (tags,
-services, engines, variants, suites) add up, dict fields (values, settings) update by key, and single
-values (timeout, retries) are replaced. `why` records which rule gave what.
+services, engines, variants, mutex, suites) add up, dict fields (values, settings) update by key, and
+single values (timeout, retries) are replaced. `why` records which rule gave what.
+
+`mutex="name"`, or several names, says what a test must have to itself: no two cases that name one of
+them run at the same time, however many workers the run has.
 
 `suites` names the suites a test is in: `"smoke"` declares it in, `"!smoke"` declares it out. It adds up
 like the other list fields, except that a name may be said again: the last word on a name wins, in the
@@ -28,9 +31,9 @@ import sys
 from dataclasses import dataclass, field
 
 from .binary import UsageError
-from .declare import CONF_FILE, Engine, Service, Variant
+from .declare import CONF_FILE, Engine, Service, Variant, as_mutex
 
-_LISTS = ("tags", "services", "engines", "variants", "suites")
+_LISTS = ("tags", "services", "engines", "variants", "mutex", "suites")
 _DICTS = ("values", "settings")
 _SINGLES = ("timeout", "retries")
 
@@ -93,6 +96,8 @@ def _rule(pattern, fields):
     unknown = sorted(set(fields) - set(_LISTS + _DICTS + _SINGLES))
     if unknown:
         raise UsageError(f"rule {pattern!r}: unknown field(s) {unknown}; known: {_LISTS + _DICTS + _SINGLES}")
+    if "mutex" in fields:
+        fields = {**fields, "mutex": as_mutex(fields["mutex"])}
     retries = fields.get("retries", 0)
     if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
         raise UsageError(f"rule {pattern!r}: retries={retries!r}; it is a whole number, 0 or more")
@@ -120,6 +125,7 @@ class Settled:
     services: list = field(default_factory=list)
     engines: list = field(default_factory=list)
     variants: list = field(default_factory=list)
+    mutex: list = field(default_factory=list)
     suites: list = field(default_factory=list)
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)

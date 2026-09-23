@@ -21,8 +21,17 @@ class SparkHandle:
                 raise SqlError(_message(exc), statement=n) from None
         return (list(result.columns) if result is not None else []), rows
 
+    def for_worker(self):
+        """A session of this worker's own, for a run with several workers. A clone keeps the
+        configuration the engine was given (a brand new session starts with none) and has its own
+        temp views, so `begin_test` here cannot drop the views of a case running beside it. The JVM,
+        the context and the cache stay the run's, and so does stopping them."""
+        from pyspark.sql import SparkSession
+
+        return SparkHandle(SparkSession(self.session.sparkContext, self.session._jsparkSession.cloneSession()))
+
     def begin_test(self):
-        """One session serves every test, so drop what a test can leave behind in it."""
+        """One session serves every test of a worker, so drop what a test can leave behind in it."""
         for view in self.session.catalog.listTables():
             if view.isTemporary:
                 self.session.catalog.dropTempView(view.name)
