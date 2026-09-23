@@ -13,7 +13,7 @@ import sys
 
 from . import asserts
 from .binary import UsageError
-from .conf import load_project
+from .conf import check_suites, load_project, merge_suites
 from .declare import CONF_FILE
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Case, TestDef
 
@@ -105,6 +105,7 @@ def scan(start, *, working_dir="."):
                     services=list(decl.services),
                     engines=list(decl.engines),
                     variants=list(decl.variants),
+                    suites=list(decl.suites),
                 )
             )
     for path in bodies:
@@ -155,6 +156,9 @@ def _settle(test, project, working_dir):
     for name in ("tags", "services", "engines", "variants"):
         merged = getattr(settled, name) + [x for x in own[name] if x not in getattr(settled, name)]
         setattr(test, name, merged)
+    check_suites(test.suites, f"{test.path}::{test.name}")
+    merge_suites(settled.suites, test.suites, None, settled.sources)
+    test.suites = settled.suites
     test.values, test.settings = settled.values, settled.settings
     test.timeout, test.retries = settled.timeout, settled.retries
     test.why, test.sources = settled.why, settled.sources

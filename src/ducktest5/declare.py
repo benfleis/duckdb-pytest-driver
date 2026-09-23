@@ -104,15 +104,20 @@ class Test:
     cases: dict = field(default_factory=dict)
     tags: tuple = ()
     variants: tuple = ()
+    suites: tuple = ()
 
 
-def test(*, engines=(), services=(), cases=None, tags=(), variants=()):
+def test(*, engines=(), services=(), cases=None, tags=(), variants=(), suites=()):
     """Mark `body(ctx)` as a test. `cases` maps a case id to the params the body reads as `ctx.case`;
     `variants` names the project's axes the test takes part in. The test runs once for each
-    combination of a case and one value of every axis."""
+    combination of a case and one value of every axis. `suites` says which suites the test is in:
+    `"smoke"` declares it in whatever the suite's own definition selects, `"!smoke"` declares it out
+    and nothing but `--id` puts it back."""
 
     def mark(body):
-        body.__ducktest__ = Test(body, tuple(engines), tuple(services), dict(cases or {}), tuple(tags), tuple(variants))
+        body.__ducktest__ = Test(
+            body, tuple(engines), tuple(services), dict(cases or {}), tuple(tags), tuple(variants), tuple(suites)
+        )
         return body
 
     return mark

@@ -57,7 +57,12 @@
     NAME` (repeatable, a union) is exactly `--select suite=NAME`: `suite=NAME[,NAME2]` is an ordinary
     TERM, and `!suite=NAME` negates it -- usable on the command line and inside another suite's own
     select/skip, the same as `suite=all` or `suite=default` is. A suite that refers to itself, directly
-    or through another suite, is a usage error that prints the cycle.
+    or through another suite, is a usage error that prints the cycle. A test says its own suites too:
+    `suites=["smoke"]`, on `@test(...)` or on a rule, puts the case in `smoke` whatever the suite's own
+    definition selects, and `suites=["!smoke"]` keeps it out -- declared out wins over the suite's own
+    select and over `--suite smoke` on the command line, and only `--id` still runs the case. A name
+    that declarations alone ever name is a suite as well, with no `SUITES` entry of its own; `!all` is
+    an error, and `!default` is how a test stays out of a bare run.
 11. `select --explain` names the reason a case is missing: which skip removed it and where that skip
     came from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- suite
     'default'` for a suite's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated
@@ -85,7 +90,7 @@ import os
 from dataclasses import dataclass, field
 
 from .binary import UsageError
-from .conf import _glob
+from .conf import _glob, suite_name
 
 
 @dataclass
@@ -137,6 +142,7 @@ class _Ctx:
     project_root: str
     working_dir: str
     suites: dict
+    declared: set  # every suite name a case declares itself in or out of
     # Per-run memoisation: a suite is parsed and matched against every case at most once, however many
     # `suite=` terms name it.
     suite_defs: dict = field(default_factory=dict)
@@ -189,9 +195,10 @@ def _parse_term(term, flag, origin, ctx):
         if unknown:
             raise UsageError(f"{flag} {term!r}: path {unknown} matches no scanned case")
     elif key == "suite":
-        unknown = [v for v in values if v not in ctx.suites and v not in ("all", "default")]
+        known = set(ctx.suites) | ctx.declared
+        unknown = [v for v in values if v not in known and v not in ("all", "default")]
         if unknown:
-            raise UsageError(f"{flag} {term!r}: no suite {unknown}; known suites: {sorted(ctx.suites)}")
+            raise UsageError(f"{flag} {term!r}: no suite {unknown}; known suites: {sorted(known)}")
     elif key in ctx.axes:
         unknown = [v for v in values if v not in ctx.axes[key]]
         if unknown:
@@ -227,8 +234,25 @@ def _matches(case, key, values, ctx):
     if key == "path":
         return any(_path_term_matches(case.test.root_path, v) for v in values)
     if key == "suite":
-        return any(case.id in _suite_members(v, ctx) for v in values)
+        return any(_in_suite(case, v, ctx) for v in values)
     return key in case.axis_values and case.axis_values[key].id in values
+
+
+def _declared(case, name):
+    """ "in" or "out" when the case's rules or its `@test` named suite `name`, else None."""
+    for entry in case.test.suites:
+        if entry == name:
+            return "in"
+        if entry == "!" + name:
+            return "out"
+    return None
+
+
+def _in_suite(case, name, ctx):
+    """The suite's own definition selects the case, or the case declares itself in -- and never when it
+    declares itself out."""
+    declared = _declared(case, name)
+    return declared != "out" and (declared == "in" or case.id in _suite_members(name, ctx))
 
 
 def _clause_holds(case, terms, ctx):
@@ -266,7 +290,8 @@ def _suite_selection(name, ctx, stack=()):
     """Parses suite `name`'s own select/skip once per run -- including the built-in suites `all` (always
     every case) and `default` (when the project does not define its own). A `suite=` reference that leads
     back to `name` is a cycle, caught here -- before any case is matched -- rather than by recursing
-    forever."""
+    forever. A name only declarations ever name has no definition of its own: None, so that its members
+    are the cases that declare themselves in and nothing else."""
     if name in ctx.suite_defs:
         return ctx.suite_defs[name]
     if name == "all":
@@ -277,6 +302,9 @@ def _suite_selection(name, ctx, stack=()):
         skips = [([(False, "tag", ["slow", "coverage"])], "skip tag=slow,coverage  <- suite 'default'")]
         ctx.suite_defs[name] = ([], positive, skips)
         return ctx.suite_defs[name]
+    if name not in ctx.suites:
+        ctx.suite_defs[name] = None
+        return None
     if name in stack:
         cycle = stack[stack.index(name) :] + (name,)
         raise UsageError(f"suite cycle: {' -> '.join(cycle)}")
@@ -300,7 +328,11 @@ def _suite_members(name, ctx):
     """The cases suite `name` selects: scope(its paths) AND (its select) MINUS (its skip). Cached, so a
     suite is matched against every case once per run, not once per case per `suite=` term."""
     if name not in ctx.suite_members:
-        paths, positive_clauses, skip_clauses = _suite_selection(name, ctx)
+        definition = _suite_selection(name, ctx)
+        if definition is None:
+            ctx.suite_members[name] = set()
+            return ctx.suite_members[name]
+        paths, positive_clauses, skip_clauses = definition
         ctx.suite_members[name] = {
             case.id
             for case in ctx.cases
@@ -330,6 +362,9 @@ def _not_in_positive_reason(case, positive_clauses, ctx):
     if values is None:
         return "matches no --select clause"
     reason = "not in suite " + " or ".join(repr(v) for v in values)
+    declared_out = [v for v in values if _declared(case, v) == "out"]
+    if len(declared_out) == len(values):
+        return f"{reason}: declared out  <- {case.test.source_of('suites', '!' + declared_out[0])}"
     if values == ["default"] and "default" not in ctx.suites:
         reason += f": {_default_exclusion_reason(case)}"
     return reason
@@ -341,7 +376,10 @@ def apply(cases, selection, project, working_dir=None):
     axes = {axis: set(values) for axis, values in project.axes.items()}
     known_tags = {t for c in cases for t in c.tags}
     known_cases = {c.case_id for c in cases if c.case_id is not None}
-    ctx = _Ctx(axes, known_tags, known_cases, cases, project.root, working_dir or project.root, project.suites)
+    declared = {suite_name(s) for c in cases for s in c.test.suites}
+    ctx = _Ctx(
+        axes, known_tags, known_cases, cases, project.root, working_dir or project.root, project.suites, declared
+    )
 
     if selection.is_bare():
         paths = []

@@ -33,6 +33,7 @@ class TestDef:
     services: list = field(default_factory=list)
     engines: list = field(default_factory=list)
     variants: list = field(default_factory=list)
+    suites: list = field(default_factory=list)  # a suite this test declares itself in, or out of as `!NAME`
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     timeout: float | None = None
@@ -104,7 +105,7 @@ class Case:
                 "case": self.case_id,
                 "variants": {a: v.id for a, v in self.axis_values.items()},
             },
-            "selection": {"tags": self.tags},
+            "selection": {"tags": self.tags, **({"suites": list(self.test.suites)} if self.test.suites else {})},
             "preconditions": {
                 "services": self.services,
                 "engines": [{"id": e, "version": project.engines[e].version} for e in self.engines],

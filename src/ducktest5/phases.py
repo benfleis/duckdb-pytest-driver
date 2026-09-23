@@ -89,7 +89,8 @@ def write_tests(run_dir, cases, project, *, working_dir=".", selection=None, for
     service running. Fields: `schema`, `made_at`, `project` (the root's name), `working_dir` (where
     the paths were read from, relative to the project root), `selection` (what was asked for), and
     `tests`, one record for each case: `identity` (id, test, type, file, case, variants),
-    `selection.tags`, `preconditions` (services, engines), `runtime` (case params, environment,
+    `selection` (tags, and the suites the test declares itself in or out of), `preconditions`
+    (services, engines), `runtime` (case params, environment,
     timeout, retries) and `why` (the rules that gave the test what it has)."""
     doc = {
         "schema": TESTS_SCHEMA,

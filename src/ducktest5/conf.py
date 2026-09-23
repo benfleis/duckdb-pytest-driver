@@ -6,8 +6,12 @@ subtree (`default`) or about a pattern relative to its file (`match`); a pattern
 
 How rules combine, in one order: the root file first, then each file on the way down to the test; in a
 file, the rules as listed; then the test's own `@test(...)`. Along that order, list fields (tags,
-services, engines, variants) add up, dict fields (values, settings) update by key, and single values
-(timeout, retries) are replaced. `why` records which rule gave what.
+services, engines, variants, suites) add up, dict fields (values, settings) update by key, and single
+values (timeout, retries) are replaced. `why` records which rule gave what.
+
+`suites` names the suites a test is in: `"smoke"` declares it in, `"!smoke"` declares it out. It adds up
+like the other list fields, except that a name may be said again: the last word on a name wins, in the
+place that name was first said. `!all` is an error -- every case is in the suite `all`.
 
 `retries=N` lets a test that ended FAILED or ERROR run again, alone, up to N times; it is PASSED when an
 attempt passes, and the report says which attempt. It is for a test that can fail for reasons that are
@@ -26,9 +30,35 @@ from dataclasses import dataclass, field
 from .binary import UsageError
 from .declare import CONF_FILE, Engine, Service, Variant
 
-_LISTS = ("tags", "services", "engines", "variants")
+_LISTS = ("tags", "services", "engines", "variants", "suites")
 _DICTS = ("values", "settings")
 _SINGLES = ("timeout", "retries")
+
+
+def suite_name(entry):
+    """The suite a `suites` entry speaks about: `!smoke` and `smoke` both name `smoke`."""
+    return entry[1:] if entry.startswith("!") else entry
+
+
+def merge_suites(target, entries, source, sources):
+    """Adds `entries` to `target`, the last word on a name winning where the name was first said.
+    `source` is what said them, or None for the test's own declaration."""
+    for entry in entries:
+        at = next((i for i, e in enumerate(target) if suite_name(e) == suite_name(entry)), None)
+        if at is None:
+            target.append(entry)
+        else:
+            sources.pop(("suites", target[at]), None)
+            target[at] = entry
+        sources.pop(("suites", entry), None)
+        if source is not None:
+            sources[("suites", entry)] = source
+
+
+def check_suites(entries, where):
+    for entry in entries:
+        if suite_name(entry) == "all" and entry.startswith("!"):
+            raise UsageError(f"{where}: '!all' -- every case is in the suite 'all'")
 
 
 @dataclass(frozen=True)
@@ -66,6 +96,7 @@ def _rule(pattern, fields):
     retries = fields.get("retries", 0)
     if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
         raise UsageError(f"rule {pattern!r}: retries={retries!r}; it is a whole number, 0 or more")
+    check_suites(fields.get("suites", ()), f"rule {pattern!r}")
     return Rule(pattern, fields)
 
 
@@ -89,6 +120,7 @@ class Settled:
     services: list = field(default_factory=list)
     engines: list = field(default_factory=list)
     variants: list = field(default_factory=list)
+    suites: list = field(default_factory=list)
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     timeout: float | None = None
@@ -98,7 +130,9 @@ class Settled:
 
     def apply(self, fields, source):
         for name, value in fields.items():
-            if name in _LISTS:
+            if name == "suites":
+                merge_suites(self.suites, value, source, self.sources)
+            elif name in _LISTS:
                 target = getattr(self, name)
                 for v in value:
                     if v not in target:
