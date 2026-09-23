@@ -188,7 +188,7 @@ def test_the_yaml_and_the_json_document_say_the_same_thing(tmp_path, report):
     assert as_json == yaml.safe_load((tmp_path / "05-report.yaml").read_text())
     assert as_json["counts"] == report.counts
     assert as_json["exit_code"] == 1
-    assert [c["id"] for c in as_json["cases"]] == [c["id"] for c in report.cases]
+    assert [c["id"] for c in as_json["cases"]] == sorted(c["id"] for c in report.cases)
 
 
 # -----------------------------------------------------------------------------
@@ -237,6 +237,41 @@ def _junit(report):
     out = io.StringIO()
     junit.render(report, out)
     return out.getvalue()
+
+
+# -----------------------------------------------------------------------------
+# a stable order in the files, whatever order the cases ended
+#
+
+
+def _case_end(name, *, file="test/a.test"):
+    return {
+        "event": "case_end",
+        "run": "r",
+        "id": f"{file.removeprefix('test/')}::{name}",
+        "test": f"{file}::{name}",
+        "file": file,
+        "type": "sqllogic",
+        "case": None,
+        "variants": {},
+        "tags": [],
+        "outcome": "passed",
+        "runner": "unittest",
+    }
+
+
+def test_the_yaml_json_and_junit_files_do_not_depend_on_which_case_ended_first(tmp_path):
+    names = ["z_test", "a_test", "m_test"]
+    forward = Report.of([_case_end(n) for n in names])
+    backward = Report.of([_case_end(n) for n in reversed(names)])
+
+    for writer, ext in ((document.write_yaml, "yaml"), (document.write_json, "json")):
+        a, b = str(tmp_path / f"forward.{ext}"), str(tmp_path / f"backward.{ext}")
+        writer(forward, a)
+        writer(backward, b)
+        assert open(a).read() == open(b).read()
+
+    assert _junit(forward) == _junit(backward)
 
 
 # -----------------------------------------------------------------------------

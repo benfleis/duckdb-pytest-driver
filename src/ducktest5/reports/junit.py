@@ -2,7 +2,8 @@
 
 The container JUnit calls a `testsuite` is the **test file** here: one `<testsuite>` per file, one
 `<testcase>` per case, so a CI that groups by suite groups by file. (In ducktest a *suite* is a named
-selection of cases; that idea has no place in this file.)
+selection of cases; that idea has no place in this file.) Testsuites are sorted by file path and
+testcases by id, so the XML does not depend on which case ended first.
 
     FAILED      <failure type="FAILED">        what is under test went wrong
     ERROR       <error type="ERROR">           something else did, so the test proved nothing
@@ -37,8 +38,10 @@ def _properties(case):
 
 
 def build(report):
+    # Sorted by id before grouping, so a file's cases stay in that order too: neither depends on
+    # which one ended first.
     by_file = {}
-    for case in report.cases:
+    for case in sorted(report.cases, key=lambda c: c.get("id") or ""):
         by_file.setdefault(_file_of(case), []).append(case)
     counts = report.counts
     root = ET.Element(
@@ -50,7 +53,7 @@ def build(report):
         skipped=str(counts[SKIPPED]),
         time=f"{report.seconds}",
     )
-    for path, cases in by_file.items():
+    for path, cases in sorted(by_file.items()):
         suite = ET.SubElement(
             root,
             "testsuite",

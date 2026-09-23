@@ -189,7 +189,7 @@ def test_a_blocked_case_fails_the_run(tmp_path):
         tmp_path, [py_case(passes), py_case(passes, services=["store"], path="test/s.py")], services=[store.service()]
     )
     assert code == 1
-    assert [c["outcome"] for c in report["cases"]] == ["blocked", "passed"]
+    assert sorted(c["outcome"] for c in report["cases"]) == ["blocked", "passed"]
 
 
 # -----------------------------------------------------------------------------

@@ -2,8 +2,9 @@
 
 `05-report.yaml` and `05-report.json` are the same dictionary through two dumpers, so the two files
 can never say different things. It holds nothing that is not in `04-events.jsonl`; it is the event
-stream turned the way a reader asks about it: the run, the counts, and the cases in the order they
-ended. `--format json` on standard output is the event lines themselves, unchanged.
+stream turned the way a reader asks about it: the run, the counts, and the cases sorted by id, so the
+file a tool reads back does not depend on which worker finished first. `--format json` on standard
+output is the event lines themselves, unchanged.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def build(report):
         "exit_code": report.exit_code,
         "not_provisioned": report.not_provisioned,
         "services": [{k: v for k, v in s.items() if k not in _BOOKKEEPING} for s in report.services],
-        "cases": [_case(c, merged=merged) for c in report.cases],
+        "cases": [_case(c, merged=merged) for c in sorted(report.cases, key=lambda c: c.get("id") or "")],
     }
 
 
