@@ -74,7 +74,9 @@ def _service_options(parser):
 
 def _plan_options(parser):
     parser.add_argument("--batch-size", type=int, default=10, help=".test files for one unittest process")
-    parser.add_argument("--workers", type=int, default=4, help="unittest processes at a time")
+    parser.add_argument(
+        "--workers", type=int, default=4, help="how much runs at a time: a .test batch or a Python case takes one slot"
+    )
     parser.add_argument(
         "--runner",
         default=phases.UNITTEST_RUNNER,

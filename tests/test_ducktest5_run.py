@@ -139,6 +139,12 @@ def outcomes(report):
     return {c["id"].split("::")[-1]: c["outcome"] for c in report["cases"]}
 
 
+def case_of(report, name):
+    """One case of the report by its name. Cases are listed in the order they ended, which with
+    several workers is not the order they were given in."""
+    return next(c for c in report["cases"] if c["id"].split("::")[-1] == name)
+
+
 def case_events(run_dir):
     """The `case_end` lines of a run: one per case, whatever else the stream holds."""
     return [e for e in read_events(str(run_dir)) if e["event"] == CASE_END]
@@ -666,7 +672,7 @@ def test_a_clean_that_raises_is_an_error_and_the_run_goes_on(tmp_path):
     code, _, report, _ = go(tmp_path, cases, services=[store.service()])
     assert code == 1
     assert outcomes(report) == {"writes": "error", "passes": "passed"}
-    first = report["cases"][0]
+    first = case_of(report, "writes")
     assert "could not be removed: RuntimeError: access denied" in first["problems"][0]
     assert first["kept"] == [first["problems"][0].split(" at ")[1].split(" could")[0]]
 
@@ -676,7 +682,7 @@ def test_a_batch_that_cannot_start_is_an_error_of_its_cases_and_python_cases_sti
     code, _, report, _ = go(tmp_path, cases, unittest_bin=str(tmp_path / "no-such-binary"))
     assert code == 1
     assert outcomes(report) == {"a": "error", "b": "error", "passes": "passed"}
-    assert "the batch could not run: FileNotFoundError" in report["cases"][0]["problems"][0]
+    assert "the batch could not run: FileNotFoundError" in case_of(report, "a")["problems"][0]
 
 
 def test_a_case_dir_that_cannot_be_made_is_an_error_of_that_case(tmp_path, monkeypatch):
@@ -688,8 +694,9 @@ def test_a_case_dir_that_cannot_be_made_is_an_error_of_that_case(tmp_path, monke
         lambda p, **kw: (_ for _ in ()).throw(OSError("disk full")) if case.dir_name in p else real(p, **kw),
     )
     _, _, report, _ = go(tmp_path, [case, py_case(passes, path="test/other.py")])
-    assert [c["outcome"] for c in report["cases"]] == ["error", "passed"]
-    assert "could not be set up: OSError: disk full" in report["cases"][0]["problems"][0]
+    assert sorted(c["outcome"] for c in report["cases"]) == ["error", "passed"]
+    broken = next(c for c in report["cases"] if c["outcome"] == "error")
+    assert "could not be set up: OSError: disk full" in broken["problems"][0]
 
 
 def test_the_report_is_written_and_services_are_released_when_the_run_raises(tmp_path):
@@ -715,10 +722,10 @@ def test_each_case_has_one_event_line(tmp_path):
     ended = case_events(run_dir)
     assert all(isinstance(e["seconds"], float) for e in ended)
     # a case with no variant carries no `variants`: what is not there was not known, never empty
-    assert [(e["id"], e["outcome"], e["runner"], e.get("variants", {})) for e in ended] == [
-        ("a.test::a[backend=oss]", "passed", "unittest", {"backend": "oss"}),
-        ("test/body.py::fails", "failed", "python", {}),
-    ]
+    assert {e["id"]: (e["outcome"], e["runner"], e.get("variants", {})) for e in ended} == {
+        "a.test::a[backend=oss]": ("passed", "unittest", {"backend": "oss"}),
+        "test/body.py::fails": ("failed", "python", {}),
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -880,8 +887,8 @@ def gives_rows_the_wrong_shape(ctx):
 def test_a_usage_error_in_a_body_is_an_error_of_the_test_and_the_run_goes_on(tmp_path, body, text):
     cases = [py_case(body), py_case(passes, path="test/next.py")]
     _, _, report, _ = go(tmp_path, cases, unittest_bin=None)
-    assert [c["outcome"] for c in report["cases"]] == ["error", "passed"]
-    problem = report["cases"][0]["problems"][0]
+    assert outcomes(report) == {body.__name__: "error", "passes": "passed"}
+    problem = case_of(report, body.__name__)["problems"][0]
     assert problem.startswith("usage error of the test, not of the command line\n") and text in problem
 
 

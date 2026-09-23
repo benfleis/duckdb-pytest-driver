@@ -8,7 +8,8 @@ wrong outside a body is an ERROR of the cases it hit, never the end of the run, 
 released on every way out.
 
 `.test` batches go to the unittest binary, several processes at a time, or to DuckDB's own `run`
-wrapper (`--runner run`, `runners.py`); Python bodies run in this process, one after another.
+wrapper (`--runner run`, `runners.py`); Python bodies run in worker threads of this process. Both
+kinds take their slot from one budget of `--workers`, and what each worker owns is in `workers.py`.
 
 The run prints nothing itself. It writes events and hands each one to the renderers that watch, so
 the terminal, a file and `ducktest5 report` of the same run all say the same thing (`events.py`,
@@ -43,6 +44,7 @@ from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
 from .provision import KEPT, attach_argument
 from .reports import Report, render, write_files
 from .reports.live import Live
+from .workers import Pool
 
 
 def _describe_failure(exc, body):
@@ -364,7 +366,7 @@ def execute(
         writer.emit(SERVICE, id=service_id, kind=kind, **fields)
 
     duckdb_home = os.path.join(run_dir, "home")
-    duckdb_session = session_factory(duckdb_bin, home=duckdb_home)
+    pool = Pool(workers, make_session=lambda: session_factory(duckdb_bin, home=duckdb_home), handles=handles)
     stopped = _stop_on_signal()
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
     code = 1
@@ -451,45 +453,12 @@ def execute(
             under way and a resume takes exactly those up again."""
             if sqllogic.stopped():  # a batch still in the queue when the run was stopped never began
                 raise RuntimeError("the run was stopped")
-            for case in chunk:
-                begin(case, runner)
-            return sqllogic.run_batch(unittest_bin, batch, working_dir)
-
-        if runner == phases.RUN_RUNNER and batches:
-            for _, chunk, batch in batches:
+            with pool.holding({m for case in chunk for m in case.mutex}):
                 for case in chunk:
                     begin(case, runner)
-            for chunk, group, by_case in runners.run_wrapper(
-                unittest_bin,
-                [(chunk, batch) for _, chunk, batch in batches],
-                working_dir,
-                run_dir=run_dir,
-                workers=workers,
-                run_flags=knobs.get("run_flags", ""),
-                run_bin=run_bin,
-            ):
-                _report_batch(chunk, group, by_case, done, run_dir, runner)
-            batches = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            futures = {pool.submit(start_and_run, chunk, batch): (chunk, batch) for _, chunk, batch in batches}
-            for future in concurrent.futures.as_completed(futures):
-                chunk, batch = futures[future]
-                try:
-                    by_case = future.result()
-                except Exception as exc:  # the binary could not be started, the batch dir not written, ...
-                    for case in chunk:
-                        done(
-                            case,
-                            ERROR,
-                            runner=runner,
-                            problems=[f"the batch could not run: {type(exc).__name__}: {exc}"],
-                            batch_dir=batch.dir,
-                        )
-                    continue
-                _report_batch(chunk, batch, by_case, done, run_dir, runner)
+                return sqllogic.run_batch(unittest_bin, batch, working_dir)
 
-        # Python bodies, in this process, one after another.
-        def attempt(case, n):
+        def attempt(case, n, shell, engine_handles):
             """Returns (outcome, problems, the failure in parts, the case's directory, its ctx)."""
             # An attempt after the first has its own directory and prefix, so it does not see what
             # the one before it left.
@@ -497,17 +466,17 @@ def execute(
             temp_dir = os.path.join(run_dir, "cases", dir_name)
             try:
                 os.makedirs(temp_dir)
-                duckdb_session.begin_test()
-                for handle in handles.values():
+                shell.begin_test()
+                for handle in engine_handles.values():
                     if hasattr(handle, "begin_test"):
                         handle.begin_test()
                 ctx = Ctx(
                     case,
                     temp_dir=temp_dir,
                     duckdb_bin=duckdb_bin,
-                    duckdb_session=duckdb_session,
+                    duckdb_session=shell,
                     duckdb_home=duckdb_home,
-                    engines=handles,
+                    engines=engine_handles,
                     services=provisioned,
                     remote_parts=(run_id, dir_name),
                     case_env=case_env(case),
@@ -519,15 +488,18 @@ def execute(
                 return ERROR, problems, {"summary": problems[0]}, temp_dir, None
             return *_run_body(case, ctx), temp_dir, ctx
 
-        for entry in plan.get("batches") or []:
-            if entry["runner"] != phases.PYTHON_RUNNER:
-                continue
-            for case in (runnable[i] for i in entry["cases"] if i in runnable):
+        def python_case(case):
+            """One Python body, in the worker that took the slot: its own warm shell, its own
+            session of every engine, and the locks its mutexes name held for as long as it runs."""
+            if sqllogic.stopped():  # a case still waiting when the run was stopped never began
+                return
+            with pool.holding(case.mutex):
                 begin(case, phases.PYTHON_RUNNER)
                 t0 = time.perf_counter()
-                allowed, tried, first = 1 + case.test.retries, [], None
+                shell, engine_handles = pool.session(), pool.engines()
+                allowed, tried, first, ctx = 1 + case.test.retries, [], None, None
                 for n in range(1, allowed + 1):
-                    outcome, problems, failure, temp_dir, ctx = attempt(case, n)
+                    outcome, problems, failure, temp_dir, ctx = attempt(case, n, shell, engine_handles)
                     tried.append((temp_dir, ctx))
                     if outcome not in (FAILED, ERROR):
                         break
@@ -555,6 +527,8 @@ def execute(
                         *(temp_dir for temp_dir, _ in tried if os.path.isdir(temp_dir)),
                         *(uri for _, c in tried if c for _, uri in c.remote_locations),
                     ]
+                if sqllogic.stopped():  # stopped while this body ran: a resume takes the case up again
+                    return
                 done(
                     case,
                     outcome,
@@ -570,17 +544,67 @@ def execute(
                     statements=[s for _, c in tried if c for s in c.statements],
                     **({"attempts": n} if n > 1 else {}),
                 )
+
+        if runner == phases.RUN_RUNNER and batches:
+            for _, chunk, batch in batches:
+                for case in chunk:
+                    begin(case, runner)
+            for chunk, group, by_case in runners.run_wrapper(
+                unittest_bin,
+                [(chunk, batch) for _, chunk, batch in batches],
+                working_dir,
+                run_dir=run_dir,
+                workers=workers,
+                run_flags=knobs.get("run_flags", ""),
+                run_bin=run_bin,
+            ):
+                _report_batch(chunk, group, by_case, done, run_dir, runner)
+            batches = []
+        # One budget of slots for both kinds of body: a batch of `.test` files and a Python case
+        # each take one, in plan order, and a Python body reports itself from its worker.
+        prepared = {entry["id"]: (chunk, batch) for entry, chunk, batch in batches}
+        batch_futures, every_future = {}, []
+        for entry in plan.get("batches") or []:
+            if entry["id"] in prepared:
+                chunk, batch = prepared[entry["id"]]
+                future = pool.submit(start_and_run, chunk, batch)
+                batch_futures[future] = (chunk, batch)
+                every_future.append(future)
+            elif entry["runner"] == phases.PYTHON_RUNNER:
+                every_future += [pool.submit(python_case, runnable[i]) for i in entry["cases"] if i in runnable]
+        for future in concurrent.futures.as_completed(every_future):
+            if future not in batch_futures:
+                future.result()  # a Python case reports its own outcome; what is left is a bug here
+                continue
+            chunk, batch = batch_futures[future]
+            try:
+                by_case = future.result()
+            except Exception as exc:  # the binary could not be started, the batch dir not written, ...
+                for case in chunk:
+                    done(
+                        case,
+                        ERROR,
+                        runner=runner,
+                        problems=[f"the batch could not run: {type(exc).__name__}: {exc}"],
+                        batch_dir=batch.dir,
+                    )
+                continue
+            _report_batch(chunk, batch, by_case, done, run_dir, runner)
+
     except KeyboardInterrupt:  # Ctrl-C, or the signal handler above
         stopped["by"] = stopped["by"] or "interrupt"
         sqllogic.kill_running()
     finally:
         _stop_on_signal(restore=stopped)
-        duckdb_session.close()
+        # The order is what a stopped run needs: no case that was waiting starts, then everything a
+        # body can be waiting for is gone, and only then are the workers waited out.
+        pool.stop()
         for handle in handles.values():
             try:
                 handle.stop()
             except Exception:
                 pass
+        pool.join()
         if provision_here:
             phases.release_all(
                 provisioned,
