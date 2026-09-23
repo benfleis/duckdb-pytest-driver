@@ -115,7 +115,7 @@ def py_case(body, axis_values=None, *, path="test/body.py", body_file=None, **fi
     return Case(test, None, axis_values or {})
 
 
-def go(tmp_path, cases, *, engines=(), services=(), unittest_bin=FAKE, **kwargs):
+def go(tmp_path, cases, *, engines=(), services=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
     """Returns (exit code, run dir, report, printed text)."""
     project = Project(str(tmp_path), {e.id: e for e in engines}, {s.id: s for s in services}, {}, {}, ())
     out = io.StringIO()
@@ -123,7 +123,7 @@ def go(tmp_path, cases, *, engines=(), services=(), unittest_bin=FAKE, **kwargs)
     code = run(
         cases,
         project,
-        duckdb_bin="no-duckdb",
+        duckdb_bin=duckdb_bin,
         unittest_bin=unittest_bin,
         working_dir=str(tmp_path),
         temp_root=str(tmp_path / "runs"),

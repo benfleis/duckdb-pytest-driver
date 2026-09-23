@@ -34,7 +34,7 @@ _EVENT = re.compile(r"\[TEST_EVENT\] (\{.*\})")
 _SKIP = re.compile(r"\[SKIP_TEST\] (.*?) :: (.*)")
 _PROGRESS = re.compile(r"^\[\d+/\d+\] \(\d+%\): .*$", re.M)
 _LOCATION = re.compile(r"([^\s():]+):(\d+)")  # "file.test:12", as the binary names where a failure is
-DEFAULT_TIMEOUT_S = 600
+DEFAULT_TIMEOUT_S = 600  # for one case, .test or Python, unless `timeout=` in conf.py says otherwise
 _OUTSIDE_A_TEST = object()  # the process hung while no test was running: at startup, between tests, at exit
 INIT_FILE = "init.sqllogic"
 

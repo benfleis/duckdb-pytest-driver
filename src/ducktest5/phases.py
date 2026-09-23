@@ -180,7 +180,7 @@ def build_plan(cases, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_a
                 "order": len(batches) + 1,
                 "cases": [case.id],
                 "tests": [case.test.root_path],
-                "timeout": case.test.timeout,
+                "timeout": case.test.timeout or sqllogic.DEFAULT_TIMEOUT_S,
                 "retries": {case.id: case.test.retries} if case.test.retries else {},
                 **({"mutex": sorted(case.mutex)} if case.mutex else {}),
                 "key": _key_record(caseenv.resolve(case)),
@@ -190,8 +190,6 @@ def build_plan(cases, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_a
         for name in ("timeouts", "retries"):
             if not batch.get(name):
                 batch.pop(name, None)
-        if batch["timeout"] is None:
-            batch.pop("timeout")
     return {
         "schema": PLAN_SCHEMA,
         "made_at": events.now(),

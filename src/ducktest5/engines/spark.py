@@ -37,6 +37,14 @@ class SparkHandle:
                 self.session.catalog.dropTempView(view.name)
         self.session.catalog.clearCache()
 
+    def begin_case(self, case_id):
+        """Scopes this session's jobs to `case_id`, so a case's timeout can cancel just its own work
+        (`cancel_case`) without touching another case running on the same JVM."""
+        self.session.sparkContext.setJobGroup(case_id, case_id)
+
+    def cancel_case(self, case_id):
+        self.session.sparkContext.cancelJobGroup(case_id)
+
     def use_service(self, service_id, block):
         """Point s3a at an S3-compatible service. Spark copies SQL confs into the Hadoop conf of each
         query, so this works after boot; the jar must already be on the classpath (`s3a=True`)."""

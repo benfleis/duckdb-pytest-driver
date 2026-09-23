@@ -19,6 +19,10 @@ place that name was first said. `!all` is an error -- every case is in the suite
 `retries=N` lets a test that ended FAILED or ERROR run again, alone, up to N times; it is PASSED when an
 attempt passes, and the report says which attempt. It is for a test that can fail for reasons that are
 not its own, such as one that reaches the public network.
+
+`timeout=N` bounds one case, in seconds, whichever way it runs -- a `.test` file inside the binary, or a
+Python body in its worker thread -- counted from when it begins. Past it the case ends ERROR; a Python
+body's thread cannot be killed, so it is only given up on, not stopped.
 """
 
 from __future__ import annotations

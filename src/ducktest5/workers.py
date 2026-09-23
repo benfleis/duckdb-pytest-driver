@@ -34,6 +34,9 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import threading
+import time
+
+JOIN_GRACE_S = 2.0  # how long join() waits for a thread a timeout already gave up on
 
 
 class Pool:
@@ -46,6 +49,7 @@ class Pool:
         self._mine = threading.local()
         self._sessions = []  # every shell handed out, so that the run can close them all
         self._mutexes = {}
+        self._running = {}  # case id -> (its worker's shell, its worker's engines), while it runs
         self._guard = threading.Lock()
 
     def submit(self, fn, *args):
@@ -72,6 +76,40 @@ class Pool:
         return handles
 
     @contextlib.contextmanager
+    def running(self, case_id):
+        """This worker's shell and engines, registered under `case_id` for as long as its body runs,
+        so a timeout noticed on another thread can reach them (`cancel`)."""
+        shell, engine_handles = self.session(), self.engines()
+        with self._guard:
+            self._running[case_id] = (shell, engine_handles)
+        try:
+            yield shell, engine_handles
+        finally:
+            with self._guard:
+                self._running.pop(case_id, None)
+
+    def cancel(self, case_id):
+        """A case's timeout expired: close the shell its worker is using, so a statement stuck in it
+        releases as a dead-shell exception, and ask any engine handle that offers it to cancel this
+        case's jobs. The worker's thread is not touched -- Python cannot kill it -- and keeps running
+        whatever it was doing until that releases it too."""
+        with self._guard:
+            entry = self._running.get(case_id)
+        if entry is None:
+            return
+        shell, engine_handles = entry
+        try:
+            shell.close()
+        except Exception:
+            pass
+        for handle in engine_handles.values():
+            if hasattr(handle, "cancel_case"):
+                try:
+                    handle.cancel_case(case_id)
+                except Exception:
+                    pass
+
+    @contextlib.contextmanager
     def holding(self, names):
         """The named locks, taken in sorted order and released in the other one."""
         taken = []
@@ -96,6 +134,12 @@ class Pool:
             except Exception:
                 pass
 
-    def join(self):
-        """What still runs, run out. It is called after everything a body can wait for is gone."""
-        self._pool.shutdown(wait=True)
+    def join(self, timeout=JOIN_GRACE_S):
+        """What still runs, run out, for up to `timeout`. It is called after everything a body can
+        wait for is already gone -- what is left past `timeout` is a thread a case's own timeout gave
+        up on; it cannot be killed, so it is left to finish on its own, unobserved, and the run ends
+        without it."""
+        deadline = time.monotonic() + timeout
+        for thread in list(self._pool._threads):
+            thread.join(max(0.0, deadline - time.monotonic()))
+        self._pool.shutdown(wait=False)

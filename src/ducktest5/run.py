@@ -28,6 +28,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 import traceback
 
@@ -360,6 +361,19 @@ def execute(
             resolved[id(case)] = caseenv.resolve(case, provisioned)
         return resolved[id(case)]
 
+    # A Python case's timeout, counted from its own begin event (`case_started`), is watched by the
+    # main thread, not the worker running it -- see `python_case` and the exec loop below. `reported`
+    # makes sure a case that is given up on and a body released late by that never both write an
+    # event for it.
+    case_started, reported, reported_lock = {}, set(), threading.Lock()
+
+    def report_once(case_id):
+        with reported_lock:
+            if case_id in reported:
+                return False
+            reported.add(case_id)
+            return True
+
     def service_event(service_id, *, kind="service", **fields):
         writer.emit(SERVICE, id=service_id, kind=kind, **fields)
 
@@ -468,6 +482,8 @@ def execute(
                 for handle in engine_handles.values():
                     if hasattr(handle, "begin_test"):
                         handle.begin_test()
+                    if hasattr(handle, "begin_case"):  # scopes its jobs, so a timeout can cancel just this case's
+                        handle.begin_case(case.id)
                 ctx = Ctx(
                     case,
                     temp_dir=temp_dir,
@@ -488,20 +504,24 @@ def execute(
 
         def python_case(case):
             """One Python body, in the worker that took the slot: its own warm shell, its own
-            session of every engine, and the locks its mutexes name held for as long as it runs."""
+            session of every engine, and the locks its mutexes name held for as long as it runs.
+            Registered under `pool.running` while it does, so the exec loop below can reach it once
+            its timeout passes; `report_once` then keeps this from also reporting it, however late it
+            is released."""
             if sqllogic.stopped():  # a case still waiting when the run was stopped never began
                 return
             with pool.holding(case.mutex):
                 begin(case, phases.PYTHON_RUNNER)
+                case_started[case.id] = time.perf_counter()
                 t0 = time.perf_counter()
-                shell, engine_handles = pool.session(), pool.engines()
-                allowed, tried, first, ctx = 1 + case.test.retries, [], None, None
-                for n in range(1, allowed + 1):
-                    outcome, problems, failure, temp_dir, ctx = attempt(case, n, shell, engine_handles)
-                    tried.append((temp_dir, ctx))
-                    if outcome not in (FAILED, ERROR):
-                        break
-                    first = first or (outcome, problems, failure)
+                with pool.running(case.id) as (shell, engine_handles):
+                    allowed, tried, first, ctx = 1 + case.test.retries, [], None, None
+                    for n in range(1, allowed + 1):
+                        outcome, problems, failure, temp_dir, ctx = attempt(case, n, shell, engine_handles)
+                        tried.append((temp_dir, ctx))
+                        if outcome not in (FAILED, ERROR):
+                            break
+                        first = first or (outcome, problems, failure)
                 note = ""
                 if outcome in (FAILED, ERROR):
                     outcome, problems, failure = first
@@ -526,6 +546,8 @@ def execute(
                         *(uri for _, c in tried if c for _, uri in c.remote_locations),
                     ]
                 if sqllogic.stopped():  # stopped while this body ran: a resume takes the case up again
+                    return
+                if not report_once(case.id):  # its timeout already wrote an ERROR for it
                     return
                 done(
                     case,
@@ -558,10 +580,20 @@ def execute(
             ):
                 _report_batch(chunk, group, by_case, done, run_dir, runner)
             batches = []
+
+        def python_timed_out(case, case_timeout):
+            """A thread cannot be killed: give up waiting on it, release whatever it holds, and
+            report it now, so the pool's slot is free for the next case in the plan."""
+            pool.cancel(case.id)
+            if report_once(case.id):
+                done(case, ERROR, runner=phases.PYTHON_RUNNER, note=f"timed out after {case_timeout:.0f}s")
+
         # One budget of slots for both kinds of body: a batch of `.test` files and a Python case
-        # each take one, in plan order, and a Python body reports itself from its worker.
+        # each take one, in plan order. A `.test` batch enforces its own timeout inside the binary and
+        # always reports itself here; a Python body reports itself from its worker, unless its
+        # timeout -- watched here, since a worker cannot watch its own clock -- gets there first.
         prepared = {entry["id"]: (chunk, batch) for entry, chunk, batch in batches}
-        batch_futures, every_future = {}, []
+        batch_futures, python_deadlines, every_future = {}, {}, []
         for entry in plan.get("batches") or []:
             if entry["id"] in prepared:
                 chunk, batch = prepared[entry["id"]]
@@ -569,25 +601,44 @@ def execute(
                 batch_futures[future] = (chunk, batch)
                 every_future.append(future)
             elif entry["runner"] == phases.PYTHON_RUNNER:
-                every_future += [pool.submit(python_case, runnable[i]) for i in entry["cases"] if i in runnable]
-        for future in concurrent.futures.as_completed(every_future):
-            if future not in batch_futures:
-                future.result()  # a Python case reports its own outcome; what is left is a bug here
-                continue
-            chunk, batch = batch_futures[future]
-            try:
-                by_case = future.result()
-            except Exception as exc:  # the binary could not be started, the batch dir not written, ...
-                for case in chunk:
-                    done(
-                        case,
-                        ERROR,
-                        runner=runner,
-                        problems=[f"the batch could not run: {type(exc).__name__}: {exc}"],
-                        batch_dir=batch.dir,
-                    )
-                continue
-            _report_batch(chunk, batch, by_case, done, run_dir, runner)
+                case_timeout = entry.get("timeout") or sqllogic.DEFAULT_TIMEOUT_S
+                for i in entry["cases"]:
+                    if i not in runnable:
+                        continue
+                    future = pool.submit(python_case, runnable[i])
+                    python_deadlines[future] = (runnable[i], case_timeout)
+                    every_future.append(future)
+
+        pending = set(every_future)
+        while pending:
+            finished, pending = concurrent.futures.wait(
+                pending, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            for future in finished:
+                if future not in batch_futures:
+                    future.result()  # a Python case reports its own outcome; what is left is a bug here
+                    continue
+                chunk, batch = batch_futures[future]
+                try:
+                    by_case = future.result()
+                except Exception as exc:  # the binary could not be started, the batch dir not written, ...
+                    for case in chunk:
+                        done(
+                            case,
+                            ERROR,
+                            runner=runner,
+                            problems=[f"the batch could not run: {type(exc).__name__}: {exc}"],
+                            batch_dir=batch.dir,
+                        )
+                    continue
+                _report_batch(chunk, batch, by_case, done, run_dir, runner)
+            now = time.perf_counter()
+            for future in [f for f in pending if f in python_deadlines]:
+                case, case_timeout = python_deadlines[future]
+                began = case_started.get(case.id)
+                if began is not None and now - began >= case_timeout:
+                    pending.discard(future)
+                    python_timed_out(case, case_timeout)
 
     except KeyboardInterrupt:  # Ctrl-C, or the signal handler above
         stopped["by"] = stopped["by"] or "interrupt"

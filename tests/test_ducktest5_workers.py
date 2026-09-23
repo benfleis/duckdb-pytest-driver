@@ -10,10 +10,12 @@ import time
 
 import pytest
 
-from ducktest5 import events
+from ducktest5 import events, phases, sqllogic
+from ducktest5.engines.duckdb import DuckDBSession
 from test_ducktest5_run import FAKE, FakeSession, go, outcomes, py_case, sql_case
 
 SLEEP_S = 0.3  # long enough that cases overlap, short enough for a self-test
+FAKE_SHELL = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_shell.py")
 
 
 class Recorder:
@@ -269,3 +271,61 @@ def test_a_stopped_run_with_several_workers_ends_by_itself_and_leaves_nothing_ru
     (run_dir,) = (tmp_path / "runs").iterdir()
     ended = {e["id"] for e in events.read(str(run_dir)) if e["event"] == events.CASE_END}
     assert len(ended) < 4  # what was under way has no end: a resume takes exactly those up again
+
+
+# -----------------------------------------------------------------------------
+# A timeout on a Python case
+#
+
+
+def _named(fn, name):
+    fn.__name__ = name
+    return fn
+
+
+def _quick_cases(n):
+    return [py_case(_named(lambda ctx: None, f"quick{i}"), path=f"test/quick{i}.py") for i in range(n)]
+
+
+@pytest.mark.parametrize("workers", [1, 4])
+def test_a_body_that_sleeps_past_its_timeout_ends_error_and_the_run_moves_on(tmp_path, workers):
+    def slow(ctx):
+        time.sleep(0.5)
+
+    cases = [py_case(_named(slow, "slow"), path="test/slow.py", timeout=0.1), *_quick_cases(3)]
+    t0 = time.perf_counter()
+    code, run_dir, report, _ = go(tmp_path, cases, workers=workers)
+    took = time.perf_counter() - t0
+    out = outcomes(report)
+    assert out["slow"] == "error"
+    assert all(out[f"quick{i}"] == "passed" for i in range(3))
+    note = next(c["note"] for c in report["cases"] if c["id"].endswith("::slow"))
+    assert re.match(r"^timed out after \d+s$", note)
+    assert took < 3  # the run did not wait out the full sleep
+
+
+@pytest.mark.parametrize("workers", [1, 4])
+def test_a_hung_duckdb_statement_is_released_and_reported_once(tmp_path, workers):
+    def hangs(ctx):
+        ctx.duckdb().oks("SELECT drip")
+
+    cases = [py_case(_named(hangs, "hangs"), path="test/hangs.py", timeout=0.3), *_quick_cases(3)]
+    code, run_dir, report, _ = go(
+        tmp_path, cases, workers=workers, duckdb_bin=FAKE_SHELL, session_factory=DuckDBSession
+    )
+    out = outcomes(report)
+    assert out["hangs"] == "error"
+    assert all(out[f"quick{i}"] == "passed" for i in range(3))
+    (case,) = [c for c in report["cases"] if c["id"].endswith("::hangs")]
+    assert re.match(r"^timed out after \d+s$", case["note"])
+    ends = [e for e in events.read(str(run_dir)) if e["event"] == events.CASE_END and e["id"] == case["id"]]
+    assert len(ends) == 1  # the dead-shell exception the timeout let loose was swallowed, not reported again
+
+
+def test_a_rules_timeout_reaches_a_python_case_and_it_defaults_like_a_test_case_does():
+    default_case = py_case(_named(lambda ctx: None, "default"), path="test/default.py")
+    custom_case = py_case(_named(lambda ctx: None, "custom"), path="test/custom.py", timeout=42)
+    plan = phases.build_plan([default_case, custom_case], workers=2)
+    by_test = {b["tests"][0]: b for b in plan["batches"]}
+    assert by_test["test/default.py"]["timeout"] == sqllogic.DEFAULT_TIMEOUT_S
+    assert by_test["test/custom.py"]["timeout"] == 42
