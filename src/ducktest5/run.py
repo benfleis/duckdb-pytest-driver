@@ -181,7 +181,7 @@ def run(
     batch_size=10,
     workers=4,
     runner=phases.UNITTEST_RUNNER,
-    run_flags="",
+    run_args="",
     run_bin=None,
     out=None,
     session_factory=DuckDBSession,
@@ -201,9 +201,7 @@ def run(
     run_dir = os.path.join(os.path.abspath(temp_root), make_run_id())
     os.makedirs(run_dir)
     phases.write_tests(run_dir, cases, project, working_dir=working_dir, selection=selection)
-    plan = phases.build_plan(
-        cases, batch_size=batch_size, workers=workers, runner=runner, run_flags=run_flags, keep=keep
-    )
+    plan = phases.build_plan(cases, batch_size=batch_size, workers=workers, runner=runner, run_args=run_args, keep=keep)
     phases.write_plan(run_dir, plan)
     return execute(
         cases,
@@ -465,7 +463,7 @@ def execute(
                 working_dir,
                 run_dir=run_dir,
                 workers=workers,
-                run_flags=knobs.get("run_flags", ""),
+                run_args=knobs.get("run_args", ""),
                 run_bin=run_bin,
             ):
                 _report_batch(chunk, group, by_case, done, run_dir, runner)

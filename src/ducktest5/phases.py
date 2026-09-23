@@ -18,9 +18,9 @@ What crosses an invocation boundary:
 - `03` holds redacted blocks only. A secret is never written down: `exec` in a new process resolves
   each service again, an `existing` one from the same source (`--existing-service`, the environment)
   and a kept one from the `attach` line `03` records.
-- A service that `provision` may leave running is one that says `outlives_the_process=True`: it is
-  not in the process that starts it (a container, a cloud workspace). One that does not can only be
-  provisioned by the process that uses it, which is `exec --provision` and `run`.
+- A service that `provision` may leave running is one that says `detached=True`: it is not in the
+  process that starts it (a container, a cloud workspace). One that does not can only be provisioned
+  by the process that uses it, which is `exec --provision` and `run`.
 - Engines (Spark, the DuckDB shell) always belong to the exec process.
 
 A phase that finds a file of a schema it does not know stops and says so. A phase that finds its own
@@ -140,7 +140,7 @@ def _key_record(case_env):
     return {"digest": hashlib.sha1(key.encode()).hexdigest()[:12], "environment": case_env.record()}
 
 
-def build_plan(cases, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_flags="", keep=False):
+def build_plan(cases, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_args="", keep=False):
     """`02-plan.yaml` as a document. `.test` cases with one case environment share a batch; a Python
     body is a batch of one, whatever `--runner` says, because only this process can run it.
 
@@ -195,7 +195,7 @@ def build_plan(cases, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_f
             "workers": workers,
             "batch_size": batch_size,
             "runner": runner,
-            **({"run_flags": run_flags} if run_flags else {}),
+            **({"run_args": run_args} if run_args else {}),
             "keep": keep,
         },
         "batches": batches,
@@ -242,7 +242,7 @@ def _record_of(p, *, owned):
     block with every secret masked, and the argument that finds it again."""
     return {
         "mode": p.mode,
-        "outlives_the_process": bool(p.service.outlives_the_process),
+        "detached": bool(p.service.detached),
         "owned": owned,
         "block": p.redacted(),
         "attach": attach_overrides(p),
@@ -279,7 +279,7 @@ def provision_services(service_ids, project, *, existing_services=(), keep_servi
     for service_id in sorted(set(service_ids)):
         service = project.services[service_id]
         existing = existing_overrides(service_id, existing_services)
-        if separate and existing is None and service.start is not None and not service.outlives_the_process:
+        if separate and existing is None and service.start is not None and not service.detached:
             raise UsageError(
                 f"service {service_id!r} lives in the process that starts it, so a separate `provision` would stop "
                 f"it again at once. Run `ducktest5 exec --run-dir DIR --provision`, which provisions and runs in "

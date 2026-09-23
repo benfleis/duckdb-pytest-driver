@@ -86,13 +86,13 @@ def test_one_call_of_the_wrapper_for_each_case_environment(tree):
 
 
 def test_the_wrapper_gets_the_flags_it_is_given_and_its_own_options(tree):
-    assert go("--keep", "--run-flags", "--batch-size 1 --retry 1", "--workers", "3") == 1
+    assert go("--keep", "--run-args", "--batch-size 1 --retry 1", "--workers", "3") == 1
     run_dir = the_run()
     # one process file per batch, so --batch-size 1 made one process per test, and the retry a second
     kept = os.listdir(os.path.join(run_dir, "run", "g001", "processes"))
     assert len(kept) == 4 + 1  # four tests, and the failed one ran again
     plan = yaml.safe_load(open(os.path.join(run_dir, phases.PLAN_FILE)))
-    assert plan["knobs"]["runner"] == "run" and plan["knobs"]["run_flags"] == "--batch-size 1 --retry 1"
+    assert plan["knobs"]["runner"] == "run" and plan["knobs"]["run_args"] == "--batch-size 1 --retry 1"
 
 
 def test_a_test_the_wrapper_never_reported_falls_back_to_its_summary(tree, capsys, monkeypatch):

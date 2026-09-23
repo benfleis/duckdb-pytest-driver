@@ -3,7 +3,7 @@
 `--runner run` hands every `.test` batch to the wrapper instead of to ducktest's own pool of
 `unittest` processes, so that a run gets what the wrapper has for CI: its batching, its worker
 count, its retry and its batch timeout. Its own options are passed through as they are, with
-`--run-flags '...'`, and are not re-invented here.
+`--run-args '...'`, and are not re-invented here.
 
 ducktest gives it one call for each set of batches that share a case environment, because a call
 takes one `--test-config`:
@@ -164,7 +164,7 @@ def _call(args, working_dir, env):
         return proc.communicate()[0] or "", proc.wait()
 
 
-def run_wrapper(unittest_bin, units, working_dir, *, run_dir, workers=4, run_flags="", run_bin=None):
+def run_wrapper(unittest_bin, units, working_dir, *, run_dir, workers=4, run_args="", run_bin=None):
     """Run every batch through the wrapper. `units` is [(cases, batch)] as the exec phase made them;
     returns [(cases, the batch of the wrapper call, {case id: TestResult})], one for each call."""
     wrapper = find_wrapper(unittest_bin, explicit=run_bin)
@@ -192,7 +192,7 @@ def run_wrapper(unittest_bin, units, working_dir, *, run_dir, workers=4, run_fla
             " ".join(shlex.quote(f) for f in flags),
             "--test-command",
             _shim_command(group_dir),
-            *shlex.split(run_flags),
+            *shlex.split(run_args),
         ]
         done = _call(args, working_dir, group.case_env.environ())
         text, code = done

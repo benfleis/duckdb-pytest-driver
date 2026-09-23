@@ -596,7 +596,7 @@ def test_secrets_of_a_service_are_not_in_the_provision_record(tmp_path):
     assert record == {
         "store": {
             "mode": EXISTING,
-            "outlives_the_process": False,
+            "detached": False,
             "owned": False,
             "block": {"endpoint": "http://store", "secret_key": "***"},
             "attach": {"endpoint": "http://store"},
@@ -788,8 +788,8 @@ def test_a_body_can_branch_on_a_statement_that_failed_and_the_case_still_passes(
 
     def body(ctx):
         c = ctx.engine("fake")
-        seen.append(c.tries("SELECT 1"))
-        seen.append(c.tries("SELECT boom"))
+        seen.append(c.exec("SELECT 1"))
+        seen.append(c.exec("SELECT boom"))
 
     case = py_case(body, engines=["fake"])
     outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path))
@@ -992,7 +992,7 @@ def test_a_preamble_that_fails_is_a_setup_error(tmp_path):
 
 
 def test_an_unknown_session_kind_is_refused(tmp_path):
-    with pytest.raises(ValueError, match="'per_run', 'own', 'per_call'"):
+    with pytest.raises(ValueError, match="'per_run', 'per_client', 'per_call'"):
         ctx_for(py_case(passes), tmp_path).duckdb(session="per_test")
 
 
@@ -1009,15 +1009,15 @@ def test_an_own_session_is_a_warm_shell_of_its_own_closed_when_the_case_ends(tmp
 
     def body(ctx):
         shared = ctx.duckdb("LOAD delta;")
-        first = ctx.duckdb("LOAD delta;", session="own")
-        second = ctx.duckdb("LOAD delta;", session="own")
+        first = ctx.duckdb("LOAD delta;", session="per_client")
+        second = ctx.duckdb("LOAD delta;", session="per_client")
         first.oks("SELECT 1")
         second.oks("SELECT 2")
         shared.oks("SELECT 3")
 
     code, _, _, _ = go(tmp_path, [py_case(body)], session_factory=factory)
     assert code == 0
-    run_shell, first, second = made  # the run's shell, then one for each `own` client
+    run_shell, first, second = made  # the run's shell, then one for each `per_client` client
     assert [first.statements, second.statements, run_shell.statements] == [["SELECT 1"], ["SELECT 2"], ["SELECT 3"]]
     assert [first.preambles, second.preambles] == [run_shell.preambles] * 2
     assert [first.home, second.home] == [run_shell.home] * 2

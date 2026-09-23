@@ -19,7 +19,7 @@ APPENDS = 3
 @test()
 def concurrent_writers_append_without_a_gap(ctx):
     shared = ctx.location("shared.db")
-    maker = ctx.duckdb(session="own")
+    maker = ctx.duckdb(session="per_client")
     maker.setup(
         """
         ATTACH '{db}' AS shared;
@@ -31,7 +31,7 @@ def concurrent_writers_append_without_a_gap(ctx):
 
     def append(db, who):
         """One attempt. True: the row is in. False: another process holds the file, come back."""
-        attached = db.tries("ATTACH '{db}' AS shared", db=shared)
+        attached = db.exec("ATTACH '{db}' AS shared", db=shared)
         if not attached:
             if "lock" not in attached.error.lower():
                 raise AssertionError(f"ATTACH failed for a reason this test does not expect\n{attached}")
@@ -48,7 +48,7 @@ def concurrent_writers_append_without_a_gap(ctx):
             committed += append(db, who)
         return committed
 
-    writers = [(ctx.duckdb(session="own"), f"w{n}") for n in range(WRITERS)]
+    writers = [(ctx.duckdb(session="per_client"), f"w{n}") for n in range(WRITERS)]
     with concurrent.futures.ThreadPoolExecutor(max_workers=WRITERS) as pool:
         submitted = [pool.submit(writer, db, who) for db, who in writers]
         assert [f.result() for f in submitted] == [APPENDS] * WRITERS

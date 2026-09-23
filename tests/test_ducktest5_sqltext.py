@@ -198,31 +198,31 @@ def test_contains_counts_how_often_a_row_is_expected():
 
 
 # -----------------------------------------------------------------------------
-# tries: the answer instead of a verdict
+# exec: the answer instead of a verdict
 #
 
 
-def test_tries_gives_back_the_result_of_a_statement_that_ran():
-    tried = _client(result=[(1, "a")]).tries("SELECT i, name FROM {t}")
-    assert tried
-    assert (tried.error, tried.columns, tried.rows) == (None, ["i"], [(1, "a")])
-    assert repr(tried) == "[fake] tried, ok, 1 row(s)\n    SELECT i, name FROM cat.t"
+def test_exec_gives_back_the_result_of_a_statement_that_ran():
+    executed = _client(result=[(1, "a")]).exec("SELECT i, name FROM {t}")
+    assert executed
+    assert (executed.error, executed.columns, executed.rows) == (None, ["i"], [(1, "a")])
+    assert repr(executed) == "[fake] exec, ok, 1 row(s)\n    SELECT i, name FROM cat.t"
 
 
 def test_a_statement_that_failed_is_an_answer_not_a_failed_check():
     recorded = []
     client = Client("fake", _fails_at(0), table="cat.t", record=recorded.append)
-    tried = client.tries("INSERT INTO {t} VALUES (1)")
-    assert not tried
-    assert tried.error == "Conflicting commit"
+    executed = client.exec("INSERT INTO {t} VALUES (1)")
+    assert not executed
+    assert executed.error == "Conflicting commit"
     assert recorded == []
-    assert repr(tried) == "[fake] tried, failed: Conflicting commit\n    INSERT INTO cat.t VALUES (1)"
+    assert repr(executed) == "[fake] exec, failed: Conflicting commit\n    INSERT INTO cat.t VALUES (1)"
 
 
 def test_only_the_last_statement_of_a_try_answers_for_the_rest():
     client = Client("fake", _fails_at(0), table="cat.t")
     with pytest.raises(ExpectationFailed, match="statement failed"):
-        client.tries("ATTACH 'x'; INSERT INTO {t} VALUES (1)")
+        client.exec("ATTACH 'x'; INSERT INTO {t} VALUES (1)")
 
 
 def test_a_timeout_or_a_dead_client_stays_an_exception():
@@ -230,12 +230,12 @@ def test_a_timeout_or_a_dead_client_stays_an_exception():
         raise SqlError("the statement was not done in 5s; the duckdb shell was killed")
 
     with pytest.raises(ExpectationFailed, match="not a statement of this call"):
-        Client("fake", dead).tries("SELECT 1")
+        Client("fake", dead).exec("SELECT 1")
 
 
 def test_a_try_is_counted_in_the_time_the_client_spent():
     client = _client(result=[(1,)])
-    client.tries("SELECT 1")
+    client.exec("SELECT 1")
     assert client.seconds > 0
 
 

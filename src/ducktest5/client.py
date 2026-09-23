@@ -4,7 +4,7 @@
     oks(sql)               statement ok      under test; must succeed
     errs(sql, text)        statement error   under test; must fail, with `text` in the message
     expects(sql, rows)     query + ----      under test; expected rows beside the query
-    tries(sql)             no verdict; the body reads the answer and decides (a retry loop)
+    exec(sql)              no verdict; the body reads the answer and decides (a retry loop)
     teardown(sql)          runs after the body, even when the test aborted; a failure is an ERROR
 
 A failure aborts the test, as in a .test file. `on_fail="continue"` on `oks`, `errs` or `expects`
@@ -64,8 +64,8 @@ class SetupFailed(Exception):
     """Something the test needs, but does not test, failed."""
 
 
-class Tried:
-    """What `tries` gives back: truthy when the statements ran, `error` the engine's message when
+class Executed:
+    """What `exec` gives back: truthy when the statements ran, `error` the engine's message when
     the last one failed, `columns` and `rows` its result when it did not."""
 
     def __init__(self, client, sql, *, error=None, columns=(), rows=()):
@@ -77,7 +77,7 @@ class Tried:
 
     def __repr__(self):
         what = f"failed: {self.error}" if self.error is not None else f"ok, {len(self.rows)} row(s)"
-        return f"[{self.client}] tried, {what}\n{_indent(self.sql)}"
+        return f"[{self.client}] exec, {what}\n{_indent(self.sql)}"
 
 
 def _indent(text, by="    "):
@@ -204,7 +204,7 @@ class Client:
     def expects(self, sql, rows, params=None, *, sort=False, on_fail="abort_test", **more):
         self._check(on_fail, self._assert_rows, sql, rows, params, sort=sort, **more)
 
-    def tries(self, sql, params=None, **more):
+    def exec(self, sql, params=None, **more):
         """Run the statements and give back what happened, instead of judging it: for a body that has
         to branch, such as a retry loop around a commit that can conflict. A statement that failed is
         not a failed check, and does not abort the test."""
@@ -213,8 +213,8 @@ class Client:
             columns, rows = self._timed_run(statements)
         except SqlError as exc:
             self._not_from_the_last_statement(statements, exc)
-            return Tried(self.name, statements[-1], error=str(exc))
-        return Tried(self.name, statements[-1], columns=columns, rows=rows)
+            return Executed(self.name, statements[-1], error=str(exc))
+        return Executed(self.name, statements[-1], columns=columns, rows=rows)
 
     def expects_contains(self, sql, rows, params=None, *, on_fail="abort_test", **more):
         """Every row of `rows` is in the result, as often as it is in `rows`; the result may hold more."""

@@ -43,8 +43,8 @@ def ctx(tmp_path):
 
 
 def test_own_clients_are_warm_and_do_not_see_each_others_instance(ctx):
-    first = ctx.duckdb("CREATE TABLE mine (i INT);", session="own")
-    second = ctx.duckdb("CREATE TABLE mine (i INT);", session="own")
+    first = ctx.duckdb("CREATE TABLE mine (i INT);", session="per_client")
+    second = ctx.duckdb("CREATE TABLE mine (i INT);", session="per_client")
     first.oks("INSERT INTO mine VALUES (1)")
     first.expects("SELECT count(*) FROM mine", [1])  # the same shell answered twice: it stayed warm
     second.expects("SELECT count(*) FROM mine", [0])
@@ -55,7 +55,7 @@ def test_what_an_own_client_persists_lands_under_the_runs_private_home(ctx, tmp_
     users_home = tmp_path / "users-home"
     users_home.mkdir()
     monkeypatch.setenv("HOME", str(users_home))
-    ctx.duckdb(session="own").oks("CREATE PERSISTENT SECRET probe (TYPE s3, KEY_ID 'k', SECRET 'x')")
+    ctx.duckdb(session="per_client").oks("CREATE PERSISTENT SECRET probe (TYPE s3, KEY_ID 'k', SECRET 'x')")
     assert (tmp_path / "home" / ".duckdb" / "stored_secrets" / "probe.duckdb_secret").exists()
     assert list(users_home.iterdir()) == []
 
@@ -105,5 +105,5 @@ def test_an_error_the_body_did_not_expect_is_reported_with_the_statement(tmp_pat
     code, printed = proof(tmp_path, break_it)
     assert code == 1
     assert "ATTACH failed for a reason this test does not expect" in printed
-    assert "[duckdb] tried, failed: IO Error: Could not set lock on file" in printed
+    assert "[duckdb] exec, failed: IO Error: Could not set lock on file" in printed
     assert "ATTACH '" in printed and "shared.db' AS shared" in printed

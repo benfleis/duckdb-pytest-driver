@@ -82,7 +82,7 @@ def _plan_options(parser):
         help="what runs a .test batch (default: unittest); a Python body always runs in this process",
     )
     parser.add_argument(
-        "--run-flags",
+        "--run-args",
         default="",
         metavar="'...'",
         help="passed to DuckDB's run wrapper as they are, with --runner run (its --retry, --batch-timeout, ...)",
@@ -285,7 +285,7 @@ def main(argv=None):
             batch_size=args.batch_size,
             workers=args.workers,
             runner=args.runner,
-            run_flags=args.run_flags,
+            run_args=args.run_args,
             run_bin=args.run_bin,
             debugger=debugger,
             command=["ducktest5"] + list(argv if argv is not None else sys.argv[1:]),
@@ -347,7 +347,7 @@ def _plan(args):
     cwd = os.getcwd()
     cases, _, _ = _cases_by_id(args, phases.ids_of_tests(phases.read_tests(args.run_dir)), cwd)
     doc = phases.build_plan(
-        cases, batch_size=args.batch_size, workers=args.workers, runner=args.runner, run_flags=args.run_flags
+        cases, batch_size=args.batch_size, workers=args.workers, runner=args.runner, run_args=args.run_args
     )
     path = phases.write_plan(args.run_dir, doc, force=args.force)
     print(f"{len(doc['batches'])} batches for {len(cases)} cases -> {path}")

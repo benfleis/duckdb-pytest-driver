@@ -36,7 +36,7 @@ CONF = """
             alive=lambda b: os.path.exists(MARK),
             start=lambda b: open(MARK, "w").close(),
             stop=stop,
-            outlives_the_process={OUTLIVES},
+            detached={DETACHED},
         )
     ]
     RULES = [match("s/**", services=["store"])]
@@ -45,9 +45,9 @@ CONF = """
 
 @pytest.fixture
 def tree(tmp_path, monkeypatch):
-    def make(*, outlives=True):
+    def make(*, detached=True):
         (tmp_path / "test/s").mkdir(parents=True)
-        (tmp_path / "test/ducktestconf.py").write_text(textwrap.dedent(CONF).replace("{OUTLIVES}", str(outlives)))
+        (tmp_path / "test/ducktestconf.py").write_text(textwrap.dedent(CONF).replace("{DETACHED}", str(detached)))
         (tmp_path / "test/s/x.test").write_text("")
         monkeypatch.setenv("FAKE_SERVICE_MARK", str(tmp_path / "store.up"))
         monkeypatch.chdir(tmp_path)
@@ -79,7 +79,7 @@ def plan(run_dir="apart"):
 
 
 def test_a_service_that_lives_in_the_process_may_not_be_provisioned_apart(tree, capsys):
-    tree(outlives=False)
+    tree(detached=False)
     plan()
     assert main(["provision", "--run-dir", "apart"]) == 2
     said = capsys.readouterr().err
@@ -92,7 +92,7 @@ def test_provision_leaves_a_service_up_and_exec_finds_it_again(tree, tmp_path):
     assert main(["provision", "--run-dir", "apart"]) == 0
     assert (tmp_path / "store.up").exists()
     record = provisioned("apart")["store"]
-    assert (record["mode"], record["owned"], record["outlives_the_process"]) == ("kept", True, True)
+    assert (record["mode"], record["owned"], record["detached"]) == ("kept", True, True)
     # the endpoint finds it again; the secret is not an override here, and would be masked if it were
     assert record["attach"] == {"endpoint": "file://store"}
     assert record["block"]["secret_key"] == "***"  # the service did not declare it: the name did
@@ -123,7 +123,7 @@ def test_exec_with_no_service_provisioned_blocks_the_cases_and_says_what_to_run(
 
 
 def test_exec_can_provision_here_as_run_does(tree, tmp_path):
-    tree(outlives=False)
+    tree(detached=False)
     plan()
     assert main(["exec", "--run-dir", "apart", "--provision", *binaries()]) == 0
     assert outcomes("apart") == {"s/x.test::x": "passed"}

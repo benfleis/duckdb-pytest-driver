@@ -38,10 +38,10 @@ class Service:
     it runs in every mode; `clean(block, prefix)` removes what a test wrote under `prefix`.
     `secrets` names block fields that must not reach a report.
 
-    `outlives_the_process` says that an instance keeps running when the process that started it
-    ends: a container, a server started with a command. Only such a service can be provisioned in
-    its own `ducktest5 provision` invocation and used by a later `exec`; one that lives in this
-    process (a thread, an embedded server) is provisioned by the process that runs the tests.
+    `detached` says that an instance keeps running when the process that started it ends: a
+    container, a server started with a command. Only such a service can be provisioned in its own
+    `ducktest5 provision` invocation and used by a later `exec`; one that lives in this process (a
+    thread, an embedded server) is provisioned by the process that runs the tests.
 
     How an instance comes to be is the run's choice, not the test's -- see `provision`.
     """
@@ -55,7 +55,7 @@ class Service:
     clean: Callable | None = None
     location: Callable | None = None  # (block, *parts) -> a writable URI under the run's prefix
     secrets: tuple = ()
-    outlives_the_process: bool = False
+    detached: bool = False
 
 
 @dataclass(frozen=True)
