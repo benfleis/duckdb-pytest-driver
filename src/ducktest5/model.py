@@ -33,6 +33,7 @@ class TestDef:
     services: list = field(default_factory=list)
     engines: list = field(default_factory=list)
     variants: list = field(default_factory=list)
+    mutex: list = field(default_factory=list)  # what the test must have to itself while it runs
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     timeout: float | None = None
@@ -87,6 +88,11 @@ class Case:
         return self._with_variants(self.test.engines, "engines")
 
     @property
+    def mutex(self):
+        """The names this case must have to itself; no case that names one of them runs beside it."""
+        return list(self.test.mutex)
+
+    @property
     def dir_name(self):
         """A directory name that says which case it holds, and is its own: two tests of one file
         name in two directories must not share it."""
@@ -108,6 +114,7 @@ class Case:
             "preconditions": {
                 "services": self.services,
                 "engines": [{"id": e, "version": project.engines[e].version} for e in self.engines],
+                **({"mutex": self.mutex} if self.mutex else {}),
             },
             "runtime": {
                 "case": _plain(self.params),

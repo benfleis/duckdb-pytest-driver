@@ -105,6 +105,7 @@ def scan(start, *, working_dir="."):
                     services=list(decl.services),
                     engines=list(decl.engines),
                     variants=list(decl.variants),
+                    mutex=list(decl.mutex),
                 )
             )
     for path in bodies:
@@ -151,8 +152,14 @@ def scan(start, *, working_dir="."):
 def _settle(test, project, working_dir):
     """Rules first, from the root down; then the test's own declaration on top."""
     settled = project.settle(os.path.abspath(os.path.join(working_dir, test.path)))
-    own = {"tags": test.tags, "services": test.services, "engines": test.engines, "variants": test.variants}
-    for name in ("tags", "services", "engines", "variants"):
+    own = {
+        "tags": test.tags,
+        "services": test.services,
+        "engines": test.engines,
+        "variants": test.variants,
+        "mutex": test.mutex,
+    }
+    for name in ("tags", "services", "engines", "variants", "mutex"):
         merged = getattr(settled, name) + [x for x in own[name] if x not in getattr(settled, name)]
         setattr(test, name, merged)
     test.values, test.settings = settled.values, settled.settings

@@ -104,15 +104,32 @@ class Test:
     cases: dict = field(default_factory=dict)
     tags: tuple = ()
     variants: tuple = ()
+    mutex: tuple = ()
 
 
-def test(*, engines=(), services=(), cases=None, tags=(), variants=()):
+def as_mutex(value):
+    """`mutex=` takes one name or several."""
+    return (value,) if isinstance(value, str) else tuple(value or ())
+
+
+def test(*, engines=(), services=(), cases=None, tags=(), variants=(), mutex=()):
     """Mark `body(ctx)` as a test. `cases` maps a case id to the params the body reads as `ctx.case`;
     `variants` names the project's axes the test takes part in. The test runs once for each
-    combination of a case and one value of every axis."""
+    combination of a case and one value of every axis.
+
+    `mutex` names what the test must have to itself: a name, or several. Two cases that name one of
+    them never run at the same time, however many workers the run has."""
 
     def mark(body):
-        body.__ducktest__ = Test(body, tuple(engines), tuple(services), dict(cases or {}), tuple(tags), tuple(variants))
+        body.__ducktest__ = Test(
+            body,
+            tuple(engines),
+            tuple(services),
+            dict(cases or {}),
+            tuple(tags),
+            tuple(variants),
+            as_mutex(mutex),
+        )
         return body
 
     return mark

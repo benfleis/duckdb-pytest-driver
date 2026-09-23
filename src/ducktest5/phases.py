@@ -89,7 +89,7 @@ def write_tests(run_dir, cases, project, *, working_dir=".", selection=None, for
     service running. Fields: `schema`, `made_at`, `project` (the root's name), `working_dir` (where
     the paths were read from, relative to the project root), `selection` (what was asked for), and
     `tests`, one record for each case: `identity` (id, test, type, file, case, variants),
-    `selection.tags`, `preconditions` (services, engines), `runtime` (case params, environment,
+    `selection.tags`, `preconditions` (services, engines, mutex), `runtime` (case params, environment,
     timeout, retries) and `why` (the rules that gave the test what it has)."""
     doc = {
         "schema": TESTS_SCHEMA,
@@ -115,8 +115,9 @@ def ids_of_tests(doc):
 
 def _alone(case):
     """A slow file takes a process for itself; a case with a service runs alone, so that a failure
-    that runs again for its text does not see what the first attempt left on the service."""
-    return "slow" in case.tags or bool(case.services)
+    that runs again for its text does not see what the first attempt left on the service. A case
+    that names a mutex takes its batch with it into the lock, so it is one case."""
+    return "slow" in case.tags or bool(case.services) or bool(case.mutex)
 
 
 def _chunks(group, batch_size):
@@ -145,10 +146,10 @@ def build_plan(cases, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_f
     body is a batch of one, whatever `--runner` says, because only this process can run it.
 
     A batch: `id`, `runner`, `order`, `cases` (the case ids), `tests` (the `.test` files, relative to
-    the project root), `timeout` and `timeouts`/`retries` where a case has its own, and `key` (the
-    digest and the case environment the batch is made of). `knobs` records what the planner was
-    given; the batch key is worked out again before a batch runs, so a plan can be read by another
-    engine without being believed."""
+    the project root), `timeout` and `timeouts`/`retries` where a case has its own, `mutex` where a
+    case names one, and `key` (the digest and the case environment the batch is made of). `knobs`
+    records what the planner was given; the batch key is worked out again before a batch runs, so a
+    plan can be read by another engine without being believed."""
     if runner not in RUNNERS:
         raise UsageError(f"--runner {runner!r}; it is one of {RUNNERS}")
     batches, groups = [], {}
@@ -166,6 +167,7 @@ def build_plan(cases, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_f
                     "timeout": sqllogic.DEFAULT_TIMEOUT_S,
                     "timeouts": {c.id: c.test.timeout for c in chunk if c.test.timeout},
                     "retries": {c.id: c.test.retries for c in chunk if c.test.retries},
+                    **({"mutex": sorted({m for c in chunk for m in c.mutex})} if any(c.mutex for c in chunk) else {}),
                     "key": _key_record(caseenv.resolve(chunk[0])),
                 }
             )
@@ -179,6 +181,7 @@ def build_plan(cases, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_f
                 "tests": [case.test.root_path],
                 "timeout": case.test.timeout,
                 "retries": {case.id: case.test.retries} if case.test.retries else {},
+                **({"mutex": sorted(case.mutex)} if case.mutex else {}),
                 "key": _key_record(caseenv.resolve(case)),
             }
         )
