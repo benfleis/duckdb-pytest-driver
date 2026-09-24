@@ -75,6 +75,7 @@ class CaseEnv:
     roots: dict = field(default_factory=dict)  # one of ROOTS -> Entry
     env: dict = field(default_factory=dict)  # name -> Entry
     env_unset: dict = field(default_factory=dict)  # name -> Entry(value=name)
+    env_state: dict = field(default_factory=dict)  # name -> "set"/"unset", whichever last touched it
     services: dict = field(default_factory=dict)  # service id -> Entry(value={"mode", "block"})
     pending: list = field(default_factory=list)  # Entry(value=field name) a service must fill in
     secrets: tuple = ()  # what must never be printed: the secret fields of the services' blocks
@@ -110,8 +111,13 @@ class CaseEnv:
         if not self.changes_environment:
             return None
         base = os.environ if base is None else base
-        out = {k: v for k, v in base.items() if k not in self.env_unset}
-        out.update({k: str(e.value) for k, e in self.env.items()})
+        out = dict(base)
+        # Replay in axis order so an env_unset after an env from an earlier axis wins, and vice versa.
+        for name, action in self.env_state.items():
+            if action == "unset":
+                out.pop(name, None)
+            else:
+                out[name] = str(self.env[name].value)
         return out
 
     def plus(self, *, values=None, init_sql="", source="ctx.run_test()"):
@@ -238,10 +244,14 @@ def resolve(case, provisioned=None):
             if name not in ROOTS:
                 raise UsageError(f"AXES {axis}={v.id}: root {name!r} is not one of {ROOTS}")
             env.roots[name] = Entry(value, where, kind="root", name=name)
+        # One ordered pass in axis order: within an axis, its env entries set before its env_unset
+        # entries remove; the last of the two to touch a name, across axes, wins (see environ()).
         for name, value in v.env.items():
             env.env[name] = Entry(value, where, kind="env", name=name, secret=bool(_SECRET_NAME.search(name)))
+            env.env_state[name] = "set"
         for name in v.env_unset:
             env.env_unset[name] = Entry(name, where, kind="unset")
+            env.env_state[name] = "unset"
         for service_id in v.services:
             env.services.setdefault(service_id, _service_entry(service_id, provisioned, where))
         if callable(v.init_sql):

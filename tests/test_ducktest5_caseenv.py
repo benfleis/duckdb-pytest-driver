@@ -88,6 +88,17 @@ def test_the_environment_of_the_engine_process_is_this_process_with_the_variant_
     assert resolve(case()).environ() is None  # nothing to change: the engine keeps ours
 
 
+def test_env_unset_removes_what_an_earlier_axis_env_set():
+    sets_x = Variant("sets", env={"X": "1"})
+    unsets_x = Variant("unsets", env_unset=("X",))
+
+    later_wins = resolve(case({"a": sets_x, "b": unsets_x}))
+    assert "X" not in later_wins.environ({"HOME": "/home"})
+
+    earlier_wins = resolve(case({"a": unsets_x, "b": sets_x}))
+    assert earlier_wins.environ({"HOME": "/home"}) == {"HOME": "/home", "X": "1"}
+
+
 def test_a_secret_of_a_service_and_a_name_that_says_credential_are_masked():
     variant = Variant("s3", services=("store",), env={"AWS_SECRET_ACCESS_KEY": "hunter2"})
     env = resolve(case({"storage": variant}, values={"token": "s3cr3t"}), provisioned())
