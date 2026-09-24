@@ -5,7 +5,7 @@ A batch is two files in its own directory, and that is the whole contract with t
     tests.txt     one test path per line (the binary's exact `-f` mode: only these are registered)
     config.json   the `--test-config` file: `{NAME}` for the body, the roots, the init file
 
-Everything in them comes from the case environment the batch was made with, and every test in a
+Everything in them comes from the test environment the batch was made with, and every test in a
 batch has the same one. The binary applies the config before it runs anything, so an extension is
 not there yet; the init file is where a setting and a secret type of an extension can be reached,
 after a `require` for it.
@@ -27,14 +27,14 @@ import time
 from dataclasses import dataclass, field
 
 from .binary import UsageError
-from .caseenv import CaseEnv
 from .outcomes import ERROR, FAILED, PASSED, SKIPPED
+from .testenv import TestEnv
 
 _EVENT = re.compile(r"\[TEST_EVENT\] (\{.*\})")
 _SKIP = re.compile(r"\[SKIP_TEST\] (.*?) :: (.*)")
 _PROGRESS = re.compile(r"^\[\d+/\d+\] \(\d+%\): .*$", re.M)
 _LOCATION = re.compile(r"([^\s():]+):(\d+)")  # "file.test:12", as the binary names where a failure is
-DEFAULT_TIMEOUT_S = 600  # for one case, .test or Python, unless `timeout=` in conf.py says otherwise
+DEFAULT_TIMEOUT_S = 600  # for one test, .test or Python, unless `timeout=` in conf.py says otherwise
 _OUTSIDE_A_TEST = object()  # the process hung while no test was running: at startup, between tests, at exit
 INIT_FILE = "init.sqllogic"
 
@@ -102,16 +102,16 @@ class TestResult:
     evidence: str | None = None
 
 
-def init_file_text(case_env):
+def init_file_text(test_env):
     """The init file, and {line of a statement header: what asked for that statement}.
 
     The requires come first, as `require`, which is the binary's own way to load an extension: a
     `SET` or a secret type of one fails before that. Then the statements, one block each, so a
     failure can be traced back to the one thing that asked for it."""
     lines, sources = [], {}
-    for entry in case_env.requires:
+    for entry in test_env.requires:
         lines += [f"require {entry.value}", ""]
-    for entry in case_env.init_sql:
+    for entry in test_env.init_sql:
         lines.append("statement ok")
         sources[len(lines)] = entry.source
         lines += [line for line in entry.value.splitlines() if line.strip()] + [""]
@@ -126,7 +126,7 @@ class Batch:
     # (key, test name) pairs. The binary knows a test by its name; the caller knows it by the key, and
     # gets its result, and gives its timeout and retries, by the key. A bare name is its own key.
     tests: list
-    case_env: object = None  # the CaseEnv every test in this batch is given
+    test_env: object = None  # the TestEnv every test in this batch is given
     timeout_s: float = DEFAULT_TIMEOUT_S  # for one test, counted from the binary's begin event for it
     timeouts: dict = field(default_factory=dict)  # key -> seconds, where a test has its own
     retries: dict = field(default_factory=dict)  # key -> how often a failure may run again
@@ -134,10 +134,10 @@ class Batch:
     def __post_init__(self):
         self.tests = [(t, t) if isinstance(t, str) else tuple(t) for t in self.tests]
         self._key = {name: key for key, name in self.tests}
-        self.case_env = self.case_env if self.case_env is not None else CaseEnv()
+        self.test_env = self.test_env if self.test_env is not None else TestEnv()
         self.init_sources = {}  # line of the init file -> source; filled by write()
         if len(self._key) != len(self.tests):
-            # The binary reports by name, so two cases of one file could not be told apart.
+            # The binary reports by name, so two tests of one file could not be told apart.
             raise ValueError(f"a test can be in a batch once: {self.names}")
 
     @property
@@ -157,14 +157,14 @@ class Batch:
         config = {
             "description": "a ducktest batch",
             "temp_dir_root": os.path.join(self.dir, "tmp"),
-            "test_env": [{"env_name": k, "env_value": str(v)} for k, v in sorted(self.case_env.names.items())],
+            "test_env": [{"env_name": k, "env_value": str(v)} for k, v in sorted(self.test_env.names.items())],
             # By default the binary ends a file early, as not failed, when an error mentions 'HTTP' or
             # 'Unable to connect'. Here an error is a failure; a test that may fail for reasons that are
             # not its own asks for `retries`.
             "skip_error_messages": [],
         }
-        config.update(self.case_env.root_paths)
-        text, self.init_sources = init_file_text(self.case_env)
+        config.update(self.test_env.root_paths)
+        text, self.init_sources = init_file_text(self.test_env)
         if text:
             init = os.path.join(self.dir, INIT_FILE)
             # For the owner only: the init SQL of a variant may hold the secret of a service.
@@ -183,7 +183,7 @@ def remove_init_sql(root):
             with open(os.path.join(dirpath, INIT_FILE), "w") as f:
                 f.write(
                     "# The init SQL of this batch was removed after the run: it may hold a secret.\n"
-                    "# Run the case again with --keep to get it.\n"
+                    "# Run the test again with --keep to get it.\n"
                 )
 
 
@@ -236,7 +236,7 @@ def _invoke(binary, batch, working_dir):
     killed. Returns (output, what was running when it was killed or None, the exit code, and
     {test name: seconds between its begin and end events})."""
     if _stopped.is_set():
-        # The run was stopped: the cases of this batch end with no event, which is what a resume
+        # The run was stopped: the tests of this batch end with no event, which is what a resume
         # takes up again.
         raise RuntimeError("the run was stopped")
     batch.write()
@@ -244,7 +244,7 @@ def _invoke(binary, batch, working_dir):
     proc = subprocess.Popen(
         args,
         cwd=working_dir,
-        env=batch.case_env.environ(),
+        env=batch.test_env.environ(),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -351,7 +351,7 @@ def _sub(batch, tag, names):
     return Batch(
         os.path.join(batch.dir, tag),
         [(batch._key[name], name) for name in names],
-        batch.case_env,
+        batch.test_env,
         batch.timeout_s,
         batch.timeouts,
         batch.retries,

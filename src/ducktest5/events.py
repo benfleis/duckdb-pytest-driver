@@ -8,8 +8,8 @@ Two rules for a reader: a line whose `event` it does not know is ignored, and a 
 there was not known -- never read an absent field as an empty one. Every line has `event` and `run`
 (the run id, which is also the run directory's name). Times are seconds, rounded to 2 decimals.
 
-A passed case is a short line. Everything a reader needs to understand a failure is on the failed
-case's own line, so no renderer has to open another file.
+A passed test is a short line. Everything a reader needs to understand a failure is on the failed
+test's own line, so no renderer has to open another file.
 
     run_start     at             when the run started, UTC, ISO-8601
                   command        the command line as given, credential-looking values masked
@@ -19,7 +19,7 @@ case's own line, so no renderer has to open another file.
                   selection      what was asked for: paths, select, skip, ids, suites
                   versions       ducktest5, python, duckdb
                   binaries       the duckdb shell and the unittest binary of this run
-                  cases          how many cases were selected
+                  tests          how many tests were selected
 
     service       id             the service or the engine
                   kind           "service" or "engine"
@@ -30,20 +30,20 @@ case's own line, so no renderer has to open another file.
                   error          why it did not come up
                   log            the engine's log file
 
-    case_start    id             the case id, `path::name[case,axis=value]`; written when the batch
-                                 of the case starts, so what has no `case_end` is what was under way
-                  test           `path::name`, the test this case comes from
+    test_start    id             the test id, `path::name[params,axis=value]`; written when the batch
+                                 of the test starts, so what has no `test_end` is what was under way
+                  test           `path::name`, the test definition it comes from
                   type           sqllogic | paired | python
                   file           the test's file, relative to the working directory
                   runner         unittest | python
                   at             seconds since run_start
 
-    case_end      id, test, type, file, runner    the same identity as case_start
-                  case           the entry of the test's `cases=` table, or null
+    test_end      id, test, type, file, runner    the same identity as test_start
+                  params         the row of the definition's `params=` table, or null
                   variants       axis -> the id of the chosen value
-                  tags           the case's tags
+                  tags           the test's tags
                   outcome        passed | failed | error | blocked | skipped
-                  seconds        the whole case, retries included
+                  seconds        the whole test, retries included
                   seconds_by_client   client name -> seconds spent in it (Python bodies)
                   attempts       how often it ran; absent means once
                   note           one line for the reader: "passed on attempt 2 of 3"
@@ -51,26 +51,26 @@ case's own line, so no renderer has to open another file.
                   failure        the first problem laid out: where (file:line), summary, sql,
                                  expected, actual. A renderer that has no use for the parts
                                  prints `problems`; both say the same thing.
-                  reason         why a SKIPPED case was skipped
+                  reason         why a SKIPPED test was skipped
                   blocked_by     the services or engines that did not come up
-                  made_of        the case environment and the files that hold the rest
+                  made_of        the test environment and the files that hold the rest
                   statements     what a Python body ran: client, sql, seconds
-                  batch          the batch directory of a `.test` case, relative to the run dir
-                  dirs           what the case wrote under the run dir, for the cleanup phase
+                  batch          the batch directory of a test of a `.test` file, relative to the run dir
+                  dirs           what the test wrote under the run dir, for the cleanup phase
                   evidence       how the outcome is known: `event` (the binary said so) or
                                  `run-summary` (a runner that forwards no event; weaker, no seconds)
                   kept           paths and URIs the run left behind for a second look
-                  again          the command that runs this one case again
+                  again          the command that runs this one test again
 
     run_end       stopped        the signal that ended the run early, where one did
-                  counts         outcome -> how many cases
-                  cases          how many cases ended
+                  counts         outcome -> how many tests
+                  tests          how many tests ended
                   seconds        wall time of the whole run
                   exit_code      what the command returned
                   at             when the run ended, UTC, ISO-8601
 
-Several event files merge: a later file's `case_end` wins for a case id it shares with an earlier
-one, and every case keeps the `run` it came from.
+Several event files merge: a later file's `test_end` wins for a test id it shares with an earlier
+one, and every test keeps the `run` it came from.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ import threading
 from .provision import MASK
 
 EVENTS_FILE = "04-events.jsonl"
-RUN_START, RUN_END, CASE_START, CASE_END, SERVICE = "run_start", "run_end", "case_start", "case_end", "service"
+RUN_START, RUN_END, TEST_START, TEST_END, SERVICE = "run_start", "run_end", "test_start", "test_end", "service"
 
 # A command-line token whose name says its value is a credential.
 _SECRET_TOKEN = re.compile(r"^(--?[\w-]*(?:secret|token|password|key)[\w-]*=).*$", re.IGNORECASE)

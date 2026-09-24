@@ -1,9 +1,9 @@
 """The phases, as files in one run directory.
 
-    01-tests.yaml      scan       the cases a selection gives, and what each one needs
+    01-tests.yaml      scan       the tests a selection gives, and what each one needs
     02-plan.yaml       plan       the batches, the runner of each, and the knobs used
     03-provision.yaml  provision  the services that are up, secrets redacted
-    04-events.jsonl    exec       one line for each case attempt (`events.py`)
+    04-events.jsonl    exec       one line for each test attempt (`events.py`)
     05-report.*        report     what a reader gets (`reports/`)
 
 Each phase is a subcommand over one `--run-dir`: it reads the files of the phases before it and
@@ -35,7 +35,7 @@ import shutil
 
 import yaml
 
-from . import caseenv, events, sqllogic
+from . import events, sqllogic, testenv
 from .binary import UsageError
 from .model import SQLLOGIC
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED
@@ -47,7 +47,7 @@ TESTS_SCHEMA = PLAN_SCHEMA = PROVISION_SCHEMA = 1
 PYTHON_RUNNER, UNITTEST_RUNNER, RUN_RUNNER = "python", "unittest", "run"
 RUNNERS = (UNITTEST_RUNNER, RUN_RUNNER)  # what `--runner` may say; a Python body is always `python`
 
-KEPT_OUTCOMES = (FAILED, ERROR, BLOCKED)  # what a case must end with for its files to stay
+KEPT_OUTCOMES = (FAILED, ERROR, BLOCKED)  # what a test must end with for its files to stay
 
 
 def run_id_of(run_dir):
@@ -81,16 +81,16 @@ def read(run_dir, name, schema, *, made_by):
     return doc
 
 
-# -- 01: the cases ------------------------------------------------------------
+# -- 01: the tests ------------------------------------------------------------
 
 
-def write_tests(run_dir, cases, project, *, working_dir=".", selection=None, force=False):
-    """`01-tests.yaml`: every selected case with its case environment as far as it is known with no
+def write_tests(run_dir, tests, project, *, working_dir=".", selection=None, force=False):
+    """`01-tests.yaml`: every selected test with its test environment as far as it is known with no
     service running. Fields: `schema`, `made_at`, `project` (the root's name), `working_dir` (where
     the paths were read from, relative to the project root), `selection` (what was asked for), and
-    `tests`, one record for each case: `identity` (id, test, type, file, case, variants),
+    `tests`, one record for each test: `identity` (id, test, type, file, params, variants),
     `selection` (tags, and the suites the test declares itself in or out of), `preconditions`
-    (services, engines, mutex), `runtime` (case params, environment,
+    (services, engines, mutex), `runtime` (params, environment,
     timeout, retries) and `why` (the rules that gave the test what it has)."""
     doc = {
         "schema": TESTS_SCHEMA,
@@ -98,7 +98,7 @@ def write_tests(run_dir, cases, project, *, working_dir=".", selection=None, for
         "project": os.path.basename(os.path.abspath(project.root)),
         "working_dir": os.path.relpath(os.path.abspath(working_dir), project.root).replace(os.sep, "/"),
         "selection": selection or {},
-        "tests": [c.record(project) for c in cases],
+        "tests": [c.record(project) for c in tests],
     }
     return write(run_dir, TESTS_FILE, doc, force=force)
 
@@ -114,20 +114,25 @@ def ids_of_tests(doc):
 # -- 02: the batches ----------------------------------------------------------
 
 
-def _alone(case):
-    """A slow file takes a process for itself; a case with a service runs alone, so that a failure
-    that runs again for its text does not see what the first attempt left on the service. A case
-    that names a mutex takes its batch with it into the lock, so it is one case."""
-    return "slow" in case.tags or bool(case.services) or bool(case.mutex)
+def _alone(test):
+    """A slow file takes a process for itself; a test with a service runs alone, so that a failure
+    that runs again for its text does not see what the first attempt left on the service. A test
+    that names a mutex takes its batch with it into the lock, so it is one test."""
+    return "slow" in test.tags or bool(test.services) or bool(test.mutex)
 
 
 def _chunks(group, batch_size):
-    """The cases of one environment, in batches of at most `batch_size`. A file is in a batch once:
-    the binary reports by file name, so two cases of one file could not be told apart."""
+    """The tests of one environment, in batches of at most `batch_size`. A file is in a batch once:
+    the binary reports by file name, so two tests of one file could not be told apart."""
     chunks, alone = [], [[c] for c in group if _alone(c)]
     for c in (c for c in group if not _alone(c)):
         chunk = next(
-            (k for k in chunks if len(k) < batch_size and c.test.body_file not in {x.test.body_file for x in k}), None
+            (
+                k
+                for k in chunks
+                if len(k) < batch_size and c.definition.body_file not in {x.definition.body_file for x in k}
+            ),
+            None,
         )
         if chunk is None:
             chunks.append(chunk := [])
@@ -135,27 +140,27 @@ def _chunks(group, batch_size):
     return chunks + alone
 
 
-def _key_record(case_env):
-    """What makes two batches different, for a reader: a short digest of the batch key and the case
+def _key_record(test_env):
+    """What makes two batches different, for a reader: a short digest of the batch key and the test
     environment that key is made of, secrets masked."""
-    key = case_env.key()
-    return {"digest": hashlib.sha1(key.encode()).hexdigest()[:12], "environment": case_env.record()}
+    key = test_env.key()
+    return {"digest": hashlib.sha1(key.encode()).hexdigest()[:12], "environment": test_env.record()}
 
 
-def build_plan(cases, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_args="", keep=False):
-    """`02-plan.yaml` as a document. `.test` cases with one case environment share a batch; a Python
+def build_plan(tests, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_args="", keep=False):
+    """`02-plan.yaml` as a document. Tests of `.test` files with one test environment share a batch; a Python
     body is a batch of one, whatever `--runner` says, because only this process can run it.
 
-    A batch: `id`, `runner`, `order`, `cases` (the case ids), `tests` (the `.test` files, relative to
-    the project root), `timeout` and `timeouts`/`retries` where a case has its own, `mutex` where a
-    case names one, and `key` (the digest and the case environment the batch is made of). `knobs`
+    A batch: `id`, `runner`, `order`, `tests` (the test ids), `files` (the `.test` files, relative to
+    the project root), `timeout` and `timeouts`/`retries` where a test has its own, `mutex` where a
+    test names one, and `key` (the digest and the test environment the batch is made of). `knobs`
     records what the planner was given; the batch key is worked out again before a batch runs, so a
     plan can be read by another engine without being believed."""
     if runner not in RUNNERS:
         raise UsageError(f"--runner {runner!r}; it is one of {RUNNERS}")
     batches, groups = [], {}
-    for case in (c for c in cases if c.test.type == SQLLOGIC):
-        groups.setdefault(caseenv.resolve(case).key(), []).append(case)
+    for test in (c for c in tests if c.definition.type == SQLLOGIC):
+        groups.setdefault(testenv.resolve(test).key(), []).append(test)
     for group in groups.values():
         for chunk in _chunks(group, batch_size):
             batches.append(
@@ -163,27 +168,27 @@ def build_plan(cases, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_a
                     "id": f"b{len(batches) + 1:03d}",
                     "runner": runner,
                     "order": len(batches) + 1,
-                    "cases": [c.id for c in chunk],
-                    "tests": [c.test.root_path for c in chunk],
+                    "tests": [c.id for c in chunk],
+                    "files": [c.definition.root_path for c in chunk],
                     "timeout": sqllogic.DEFAULT_TIMEOUT_S,
-                    "timeouts": {c.id: c.test.timeout for c in chunk if c.test.timeout},
-                    "retries": {c.id: c.test.retries for c in chunk if c.test.retries},
+                    "timeouts": {c.id: c.definition.timeout for c in chunk if c.definition.timeout},
+                    "retries": {c.id: c.definition.retries for c in chunk if c.definition.retries},
                     **({"mutex": sorted({m for c in chunk for m in c.mutex})} if any(c.mutex for c in chunk) else {}),
-                    "key": _key_record(caseenv.resolve(chunk[0])),
+                    "key": _key_record(testenv.resolve(chunk[0])),
                 }
             )
-    for case in (c for c in cases if c.test.type != SQLLOGIC):
+    for test in (c for c in tests if c.definition.type != SQLLOGIC):
         batches.append(
             {
                 "id": f"b{len(batches) + 1:03d}",
                 "runner": PYTHON_RUNNER,
                 "order": len(batches) + 1,
-                "cases": [case.id],
-                "tests": [case.test.root_path],
-                "timeout": case.test.timeout or sqllogic.DEFAULT_TIMEOUT_S,
-                "retries": {case.id: case.test.retries} if case.test.retries else {},
-                **({"mutex": sorted(case.mutex)} if case.mutex else {}),
-                "key": _key_record(caseenv.resolve(case)),
+                "tests": [test.id],
+                "files": [test.definition.root_path],
+                "timeout": test.definition.timeout or sqllogic.DEFAULT_TIMEOUT_S,
+                "retries": {test.id: test.definition.retries} if test.definition.retries else {},
+                **({"mutex": sorted(test.mutex)} if test.mutex else {}),
+                "key": _key_record(testenv.resolve(test)),
             }
         )
     for batch in batches:
@@ -213,23 +218,23 @@ def read_plan(run_dir):
 
 
 def ids_of_plan(doc):
-    return [case_id for batch in doc.get("batches") or [] for case_id in batch["cases"]]
+    return [test_id for batch in doc.get("batches") or [] for test_id in batch["tests"]]
 
 
-def narrow(doc, *, batch_ids=(), case_ids=None):
-    """The plan with only the batches named, and inside them only the cases named. A batch that
-    keeps no case is left out, so a slice of a plan is a plan."""
+def narrow(doc, *, batch_ids=(), test_ids=None):
+    """The plan with only the batches named, and inside them only the tests named. A batch that
+    keeps no test is left out, so a slice of a plan is a plan."""
     batches = []
     for batch in doc.get("batches") or []:
         if batch_ids and batch["id"] not in batch_ids:
             continue
-        keep = [c for c in batch["cases"] if case_ids is None or c in case_ids]
+        keep = [c for c in batch["tests"] if test_ids is None or c in test_ids]
         if not keep:
             continue
-        kept = dict(batch, cases=keep)
-        if len(keep) != len(batch["cases"]):
-            by_id = dict(zip(batch["cases"], batch.get("tests") or batch["cases"]))
-            kept["tests"] = [by_id[c] for c in keep]
+        kept = dict(batch, tests=keep)
+        if len(keep) != len(batch["tests"]):
+            by_id = dict(zip(batch["tests"], batch.get("files") or batch["tests"]))
+            kept["files"] = [by_id[c] for c in keep]
         batches.append(kept)
     if unknown := sorted(set(batch_ids) - {b["id"] for b in doc.get("batches") or []}):
         raise UsageError(f"the plan has no batch {', '.join(unknown)}; it has {len(doc.get('batches') or [])}")
@@ -352,46 +357,46 @@ def services_for_exec(service_ids, project, *, doc, existing_services=(), on=Non
 
 
 def outcomes_of(event_lines):
-    """{case id: its last outcome}. A case that started and never ended has none: it was interrupted."""
+    """{test id: its last outcome}. A test that started and never ended has none: it was interrupted."""
     out = {}
     for event in event_lines:
-        if event.get("event") == events.CASE_END:
+        if event.get("event") == events.TEST_END:
             out[event["id"]] = event.get("outcome")
     return out
 
 
 def unfinished(event_lines):
-    """The cases that started and never ended, in the order they started."""
+    """The tests that started and never ended, in the order they started."""
     started, ended = [], set()
     for event in event_lines:
-        if event.get("event") == events.CASE_START:
+        if event.get("event") == events.TEST_START:
             started.append(event["id"])
-        elif event.get("event") == events.CASE_END:
+        elif event.get("event") == events.TEST_END:
             ended.add(event["id"])
-    return [case_id for case_id in started if case_id not in ended]
+    return [test_id for test_id in started if test_id not in ended]
 
 
 def _paths_by_outcome(event_lines, run_dir):
-    """(what may go, what stays): the directories of the cases, by how each one ended. A batch goes
-    only when every case in it passed on its first attempt; anything else is evidence."""
+    """(what may go, what stays): the directories of the tests, by how each one ended. A batch goes
+    only when every test in it passed on its first attempt; anything else is evidence."""
     passed, kept, batches = [], [], {}
     for event in event_lines:
-        if event.get("event") != events.CASE_END:
+        if event.get("event") != events.TEST_END:
             continue
         good = event.get("outcome") == PASSED
         if batch := event.get("batch"):
             # What a failed attempt printed stays, also when a later attempt passed.
             batches[batch] = batches.get(batch, True) and good and (event.get("attempts") or 1) == 1
-        for case_dir in event.get("dirs") or ():
-            (passed if good else kept).append(os.path.join(run_dir, case_dir))
+        for test_dir in event.get("dirs") or ():
+            (passed if good else kept).append(os.path.join(run_dir, test_dir))
     for batch, good in batches.items():
         (passed if good else kept).append(os.path.join(run_dir, batch))
     return passed, kept
 
 
 def cleanup(run_dir, *, project=None, keep=False, event_lines=None, existing_services=()):
-    """What a run leaves behind, by what `04` says about each case: the files of a case that passed
-    are removed, the files of a case that failed stay, and a service this run started is stopped.
+    """What a run leaves behind, by what `04` says about each test: the files of a test that passed
+    are removed, the files of a test that failed stay, and a service this run started is stopped.
 
     Returns {"removed": [...], "kept": [...], "stopped": [...], "problems": [...]}. It may run
     twice: what is not there any more is not a problem, and a service that does not answer is not
@@ -410,7 +415,7 @@ def cleanup(run_dir, *, project=None, keep=False, event_lines=None, existing_ser
                 # The init SQL of a batch that stays may hold a secret; the file says how to get it back.
                 sqllogic.remove_init_sql(path)
     summary["kept"] += [
-        uri for event in event_lines if event.get("event") == events.CASE_END for uri in (event.get("kept") or [])
+        uri for event in event_lines if event.get("event") == events.TEST_END for uri in (event.get("kept") or [])
     ]
     summary.update(stop_services(run_dir, project, existing_services=existing_services))
     return summary

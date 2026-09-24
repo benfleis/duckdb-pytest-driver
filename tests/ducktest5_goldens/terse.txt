@@ -1,4 +1,4 @@
-case: sql/rows.test::rows
+test: sql/rows.test::rows
 outcome: FAILED
 runner: unittest
 seconds: 1.25
@@ -19,7 +19,7 @@ made-of:
 kept: /runs/2026-09-21T10-00-00Z--amber-koala-01/batches/b002/tmp
 again: ducktest5 run --id sql/rows.test::rows
 
-case: sql/needs_env.test::needs_env
+test: sql/needs_env.test::needs_env
 outcome: SKIPPED
 runner: unittest
 seconds: 0.33
@@ -27,7 +27,7 @@ file: test/sql/needs_env.test
 reason: require-env DAT_PATH
 again: ducktest5 run --id sql/needs_env.test::needs_env
 
-case: py/write.py::write_then_read
+test: py/write.py::write_then_read
 outcome: ERROR
 runner: python
 seconds: 0.9
@@ -39,14 +39,14 @@ message:
   |     SELECT * FROM t;
 made-of:
   | require: httpfs  <- AXES storage=s3
-  | dir: /runs/2026-09-21T10-00-00Z--amber-koala-01/cases/write_then_read@write.py-ab12cd
+  | dir: /runs/2026-09-21T10-00-00Z--amber-koala-01/tests/write_then_read@write.py-ab12cd
 statements:
   | 0.51s  [duckdb] CREATE TABLE u (id INTEGER);
   | 0.21s  [duckdb] SELECT * FROM t;
-kept: /runs/2026-09-21T10-00-00Z--amber-koala-01/cases/write_then_read@write.py-ab12cd
+kept: /runs/2026-09-21T10-00-00Z--amber-koala-01/tests/write_then_read@write.py-ab12cd
 again: ducktest5 run --id py/write.py::write_then_read
 
-case: py/spark.py::roundtrip[backend=oss]
+test: py/spark.py::roundtrip[backend=oss]
 outcome: BLOCKED
 runner: -
 file: test/py/spark.py

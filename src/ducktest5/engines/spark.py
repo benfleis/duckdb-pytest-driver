@@ -24,7 +24,7 @@ class SparkHandle:
     def for_worker(self):
         """A session of this worker's own, for a run with several workers. A clone keeps the
         configuration the engine was given (a brand new session starts with none) and has its own
-        temp views, so `begin_test` here cannot drop the views of a case running beside it. The JVM,
+        temp views, so `begin_test` here cannot drop the views of a test running beside it. The JVM,
         the context and the cache stay the run's, and so does stopping them."""
         from pyspark.sql import SparkSession
 
@@ -37,13 +37,13 @@ class SparkHandle:
                 self.session.catalog.dropTempView(view.name)
         self.session.catalog.clearCache()
 
-    def begin_case(self, case_id):
-        """Scopes this session's jobs to `case_id`, so a case's timeout can cancel just its own work
-        (`cancel_case`) without touching another case running on the same JVM."""
-        self.session.sparkContext.setJobGroup(case_id, case_id)
+    def scope_jobs(self, test_id):
+        """Scopes this session's jobs to `test_id`, so a test's timeout can cancel just its own work
+        (`cancel_jobs`) without touching another test running on the same JVM."""
+        self.session.sparkContext.setJobGroup(test_id, test_id)
 
-    def cancel_case(self, case_id):
-        self.session.sparkContext.cancelJobGroup(case_id)
+    def cancel_jobs(self, test_id):
+        self.session.sparkContext.cancelJobGroup(test_id)
 
     def use_service(self, service_id, block):
         """Point s3a at an S3-compatible service. Spark copies SQL confs into the Hadoop conf of each

@@ -6,12 +6,12 @@ import shutil
 
 import pytest
 
-from ducktest5.caseenv import resolve
 from ducktest5.ctx import Ctx
 from ducktest5.engines.duckdb import DuckDBSession
-from ducktest5.model import PYTHON, Case, TestDef
+from ducktest5.model import PYTHON, Test, TestDef
 from ducktest5.run import run
 from ducktest5.scan import scan
+from ducktest5.testenv import resolve
 
 
 def _shell():
@@ -23,18 +23,18 @@ pytestmark = pytest.mark.skipif(_shell() is None, reason="no duckdb shell (set $
 
 @pytest.fixture
 def ctx(tmp_path):
-    case = Case(TestDef(path="t.py", name="t", type=PYTHON, body=lambda ctx: None), None, {})
+    test = Test(TestDef(path="t.py", name="t", type=PYTHON, body=lambda ctx: None), None, {})
     home = str(tmp_path / "home")
     shared = DuckDBSession(_shell(), home=home)
     shared.begin_test()
     context = Ctx(
-        case,
+        test,
         temp_dir=str(tmp_path),
         duckdb_bin=_shell(),
         duckdb_session=shared,
         duckdb_home=home,
         engines={},
-        case_env=resolve(case),
+        test_env=resolve(test),
     )
     yield context
     for teardown in reversed(context.teardowns):
@@ -74,10 +74,10 @@ def proof(tmp_path, mutate=lambda text: text):
     (root / "ducktest_conf.py").write_text("RULES = []\n")
     with open(PROOF) as f:
         (root / "concurrent_rw.py").write_text(mutate(f.read()))
-    cases, project = scan(str(root), working_dir=str(tmp_path))
+    tests, project = scan(str(root), working_dir=str(tmp_path))
     printed = io.StringIO()
     code = run(
-        cases, project, duckdb_bin=_shell(), working_dir=str(tmp_path), temp_root=str(tmp_path / "runs"), out=printed
+        tests, project, duckdb_bin=_shell(), working_dir=str(tmp_path), temp_root=str(tmp_path / "runs"), out=printed
     )
     return code, printed.getvalue()
 

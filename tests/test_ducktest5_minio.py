@@ -51,7 +51,7 @@ def s3(monkeypatch):
 
 
 def test_a_location_is_under_the_temp_prefix_of_the_bucket():
-    assert minio_service().location(minio_block(), "run", "case", "t") == "s3://ducktest/temp/run/case/t"
+    assert minio_service().location(minio_block(), "run", "test", "t") == "s3://ducktest/temp/run/test/t"
 
 
 def test_clean_removes_a_directory_or_an_object_and_not_a_sibling_with_the_same_start(s3):

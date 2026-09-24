@@ -1,10 +1,10 @@
-"""exec: the plan's batches, run, as one event for each case; and `run`, which is every phase.
+"""exec: the plan's batches, run, as one event for each test; and `run`, which is every phase.
 
 `ducktest5 run` is `scan`, `plan`, `provision`, `exec`, `cleanup` and `report` in one process, and
 each of them is the function the subcommand of the same name calls (`phases.py`). What was decided
 and what happened is in the run dir: `01-tests.yaml`, `02-plan.yaml`, `03-provision.yaml`,
-`04-events.jsonl` (one line for each case), `05-report.yaml` and `05-report.json`. Whatever goes
-wrong outside a body is an ERROR of the cases it hit, never the end of the run, and services are
+`04-events.jsonl` (one line for each test), `05-report.yaml` and `05-report.json`. Whatever goes
+wrong outside a body is an ERROR of the tests it hit, never the end of the run, and services are
 released on every way out.
 
 `.test` batches go to the unittest binary, several processes at a time, or to DuckDB's own `run`
@@ -15,7 +15,7 @@ The run prints nothing itself. It writes events and hands each one to the render
 the terminal, a file and `ducktest5 report` of the same run all say the same thing (`events.py`,
 `reports/`).
 
-With `debugger` (`--lldb`) the one selected `.test` case is prepared as usual -- services, batch dir,
+With `debugger` (`--lldb`) the one selected test of a `.test` file is prepared as usual -- services, batch dir,
 `config.json`, init file -- and then handed to the debugger in the foreground instead of being run.
 The batch dir stays behind for a second look, or a second debugger.
 """
@@ -32,12 +32,12 @@ import threading
 import time
 import traceback
 
-from . import caseenv, events, phases, runners, sqllogic
+from . import events, phases, runners, sqllogic, testenv
 from .binary import UsageError
 from .client import SetupFailed
 from .ctx import Ctx
 from .engines.duckdb import DuckDBSession
-from .events import CASE_END, CASE_START, RUN_END, RUN_START, SERVICE
+from .events import RUN_END, RUN_START, SERVICE, TEST_END, TEST_START
 from .mnemonic import run_id as make_run_id
 from .model import SQLLOGIC
 from .outcomes import ALL as OUTCOMES
@@ -73,11 +73,11 @@ def _failure_parts(problems, checks):
     return out
 
 
-def _run_body(case, ctx):
+def _run_body(test, ctx):
     """Returns (outcome, [problem descriptions], the first problem in parts). Checks that failed
     under on_fail="continue" are all reported; an abort or a crash is reported after them; teardowns
     run whatever happened, Ctrl-C too."""
-    body, outcome, problems = case.test.body, PASSED, []
+    body, outcome, problems = test.definition.body, PASSED, []
     try:
         try:
             body(ctx)
@@ -103,11 +103,11 @@ def _run_body(case, ctx):
     return outcome, problems, _failure_parts(problems, ctx.failed_checks)
 
 
-def _made_of(case_env, *, batch_dir=None, case_dir=None):
-    """What a failed case was made of, for a reader who did not write it: its case environment, with
+def _made_of(test_env, *, batch_dir=None, test_dir=None):
+    """What a failed test was made of, for a reader who did not write it: its test environment, with
     where every part came from, and the files that hold the rest. The init SQL is named by its
     source and its file, never quoted: it may hold a secret."""
-    facts = {"environment": case_env.record()}
+    facts = {"environment": test_env.record()}
     files = {}
     if batch_dir:
         files = {
@@ -116,23 +116,24 @@ def _made_of(case_env, *, batch_dir=None, case_dir=None):
             "init": os.path.join(batch_dir, sqllogic.INIT_FILE),
             "output": os.path.join(batch_dir, "output.txt"),
         }
-    if case_dir:
-        files = {"dir": case_dir}
+    if test_dir:
+        files = {"dir": test_dir}
     files = {name: path for name, path in files.items() if os.path.exists(path)}
     if files:
         facts["files"] = files
     return facts
 
 
-def _only_one_test_case(cases):
+def _only_one_test(tests):
     """A debugger takes over the terminal, so there is one process to take over."""
-    if len(cases) != 1:
-        listed = [c.id for c in cases[:10]] + ([f"... and {len(cases) - 10} more"] if len(cases) > 10 else [])
+    if len(tests) != 1:
+        listed = [c.id for c in tests[:10]] + ([f"... and {len(tests) - 10} more"] if len(tests) > 10 else [])
         raise UsageError(
-            f"a debugger needs exactly one .test case; the selection gives {len(cases)}:\n  " + "\n  ".join(listed)
+            f"a debugger needs exactly one test of a .test file; the selection gives {len(tests)}:\n  "
+            + "\n  ".join(listed)
         )
-    if cases[0].test.type != SQLLOGIC:
-        raise UsageError(f"a debugger runs the unittest binary; {cases[0].id} is a Python body -- not supported yet")
+    if tests[0].definition.type != SQLLOGIC:
+        raise UsageError(f"a debugger runs the unittest binary; {tests[0].id} is a Python body -- not supported yet")
 
 
 def _stop_on_signal(restore=None):
@@ -171,7 +172,7 @@ def _batch_dir(run_dir, batch_id):
 
 
 def run(
-    cases,
+    tests,
     project,
     *,
     duckdb_bin,
@@ -200,14 +201,14 @@ def run(
 ):
     """Every phase, in one process and one run directory."""
     if debugger is not None:
-        _only_one_test_case(cases)
+        _only_one_test(tests)
     run_dir = os.path.join(os.path.abspath(temp_root), make_run_id())
     os.makedirs(run_dir)
-    phases.write_tests(run_dir, cases, project, working_dir=working_dir, selection=selection)
-    plan = phases.build_plan(cases, batch_size=batch_size, workers=workers, runner=runner, run_args=run_args, keep=keep)
+    phases.write_tests(run_dir, tests, project, working_dir=working_dir, selection=selection)
+    plan = phases.build_plan(tests, batch_size=batch_size, workers=workers, runner=runner, run_args=run_args, keep=keep)
     phases.write_plan(run_dir, plan)
     return execute(
-        cases,
+        tests,
         project,
         plan=plan,
         run_dir=run_dir,
@@ -235,7 +236,7 @@ def run(
 
 
 def execute(
-    cases,
+    tests,
     project,
     *,
     plan,
@@ -266,18 +267,18 @@ def execute(
 ):
     """The exec phase: the batches of `plan`, run, as events in `04-events.jsonl`.
 
-    `cases` holds the Case of every id the plan names. With `provision_here` the services are
+    `tests` holds the Test of every id the plan names. With `provision_here` the services are
     started and released here, as `run` does; without it they are attached to, from `03` or from
-    `--existing-service`. `interrupted` names cases a run before this one left half-run, so that
+    `--existing-service`. `interrupted` names tests a run before this one left half-run, so that
     their event says so."""
     out = out or sys.stdout  # looked up now: a caller may have replaced it since import
-    by_id = {c.id: c for c in cases}
+    by_id = {c.id: c for c in tests}
     if missing := [i for i in phases.ids_of_plan(plan) if i not in by_id]:
         raise UsageError(
-            f"{len(missing)} case(s) of the plan are not in the test tree any more (was it changed since `plan`?):\n  "
+            f"{len(missing)} test(s) of the plan are not in the test tree any more (was it changed since `plan`?):\n  "
             + "\n  ".join(missing[:10])
         )
-    cases = [by_id[i] for i in phases.ids_of_plan(plan)]
+    tests = [by_id[i] for i in phases.ids_of_plan(plan)]
     run_id = phases.run_id_of(run_dir)
     engines = project.engines
     knobs = plan.get("knobs") or {}
@@ -286,7 +287,7 @@ def execute(
 
     verbose = level == "verbose"
     # Text at normal or verbose is the live renderer; anything else is rendered once, at the end.
-    live = Live(out, color=color, total=len(cases), level=level) if format == "text" and level != "terse" else None
+    live = Live(out, color=color, total=len(tests), level=level) if format == "text" and level != "terse" else None
     writer = events.Writer(
         events_file or os.path.join(run_dir, events.EVENTS_FILE),
         run_id,
@@ -304,14 +305,14 @@ def execute(
         selection=selection,
         versions=events.versions(duckdb_bin),
         binaries={"duckdb": duckdb_bin, "unittest": unittest_bin},
-        cases=len(cases),
+        tests=len(tests),
     )
 
-    def begin(case, runner_name):
-        writer.emit(CASE_START, at=round(time.perf_counter() - started, 2), runner=runner_name, **_identity(case))
+    def begin(test, runner_name):
+        writer.emit(TEST_START, at=round(time.perf_counter() - started, 2), runner=runner_name, **_identity(test))
 
     def done(
-        case,
+        test,
         outcome,
         *,
         runner,
@@ -320,19 +321,19 @@ def execute(
         kept=(),
         note="",
         batch_dir=None,
-        case_dir=None,
+        test_dir=None,
         dirs=(),
         failure=None,
         statements=(),
         reason=None,
         **more,
     ):
-        line = {**_identity(case), "outcome": outcome, "runner": runner}
+        line = {**_identity(test), "outcome": outcome, "runner": runner}
         if seconds is not None:
             line["seconds"] = seconds
         line.update({k: v for k, v in more.items() if v not in (None, (), {})})
-        if case.id in interrupted:
-            note = "; ".join(x for x in ("the run before this one was stopped while this case was running", note) if x)
+        if test.id in interrupted:
+            note = "; ".join(x for x in ("the run before this one was stopped while this test was running", note) if x)
         if problems:
             line["problems"] = list(problems)
         if failure:
@@ -341,37 +342,37 @@ def execute(
             line["reason"] = reason
         if note:
             line["note"] = note
-        if dirs:  # where the cleanup phase finds what this case left
+        if dirs:  # where the cleanup phase finds what this test left
             line["dirs"] = [os.path.relpath(d, run_dir) for d in dirs]
         if outcome != PASSED or verbose:
-            line["made_of"] = _made_of(case_env(case), batch_dir=batch_dir, case_dir=case_dir)
-            line["again"] = f"ducktest5 run --id {shlex.quote(case.id)}"
+            line["made_of"] = _made_of(test_env(test), batch_dir=batch_dir, test_dir=test_dir)
+            line["again"] = f"ducktest5 run --id {shlex.quote(test.id)}"
         if kept:
             line["kept"] = list(kept)
         if statements and (outcome != PASSED or verbose):
             line["statements"] = list(statements)
-        writer.emit(CASE_END, **line)
+        writer.emit(TEST_END, **line)
 
     provisioned, boot_errors, handles, debugged = {}, {}, {}, False
     resolved = {}
 
-    def case_env(case):
-        """The case's environment, computed once: after provisioning, before anything runs."""
-        if id(case) not in resolved:
-            resolved[id(case)] = caseenv.resolve(case, provisioned)
-        return resolved[id(case)]
+    def test_env(test):
+        """The test's environment, computed once: after provisioning, before anything runs."""
+        if id(test) not in resolved:
+            resolved[id(test)] = testenv.resolve(test, provisioned)
+        return resolved[id(test)]
 
-    # A Python case's timeout, counted from its own begin event (`case_started`), is watched by the
-    # main thread, not the worker running it -- see `python_case` and the exec loop below. `reported`
-    # makes sure a case that is given up on and a body released late by that never both write an
+    # A Python test's timeout, counted from its own begin event (`test_started`), is watched by the
+    # main thread, not the worker running it -- see `python_test` and the exec loop below. `reported`
+    # makes sure a test that is given up on and a body released late by that never both write an
     # event for it.
-    case_started, reported, reported_lock = {}, set(), threading.Lock()
+    test_started, reported, reported_lock = {}, set(), threading.Lock()
 
-    def report_once(case_id):
+    def report_once(test_id):
         with reported_lock:
-            if case_id in reported:
+            if test_id in reported:
                 return False
-            reported.add(case_id)
+            reported.add(test_id)
             return True
 
     def service_event(service_id, *, kind="service", **fields):
@@ -383,9 +384,9 @@ def execute(
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
     code = 1
     try:
-        # provision: each service some selected case needs, then each engine. One that does not come
-        # up blocks its cases; the rest of the run goes on.
-        needed = {s for c in cases for s in c.services}
+        # provision: each service some selected test needs, then each engine. One that does not come
+        # up blocks its tests; the rest of the run goes on.
+        needed = {s for c in tests for s in c.services}
         if provision_here:
             provisioned, boot_errors = phases.provision_services(
                 needed,
@@ -404,8 +405,8 @@ def execute(
                 on=service_event,
             )
 
-        # An engine boots only when a case that can still run needs it.
-        for engine_id in sorted({e for c in cases if not blocked(c) for e in c.engines}):
+        # An engine boots only when a test that can still run needs it.
+        for engine_id in sorted({e for c in tests if not blocked(c) for e in c.engines}):
             log = os.path.join(run_dir, f"engine-{engine_id}.log")
             version = engines[engine_id].version
             service_event(engine_id, kind="engine", state="starting", version=version, log=log)
@@ -428,23 +429,23 @@ def execute(
                 service_event(engine_id, kind="engine", state="failed", version=version, error=boot_errors[engine_id])
 
         runnable = {}
-        for case in cases:
-            if by := blocked(case):
-                begin(case, "-")
-                done(case, BLOCKED, runner="-", blocked_by=by, note=f"{by[0]} did not come up")
+        for test in tests:
+            if by := blocked(test):
+                begin(test, "-")
+                done(test, BLOCKED, runner="-", blocked_by=by, note=f"{by[0]} did not come up")
             else:
-                runnable[case.id] = case
+                runnable[test.id] = test
 
         # .test bodies with no Python: batches through the unittest binary, several at a time, or
         # through DuckDB's own `run` wrapper.
         batches = []
         for entry in plan.get("batches") or []:
-            chunk = [runnable[i] for i in entry["cases"] if i in runnable]
+            chunk = [runnable[i] for i in entry["tests"] if i in runnable]
             if not chunk or entry["runner"] == phases.PYTHON_RUNNER:
                 continue
             if unittest_bin is None:
                 raise UsageError("the selection holds .test files, and no unittest binary was found")
-            batches.append((entry, chunk, _batch_of(run_dir, entry, chunk, case_env)))
+            batches.append((entry, chunk, _batch_of(run_dir, entry, chunk, test_env)))
 
         if debugger is not None and batches:
             ((_, _, batch),) = batches
@@ -454,38 +455,38 @@ def execute(
             debugged = True
             code = subprocess.call(args, cwd=working_dir)  # the terminal is the debugger's
             print(f"\nbatch kept: {batch.dir}", file=out, flush=True)
-            if batch.case_env.init_sql:
+            if batch.test_env.init_sql:
                 print(
                     f"  {sqllogic.INIT_FILE} there may hold a secret; remove the directory when you are done", file=out
                 )
             return code
 
         def start_and_run(chunk, batch):
-            """A case starts when its batch does, so a run that is stopped says which cases were
+            """A test starts when its batch does, so a run that is stopped says which tests were
             under way and a resume takes exactly those up again."""
             if sqllogic.stopped():  # a batch still in the queue when the run was stopped never began
                 raise RuntimeError("the run was stopped")
-            with pool.holding({m for case in chunk for m in case.mutex}):
-                for case in chunk:
-                    begin(case, runner)
+            with pool.holding({m for test in chunk for m in test.mutex}):
+                for test in chunk:
+                    begin(test, runner)
                 return sqllogic.run_batch(unittest_bin, batch, working_dir)
 
-        def attempt(case, n, shell, engine_handles):
-            """Returns (outcome, problems, the failure in parts, the case's directory, its ctx)."""
+        def attempt(test, n, shell, engine_handles):
+            """Returns (outcome, problems, the failure in parts, the test's directory, its ctx)."""
             # An attempt after the first has its own directory and prefix, so it does not see what
             # the one before it left.
-            dir_name = case.dir_name if n == 1 else f"{case.dir_name}.attempt{n}"
-            temp_dir = os.path.join(run_dir, "cases", dir_name)
+            dir_name = test.dir_name if n == 1 else f"{test.dir_name}.attempt{n}"
+            temp_dir = os.path.join(run_dir, "tests", dir_name)
             try:
                 os.makedirs(temp_dir)
                 shell.begin_test()
                 for handle in engine_handles.values():
                     if hasattr(handle, "begin_test"):
                         handle.begin_test()
-                    if hasattr(handle, "begin_case"):  # scopes its jobs, so a timeout can cancel just this case's
-                        handle.begin_case(case.id)
+                    if hasattr(handle, "scope_jobs"):  # scopes its jobs, so a timeout can cancel just this test's
+                        handle.scope_jobs(test.id)
                 ctx = Ctx(
-                    case,
+                    test,
                     temp_dir=temp_dir,
                     duckdb_bin=duckdb_bin,
                     duckdb_session=shell,
@@ -493,31 +494,31 @@ def execute(
                     engines=engine_handles,
                     services=provisioned,
                     remote_parts=(run_id, dir_name),
-                    case_env=case_env(case),
-                    run_test=lambda **kw: _run_paired(case, case_env(case), unittest_bin, working_dir, temp_dir, **kw),
+                    test_env=test_env(test),
+                    run_test=lambda **kw: _run_paired(test, test_env(test), unittest_bin, working_dir, temp_dir, **kw),
                     session_factory=session_factory,
                 )
             except Exception as exc:
-                problems = [f"the case could not be set up: {type(exc).__name__}: {exc}"]
+                problems = [f"the test could not be set up: {type(exc).__name__}: {exc}"]
                 return ERROR, problems, {"summary": problems[0]}, temp_dir, None
-            return *_run_body(case, ctx), temp_dir, ctx
+            return *_run_body(test, ctx), temp_dir, ctx
 
-        def python_case(case):
+        def python_test(test):
             """One Python body, in the worker that took the slot: its own warm shell, its own
             session of every engine, and the locks its mutexes name held for as long as it runs.
             Registered under `pool.running` while it does, so the exec loop below can reach it once
             its timeout passes; `report_once` then keeps this from also reporting it, however late it
             is released."""
-            if sqllogic.stopped():  # a case still waiting when the run was stopped never began
+            if sqllogic.stopped():  # a test still waiting when the run was stopped never began
                 return
-            with pool.holding(case.mutex):
-                begin(case, phases.PYTHON_RUNNER)
-                case_started[case.id] = time.perf_counter()
+            with pool.holding(test.mutex):
+                begin(test, phases.PYTHON_RUNNER)
+                test_started[test.id] = time.perf_counter()
                 t0 = time.perf_counter()
-                with pool.running(case.id) as (shell, engine_handles):
-                    allowed, tried, first, ctx = 1 + case.test.retries, [], None, None
+                with pool.running(test.id) as (shell, engine_handles):
+                    allowed, tried, first, ctx = 1 + test.definition.retries, [], None, None
                     for n in range(1, allowed + 1):
-                        outcome, problems, failure, temp_dir, ctx = attempt(case, n, shell, engine_handles)
+                        outcome, problems, failure, temp_dir, ctx = attempt(test, n, shell, engine_handles)
                         tried.append((temp_dir, ctx))
                         if outcome not in (FAILED, ERROR):
                             break
@@ -529,14 +530,14 @@ def execute(
                     note = f"passed on attempt {n} of {allowed}"
                 kept = []
                 if outcome == PASSED and not keep:
-                    # What the case wrote on a service is its own; the files it left are the cleanup phase's.
+                    # What the test wrote on a service is its own; the files it left are the cleanup phase's.
                     for service_id, uri in (x for _, c in tried if c for x in c.remote_locations):
                         try:
                             provisioned[service_id].service.clean(provisioned[service_id].block, uri)
                         except Exception as exc:
                             outcome = ERROR
                             problems.append(
-                                f"what the case wrote at {uri} could not be removed: {type(exc).__name__}: {exc}"
+                                f"what the test wrote at {uri} could not be removed: {type(exc).__name__}: {exc}"
                             )
                             failure = {"summary": problems[-1]}
                             kept.append(uri)
@@ -545,12 +546,12 @@ def execute(
                         *(temp_dir for temp_dir, _ in tried if os.path.isdir(temp_dir)),
                         *(uri for _, c in tried if c for _, uri in c.remote_locations),
                     ]
-                if sqllogic.stopped():  # stopped while this body ran: a resume takes the case up again
+                if sqllogic.stopped():  # stopped while this body ran: a resume takes the test up again
                     return
-                if not report_once(case.id):  # its timeout already wrote an ERROR for it
+                if not report_once(test.id):  # its timeout already wrote an ERROR for it
                     return
                 done(
-                    case,
+                    test,
                     outcome,
                     runner=phases.PYTHON_RUNNER,
                     seconds=round(time.perf_counter() - t0, 2),
@@ -558,7 +559,7 @@ def execute(
                     failure=failure if outcome != PASSED else None,
                     kept=kept,
                     note=note,
-                    case_dir=tried[0][0],
+                    test_dir=tried[0][0],
                     dirs=[d for d, _ in tried],
                     seconds_by_client=ctx.seconds_by_client() if ctx else {},
                     statements=[s for _, c in tried if c for s in c.statements],
@@ -567,9 +568,9 @@ def execute(
 
         if runner == phases.RUN_RUNNER and batches:
             for _, chunk, batch in batches:
-                for case in chunk:
-                    begin(case, runner)
-            for chunk, group, by_case in runners.run_wrapper(
+                for test in chunk:
+                    begin(test, runner)
+            for chunk, group, by_test in runners.run_wrapper(
                 unittest_bin,
                 [(chunk, batch) for _, chunk, batch in batches],
                 working_dir,
@@ -578,17 +579,17 @@ def execute(
                 run_args=knobs.get("run_args", ""),
                 run_bin=run_bin,
             ):
-                _report_batch(chunk, group, by_case, done, run_dir, runner)
+                _report_batch(chunk, group, by_test, done, run_dir, runner)
             batches = []
 
-        def python_timed_out(case, case_timeout):
+        def python_timed_out(test, test_timeout):
             """A thread cannot be killed: give up waiting on it, release whatever it holds, and
-            report it now, so the pool's slot is free for the next case in the plan."""
-            pool.cancel(case.id)
-            if report_once(case.id):
-                done(case, ERROR, runner=phases.PYTHON_RUNNER, note=f"timed out after {case_timeout:.0f}s")
+            report it now, so the pool's slot is free for the next test in the plan."""
+            pool.cancel(test.id)
+            if report_once(test.id):
+                done(test, ERROR, runner=phases.PYTHON_RUNNER, note=f"timed out after {test_timeout:.0f}s")
 
-        # One budget of slots for both kinds of body: a batch of `.test` files and a Python case
+        # One budget of slots for both kinds of body: a batch of `.test` files and a Python test
         # each take one, in plan order. A `.test` batch enforces its own timeout inside the binary and
         # always reports itself here; a Python body reports itself from its worker, unless its
         # timeout -- watched here, since a worker cannot watch its own clock -- gets there first.
@@ -601,12 +602,12 @@ def execute(
                 batch_futures[future] = (chunk, batch)
                 every_future.append(future)
             elif entry["runner"] == phases.PYTHON_RUNNER:
-                case_timeout = entry.get("timeout") or sqllogic.DEFAULT_TIMEOUT_S
-                for i in entry["cases"]:
+                test_timeout = entry.get("timeout") or sqllogic.DEFAULT_TIMEOUT_S
+                for i in entry["tests"]:
                     if i not in runnable:
                         continue
-                    future = pool.submit(python_case, runnable[i])
-                    python_deadlines[future] = (runnable[i], case_timeout)
+                    future = pool.submit(python_test, runnable[i])
+                    python_deadlines[future] = (runnable[i], test_timeout)
                     every_future.append(future)
 
         pending = set(every_future)
@@ -616,36 +617,36 @@ def execute(
             )
             for future in finished:
                 if future not in batch_futures:
-                    future.result()  # a Python case reports its own outcome; what is left is a bug here
+                    future.result()  # a Python test reports its own outcome; what is left is a bug here
                     continue
                 chunk, batch = batch_futures[future]
                 try:
-                    by_case = future.result()
+                    by_test = future.result()
                 except Exception as exc:  # the binary could not be started, the batch dir not written, ...
-                    for case in chunk:
+                    for test in chunk:
                         done(
-                            case,
+                            test,
                             ERROR,
                             runner=runner,
                             problems=[f"the batch could not run: {type(exc).__name__}: {exc}"],
                             batch_dir=batch.dir,
                         )
                     continue
-                _report_batch(chunk, batch, by_case, done, run_dir, runner)
+                _report_batch(chunk, batch, by_test, done, run_dir, runner)
             now = time.perf_counter()
             for future in [f for f in pending if f in python_deadlines]:
-                case, case_timeout = python_deadlines[future]
-                began = case_started.get(case.id)
-                if began is not None and now - began >= case_timeout:
+                test, test_timeout = python_deadlines[future]
+                began = test_started.get(test.id)
+                if began is not None and now - began >= test_timeout:
                     pending.discard(future)
-                    python_timed_out(case, case_timeout)
+                    python_timed_out(test, test_timeout)
 
     except KeyboardInterrupt:  # Ctrl-C, or the signal handler above
         stopped["by"] = stopped["by"] or "interrupt"
         sqllogic.kill_running()
     finally:
         _stop_on_signal(restore=stopped)
-        # The order is what a stopped run needs: no case that was waiting starts, then everything a
+        # The order is what a stopped run needs: no test that was waiting starts, then everything a
         # body can be waiting for is gone, and only then are the workers waited out.
         pool.stop()
         for handle in handles.values():
@@ -662,8 +663,8 @@ def execute(
             for p in provisioned.values():
                 if p.mode == KEPT:
                     service_event(p.service.id, state="kept", attach=attach_argument(p))
-        if not debugged:  # the debugger ran the case, so nothing here has an outcome to report
-            ended = [e for e in writer.events if e.get("event") == CASE_END]
+        if not debugged:  # the debugger ran the test, so nothing here has an outcome to report
+            ended = [e for e in writer.events if e.get("event") == TEST_END]
             counts = {o: sum(e["outcome"] == o for e in ended) for o in OUTCOMES}
             # Green means it ran: a skip inside the binary does not fail the run, anything else not
             # passed does, and a run in which nothing passed is not green.
@@ -675,7 +676,7 @@ def execute(
                 RUN_END,
                 at=events.now(),
                 counts=counts,
-                cases=len(ended),
+                tests=len(ended),
                 seconds=round(time.perf_counter() - started, 2),
                 exit_code=code,
                 stopped=stopped["by"],
@@ -704,43 +705,43 @@ def execute(
     return code
 
 
-def _batch_of(run_dir, entry, chunk, case_env):
+def _batch_of(run_dir, entry, chunk, test_env):
     """One plan batch as the two files the binary takes. The batch key is worked out again here,
     with the services of this process: a plan that puts two environments in one batch is refused,
     not run."""
-    keys = {case_env(c).key() for c in chunk}
+    keys = {test_env(c).key() for c in chunk}
     if len(keys) > 1:
         raise UsageError(
-            f"batch {entry['id']} of the plan holds {len(keys)} case environments; a batch is one environment. "
+            f"batch {entry['id']} of the plan holds {len(keys)} test environments; a batch is one environment. "
             "Make the plan again with `ducktest5 plan --force`."
         )
     return sqllogic.Batch(
         _batch_dir(run_dir, entry["id"]),
-        [(c.id, c.test.body_file) for c in chunk],
-        case_env(chunk[0]),
+        [(c.id, c.definition.body_file) for c in chunk],
+        test_env(chunk[0]),
         entry.get("timeout") or sqllogic.DEFAULT_TIMEOUT_S,
         timeouts={i: t for i, t in (entry.get("timeouts") or {}).items()},
         retries={i: n for i, n in (entry.get("retries") or {}).items()},
     )
 
 
-def _report_batch(chunk, batch, by_case, done, run_dir, runner):
-    """One event for each case of a batch the binary or the wrapper has run."""
-    for case in chunk:
-        r = by_case.get(case.id)
+def _report_batch(chunk, batch, by_test, done, run_dir, runner):
+    """One event for each test of a batch the binary or the wrapper has run."""
+    for test in chunk:
+        r = by_test.get(test.id)
         if r is None:
             done(
-                case,
+                test,
                 ERROR,
                 runner=runner,
-                problems=[f"the {runner} runner reported nothing for this case"],
+                problems=[f"the {runner} runner reported nothing for this test"],
                 batch_dir=batch.dir,
                 batch=os.path.relpath(batch.dir, run_dir),
             )
             continue
         problems = [r.detail] if r.detail and r.outcome != PASSED else []
         done(
-            case,
+            test,
             r.outcome,
             runner=runner,
             seconds=r.seconds,
@@ -756,31 +757,31 @@ def _report_batch(chunk, batch, by_case, done, run_dir, runner):
         )
 
 
-def _identity(case):
-    """The same fields on `case_start` and `case_end`, so one is enough to know what a line is about."""
+def _identity(test):
+    """The same fields on `test_start` and `test_end`, so one is enough to know what a line is about."""
     return {
-        "id": case.id,
-        "test": f"{case.test.root_path}::{case.test.name}",
-        "type": case.test.type,
-        "file": case.test.path,
-        "case": case.case_id,
-        "variants": {a: v.id for a, v in case.axis_values.items()},
-        "tags": case.tags,
+        "id": test.id,
+        "test": f"{test.definition.root_path}::{test.definition.name}",
+        "type": test.definition.type,
+        "file": test.definition.path,
+        "params": test.params_key,
+        "variants": {a: v.id for a, v in test.axis_values.items()},
+        "tags": test.tags,
     }
 
 
-def _run_paired(case, case_env, unittest_bin, working_dir, temp_dir, *, env=None, init_sql=""):
+def _run_paired(test, test_env, unittest_bin, working_dir, temp_dir, *, env=None, init_sql=""):
     """`ctx.run_test()`: the `.test` file beside a Python body, as a batch of one."""
     if unittest_bin is None:
-        raise UsageError(f"{case.id} runs {case.test.body_file}, and no unittest binary was found")
+        raise UsageError(f"{test.id} runs {test.definition.body_file}, and no unittest binary was found")
     batch = sqllogic.Batch(
         os.path.join(temp_dir, "run_test"),
-        [(case.id, case.test.body_file)],
-        case_env.plus(values=env, init_sql=init_sql),
-        case.test.timeout or sqllogic.DEFAULT_TIMEOUT_S,
+        [(test.id, test.definition.body_file)],
+        test_env.plus(values=env, init_sql=init_sql),
+        test.definition.timeout or sqllogic.DEFAULT_TIMEOUT_S,
     )
-    result = sqllogic.run_batch(unittest_bin, batch, working_dir)[case.id]
+    result = sqllogic.run_batch(unittest_bin, batch, working_dir)[test.id]
     if result.outcome == SKIPPED:
-        raise SetupFailed(f"{case.test.body_file} was skipped inside the binary: {result.detail}")
+        raise SetupFailed(f"{test.definition.body_file} was skipped inside the binary: {result.detail}")
     if result.outcome != PASSED:
-        raise AssertionError(f"{case.test.body_file}\n{result.detail}")
+        raise AssertionError(f"{test.definition.body_file}\n{result.detail}")

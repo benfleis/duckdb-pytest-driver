@@ -34,8 +34,8 @@
       SELECT * FROM t;
 
   require: httpfs  &lt;- AXES storage=s3
-  dir: /runs/2026-09-21T10-00-00Z--amber-koala-01/cases/write_then_read@write.py-ab12cd
-  kept: /runs/2026-09-21T10-00-00Z--amber-koala-01/cases/write_then_read@write.py-ab12cd
+  dir: /runs/2026-09-21T10-00-00Z--amber-koala-01/tests/write_then_read@write.py-ab12cd
+  kept: /runs/2026-09-21T10-00-00Z--amber-koala-01/tests/write_then_read@write.py-ab12cd
   again: ducktest5 run --id py/write.py::write_then_read</error>
     </testcase>
   </testsuite>

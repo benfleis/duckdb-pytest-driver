@@ -4,24 +4,25 @@ The file at the root of the scanned tree is the project file; it may also declar
 AXES, SUITES and EXCLUDE. Any directory may have its own file with RULES. A rule speaks about the whole
 subtree (`default`) or about a pattern relative to its file (`match`); a pattern may name one file.
 
-How rules combine, in one order: the root file first, then each file on the way down to the test; in a
-file, the rules as listed; then the test's own `@test(...)`. Along that order, list fields (tags,
+How rules combine, in one order: the root file first, then each file on the way down to the test definition;
+in a file, the rules as listed; then the definition's own `@test(...)`. Along that order, list fields (tags,
 services, engines, variants, mutex, suites) add up, dict fields (values, settings) update by key, and
-single values (timeout, retries) are replaced. `why` records which rule gave what.
+single values (timeout, retries) are replaced. `why` records which rule gave what. All of them are on
+the definition and apply to every test made from it.
 
-`mutex="name"`, or several names, says what a test must have to itself: no two cases that name one of
+`mutex="name"`, or several names, says what a test must have to itself: no two tests that name one of
 them run at the same time, however many workers the run has.
 
 `suites` names the suites a test is in: `"smoke"` declares it in, `"!smoke"` declares it out. It adds up
 like the other list fields, except that a name may be said again: the last word on a name wins, in the
-place that name was first said. `!all` is an error -- every case is in the suite `all`.
+place that name was first said. `!all` is an error -- every test is in the suite `all`.
 
 `retries=N` lets a test that ended FAILED or ERROR run again, alone, up to N times; it is PASSED when an
 attempt passes, and the report says which attempt. It is for a test that can fail for reasons that are
 not its own, such as one that reaches the public network.
 
-`timeout=N` bounds one case, in seconds, whichever way it runs -- a `.test` file inside the binary, or a
-Python body in its worker thread -- counted from when it begins. Past it the case ends ERROR; a Python
+`timeout=N` bounds one test, in seconds, whichever way it runs -- a `.test` file inside the binary, or a
+Python body in its worker thread -- counted from when it begins. Past it the test ends ERROR; a Python
 body's thread cannot be killed, so it is only given up on, not stopped.
 """
 
@@ -49,7 +50,7 @@ def suite_name(entry):
 
 def merge_suites(target, entries, source, sources):
     """Adds `entries` to `target`, the last word on a name winning where the name was first said.
-    `source` is what said them, or None for the test's own declaration."""
+    `source` is what said them, or None for the definition's own `@test(...)`."""
     for entry in entries:
         at = next((i for i, e in enumerate(target) if suite_name(e) == suite_name(entry)), None)
         if at is None:
@@ -65,7 +66,7 @@ def merge_suites(target, entries, source, sources):
 def check_suites(entries, where):
     for entry in entries:
         if suite_name(entry) == "all" and entry.startswith("!"):
-            raise UsageError(f"{where}: '!all' -- every case is in the suite 'all'")
+            raise UsageError(f"{where}: '!all' -- every test is in the suite 'all'")
 
 
 @dataclass(frozen=True)
@@ -110,12 +111,12 @@ def _rule(pattern, fields):
 
 
 def default(**fields):
-    """A rule for every test below this file."""
+    """A rule for every test definition below this file."""
     return _rule("**", fields)
 
 
 def match(pattern, **fields):
-    """A rule for the tests whose path, relative to this file, matches `pattern`: `*` stays inside one
+    """A rule for the test definitions whose path, relative to this file, matches `pattern`: `*` stays inside one
     directory level, `**` crosses levels, `dir/**` is everything below `dir`, and a pattern with no
     wildcard names one file."""
     return _rule(pattern, fields)
@@ -123,7 +124,7 @@ def match(pattern, **fields):
 
 @dataclass
 class Settled:
-    """What the rules gave one test, and where each part came from."""
+    """What the rules gave one test definition, and where each part came from."""
 
     tags: list = field(default_factory=list)
     services: list = field(default_factory=list)

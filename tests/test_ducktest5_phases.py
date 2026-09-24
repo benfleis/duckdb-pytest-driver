@@ -50,7 +50,7 @@ def binaries(*more):
 
 
 def outcomes(run_dir):
-    return {e["id"]: e["outcome"] for e in events.read(str(run_dir)) if e["event"] == events.CASE_END}
+    return {e["id"]: e["outcome"] for e in events.read(str(run_dir)) if e["event"] == events.TEST_END}
 
 
 def phases_of(run_dir, *, exec_args=(), plan_args=()):
@@ -78,7 +78,7 @@ def test_the_phases_one_at_a_time_give_what_one_run_gives(tree, capsys):
     capsys.readouterr()
     assert main(["report", "--run-dir", "apart", "--format", "json"]) == 1
     printed = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert {e["id"] for e in printed if e["event"] == events.CASE_END} == set(outcomes(whole))
+    assert {e["id"] for e in printed if e["event"] == events.TEST_END} == set(outcomes(whole))
 
 
 def test_each_phase_writes_its_own_file_and_the_files_say_what_schema_they_are(tree):
@@ -89,7 +89,7 @@ def test_each_phase_writes_its_own_file_and_the_files_say_what_schema_they_are(t
         assert yaml.safe_load(open(os.path.join("apart", name)))["schema"] == 1
 
 
-def test_the_plan_names_the_batches_the_cases_and_the_knobs(tree):
+def test_the_plan_names_the_batches_the_tests_and_the_knobs(tree):
     assert main(["scan", "--run-dir", "apart"]) == 0
     assert main(["plan", "--run-dir", "apart", "--batch-size", "1", "--workers", "2"]) == 0
     doc = yaml.safe_load(open(os.path.join("apart", phases.PLAN_FILE)))
@@ -97,7 +97,7 @@ def test_the_plan_names_the_batches_the_cases_and_the_knobs(tree):
     assert doc["knobs"]["runner"] == "unittest"
     assert [b["id"] for b in doc["batches"]] == ["b001", "b002", "b003", "b004"]
     assert [b["runner"] for b in doc["batches"]] == ["unittest"] * 3 + ["python"]
-    assert sorted(b["cases"][0] for b in doc["batches"]) == [
+    assert sorted(b["tests"][0] for b in doc["batches"]) == [
         "a/x.test::x",
         "a/y.test::y",
         "b/body.py::passes",
@@ -142,7 +142,7 @@ def test_a_phase_that_has_no_input_says_which_phase_to_run_first(tree, capsys):
     assert "run `ducktest5 scan --run-dir apart` first" in capsys.readouterr().err
 
 
-def test_a_case_of_the_plan_that_is_not_in_the_tree_any_more_is_a_usage_error(tree, capsys):
+def test_a_test_of_the_plan_that_is_not_in_the_tree_any_more_is_a_usage_error(tree, capsys):
     assert main(["scan", "--run-dir", "apart"]) == 0
     assert main(["plan", "--run-dir", "apart"]) == 0
     os.remove("test/a/x.test")
@@ -162,14 +162,14 @@ def test_exec_refuses_a_plan_that_already_has_events(tree, capsys):
 
 
 def ended(run_dir):
-    return [e for e in events.read(str(run_dir)) if e["event"] == events.CASE_END]
+    return [e for e in events.read(str(run_dir)) if e["event"] == events.TEST_END]
 
 
 def started(run_dir):
-    return [e["id"] for e in events.read(str(run_dir)) if e["event"] == events.CASE_START]
+    return [e["id"] for e in events.read(str(run_dir)) if e["event"] == events.TEST_START]
 
 
-def test_resume_runs_only_the_cases_that_have_no_end_yet(tree, capsys):
+def test_resume_runs_only_the_tests_that_have_no_end_yet(tree, capsys):
     assert main(["scan", "--run-dir", "apart"]) == 0
     assert main(["plan", "--run-dir", "apart", "--batch-size", "1"]) == 0
     assert main(["exec", "--run-dir", "apart", "--batch", "b001", *binaries()]) == 0
@@ -186,16 +186,16 @@ def test_resume_runs_only_the_cases_that_have_no_end_yet(tree, capsys):
     }
 
 
-def test_a_case_that_was_stopped_half_way_runs_again_and_its_event_says_so(tree):
+def test_a_test_that_was_stopped_half_way_runs_again_and_its_event_says_so(tree):
     assert main(["scan", "--run-dir", "apart"]) == 0
     assert main(["plan", "--run-dir", "apart", "--batch-size", "1"]) == 0
     with open(os.path.join("apart", events.EVENTS_FILE), "w") as f:
-        f.write(json.dumps({"event": events.CASE_START, "run": "apart", "id": "a/x.test::x"}) + "\n")
+        f.write(json.dumps({"event": events.TEST_START, "run": "apart", "id": "a/x.test::x"}) + "\n")
 
     assert main(["exec", "--run-dir", "apart", "--resume", *binaries()]) == 1
     (again,) = [e for e in ended("apart") if e["id"] == "a/x.test::x"]
     assert again["outcome"] == "passed"
-    assert again["note"] == "the run before this one was stopped while this case was running"
+    assert again["note"] == "the run before this one was stopped while this test was running"
 
 
 def test_only_failed_runs_what_failed_again_and_the_later_outcome_wins(tree, tmp_path, monkeypatch):
@@ -226,7 +226,7 @@ def test_two_execs_over_one_plan_write_beside_each_other(tree, capsys):
     capsys.readouterr()
     assert main(["report", "--run-dir", here, "--run-dir", there, "--format", "json"]) == 1
     merged = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert {e["id"]: e["outcome"] for e in merged if e["event"] == events.CASE_END} == {
+    assert {e["id"]: e["outcome"] for e in merged if e["event"] == events.TEST_END} == {
         "a/x.test::x": "passed",
         "b/z_fail.test::z_fail": "failed",
     }

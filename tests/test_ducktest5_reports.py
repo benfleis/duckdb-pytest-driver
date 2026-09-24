@@ -1,7 +1,7 @@
 """The renderers, against one synthetic run that holds every outcome.
 
-`ducktest5_goldens/events.jsonl` is that run: a passed case, a failed one with rows, a skipped one
-with its reason, an error in a Python body, a blocked case, and one that passed on its second
+`ducktest5_goldens/events.jsonl` is that run: a passed test, a failed one with rows, a skipped one
+with its reason, an error in a Python body, a blocked test, and one that passed on its second
 attempt. The expected text of each renderer is a file beside it, so the goldens read as a sample of
 what a run looks like. Re-make them with `UPDATE_GOLDENS=1 pytest tests/test_ducktest5_reports.py`.
 """
@@ -56,7 +56,7 @@ def test_every_outcome_is_in_the_synthetic_run(report):
 
 def test_a_half_written_last_line_is_dropped(tmp_path):
     path = tmp_path / "04-events.jsonl"
-    path.write_text(open(EVENTS).read() + '{"event": "case_end", "id": "cut off her')
+    path.write_text(open(EVENTS).read() + '{"event": "test_end", "id": "cut off her')
     assert len(events.read(str(path))) == len(events.read(EVENTS))
 
 
@@ -116,11 +116,11 @@ def test_verbose_adds_the_statements_a_body_ran(report):
     assert "0.51s  [duckdb] CREATE TABLE u (id INTEGER);" in produced
 
 
-def test_terse_has_no_banner_and_no_passed_case(report):
+def test_terse_has_no_banner_and_no_passed_test(report):
     produced = rendered(report, format="text", level="terse")
     golden("terse.txt", produced)
-    assert "sql/read.test::read" not in produced  # the passed case
-    assert produced.splitlines()[0].startswith("case: ")
+    assert "sql/read.test::read" not in produced  # the passed test
+    assert produced.splitlines()[0].startswith("test: ")
 
 
 def test_the_terse_grammar_is_what_the_docstring_says(report):
@@ -142,10 +142,10 @@ def test_the_terse_grammar_is_what_the_docstring_says(report):
         assert key in TERSE_KEYS, key
         assert not seen or TERSE_KEYS.index(key) > TERSE_KEYS.index(seen[-1]), f"{key} out of order"
         if not seen:
-            assert key == "case"
+            assert key == "test"
             blocks += 1
         seen.append(key)
-    assert blocks == 4  # every case that did not pass
+    assert blocks == 4  # every test that did not pass
 
 
 def test_colour_is_only_asked_for_on_a_terminal(monkeypatch, report):
@@ -188,7 +188,7 @@ def test_the_yaml_and_the_json_document_say_the_same_thing(tmp_path, report):
     assert as_json == yaml.safe_load((tmp_path / "05-report.yaml").read_text())
     assert as_json["counts"] == report.counts
     assert as_json["exit_code"] == 1
-    assert [c["id"] for c in as_json["cases"]] == sorted(c["id"] for c in report.cases)
+    assert [c["id"] for c in as_json["tests"]] == sorted(c["id"] for c in report.tests)
 
 
 # -----------------------------------------------------------------------------
@@ -221,11 +221,11 @@ def test_the_junit_xml_parses_back_into_the_common_shape(report):
     assert all(c.attrib["classname"] == _file_of(c.attrib["name"]) for c in by_name.values())
 
 
-def _file_of(case_id):
-    return "test/" + case_id.split("::")[0]
+def _file_of(test_id):
+    return "test/" + test_id.split("::")[0]
 
 
-def test_a_case_that_passed_on_a_second_attempt_says_so_as_a_property(report):
+def test_a_test_that_passed_on_a_second_attempt_says_so_as_a_property(report):
     root = ET.fromstring(io.StringIO(_junit(report)).read())
     (flaky,) = [c for s in root for c in s.findall("testcase") if c.attrib["name"] == "sql/flaky.test::flaky"]
     properties = {p.attrib["name"]: p.attrib["value"] for p in flaky.iter("property")}
@@ -240,19 +240,19 @@ def _junit(report):
 
 
 # -----------------------------------------------------------------------------
-# a stable order in the files, whatever order the cases ended
+# a stable order in the files, whatever order the tests ended
 #
 
 
-def _case_end(name, *, file="test/a.test"):
+def _test_end(name, *, file="test/a.test"):
     return {
-        "event": "case_end",
+        "event": "test_end",
         "run": "r",
         "id": f"{file.removeprefix('test/')}::{name}",
         "test": f"{file}::{name}",
         "file": file,
         "type": "sqllogic",
-        "case": None,
+        "params": None,
         "variants": {},
         "tags": [],
         "outcome": "passed",
@@ -260,10 +260,10 @@ def _case_end(name, *, file="test/a.test"):
     }
 
 
-def test_the_yaml_json_and_junit_files_do_not_depend_on_which_case_ended_first(tmp_path):
+def test_the_yaml_json_and_junit_files_do_not_depend_on_which_test_ended_first(tmp_path):
     names = ["z_test", "a_test", "m_test"]
-    forward = Report.of([_case_end(n) for n in names])
-    backward = Report.of([_case_end(n) for n in reversed(names)])
+    forward = Report.of([_test_end(n) for n in names])
+    backward = Report.of([_test_end(n) for n in reversed(names)])
 
     for writer, ext in ((document.write_yaml, "yaml"), (document.write_json, "json")):
         a, b = str(tmp_path / f"forward.{ext}"), str(tmp_path / f"backward.{ext}")
@@ -303,7 +303,7 @@ def test_the_example_queries_are_the_ones_the_docstring_shows():
 def test_the_events_load_into_tables_that_answer_the_example_questions(tmp_path):
     db = str(tmp_path / "results.duckdb")
     duck.load(db, [EVENTS], duckdb_bin=shell())
-    assert query(db, "SELECT count(*) FROM cases") == [["6"]]
+    assert query(db, "SELECT count(*) FROM tests") == [["6"]]
     assert query(db, "SELECT count(*) FROM runs") == [["1"]]
     assert sorted(query(db, "SELECT service_id, state FROM services")) == [
         ["spark", "failed"],
@@ -312,7 +312,7 @@ def test_the_events_load_into_tables_that_answer_the_example_questions(tmp_path)
         ["store", "up"],
     ]
     assert query(db, "SELECT client, seconds FROM clients") == [["duckdb", "0.72"]]
-    assert query(db, "SELECT case_id FROM failures ORDER BY case_id") == [
+    assert query(db, "SELECT test_id FROM failures ORDER BY test_id") == [
         ["py/spark.py::roundtrip[backend=oss]"],
         ["py/write.py::write_then_read"],
         ["sql/needs_env.test::needs_env"],
@@ -332,7 +332,7 @@ def test_runs_append_and_a_run_loaded_twice_is_not_counted_twice(tmp_path):
     second.write_text(later.replace('"failed", ', '"passed", '))
     duck.load(db, [EVENTS], duckdb_bin=shell())
     duck.load(db, [EVENTS], duckdb_bin=shell())  # again: it replaces its own rows
-    assert query(db, "SELECT count(*) FROM cases") == [["6"]]
+    assert query(db, "SELECT count(*) FROM tests") == [["6"]]
     duck.load(db, [str(second)], duckdb_bin=shell())
     assert query(db, "SELECT count(*) FROM runs") == [["2"]]
     assert query(db, duck.EXAMPLES["changed"]) == [["sql/rows.test::rows", "failed", "passed"]]
@@ -347,7 +347,7 @@ LATER = "2026-09-21T11-00-00Z--brass-otter-02"
 
 
 def second_run(tmp_path):
-    """The same run again, an hour later, with the case that failed passing this time."""
+    """The same run again, an hour later, with the test that failed passing this time."""
     text = open(EVENTS).read().replace("2026-09-21T10-00-00Z--amber-koala-01", LATER)
     path = tmp_path / "later.jsonl"
     path.write_text(text.replace("T10:00:0", "T11:00:0").replace('"outcome": "failed"', '"outcome": "passed"'))
@@ -371,15 +371,15 @@ def test_a_missing_event_file_is_a_usage_error(tmp_path, capsys):
     assert report_command(["--run-dir", str(tmp_path)], capsys)[0] == 2
 
 
-def test_several_run_dirs_merge_and_a_later_run_wins_a_shared_case(tmp_path, capsys):
+def test_several_run_dirs_merge_and_a_later_run_wins_a_shared_test(tmp_path, capsys):
     code, printed = report_command(["--run-dir", EVENTS, "--run-dir", second_run(tmp_path), "--level", "terse"], capsys)
-    assert "case: sql/rows.test::rows" not in printed  # it passed in the later run
-    assert code == 1  # the error and the blocked case are still there
-    assert printed.count(f"run: {LATER}") == 3  # every case left says which run it came from
+    assert "test: sql/rows.test::rows" not in printed  # it passed in the later run
+    assert code == 1  # the error and the blocked test are still there
+    assert printed.count(f"run: {LATER}") == 3  # every test left says which run it came from
     assert printed.splitlines()[-1].startswith("summary: 3 passed, 0 failed, 1 error, 1 blocked, 1 skipped")
 
 
-def test_a_merged_report_names_the_run_of_every_case(tmp_path, capsys):
+def test_a_merged_report_names_the_run_of_every_test(tmp_path, capsys):
     _, printed = report_command(["--run-dir", EVENTS, "--run-dir", second_run(tmp_path)], capsys)
     assert f"<{LATER}>" in printed and "<2026-09-21T10-00-00Z--amber-koala-01>" not in printed
 

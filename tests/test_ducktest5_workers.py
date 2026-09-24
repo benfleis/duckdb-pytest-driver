@@ -1,4 +1,4 @@
-"""Several workers: the same outcomes as one, cases that overlap, and cases that must not."""
+"""Several workers: the same outcomes as one, tests that overlap, and tests that must not."""
 
 import os
 import re
@@ -12,14 +12,14 @@ import pytest
 
 from ducktest5 import events, phases, sqllogic
 from ducktest5.engines.duckdb import DuckDBSession
-from test_ducktest5_run import FAKE, FakeSession, go, outcomes, py_case, sql_case
+from test_ducktest5_run import FAKE, FakeSession, go, outcomes, py_test, sql_test
 
-SLEEP_S = 0.3  # long enough that cases overlap, short enough for a self-test
+SLEEP_S = 0.3  # long enough that tests overlap, short enough for a self-test
 FAKE_SHELL = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_shell.py")
 
 
 class Recorder:
-    """What each body did and when, for a test that asks whether two cases overlapped."""
+    """What each body did and when, for a test that asks whether two tests overlapped."""
 
     def __init__(self):
         self.spans = []  # (name, entered, left)
@@ -38,14 +38,14 @@ class Recorder:
         return run
 
     def overlap(self, one, other):
-        """Whether the two cases of these names were in their bodies at the same time."""
+        """Whether the two tests of these names were in their bodies at the same time."""
         (_, a_in, a_out) = next(s for s in self.spans if s[0] == one)
         (_, b_in, b_out) = next(s for s in self.spans if s[0] == other)
         return a_in < b_out and b_in < a_out
 
 
-def cases_of(recorder, names, *, seconds=SLEEP_S, **fields):
-    return [py_case(recorder.body(n, seconds=seconds), path=f"test/{n}.py", **fields) for n in names]
+def py_tests_of(recorder, names, *, seconds=SLEEP_S, **fields):
+    return [py_test(recorder.body(n, seconds=seconds), path=f"test/{n}.py", **fields) for n in names]
 
 
 def tree_for(tmp_path, name):
@@ -64,23 +64,25 @@ def test_four_workers_give_the_same_outcomes_as_one(tmp_path):
 
     def run(workers):
         recorder = Recorder()
-        cases = [
-            *cases_of(recorder, [n for n in names if not n.endswith("_fails")], seconds=0.05),
-            py_case(recorder.body("e_fails", seconds=0.05, raises=True), path="test/e_fails.py"),
-            sql_case("a.test"),
-            sql_case("b_fail.test"),
+        tests = [
+            *py_tests_of(recorder, [n for n in names if not n.endswith("_fails")], seconds=0.05),
+            py_test(recorder.body("e_fails", seconds=0.05, raises=True), path="test/e_fails.py"),
+            sql_test("a.test"),
+            sql_test("b_fail.test"),
         ]
-        code, _, report, _ = go(tree_for(tmp_path, f"w{workers}"), cases, workers=workers)
+        code, _, report, _ = go(tree_for(tmp_path, f"w{workers}"), tests, workers=workers)
         return code, outcomes(report)
 
     assert run(1) == run(4)
 
 
-def test_cases_run_at_the_same_time_and_one_worker_runs_them_one_after_another(tmp_path):
+def test_tests_run_at_the_same_time_and_one_worker_runs_them_one_after_another(tmp_path):
     def wall(workers):
         recorder = Recorder()
         started = time.perf_counter()
-        code, _, _, _ = go(tree_for(tmp_path, f"w{workers}"), cases_of(recorder, ["a", "b", "c", "d"]), workers=workers)
+        code, _, _, _ = go(
+            tree_for(tmp_path, f"w{workers}"), py_tests_of(recorder, ["a", "b", "c", "d"]), workers=workers
+        )
         assert code == 0
         return time.perf_counter() - started, recorder
 
@@ -91,14 +93,14 @@ def test_cases_run_at_the_same_time_and_one_worker_runs_them_one_after_another(t
     assert together < alone / 2
 
 
-def test_a_case_that_raises_does_not_stop_the_others(tmp_path):
+def test_a_test_that_raises_does_not_stop_the_others(tmp_path):
     recorder = Recorder()
-    cases = [
-        *cases_of(recorder, ["a"], seconds=0.05),
-        py_case(recorder.body("b_raises", seconds=0.05, raises=True), path="test/b_raises.py"),
-        *cases_of(recorder, ["c"], seconds=0.05),
+    tests = [
+        *py_tests_of(recorder, ["a"], seconds=0.05),
+        py_test(recorder.body("b_raises", seconds=0.05, raises=True), path="test/b_raises.py"),
+        *py_tests_of(recorder, ["c"], seconds=0.05),
     ]
-    code, _, report, _ = go(tmp_path, cases, workers=4)
+    code, _, report, _ = go(tmp_path, tests, workers=4)
     assert code == 1
     assert outcomes(report) == {"a": "passed", "b_raises": "failed", "c": "passed"}
 
@@ -123,13 +125,13 @@ def test_every_worker_has_a_shell_of_its_own_and_keeps_it_warm(tmp_path):
         run.__name__ = name
         return run
 
-    cases = [py_case(uses_the_shell(n), path=f"test/{n}.py") for n in ("a", "b", "c", "d")]
-    assert go(tmp_path, cases, workers=2, session_factory=Counted)[0] == 0
-    assert len(made) == 2  # one for each worker, not one for each case
+    tests = [py_test(uses_the_shell(n), path=f"test/{n}.py") for n in ("a", "b", "c", "d")]
+    assert go(tmp_path, tests, workers=2, session_factory=Counted)[0] == 0
+    assert len(made) == 2  # one for each worker, not one for each test
     assert sum(len(s.statements) for s in made) == 4
 
 
-def test_a_case_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_path):
+def test_a_test_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_path):
     from ducktest5.declare import Variant
 
     made = []
@@ -142,11 +144,11 @@ def test_a_case_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_p
     def body(ctx):
         ctx.duckdb().oks("SELECT 1")
 
-    cases = [
-        py_case(body, {"auth": Variant("profile", env={"AWS_PROFILE": "ducktest"})}, path="test/env.py"),
-        py_case(body, path="test/plain.py"),
+    tests = [
+        py_test(body, {"auth": Variant("profile", env={"AWS_PROFILE": "ducktest"})}, path="test/env.py"),
+        py_test(body, path="test/plain.py"),
     ]
-    assert go(tmp_path, cases, workers=2, session_factory=Counted)[0] == 0
+    assert go(tmp_path, tests, workers=2, session_factory=Counted)[0] == 0
     with_env = [s for s in made if s.env is not None]
     assert len(with_env) == 1 and with_env[0].env["AWS_PROFILE"] == "ducktest"
 
@@ -156,24 +158,24 @@ def test_a_case_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_p
 #
 
 
-def test_two_cases_that_name_the_same_mutex_never_overlap(tmp_path):
+def test_two_tests_that_name_the_same_mutex_never_overlap(tmp_path):
     recorder = Recorder()
-    cases = [
-        *cases_of(recorder, ["a", "b"], mutex=["the-host-port"]),
-        *cases_of(recorder, ["c"]),
+    tests = [
+        *py_tests_of(recorder, ["a", "b"], mutex=["the-host-port"]),
+        *py_tests_of(recorder, ["c"]),
     ]
-    assert go(tmp_path, cases, workers=4)[0] == 0
+    assert go(tmp_path, tests, workers=4)[0] == 0
     assert not recorder.overlap("a", "b")
     assert recorder.overlap("a", "c") or recorder.overlap("b", "c")  # the mutex holds back nothing else
 
 
-def test_a_case_takes_its_mutexes_in_sorted_order_whatever_order_it_names_them(tmp_path):
+def test_a_test_takes_its_mutexes_in_sorted_order_whatever_order_it_names_them(tmp_path):
     recorder = Recorder()
-    cases = [
-        *cases_of(recorder, ["a"], mutex=["one", "two"]),
-        *cases_of(recorder, ["b"], mutex=["two", "one"]),
+    tests = [
+        *py_tests_of(recorder, ["a"], mutex=["one", "two"]),
+        *py_tests_of(recorder, ["b"], mutex=["two", "one"]),
     ]
-    assert go(tmp_path, cases, workers=2)[0] == 0
+    assert go(tmp_path, tests, workers=2)[0] == 0
     assert not recorder.overlap("a", "b")
 
 
@@ -181,8 +183,8 @@ def test_the_plan_says_which_batches_hold_a_mutex(tmp_path):
     import yaml
 
     recorder = Recorder()
-    cases = [*cases_of(recorder, ["a"], mutex=["the-host-port"]), *cases_of(recorder, ["b"])]
-    _, run_dir, _, _ = go(tmp_path, cases, workers=2)
+    tests = [*py_tests_of(recorder, ["a"], mutex=["the-host-port"]), *py_tests_of(recorder, ["b"])]
+    _, run_dir, _, _ = go(tmp_path, tests, workers=2)
     plan = yaml.safe_load((run_dir / "02-plan.yaml").read_text())
     assert [b.get("mutex") for b in plan["batches"]] == [["the-host-port"], None]
 
@@ -192,14 +194,14 @@ def test_the_plan_says_which_batches_hold_a_mutex(tmp_path):
 #
 
 
-def test_the_live_lines_come_one_by_one_in_the_order_the_cases_ended(tmp_path):
+def test_the_live_lines_come_one_by_one_in_the_order_the_tests_ended(tmp_path):
     recorder = Recorder()
-    cases = [*cases_of(recorder, ["a", "b", "c", "d"]), sql_case("x.test")]
-    _, run_dir, _, text = go(tmp_path, cases, workers=4)
+    tests = [*py_tests_of(recorder, ["a", "b", "c", "d"]), sql_test("x.test")]
+    _, run_dir, _, text = go(tmp_path, tests, workers=4)
     lines = [line for line in text.splitlines() if re.match(r"^\s*\[\d+/\d+]", line)]
     assert [re.match(r"^\s*\[(\d+)/(\d+)]", line).groups() for line in lines] == [(str(n), "5") for n in range(1, 6)]
-    ended = [e["id"] for e in events.read(str(run_dir)) if e["event"] == events.CASE_END]
-    assert [line.split()[2] for line in lines] == ended  # one line for each case, in the order they ended
+    ended = [e["id"] for e in events.read(str(run_dir)) if e["event"] == events.TEST_END]
+    assert [line.split()[2] for line in lines] == ended  # one line for each test, in the order they ended
 
 
 # -----------------------------------------------------------------------------
@@ -213,7 +215,7 @@ TREE = {
 
         from ducktest5 import test
 
-        @test(cases={"a": {}, "b": {}, "c": {}, "d": {}})
+        @test(params={"a": {}, "b": {}, "c": {}, "d": {}})
         def waits(ctx):
             time.sleep(5)
     """,
@@ -259,9 +261,9 @@ def test_a_stopped_run_with_several_workers_ends_by_itself_and_leaves_nothing_ru
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    for _ in range(300):  # until the first cases are under way
+    for _ in range(300):  # until the first tests are under way
         lines = [e for f in (tmp_path / "runs").glob("*/04-events.jsonl") for e in events.read(str(f))]
-        if any(e["event"] == events.CASE_START for e in lines):
+        if any(e["event"] == events.TEST_START for e in lines):
             break
         time.sleep(0.1)
 
@@ -269,12 +271,12 @@ def test_a_stopped_run_with_several_workers_ends_by_itself_and_leaves_nothing_ru
     assert started.wait(timeout=30) == 130
     assert still_running(str(tmp_path)) == []
     (run_dir,) = (tmp_path / "runs").iterdir()
-    ended = {e["id"] for e in events.read(str(run_dir)) if e["event"] == events.CASE_END}
+    ended = {e["id"] for e in events.read(str(run_dir)) if e["event"] == events.TEST_END}
     assert len(ended) < 4  # what was under way has no end: a resume takes exactly those up again
 
 
 # -----------------------------------------------------------------------------
-# A timeout on a Python case
+# A timeout on a Python test
 #
 
 
@@ -283,8 +285,8 @@ def _named(fn, name):
     return fn
 
 
-def _quick_cases(n):
-    return [py_case(_named(lambda ctx: None, f"quick{i}"), path=f"test/quick{i}.py") for i in range(n)]
+def _quick_tests(n):
+    return [py_test(_named(lambda ctx: None, f"quick{i}"), path=f"test/quick{i}.py") for i in range(n)]
 
 
 @pytest.mark.parametrize("workers", [1, 4])
@@ -292,14 +294,14 @@ def test_a_body_that_sleeps_past_its_timeout_ends_error_and_the_run_moves_on(tmp
     def slow(ctx):
         time.sleep(0.5)
 
-    cases = [py_case(_named(slow, "slow"), path="test/slow.py", timeout=0.1), *_quick_cases(3)]
+    tests = [py_test(_named(slow, "slow"), path="test/slow.py", timeout=0.1), *_quick_tests(3)]
     t0 = time.perf_counter()
-    code, run_dir, report, _ = go(tmp_path, cases, workers=workers)
+    code, run_dir, report, _ = go(tmp_path, tests, workers=workers)
     took = time.perf_counter() - t0
     out = outcomes(report)
     assert out["slow"] == "error"
     assert all(out[f"quick{i}"] == "passed" for i in range(3))
-    note = next(c["note"] for c in report["cases"] if c["id"].endswith("::slow"))
+    note = next(c["note"] for c in report["tests"] if c["id"].endswith("::slow"))
     assert re.match(r"^timed out after \d+s$", note)
     assert took < 3  # the run did not wait out the full sleep
 
@@ -309,23 +311,23 @@ def test_a_hung_duckdb_statement_is_released_and_reported_once(tmp_path, workers
     def hangs(ctx):
         ctx.duckdb().oks("SELECT drip")
 
-    cases = [py_case(_named(hangs, "hangs"), path="test/hangs.py", timeout=0.3), *_quick_cases(3)]
+    tests = [py_test(_named(hangs, "hangs"), path="test/hangs.py", timeout=0.3), *_quick_tests(3)]
     code, run_dir, report, _ = go(
-        tmp_path, cases, workers=workers, duckdb_bin=FAKE_SHELL, session_factory=DuckDBSession
+        tmp_path, tests, workers=workers, duckdb_bin=FAKE_SHELL, session_factory=DuckDBSession
     )
     out = outcomes(report)
     assert out["hangs"] == "error"
     assert all(out[f"quick{i}"] == "passed" for i in range(3))
-    (case,) = [c for c in report["cases"] if c["id"].endswith("::hangs")]
-    assert re.match(r"^timed out after \d+s$", case["note"])
-    ends = [e for e in events.read(str(run_dir)) if e["event"] == events.CASE_END and e["id"] == case["id"]]
+    (test,) = [c for c in report["tests"] if c["id"].endswith("::hangs")]
+    assert re.match(r"^timed out after \d+s$", test["note"])
+    ends = [e for e in events.read(str(run_dir)) if e["event"] == events.TEST_END and e["id"] == test["id"]]
     assert len(ends) == 1  # the dead-shell exception the timeout let loose was swallowed, not reported again
 
 
-def test_a_rules_timeout_reaches_a_python_case_and_it_defaults_like_a_test_case_does():
-    default_case = py_case(_named(lambda ctx: None, "default"), path="test/default.py")
-    custom_case = py_case(_named(lambda ctx: None, "custom"), path="test/custom.py", timeout=42)
-    plan = phases.build_plan([default_case, custom_case], workers=2)
-    by_test = {b["tests"][0]: b for b in plan["batches"]}
-    assert by_test["test/default.py"]["timeout"] == sqllogic.DEFAULT_TIMEOUT_S
-    assert by_test["test/custom.py"]["timeout"] == 42
+def test_a_rules_timeout_reaches_a_python_test_and_it_defaults_like_a_sqllogic_test_does():
+    default_test = py_test(_named(lambda ctx: None, "default"), path="test/default.py")
+    custom_test = py_test(_named(lambda ctx: None, "custom"), path="test/custom.py", timeout=42)
+    plan = phases.build_plan([default_test, custom_test], workers=2)
+    by_file = {b["files"][0]: b for b in plan["batches"]}
+    assert by_file["test/default.py"]["timeout"] == sqllogic.DEFAULT_TIMEOUT_S
+    assert by_file["test/custom.py"]["timeout"] == 42

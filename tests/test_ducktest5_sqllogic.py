@@ -7,8 +7,8 @@ import os
 import pytest
 
 from ducktest5 import sqllogic
-from ducktest5.caseenv import CaseEnv, Entry
 from ducktest5.sqllogic import ERROR, FAILED, PASSED, SKIPPED, Batch
+from ducktest5.testenv import Entry, TestEnv
 
 FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
 
@@ -18,11 +18,11 @@ def run(tmp_path, names, **kwargs):
 
 
 def test_a_batch_is_two_files(tmp_path):
-    case_env = CaseEnv(
+    test_env = TestEnv(
         values={"catalog": Entry("duck", "@test", name="catalog")},
         init_sql=[Entry("SELECT 1;", "@test", kind="sql", shown="")],
     )
-    run(tmp_path, ["a.test", "b.test"], case_env=case_env)
+    run(tmp_path, ["a.test", "b.test"], test_env=test_env)
     batch = tmp_path / "b001"
     assert (batch / "tests.txt").read_text() == "a.test\nb.test\n"
     config = json.loads((batch / "config.json").read_text())
@@ -102,12 +102,12 @@ def test_an_exit_code_that_no_test_explains_is_an_error(tmp_path):
 
 
 def test_results_timeouts_and_retries_go_by_the_callers_key_not_by_file_name(tmp_path, flaky_state):
-    tests = [("case 1", "a.test"), ("case 2", "b_flaky2.test"), ("case 3", "c_hang.test")]
-    results = run(tmp_path, tests, retries={"case 2": 1}, timeouts={"case 3": 0.5})
+    tests = [("test 1", "a.test"), ("test 2", "b_flaky2.test"), ("test 3", "c_hang.test")]
+    results = run(tmp_path, tests, retries={"test 2": 1}, timeouts={"test 3": 0.5})
     assert {key: (r.name, r.outcome) for key, r in results.items()} == {
-        "case 1": ("a.test", PASSED),
-        "case 2": ("b_flaky2.test", PASSED),
-        "case 3": ("c_hang.test", ERROR),
+        "test 1": ("a.test", PASSED),
+        "test 2": ("b_flaky2.test", PASSED),
+        "test 3": ("c_hang.test", ERROR),
     }
 
 

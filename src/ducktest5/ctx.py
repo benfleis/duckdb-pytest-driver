@@ -19,34 +19,34 @@ def _no_reconnect():
 class Ctx:
     def __init__(
         self,
-        case,
+        test,
         *,
         temp_dir,
         duckdb_bin,
         duckdb_session,
         engines,
-        case_env,
+        test_env,
         duckdb_home=None,
         services=None,
         remote_parts=(),
         run_test=None,
         session_factory=DuckDBSession,
     ):
-        self.id = case.id
-        self.case = case.params
-        self.variant = {axis: v for axis, v in case.axis_values.items()}
-        self.environment = case_env
-        self.values = case_env.value_map
-        self.roots = case_env.root_paths
+        self.id = test.id
+        self.params = test.params
+        self.variant = {axis: v for axis, v in test.axis_values.items()}
+        self.environment = test_env
+        self.values = test_env.value_map
+        self.roots = test_env.root_paths
         self._run_test = run_test
-        self._location_on = next((v.location_on for v in case.axis_values.values() if v.location_on), None)
+        self._location_on = next((v.location_on for v in test.axis_values.values() if v.location_on), None)
         self.temp_dir = temp_dir
         self._duckdb_bin = duckdb_bin
         self._duckdb_session = duckdb_session
         self._duckdb_home = duckdb_home
         self._session_factory = session_factory
-        self._engines = {e: engines[e] for e in case.engines}
-        self._services = {s: services[s] for s in case.services} if services else {}
+        self._engines = {e: engines[e] for e in test.engines}
+        self._services = {s: services[s] for s in test.services} if services else {}
         self._remote_parts = remote_parts
         self.remote_locations = []  # (service id, uri): what this test may have written outside temp_dir
         self.failed_checks = []
@@ -55,16 +55,16 @@ class Ctx:
         self.statements = []  # {client, sql, seconds} per call, for a verbose report
 
     def duckdb(self, preamble="", *, table=None, session="per_run", timeout=DEFAULT_TIMEOUT_S):
-        """DuckDB as a client. `per_run` (the rule): the shell of the worker that runs this case, on
+        """DuckDB as a client. `per_run` (the rule): the shell of the worker that runs this test, on
         the instance this test started fresh; `preamble` runs once, now. The client has `restart()`
         (new instance, then the test's preambles again) and `respawn()` (new process, the same).
-        `per_client`: the same, on a shell of this client's own, closed when the case ends. `per_call`:
+        `per_client`: the same, on a shell of this client's own, closed when the test ends. `per_call`:
         a cold process for every call, running `preamble` each time. All three get the same private
-        HOME and the same case
+        HOME and the same test
         environment: the extensions loaded, the settings set, then the init SQL.
 
-        A case whose environment sets or unsets process variables gets a shell of its own even when
-        `per_run` was asked for: the run's one shell was started before the case was known and
+        A test whose environment sets or unsets process variables gets a shell of its own even when
+        `per_run` was asked for: the run's one shell was started before the test was known and
         cannot change its environment.
 
         `timeout`, in seconds, is for each statement (`per_call`: for each call); after it the shell
@@ -76,7 +76,7 @@ class Ctx:
         a cold process per call, with nothing shared but files."""
         if session not in SESSIONS:
             raise ValueError(f"session={session!r}; it is one of {SESSIONS}")
-        preamble = "\n".join(x for x in (self._case_preamble(), preamble) if x)
+        preamble = "\n".join(x for x in (self._test_preamble(), preamble) if x)
         environ = self.environment.environ()
         if session == "per_call":
             per_call = DuckDBPerCall(self._duckdb_bin, preamble, timeout=timeout, home=self._duckdb_home, env=environ)
@@ -99,8 +99,8 @@ class Ctx:
             raise KeyError(f"engine {name!r} is not declared by this test (engines={sorted(self._engines)})")
         return self._client(name, self._engines[name].run, table)
 
-    def _case_preamble(self):
-        """The case environment as SQL, in the order the `.test` init file has it."""
+    def _test_preamble(self):
+        """The test environment as SQL, in the order the `.test` init file has it."""
         return "\n".join([f"LOAD {x};" for x in self.environment.extensions] + [self.environment.sql]).strip()
 
     def run_test(self, *, env=None, init_sql=""):
@@ -137,7 +137,7 @@ class Ctx:
 
     def location(self, name, *, on=None):
         """A place for a table the body creates; nothing is created here. By default a path under
-        this test's temp dir, or under the case environment's `temp_dir_root` where a variant gives
+        this test's temp dir, or under the test environment's `temp_dir_root` where a variant gives
         one; with `on=<service>`, a URI under this run's prefix on that service."""
         on = on or self._location_on
         if on is None:

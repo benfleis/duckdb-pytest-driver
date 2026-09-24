@@ -1,4 +1,4 @@
-"""scan: the test tree + the configuration files -> every case, before any selection.
+"""scan: the test tree + the configuration files -> every test, before any selection.
 
 No file is opened except `.py` test files (imported, to find `@test` bodies) and the configuration
 files. A `.test` file is found by name only, so a tree of thousands of them costs one directory walk.
@@ -15,7 +15,7 @@ from . import asserts
 from .binary import UsageError
 from .conf import check_suites, load_project, merge_suites
 from .declare import CONF_FILE
-from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Case, TestDef
+from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 
 _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 
@@ -68,7 +68,7 @@ def _suffix_tags(path):
 
 
 def scan(start, *, working_dir="."):
-    """Returns (cases, project): every case under the project root, in a stable order."""
+    """Returns (tests, project): every test under the project root, in a stable order."""
     project = load_project(start)
     asserts.rewrite_under(project.root)
     bodies, scripts = _walk(project.root, project.excludes)
@@ -76,7 +76,7 @@ def scan(start, *, working_dir="."):
     for b in bodies:
         body_by_stem.setdefault(os.path.splitext(b)[0], b)  # .test wins over .test_slow of one stem
 
-    tests = []
+    definitions = []
     paired_bodies = set()
     for path in scripts:
         rel = os.path.relpath(path, working_dir)
@@ -92,7 +92,7 @@ def scan(start, *, working_dir="."):
         if body_file:
             paired_bodies.add(body_file)
         for name, decl in marked:
-            tests.append(
+            definitions.append(
                 TestDef(
                     path=rel,
                     name=name,
@@ -100,7 +100,7 @@ def scan(start, *, working_dir="."):
                     root_path=_root_path(path, project.root),
                     body=decl.body,
                     body_file=os.path.relpath(body_file, working_dir) if body_file else None,
-                    cases=dict(decl.cases),
+                    params=dict(decl.params),
                     tags=list(decl.tags) + (_suffix_tags(body_file) if body_file else []),
                     services=list(decl.services),
                     engines=list(decl.engines),
@@ -113,7 +113,7 @@ def scan(start, *, working_dir="."):
         if path in paired_bodies:
             continue
         rel = os.path.relpath(path, working_dir)
-        tests.append(
+        definitions.append(
             TestDef(
                 path=rel,
                 name=os.path.splitext(os.path.basename(path))[0],
@@ -124,48 +124,50 @@ def scan(start, *, working_dir="."):
             )
         )
 
-    cases = []
-    for test in sorted(tests, key=lambda t: (t.root_path, t.name)):
-        _settle(test, project, working_dir)
-        for axis in test.variants:
+    tests = []
+    for definition in sorted(definitions, key=lambda d: (d.root_path, d.name)):
+        _settle(definition, project, working_dir)
+        for axis in definition.variants:
             if axis not in project.axes:
                 raise UsageError(
-                    f"{test.path}::{test.name} takes part in axis {axis!r}; the project has {sorted(project.axes)}"
+                    f"{definition.path}::{definition.name} takes part in axis {axis!r}; the project has {sorted(project.axes)}"
                 )
         # AXES decides the order of the axis parts in an id, not the order in which rules name them.
-        axes = [[(axis, v) for v in values.values()] for axis, values in project.axes.items() if axis in test.variants]
-        for case_id in test.cases or [None]:
+        axes = [
+            [(axis, v) for v in values.values()] for axis, values in project.axes.items() if axis in definition.variants
+        ]
+        for params_key in definition.params or [None]:
             for combo in itertools.product(*axes):
-                cases.append(Case(test, case_id, dict(combo)))
+                tests.append(Test(definition, params_key, dict(combo)))
     project.note_unused_rules()
     if project.unused_rules:
         raise UsageError(
             "a rule that matches no test is a typo or a moved file:\n  " + "\n  ".join(project.unused_rules)
         )
-    for case in cases:
+    for test in tests:
         for kind, known in (("services", project.services), ("engines", project.engines)):
-            unknown = [x for x in getattr(case, kind) if x not in known]
+            unknown = [x for x in getattr(test, kind) if x not in known]
             if unknown:
-                raise UsageError(f"{case.id} needs {kind} {unknown}, not declared in the root {CONF_FILE}")
-    return cases, project
+                raise UsageError(f"{test.id} needs {kind} {unknown}, not declared in the root {CONF_FILE}")
+    return tests, project
 
 
-def _settle(test, project, working_dir):
-    """Rules first, from the root down; then the test's own declaration on top."""
-    settled = project.settle(os.path.abspath(os.path.join(working_dir, test.path)))
+def _settle(definition, project, working_dir):
+    """Rules first, from the root down; then the definition's own declaration on top."""
+    settled = project.settle(os.path.abspath(os.path.join(working_dir, definition.path)))
     own = {
-        "tags": test.tags,
-        "services": test.services,
-        "engines": test.engines,
-        "variants": test.variants,
-        "mutex": test.mutex,
+        "tags": definition.tags,
+        "services": definition.services,
+        "engines": definition.engines,
+        "variants": definition.variants,
+        "mutex": definition.mutex,
     }
     for name in ("tags", "services", "engines", "variants", "mutex"):
         merged = getattr(settled, name) + [x for x in own[name] if x not in getattr(settled, name)]
-        setattr(test, name, merged)
-    check_suites(test.suites, f"{test.path}::{test.name}")
-    merge_suites(settled.suites, test.suites, None, settled.sources)
-    test.suites = settled.suites
-    test.values, test.settings = settled.values, settled.settings
-    test.timeout, test.retries = settled.timeout, settled.retries
-    test.why, test.sources = settled.why, settled.sources
+        setattr(definition, name, merged)
+    check_suites(definition.suites, f"{definition.path}::{definition.name}")
+    merge_suites(settled.suites, definition.suites, None, settled.sources)
+    definition.suites = settled.suites
+    definition.values, definition.settings = settled.values, settled.settings
+    definition.timeout, definition.retries = settled.timeout, settled.retries
+    definition.why, definition.sources = settled.why, settled.sources

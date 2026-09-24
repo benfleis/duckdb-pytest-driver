@@ -11,16 +11,16 @@ import pytest
 import yaml
 
 from ducktest5.binary import UsageError
-from ducktest5.caseenv import resolve
 from ducktest5.client import SqlError
 from ducktest5.conf import Project
 from ducktest5.ctx import Ctx
 from ducktest5.declare import EngineDef, ServiceDef, Variant
-from ducktest5.events import CASE_END
+from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
-from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Case, TestDef
+from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.provision import EXISTING, Provisioned
 from ducktest5.run import _run_body, run
+from ducktest5.testenv import resolve
 
 FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
 FAKE_DEBUGGER = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_debugger.py")
@@ -103,25 +103,25 @@ class FakeSession:
     restart = respawn = close = lambda self: None
 
 
-def sql_case(path, axis_values=None, **fields):
+def sql_test(path, axis_values=None, **fields):
     name = os.path.splitext(os.path.basename(path))[0]
-    return Case(TestDef(path=path, name=name, type=SQLLOGIC, body_file=path, **fields), None, axis_values or {})
+    return Test(TestDef(path=path, name=name, type=SQLLOGIC, body_file=path, **fields), None, axis_values or {})
 
 
-def py_case(body, axis_values=None, *, path="test/body.py", body_file=None, **fields):
-    test = TestDef(
+def py_test(body, axis_values=None, *, path="test/body.py", body_file=None, **fields):
+    definition = TestDef(
         path=path, name=body.__name__, type=PAIRED if body_file else PYTHON, body=body, body_file=body_file, **fields
     )
-    return Case(test, None, axis_values or {})
+    return Test(definition, None, axis_values or {})
 
 
-def go(tmp_path, cases, *, engines=(), services=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
+def go(tmp_path, tests, *, engines=(), services=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
     """Returns (exit code, run dir, report, printed text)."""
     project = Project(str(tmp_path), {e.id: e for e in engines}, {s.id: s for s in services}, {}, {}, ())
     out = io.StringIO()
     kwargs.setdefault("session_factory", FakeSession)
     code = run(
-        cases,
+        tests,
         project,
         duckdb_bin=duckdb_bin,
         unittest_bin=unittest_bin,
@@ -136,18 +136,18 @@ def go(tmp_path, cases, *, engines=(), services=(), unittest_bin=FAKE, duckdb_bi
 
 
 def outcomes(report):
-    return {c["id"].split("::")[-1]: c["outcome"] for c in report["cases"]}
+    return {c["id"].split("::")[-1]: c["outcome"] for c in report["tests"]}
 
 
-def case_of(report, name):
-    """One case of the report by its name. Cases are listed in the order they ended, which with
+def result_of(report, name):
+    """One test of the report by its name. Tests are listed in the order they ended, which with
     several workers is not the order they were given in."""
-    return next(c for c in report["cases"] if c["id"].split("::")[-1] == name)
+    return next(c for c in report["tests"] if c["id"].split("::")[-1] == name)
 
 
-def case_events(run_dir):
-    """The `case_end` lines of a run: one per case, whatever else the stream holds."""
-    return [e for e in read_events(str(run_dir)) if e["event"] == CASE_END]
+def end_events(run_dir):
+    """The `test_end` lines of a run: one per test, whatever else the stream holds."""
+    return [e for e in read_events(str(run_dir)) if e["event"] == TEST_END]
 
 
 @pytest.fixture
@@ -180,16 +180,16 @@ def fails(ctx):
     ],
 )
 def test_the_exit_code_says_whether_everything_that_ran_passed(tmp_path, names, code):
-    assert go(tmp_path, [sql_case(n) for n in names])[0] == code
+    assert go(tmp_path, [sql_test(n) for n in names])[0] == code
 
 
-def test_a_blocked_case_fails_the_run(tmp_path):
+def test_a_blocked_test_fails_the_run(tmp_path):
     store = FakeStore(up=False)
     code, _, report, _ = go(
-        tmp_path, [py_case(passes), py_case(passes, services=["store"], path="test/s.py")], services=[store.service()]
+        tmp_path, [py_test(passes), py_test(passes, services=["store"], path="test/s.py")], services=[store.service()]
     )
     assert code == 1
-    assert sorted(c["outcome"] for c in report["cases"]) == ["blocked", "passed"]
+    assert sorted(c["outcome"] for c in report["tests"]) == ["blocked", "passed"]
 
 
 # -----------------------------------------------------------------------------
@@ -198,17 +198,17 @@ def test_a_blocked_case_fails_the_run(tmp_path):
 
 
 def batch_of(report):
-    return {c["id"].split("::")[-1]: c["batch"] for c in report["cases"]}
+    return {c["id"].split("::")[-1]: c["batch"] for c in report["tests"]}
 
 
-def test_cases_of_one_file_never_share_a_batch(tmp_path):
+def test_tests_of_one_file_never_share_a_batch(tmp_path):
     axis = {"a": Variant("a", tags=("x",)), "b": Variant("b", tags=("y",))}
-    cases = [
-        sql_case("t.test", {"k": axis["a"]}),
-        sql_case("t.test", {"k": axis["b"]}),
-        sql_case("u.test", {"k": axis["a"]}),
+    tests = [
+        sql_test("t.test", {"k": axis["a"]}),
+        sql_test("t.test", {"k": axis["b"]}),
+        sql_test("u.test", {"k": axis["a"]}),
     ]
-    code, run_dir, report, _ = go(tmp_path, cases, keep=True)
+    code, run_dir, report, _ = go(tmp_path, tests, keep=True)
     assert code == 0
     batches = batch_of(report)
     assert batches["t[k=a]"] != batches["t[k=b]"]
@@ -217,14 +217,14 @@ def test_cases_of_one_file_never_share_a_batch(tmp_path):
     assert (run_dir / batches["t[k=b]"] / "tests.txt").read_text() == "t.test\n"
 
 
-def test_cases_with_other_values_or_settings_go_in_other_batches(tmp_path):
-    cases = [
-        sql_case("a.test"),
-        sql_case("b.test"),
-        sql_case("c_env.test", values={"catalog": "duck"}),
-        sql_case("d.test", settings={"threads": 2}),
+def test_tests_with_other_values_or_settings_go_in_other_batches(tmp_path):
+    tests = [
+        sql_test("a.test"),
+        sql_test("b.test"),
+        sql_test("c_env.test", values={"catalog": "duck"}),
+        sql_test("d.test", settings={"threads": 2}),
     ]
-    _, run_dir, report, _ = go(tmp_path, cases, keep=True)
+    _, run_dir, report, _ = go(tmp_path, tests, keep=True)
     batches = batch_of(report)
     assert batches["a"] == batches["b"]
     assert len({batches["a"], batches["c_env"], batches["d"]}) == 3
@@ -237,17 +237,17 @@ def test_cases_with_other_values_or_settings_go_in_other_batches(tmp_path):
 
 
 def test_a_batch_holds_at_most_batch_size_files_and_a_slow_file_runs_alone(tmp_path):
-    cases = [sql_case(f"t{n}.test") for n in range(3)] + [sql_case("s.test_slow", tags=["slow"])]
-    _, _, report, _ = go(tmp_path, cases, batch_size=2)
+    tests = [sql_test(f"t{n}.test") for n in range(3)] + [sql_test("s.test_slow", tags=["slow"])]
+    _, _, report, _ = go(tmp_path, tests, batch_size=2)
     batches = batch_of(report)
     assert sorted(list(batches.values()).count(b) for b in set(batches.values())) == [1, 1, 2]
     assert list(batches.values()).count(batches["s"]) == 1
 
 
-def test_a_case_with_a_service_runs_alone_and_its_failure_is_not_run_a_second_time(tmp_path, flaky_state):
+def test_a_test_with_a_service_runs_alone_and_its_failure_is_not_run_a_second_time(tmp_path, flaky_state):
     store = FakeStore()
-    cases = [sql_case("a.test"), sql_case("b.test", services=["store"]), sql_case("c_flaky2.test", services=["store"])]
-    _, _, report, _ = go(tmp_path, cases, services=[store.service()])
+    tests = [sql_test("a.test"), sql_test("b.test", services=["store"]), sql_test("c_flaky2.test", services=["store"])]
+    _, _, report, _ = go(tmp_path, tests, services=[store.service()])
     assert len(set(batch_of(report).values())) == 3
     assert outcomes(report)["c_flaky2"] == "failed"
     assert (tmp_path / "state" / "c_flaky2.test.runs").read_text() == "1"
@@ -256,8 +256,8 @@ def test_a_case_with_a_service_runs_alone_and_its_failure_is_not_run_a_second_ti
 def test_a_variant_init_sql_is_the_batch_init_file(tmp_path):
     store = FakeStore()
     variant = Variant("s3", services=("store",), init_sql=lambda blocks: f"ATTACH '{blocks['store']['endpoint']}'")
-    _, run_dir, report, _ = go(tmp_path, [sql_case("a.test", {"k": variant})], services=[store.service()], keep=True)
-    init = run_dir / report["cases"][0]["batch"] / "init.sqllogic"
+    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"k": variant})], services=[store.service()], keep=True)
+    init = run_dir / report["tests"][0]["batch"] / "init.sqllogic"
     assert init.read_text() == "statement ok\nATTACH 'http://store';\n"
 
 
@@ -268,8 +268,8 @@ def test_requires_settings_and_init_sql_reach_the_init_file_in_that_order(tmp_pa
         settings={"httpfs_client_implementation": "curl"},
         init_sql="CREATE SECRET s (TYPE S3)",
     )
-    _, run_dir, report, _ = go(tmp_path, [sql_case("a.test", {"client": variant})], keep=True)
-    init = run_dir / report["cases"][0]["batch"] / "init.sqllogic"
+    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"client": variant})], keep=True)
+    init = run_dir / report["tests"][0]["batch"] / "init.sqllogic"
     assert init.read_text() == (
         "require httpfs\n\nrequire json\n\n"
         "statement ok\nSET httpfs_client_implementation = 'curl';\n\n"
@@ -279,35 +279,35 @@ def test_requires_settings_and_init_sql_reach_the_init_file_in_that_order(tmp_pa
 
 def test_a_variant_gives_the_binary_its_roots(tmp_path):
     variant = Variant("http", roots={"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"})
-    _, run_dir, report, _ = go(tmp_path, [sql_case("a.test", {"storage": variant})], keep=True)
-    config = json.loads((run_dir / report["cases"][0]["batch"] / "config.json").read_text())
+    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"storage": variant})], keep=True)
+    config = json.loads((run_dir / report["tests"][0]["batch"] / "config.json").read_text())
     assert config["temp_dir_root"] == "http://origin/temp"
     assert config["local_temp_dir_root"] == "/www/temp"
 
 
 def test_a_root_the_binary_does_not_have_is_a_usage_error(tmp_path):
     with pytest.raises(UsageError, match="root 'tmp' is not one of"):
-        go(tmp_path, [sql_case("a.test", {"storage": Variant("http", roots={"tmp": "/x"})})])
+        go(tmp_path, [sql_test("a.test", {"storage": Variant("http", roots={"tmp": "/x"})})])
 
 
 def test_a_variant_sets_and_unsets_variables_in_the_environment_of_the_unittest_process(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "LEAKED-FROM-THE-CALLER")
     variant = Variant("env", env={"AWS_PROFILE": "ducktest"}, env_unset=("AWS_ACCESS_KEY_ID",))
-    _, run_dir, report, _ = go(tmp_path, [sql_case("a_showenv.test", {"auth": variant})], keep=True)
-    output = (run_dir / report["cases"][0]["batch"] / "output.txt").read_text()
+    _, run_dir, report, _ = go(tmp_path, [sql_test("a_showenv.test", {"auth": variant})], keep=True)
+    output = (run_dir / report["tests"][0]["batch"] / "output.txt").read_text()
     printed = json.loads(output.split("PROCESS_ENV ")[1].splitlines()[0])
     assert printed == {"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None}
 
 
-def test_cases_with_other_environments_never_share_a_unittest_process(tmp_path):
+def test_tests_with_other_environments_never_share_a_unittest_process(tmp_path):
     axis = {
         "plain": Variant("plain"),
         "loaded": Variant("loaded", requires=("httpfs",)),
         "rooted": Variant("rooted", roots={"data_dir": "/d"}),
         "noisy": Variant("noisy", env={"AWS_PROFILE": "p"}),
     }
-    cases = [sql_case(f"t{n}.test", {"k": v}) for n, v in enumerate(axis.values())]
-    _, _, report, _ = go(tmp_path, cases + [sql_case("t9.test", {"k": axis["plain"]})], keep=True)
+    tests = [sql_test(f"t{n}.test", {"k": v}) for n, v in enumerate(axis.values())]
+    _, _, report, _ = go(tmp_path, tests + [sql_test("t9.test", {"k": axis["plain"]})], keep=True)
     batches = batch_of(report)
     assert len(set(batches.values())) == 4  # one for each environment; the two plain ones ride along
     assert batches["t0[k=plain]"] == batches["t9[k=plain]"]
@@ -322,8 +322,8 @@ def files_with_the_secret(run_dir):
 
 @pytest.mark.parametrize("keep", [False, True])
 def test_init_sql_does_not_stay_in_a_batch_that_is_kept_for_its_failure(tmp_path, keep):
-    cases = [sql_case("a.test", {"k": SECRET}), sql_case("b_fail.test", {"k": SECRET})]
-    _, run_dir, _, _ = go(tmp_path, cases, keep=keep)
+    tests = [sql_test("a.test", {"k": SECRET}), sql_test("b_fail.test", {"k": SECRET})]
+    _, run_dir, _, _ = go(tmp_path, tests, keep=keep)
     inits = sorted(str(p.relative_to(run_dir / "batches")) for p in run_dir.rglob("init.sqllogic"))
     assert inits == ["b001/alone-b_fail.test/init.sqllogic", "b001/init.sqllogic"]
     # with --keep the user asked for everything, and that is how the init SQL is got back
@@ -332,10 +332,10 @@ def test_init_sql_does_not_stay_in_a_batch_that_is_kept_for_its_failure(tmp_path
         assert "again with --keep" in (run_dir / "batches" / "b001" / "init.sqllogic").read_text()
 
 
-def test_init_sql_does_not_stay_in_the_directory_of_a_failed_paired_case(tmp_path):
-    case = py_case(runs_its_file, {"k": SECRET}, body_file="test/p_fail.test")
-    _, run_dir, report, _ = go(tmp_path, [case])
-    assert (run_dir / "cases" / case.dir_name / "run_test" / "init.sqllogic").exists()
+def test_init_sql_does_not_stay_in_the_directory_of_a_failed_paired_test(tmp_path):
+    test = py_test(runs_its_file, {"k": SECRET}, body_file="test/p_fail.test")
+    _, run_dir, report, _ = go(tmp_path, [test])
+    assert (run_dir / "tests" / test.dir_name / "run_test" / "init.sqllogic").exists()
     assert files_with_the_secret(run_dir) == []
 
 
@@ -356,11 +356,11 @@ def debugger(tmp_path, monkeypatch):
     return f"{sys.executable} {FAKE_DEBUGGER} --", started
 
 
-def debug(tmp_path, cases, command, *, services=(), **kwargs):
+def debug(tmp_path, tests, command, *, services=(), **kwargs):
     project = Project(str(tmp_path), {}, {s.id: s for s in services}, {}, {}, ())
     out = io.StringIO()
     code = run(
-        cases,
+        tests,
         project,
         duckdb_bin="no-duckdb",
         unittest_bin=FAKE,
@@ -376,8 +376,8 @@ def debug(tmp_path, cases, command, *, services=(), **kwargs):
 
 def test_the_debugger_gets_the_binary_and_the_batch_a_normal_run_would_have_used(tmp_path, debugger):
     command, started = debugger
-    case = sql_case("a.test", {"storage": MADE_OF}, values={"catalog": "duck"})
-    code, text = debug(tmp_path, [case], command, services=[FakeStore().service()])
+    test = sql_test("a.test", {"storage": MADE_OF}, values={"catalog": "duck"})
+    code, text = debug(tmp_path, [test], command, services=[FakeStore().service()])
     argv = started()["argv"]
     batch_dir = os.path.dirname(argv[argv.index("-f") + 1])
     assert code == 0
@@ -403,25 +403,28 @@ def test_the_debugger_gets_the_binary_and_the_batch_a_normal_run_would_have_used
 
 def test_the_exit_code_of_the_debugger_is_the_exit_code_of_the_run(tmp_path, debugger, monkeypatch):
     monkeypatch.setenv("FAKE_DEBUGGER_EXIT", "3")
-    assert debug(tmp_path, [sql_case("a.test")], debugger[0])[0] == 3
+    assert debug(tmp_path, [sql_test("a.test")], debugger[0])[0] == 3
 
 
 @pytest.mark.parametrize(
-    "cases, message",
+    "tests, message",
     [
-        ([sql_case("a.test"), sql_case("b.test")], "exactly one .test case; the selection gives 2:\n  a.test::a"),
-        ([], "exactly one .test case; the selection gives 0"),
-        ([py_case(passes)], "is a Python body -- not supported yet"),
+        (
+            [sql_test("a.test"), sql_test("b.test")],
+            "exactly one test of a .test file; the selection gives 2:\n  a.test::a",
+        ),
+        ([], "exactly one test of a .test file; the selection gives 0"),
+        ([py_test(passes)], "is a Python body -- not supported yet"),
     ],
 )
-def test_a_debugger_needs_one_test_case_and_says_what_was_selected(tmp_path, debugger, cases, message):
+def test_a_debugger_needs_one_test_and_says_what_was_selected(tmp_path, debugger, tests, message):
     with pytest.raises(UsageError, match=re.escape(message)):
-        debug(tmp_path, cases, debugger[0])
+        debug(tmp_path, tests, debugger[0])
     assert not (tmp_path / "runs").exists()  # refused before the run dir is made
 
 
 # -----------------------------------------------------------------------------
-# A failure says what the case was made of
+# A failure says what the test was made of
 #
 
 
@@ -434,10 +437,10 @@ MADE_OF = Variant(
 )
 
 
-def test_a_failed_test_case_says_what_it_was_made_of(tmp_path):
-    case = sql_case("b_fail.test", {"storage": MADE_OF})
-    _, run_dir, report, text = go(tmp_path, [case], services=[FakeStore().service()])
-    facts = report["cases"][0]["made_of"]
+def test_a_failed_test_says_what_it_was_made_of(tmp_path):
+    test = sql_test("b_fail.test", {"storage": MADE_OF})
+    _, run_dir, report, text = go(tmp_path, [test], services=[FakeStore().service()])
+    facts = report["tests"][0]["made_of"]
     assert facts["environment"] == [
         {"what": "set", "is": "s3_region=eu", "from": "AXES storage=s3"},
         {"what": "init sql", "is": "", "from": "AXES storage=s3"},
@@ -452,7 +455,7 @@ def test_a_failed_test_case_says_what_it_was_made_of(tmp_path):
         "output": "output.txt",
     }
     assert all(os.path.isfile(p) for p in facts["files"].values())
-    block = text.split("--- " + case.id)[1]
+    block = text.split("--- " + test.id)[1]
     assert "\n  values: root=s3://bucket  <- AXES storage=s3\n" in block
     assert "\n  set: s3_region=eu  <- AXES storage=s3\n" in block
     assert "\n  init sql  <- AXES storage=s3\n" in block
@@ -470,9 +473,9 @@ def test_a_failure_says_what_the_environment_of_the_process_was(tmp_path):
         env={"AWS_PROFILE": "ducktest", "AWS_SECRET_ACCESS_KEY": "hunter2"},
         env_unset=("AZURE_CLIENT_SECRET",),
     )
-    case = sql_case("b_fail.test", {"auth": variant})
-    _, _, _, text = go(tmp_path, [case])
-    block = text.split("--- " + case.id)[1]
+    test = sql_test("b_fail.test", {"auth": variant})
+    _, _, _, text = go(tmp_path, [test])
+    block = text.split("--- " + test.id)[1]
     assert "\n  require: httpfs  <- AXES auth=env\n" in block
     assert "\n  root: data_dir=s3://bucket/data  <- AXES auth=env\n" in block
     assert "\n  env: AWS_PROFILE=ducktest  <- AXES auth=env\n" in block
@@ -481,32 +484,32 @@ def test_a_failure_says_what_the_environment_of_the_process_was(tmp_path):
     assert "hunter2" not in text
 
 
-def test_a_passed_case_says_nothing_of_the_kind(tmp_path):
-    _, _, report, text = go(tmp_path, [sql_case("a.test", {"storage": MADE_OF})], services=[FakeStore().service()])
-    assert "made_of" not in report["cases"][0]
+def test_a_passed_test_says_nothing_of_the_kind(tmp_path):
+    _, _, report, text = go(tmp_path, [sql_test("a.test", {"storage": MADE_OF})], services=[FakeStore().service()])
+    assert "made_of" not in report["tests"][0]
     assert "values: " not in text and "config: " not in text
 
 
-def test_a_failed_python_case_names_its_case_directory(tmp_path):
-    case = py_case(writes_and_fails, services=["store"])
-    _, run_dir, report, text = go(tmp_path, [case], services=[FakeStore().service()])
-    facts = report["cases"][0]["made_of"]
-    assert facts["files"] == {"dir": str(run_dir / "cases" / case.dir_name)}
+def test_a_failed_python_test_names_its_test_directory(tmp_path):
+    test = py_test(writes_and_fails, services=["store"])
+    _, run_dir, report, text = go(tmp_path, [test], services=[FakeStore().service()])
+    facts = report["tests"][0]["made_of"]
+    assert facts["files"] == {"dir": str(run_dir / "tests" / test.dir_name)}
     assert f"\n  dir: {facts['files']['dir']}\n" in text
 
 
-def test_a_secret_of_a_service_never_reaches_what_the_case_was_made_of(tmp_path):
-    case = sql_case("b_fail.test", values={"token": "s3cr3t"}, services=["store"])
-    _, _, report, text = go(tmp_path, [case], services=[FakeStore().service()])
-    assert {"what": "values", "is": "token=***", "from": "@test"} in report["cases"][0]["made_of"]["environment"]
+def test_a_secret_of_a_service_never_reaches_what_the_test_was_made_of(tmp_path):
+    test = sql_test("b_fail.test", values={"token": "s3cr3t"}, services=["store"])
+    _, _, report, text = go(tmp_path, [test], services=[FakeStore().service()])
+    assert {"what": "values", "is": "token=***", "from": "@test"} in report["tests"][0]["made_of"]["environment"]
     assert "s3cr3t" not in text
 
 
 def test_the_event_line_of_a_failure_holds_the_same_facts(tmp_path):
-    case = sql_case("b_fail.test", {"storage": MADE_OF})
-    _, run_dir, report, _ = go(tmp_path, [case], services=[FakeStore().service()])
-    (event,) = case_events(run_dir)
-    assert event["made_of"] == report["cases"][0]["made_of"]
+    test = sql_test("b_fail.test", {"storage": MADE_OF})
+    _, run_dir, report, _ = go(tmp_path, [test], services=[FakeStore().service()])
+    (event,) = end_events(run_dir)
+    assert event["made_of"] == report["tests"][0]["made_of"]
 
 
 # -----------------------------------------------------------------------------
@@ -515,10 +518,10 @@ def test_the_event_line_of_a_failure_holds_the_same_facts(tmp_path):
 
 
 def test_a_failure_in_the_init_sql_is_an_error_that_names_the_variant_and_the_file(tmp_path):
-    case = sql_case("a_initfail.test", {"storage": Variant("s3", init_sql="ATTACH 'nowhere'")})
-    code, run_dir, report, text = go(tmp_path, [case], keep=True)
-    assert (code, report["cases"][0]["outcome"]) == (1, "error")
-    first_line = report["cases"][0]["problems"][0].splitlines()[0]
+    test = sql_test("a_initfail.test", {"storage": Variant("s3", init_sql="ATTACH 'nowhere'")})
+    code, run_dir, report, text = go(tmp_path, [test], keep=True)
+    assert (code, report["tests"][0]["outcome"]) == (1, "error")
+    first_line = report["tests"][0]["problems"][0].splitlines()[0]
     assert first_line == f"in the init SQL of AXES storage=s3 ({run_dir / 'batches' / 'b001' / 'init.sqllogic'}:1)"
     assert "a_initfail.test:1" not in first_line  # not the body file, where the reader would find nothing
     assert first_line in text
@@ -526,40 +529,40 @@ def test_a_failure_in_the_init_sql_is_an_error_that_names_the_variant_and_the_fi
 
 def test_the_failing_statement_of_the_init_sql_names_its_own_source(tmp_path):
     axis_values = {"backend": Variant("oss", init_sql="SET a = 1"), "storage": Variant("s3", init_sql="SET b = 2")}
-    _, _, report, _ = go(tmp_path, [sql_case("a_initfail2.test", axis_values)], keep=True)
-    assert "in the init SQL of AXES storage=s3 (" in report["cases"][0]["problems"][0]
+    _, _, report, _ = go(tmp_path, [sql_test("a_initfail2.test", axis_values)], keep=True)
+    assert "in the init SQL of AXES storage=s3 (" in report["tests"][0]["problems"][0]
 
 
 def test_a_setting_that_fails_in_the_init_sql_names_the_rule_that_asked_for_it(tmp_path):
-    case = sql_case("a_initfail.test", settings={"threads": 2})
-    case.test.sources = {("settings", "threads"): "ducktest_conf.py: default"}
-    _, _, report, _ = go(tmp_path, [case])
-    assert "in the init SQL of ducktest_conf.py: default (" in report["cases"][0]["problems"][0]
+    test = sql_test("a_initfail.test", settings={"threads": 2})
+    test.definition.sources = {("settings", "threads"): "ducktest_conf.py: default"}
+    _, _, report, _ = go(tmp_path, [test])
+    assert "in the init SQL of ducktest_conf.py: default (" in report["tests"][0]["problems"][0]
 
 
 def test_a_failure_in_the_body_stays_a_failure_when_the_batch_has_init_sql(tmp_path):
-    case = sql_case("b_fail.test", {"storage": Variant("s3", init_sql="ATTACH 'nowhere'")})
-    _, _, report, _ = go(tmp_path, [case])
-    assert report["cases"][0]["outcome"] == "failed"
+    test = sql_test("b_fail.test", {"storage": Variant("s3", init_sql="ATTACH 'nowhere'")})
+    _, _, report, _ = go(tmp_path, [test])
+    assert report["tests"][0]["outcome"] == "failed"
 
 
 # -----------------------------------------------------------------------------
-# What does not come up blocks its cases, and only those
+# What does not come up blocks its tests, and only those
 #
 
 
-def test_a_service_that_is_down_blocks_its_cases_and_their_engine_is_not_booted(tmp_path):
+def test_a_service_that_is_down_blocks_its_tests_and_their_engine_is_not_booted(tmp_path):
     store, engine = FakeStore(up=False), FakeEngine()
-    cases = [py_case(passes, services=["store"], engines=["fake"]), py_case(passes, path="test/free.py")]
-    code, run_dir, report, text = go(tmp_path, cases, engines=[engine.engine()], services=[store.service()])
-    assert [c["outcome"] for c in report["cases"]] == ["blocked", "passed"]
-    assert report["cases"][0]["blocked_by"] == ["store"]
+    tests = [py_test(passes, services=["store"], engines=["fake"]), py_test(passes, path="test/free.py")]
+    code, run_dir, report, text = go(tmp_path, tests, engines=[engine.engine()], services=[store.service()])
+    assert [c["outcome"] for c in report["tests"]] == ["blocked", "passed"]
+    assert report["tests"][0]["blocked_by"] == ["store"]
     assert "does not answer" in report["not_provisioned"]["store"]
     assert engine.calls == []
-    assert "'store' did not come up: 1 cases blocked" in text
+    assert "'store' did not come up: 1 tests blocked" in text
 
 
-def test_a_service_whose_start_raises_blocks_only_cases_with_a_callable_variant(tmp_path):
+def test_a_service_whose_start_raises_blocks_only_tests_with_a_callable_variant(tmp_path):
     def start(block):
         raise RuntimeError("minio image unpullable: exit 125")
 
@@ -570,34 +573,34 @@ def test_a_service_whose_start_raises_blocks_only_cases_with_a_callable_variant(
         values=lambda blocks: {"root": blocks["minio"]["endpoint"]},
         init_sql=lambda blocks: f"ATTACH '{blocks['minio']['endpoint']}'",
     )
-    cases = [sql_case("a.test", {"storage": variant}), sql_case("b.test")]
-    code, run_dir, report, text = go(tmp_path, cases, services=[broken])
+    tests = [sql_test("a.test", {"storage": variant}), sql_test("b.test")]
+    code, run_dir, report, text = go(tmp_path, tests, services=[broken])
     assert outcomes(report) == {"a[storage=s3]": "blocked", "b": "passed"}
-    assert report["cases"][0]["blocked_by"] == ["minio"]
-    made_of = report["cases"][0]["made_of"]["environment"]
+    assert report["tests"][0]["blocked_by"] == ["minio"]
+    made_of = report["tests"][0]["made_of"]["environment"]
     assert {"what": "values", "is": "<from service minio>", "from": "AXES storage=s3"} in made_of
     assert {"what": "service", "is": "minio (did not come up)", "from": "AXES storage=s3"} in made_of
-    assert "'minio' did not come up: 1 cases blocked" in text
+    assert "'minio' did not come up: 1 tests blocked" in text
     assert code == 1
 
 
-def test_an_engine_that_does_not_boot_blocks_its_cases(tmp_path):
+def test_an_engine_that_does_not_boot_blocks_its_tests(tmp_path):
     engine = FakeEngine(boots=False)
-    cases = [py_case(passes, engines=["fake"]), sql_case("a.test")]
-    _, _, report, _ = go(tmp_path, cases, engines=[engine.engine()])
+    tests = [py_test(passes, engines=["fake"]), sql_test("a.test")]
+    _, _, report, _ = go(tmp_path, tests, engines=[engine.engine()])
     assert outcomes(report) == {"passes": "blocked", "a": "passed"}
     assert "no JVM" in report["not_provisioned"]["fake"]
 
 
 def test_an_engine_is_told_about_the_services_it_uses_and_is_stopped(tmp_path):
     store, engine = FakeStore(), FakeEngine()
-    case = py_case(passes, services=["store"], engines=["fake"])
-    go(tmp_path, [case], engines=[engine.engine(uses=("store", "absent"))], services=[store.service()])
+    test = py_test(passes, services=["store"], engines=["fake"])
+    go(tmp_path, [test], engines=[engine.engine(uses=("store", "absent"))], services=[store.service()])
     assert engine.calls == ["boot", "use store", "begin_test", "stop"]
 
 
 def test_secrets_of_a_service_are_not_in_the_provision_record(tmp_path):
-    _, run_dir, _, _ = go(tmp_path, [py_case(passes, services=["store"])], services=[FakeStore().service()])
+    _, run_dir, _, _ = go(tmp_path, [py_test(passes, services=["store"])], services=[FakeStore().service()])
     record = yaml.safe_load((run_dir / "03-provision.yaml").read_text())["services"]
     assert record == {
         "store": {
@@ -626,76 +629,76 @@ def writes_and_fails(ctx):
 
 
 @pytest.mark.parametrize("keep", [False, True])
-def test_what_a_passed_case_wrote_is_removed_unless_kept(tmp_path, keep):
+def test_what_a_passed_test_wrote_is_removed_unless_kept(tmp_path, keep):
     store = FakeStore()
     code, run_dir, report, _ = go(
-        tmp_path, [py_case(writes, services=["store"])], services=[store.service()], keep=keep
+        tmp_path, [py_test(writes, services=["store"])], services=[store.service()], keep=keep
     )
     assert code == 0
-    uri = f"fake://{run_dir.name}/{py_case(writes).dir_name}/tbl"
+    uri = f"fake://{run_dir.name}/{py_test(writes).dir_name}/tbl"
     if keep:
-        assert store.cleaned == [] and len(list((run_dir / "cases").iterdir())) == 1
-        assert report["cases"][0]["kept"][1:] == [uri]
+        assert store.cleaned == [] and len(list((run_dir / "tests").iterdir())) == 1
+        assert report["tests"][0]["kept"][1:] == [uri]
     else:
-        assert store.cleaned == [uri] and list((run_dir / "cases").iterdir()) == []
-        assert "kept" not in report["cases"][0]
+        assert store.cleaned == [uri] and list((run_dir / "tests").iterdir()) == []
+        assert "kept" not in report["tests"][0]
 
 
-def test_what_a_failed_case_wrote_stays_and_is_listed(tmp_path):
+def test_what_a_failed_test_wrote_stays_and_is_listed(tmp_path):
     store = FakeStore()
-    _, run_dir, report, text = go(tmp_path, [py_case(writes_and_fails, services=["store"])], services=[store.service()])
-    kept = report["cases"][0]["kept"]
+    _, run_dir, report, text = go(tmp_path, [py_test(writes_and_fails, services=["store"])], services=[store.service()])
+    kept = report["tests"][0]["kept"]
     assert store.cleaned == [] and os.path.isfile(os.path.join(kept[0], "f")) and kept[1].startswith("fake://")
     assert "kept: " + kept[0] in text and "again: ducktest5 run --id" in text
 
 
 @pytest.mark.parametrize("keep", [False, True])
 def test_a_batch_dir_stays_only_when_kept_or_not_all_passed(tmp_path, keep):
-    _, run_dir, _, _ = go(tmp_path, [sql_case("a.test")], keep=keep)
+    _, run_dir, _, _ = go(tmp_path, [sql_test("a.test")], keep=keep)
     assert (run_dir / "batches" / "b001").exists() == keep
 
 
 def test_a_batch_dir_with_a_failure_stays(tmp_path):
-    _, run_dir, report, _ = go(tmp_path, [sql_case("a.test"), sql_case("b_fail.test")])
+    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test"), sql_test("b_fail.test")])
     assert (run_dir / "batches" / "b001" / "output.txt").exists()
-    assert "Wrong result in query" in report["cases"][1]["problems"][0]
+    assert "Wrong result in query" in report["tests"][1]["problems"][0]
 
 
 # -----------------------------------------------------------------------------
-# Whatever goes wrong outside a body is an ERROR of the cases it hit
+# Whatever goes wrong outside a body is an ERROR of the tests it hit
 #
 
 
 def test_a_clean_that_raises_is_an_error_and_the_run_goes_on(tmp_path):
     store = FakeStore(clean_raises=True)
-    cases = [py_case(writes, services=["store"]), py_case(passes, path="test/next.py")]
-    code, _, report, _ = go(tmp_path, cases, services=[store.service()])
+    tests = [py_test(writes, services=["store"]), py_test(passes, path="test/next.py")]
+    code, _, report, _ = go(tmp_path, tests, services=[store.service()])
     assert code == 1
     assert outcomes(report) == {"writes": "error", "passes": "passed"}
-    first = case_of(report, "writes")
+    first = result_of(report, "writes")
     assert "could not be removed: RuntimeError: access denied" in first["problems"][0]
     assert first["kept"] == [first["problems"][0].split(" at ")[1].split(" could")[0]]
 
 
-def test_a_batch_that_cannot_start_is_an_error_of_its_cases_and_python_cases_still_run(tmp_path):
-    cases = [sql_case("a.test"), sql_case("b.test"), py_case(passes)]
-    code, _, report, _ = go(tmp_path, cases, unittest_bin=str(tmp_path / "no-such-binary"))
+def test_a_batch_that_cannot_start_is_an_error_of_its_tests_and_python_tests_still_run(tmp_path):
+    tests = [sql_test("a.test"), sql_test("b.test"), py_test(passes)]
+    code, _, report, _ = go(tmp_path, tests, unittest_bin=str(tmp_path / "no-such-binary"))
     assert code == 1
     assert outcomes(report) == {"a": "error", "b": "error", "passes": "passed"}
-    assert "the batch could not run: FileNotFoundError" in case_of(report, "a")["problems"][0]
+    assert "the batch could not run: FileNotFoundError" in result_of(report, "a")["problems"][0]
 
 
-def test_a_case_dir_that_cannot_be_made_is_an_error_of_that_case(tmp_path, monkeypatch):
-    case = py_case(passes)
+def test_a_test_dir_that_cannot_be_made_is_an_error_of_that_test(tmp_path, monkeypatch):
+    test = py_test(passes)
     real = os.makedirs
     monkeypatch.setattr(
         os,
         "makedirs",
-        lambda p, **kw: (_ for _ in ()).throw(OSError("disk full")) if case.dir_name in p else real(p, **kw),
+        lambda p, **kw: (_ for _ in ()).throw(OSError("disk full")) if test.dir_name in p else real(p, **kw),
     )
-    _, _, report, _ = go(tmp_path, [case, py_case(passes, path="test/other.py")])
-    assert sorted(c["outcome"] for c in report["cases"]) == ["error", "passed"]
-    broken = next(c for c in report["cases"] if c["outcome"] == "error")
+    _, _, report, _ = go(tmp_path, [test, py_test(passes, path="test/other.py")])
+    assert sorted(c["outcome"] for c in report["tests"]) == ["error", "passed"]
+    broken = next(c for c in report["tests"] if c["outcome"] == "error")
     assert "could not be set up: OSError: disk full" in broken["problems"][0]
 
 
@@ -703,7 +706,7 @@ def test_the_report_is_written_and_services_are_released_when_the_run_raises(tmp
     engine = FakeEngine()
     with pytest.raises(UsageError, match="no unittest binary"):
         run(
-            [sql_case("a.test"), py_case(passes, engines=["fake"])],
+            [sql_test("a.test"), py_test(passes, engines=["fake"])],
             Project(str(tmp_path), {"fake": engine.engine()}, {}, {}, {}, ()),
             duckdb_bin="no-duckdb",
             unittest_bin=None,
@@ -716,12 +719,12 @@ def test_the_report_is_written_and_services_are_released_when_the_run_raises(tmp
     assert engine.calls == ["boot", "stop"]
 
 
-def test_each_case_has_one_event_line(tmp_path):
+def test_each_test_has_one_event_line(tmp_path):
     variant = Variant("oss")
-    _, run_dir, _, _ = go(tmp_path, [sql_case("a.test", {"backend": variant}), py_case(fails)])
-    ended = case_events(run_dir)
+    _, run_dir, _, _ = go(tmp_path, [sql_test("a.test", {"backend": variant}), py_test(fails)])
+    ended = end_events(run_dir)
     assert all(isinstance(e["seconds"], float) for e in ended)
-    # a case with no variant carries no `variants`: what is not there was not known, never empty
+    # a test with no variant carries no `variants`: what is not there was not known, never empty
     assert {e["id"]: (e["outcome"], e["runner"], e.get("variants", {})) for e in ended} == {
         "a.test::a[backend=oss]": ("passed", "unittest", {"backend": "oss"}),
         "test/body.py::fails": ("failed", "python", {}),
@@ -733,11 +736,11 @@ def test_each_case_has_one_event_line(tmp_path):
 #
 
 
-def ctx_for(case, tmp_path, *, engine=None, session=None, services=None, **kwargs):
+def ctx_for(test, tmp_path, *, engine=None, session=None, services=None, **kwargs):
     kwargs.setdefault("session_factory", FakeSession)
-    kwargs.setdefault("case_env", resolve(case, services))
+    kwargs.setdefault("test_env", resolve(test, services))
     return Ctx(
-        case,
+        test,
         temp_dir=str(tmp_path),
         duckdb_bin="no-duckdb",
         duckdb_session=session or FakeSession(),
@@ -754,19 +757,19 @@ def test_failed_checks_are_reported_before_the_abort_and_the_outcome_is_failed(t
         c.expects("SELECT 1", [3], on_fail="continue")
         raise ValueError("then the body broke")
 
-    case = py_case(body, engines=["fake"])
-    outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path))
+    test = py_test(body, engines=["fake"])
+    outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path))
     assert outcome == "failed"
     assert ["2" in problems[0], "3" in problems[1], "then the body broke" in problems[2]] == [True] * 3
     assert f"at {__file__}:" in problems[0]
 
 
-def test_failed_checks_alone_fail_the_case(tmp_path):
+def test_failed_checks_alone_fail_the_test(tmp_path):
     def body(ctx):
         ctx.engine("fake").expects("SELECT 1", [2], on_fail="continue")
 
-    case = py_case(body, engines=["fake"])
-    assert _run_body(case, ctx_for(case, tmp_path))[0] == "failed"
+    test = py_test(body, engines=["fake"])
+    assert _run_body(test, ctx_for(test, tmp_path))[0] == "failed"
 
 
 def test_a_failed_check_stays_a_failure_when_a_setup_fails_after_it(tmp_path):
@@ -775,8 +778,8 @@ def test_a_failed_check_stays_a_failure_when_a_setup_fails_after_it(tmp_path):
         c.expects("SELECT 1", [2], on_fail="continue")
         c.setup("SELECT boom")
 
-    case = py_case(body, engines=["fake"])
-    outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path))
+    test = py_test(body, engines=["fake"])
+    outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path))
     assert outcome == "failed"
     assert "wrong result" in problems[0] and problems[1].startswith("setup failed")
 
@@ -785,12 +788,12 @@ def test_a_failed_setup_is_an_error_not_a_failure(tmp_path):
     def body(ctx):
         ctx.engine("fake").setup("SELECT boom")
 
-    case = py_case(body, engines=["fake"])
-    outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path))
+    test = py_test(body, engines=["fake"])
+    outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path))
     assert outcome == "error" and problems[0].startswith("setup failed")
 
 
-def test_a_body_can_branch_on_a_statement_that_failed_and_the_case_still_passes(tmp_path):
+def test_a_body_can_branch_on_a_statement_that_failed_and_the_test_still_passes(tmp_path):
     seen = []
 
     def body(ctx):
@@ -798,8 +801,8 @@ def test_a_body_can_branch_on_a_statement_that_failed_and_the_case_still_passes(
         seen.append(c.exec("SELECT 1"))
         seen.append(c.exec("SELECT boom"))
 
-    case = py_case(body, engines=["fake"])
-    outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path))
+    test = py_test(body, engines=["fake"])
+    outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path))
     assert (outcome, problems) == ("passed", [])
     assert [bool(t) for t in seen] == [True, False]
     assert (seen[0].rows, seen[1].error) == ([(1,)], "boom")
@@ -815,8 +818,8 @@ def test_teardowns_run_in_reverse_order_also_after_an_abort(tmp_path, aborts):
         c.teardown("DROP second")
         c.oks("SELECT boom" if aborts else "SELECT 1")
 
-    case = py_case(body, engines=["fake"])
-    outcome, _, _ = _run_body(case, ctx_for(case, tmp_path, engine=engine))
+    test = py_test(body, engines=["fake"])
+    outcome, _, _ = _run_body(test, ctx_for(test, tmp_path, engine=engine))
     assert outcome == ("failed" if aborts else "passed")
     assert engine.statements[-2:] == ["DROP second", "DROP first"]
 
@@ -829,14 +832,14 @@ def test_a_teardown_that_fails_is_an_error_and_the_others_still_run(tmp_path):
         c.teardown("DROP last")
         c.teardown("DROP boom")
 
-    case = py_case(body, engines=["fake"])
-    outcome, problems, _ = _run_body(case, ctx_for(case, tmp_path, engine=engine))
+    test = py_test(body, engines=["fake"])
+    outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path, engine=engine))
     assert outcome == "error" and problems[0].startswith("teardown failed")
     assert engine.statements[-1] == "DROP last"
 
 
 def test_an_engine_the_test_did_not_declare_is_refused(tmp_path):
-    ctx = ctx_for(py_case(passes), tmp_path)
+    ctx = ctx_for(py_test(passes), tmp_path)
     with pytest.raises(KeyError, match="not declared by this test"):
         ctx.engine("fake")
 
@@ -859,13 +862,13 @@ def runs_its_file(ctx):
     ],
 )
 def test_a_paired_test_runs_its_file_through_the_binary(tmp_path, body_file, outcome, text):
-    case = py_case(runs_its_file, body_file=body_file, values={"catalog": "duck"})
-    _, run_dir, report, _ = go(tmp_path, [case], keep=True)
-    assert report["cases"][0]["outcome"] == outcome
+    test = py_test(runs_its_file, body_file=body_file, values={"catalog": "duck"})
+    _, run_dir, report, _ = go(tmp_path, [test], keep=True)
+    assert report["tests"][0]["outcome"] == outcome
     if text:
-        assert text in report["cases"][0]["problems"][0]
+        assert text in report["tests"][0]["problems"][0]
     else:
-        output = (run_dir / "cases" / case.dir_name / "run_test" / "output.txt").read_text()
+        output = (run_dir / "tests" / test.dir_name / "run_test" / "output.txt").read_text()
         assert 'ENV {"CATALOG": "duck", "EXTRA": "x"}' in output
 
 
@@ -885,16 +888,16 @@ def gives_rows_the_wrong_shape(ctx):
     ],
 )
 def test_a_usage_error_in_a_body_is_an_error_of_the_test_and_the_run_goes_on(tmp_path, body, text):
-    cases = [py_case(body), py_case(passes, path="test/next.py")]
-    _, _, report, _ = go(tmp_path, cases, unittest_bin=None)
+    tests = [py_test(body), py_test(passes, path="test/next.py")]
+    _, _, report, _ = go(tmp_path, tests, unittest_bin=None)
     assert outcomes(report) == {body.__name__: "error", "passes": "passed"}
-    problem = case_of(report, body.__name__)["problems"][0]
+    problem = result_of(report, body.__name__)["problems"][0]
     assert problem.startswith("usage error of the test, not of the command line\n") and text in problem
 
 
 def test_run_test_in_a_body_with_no_file_says_what_it_is_for(tmp_path):
     with pytest.raises(RuntimeError, match="a .test file of the same stem"):
-        ctx_for(py_case(passes), tmp_path).run_test()
+        ctx_for(py_test(passes), tmp_path).run_test()
 
 
 # -----------------------------------------------------------------------------
@@ -908,23 +911,23 @@ def provisioned_store():
 
 
 def test_a_location_is_under_the_temp_dir_unless_a_service_is_named(tmp_path):
-    case = py_case(passes, services=["store"])
-    ctx = ctx_for(case, tmp_path, services=provisioned_store(), remote_parts=("run1", "case1"))
+    test = py_test(passes, services=["store"])
+    ctx = ctx_for(test, tmp_path, services=provisioned_store(), remote_parts=("run1", "test1"))
     assert ctx.location("tbl") == str(tmp_path / "tbl")
     assert ctx.remote_locations == []
-    assert ctx.location("tbl", on="store") == "fake://run1/case1/tbl"
-    assert ctx.remote_locations == [("store", "fake://run1/case1/tbl")]
+    assert ctx.location("tbl", on="store") == "fake://run1/test1/tbl"
+    assert ctx.remote_locations == [("store", "fake://run1/test1/tbl")]
     assert ctx.service("store")["endpoint"] == "http://store"
 
 
 def test_a_variant_can_put_every_location_on_a_service(tmp_path):
     variant = Variant("s3", services=("store",), location_on="store")
-    ctx = ctx_for(py_case(passes, {"k": variant}), tmp_path, services=provisioned_store(), remote_parts=("r", "c"))
+    ctx = ctx_for(py_test(passes, {"k": variant}), tmp_path, services=provisioned_store(), remote_parts=("r", "c"))
     assert ctx.location("tbl") == "fake://r/c/tbl"
 
 
 def test_a_service_the_test_did_not_declare_is_refused(tmp_path):
-    ctx = ctx_for(py_case(passes), tmp_path, services=provisioned_store())
+    ctx = ctx_for(py_test(passes), tmp_path, services=provisioned_store())
     with pytest.raises(KeyError, match="not declared by this test"):
         ctx.location("tbl", on="store")
 
@@ -934,7 +937,7 @@ def test_a_service_the_test_did_not_declare_is_refused(tmp_path):
 #
 
 
-def test_the_case_environment_comes_before_the_bodys_own_preamble_in_the_order_of_the_init_file(tmp_path):
+def test_the_test_environment_comes_before_the_bodys_own_preamble_in_the_order_of_the_init_file(tmp_path):
     seen = []
 
     def body(ctx):
@@ -948,7 +951,7 @@ def test_the_case_environment_comes_before_the_bodys_own_preamble_in_the_order_o
         settings={"threads": 2, "s3_region": "it's"},
         init_sql=lambda blocks: f"CREATE SECRET (ENDPOINT '{blocks['store']['endpoint']}')",
     )
-    code, _, _, _ = go(tmp_path, [py_case(body, {"k": variant})], services=[FakeStore().service()])
+    code, _, _, _ = go(tmp_path, [py_test(body, {"k": variant})], services=[FakeStore().service()])
     assert code == 0
     assert seen == [
         "LOAD httpfs;\nSET threads = '2';\nSET s3_region = 'it''s';\n"
@@ -964,13 +967,13 @@ def test_a_python_body_reads_the_roots_and_puts_what_it_makes_under_the_temp_roo
         seen["location"] = ctx.location("tbl")
 
     variant = Variant("http", roots={"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"})
-    case = py_case(body, {"storage": variant})
-    assert go(tmp_path, [case])[0] == 0
+    test = py_test(body, {"storage": variant})
+    assert go(tmp_path, [test])[0] == 0
     assert seen["roots"] == {"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"}
-    assert seen["location"].startswith("http://origin/temp/") and seen["location"].endswith(f"/{case.dir_name}/tbl")
+    assert seen["location"].startswith("http://origin/temp/") and seen["location"].endswith(f"/{test.dir_name}/tbl")
 
 
-def test_a_case_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(tmp_path):
+def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(tmp_path):
     made, seen = [], {}
 
     def factory(binary, *, home=None, env=None):
@@ -982,8 +985,8 @@ def test_a_case_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(
         seen["is_the_runs_shell"] = ctx._duckdb_session in made[1:]
 
     variant = Variant("no-key", env={"AWS_PROFILE": "ducktest"}, env_unset=("AWS_ACCESS_KEY_ID",))
-    assert go(tmp_path, [py_case(body, {"auth": variant})], session_factory=factory)[0] == 0
-    run_shell, own = made  # the run's own shell, then the one this case had to have
+    assert go(tmp_path, [py_test(body, {"auth": variant})], session_factory=factory)[0] == 0
+    run_shell, own = made  # the run's own shell, then the one this test had to have
     assert (run_shell.env, own.env["AWS_PROFILE"]) == (None, "ducktest")
     assert "AWS_ACCESS_KEY_ID" not in own.env
     assert seen["is_the_runs_shell"] is False
@@ -993,17 +996,17 @@ def test_a_preamble_that_fails_is_a_setup_error(tmp_path):
     def body(ctx):
         ctx.duckdb()
 
-    _, _, report, _ = go(tmp_path, [py_case(body)], session_factory=lambda b, **kw: FakeSession(preamble_fails=True))
-    assert report["cases"][0]["outcome"] == "error"
-    assert "the preamble failed: Catalog Error" in report["cases"][0]["problems"][0]
+    _, _, report, _ = go(tmp_path, [py_test(body)], session_factory=lambda b, **kw: FakeSession(preamble_fails=True))
+    assert report["tests"][0]["outcome"] == "error"
+    assert "the preamble failed: Catalog Error" in report["tests"][0]["problems"][0]
 
 
 def test_an_unknown_session_kind_is_refused(tmp_path):
     with pytest.raises(ValueError, match="'per_run', 'per_client', 'per_call'"):
-        ctx_for(py_case(passes), tmp_path).duckdb(session="per_test")
+        ctx_for(py_test(passes), tmp_path).duckdb(session="per_test")
 
 
-def test_an_own_session_is_a_warm_shell_of_its_own_closed_when_the_case_ends(tmp_path):
+def test_an_own_session_is_a_warm_shell_of_its_own_closed_when_the_test_ends(tmp_path):
     made = []
 
     def factory(binary, *, home=None, env=None):
@@ -1022,7 +1025,7 @@ def test_an_own_session_is_a_warm_shell_of_its_own_closed_when_the_case_ends(tmp
         second.oks("SELECT 2")
         shared.oks("SELECT 3")
 
-    code, _, _, _ = go(tmp_path, [py_case(body)], session_factory=factory)
+    code, _, _, _ = go(tmp_path, [py_test(body)], session_factory=factory)
     assert code == 0
     run_shell, first, second = made  # the run's shell, then one for each `per_client` client
     assert [first.statements, second.statements, run_shell.statements] == [["SELECT 1"], ["SELECT 2"], ["SELECT 3"]]
@@ -1037,15 +1040,15 @@ def test_an_own_session_is_a_warm_shell_of_its_own_closed_when_the_case_ends(tmp
 
 
 def test_a_flaky_file_is_passed_with_its_attempts_in_the_event_line_and_its_output_stays(tmp_path, flaky_state):
-    cases = [sql_case("a.test"), sql_case("b_flaky2.test", retries=1), sql_case("c_flaky2.test")]
-    code, run_dir, report, text = go(tmp_path, cases)
+    tests = [sql_test("a.test"), sql_test("b_flaky2.test", retries=1), sql_test("c_flaky2.test")]
+    code, run_dir, report, text = go(tmp_path, tests)
     assert outcomes(report) == {"a": "passed", "b_flaky2": "passed", "c_flaky2": "failed"}
-    assert sorted(e.get("attempts") for e in case_events(run_dir) if e.get("attempts")) == [2]
+    assert sorted(e.get("attempts") for e in end_events(run_dir) if e.get("attempts")) == [2]
     assert "[passed on attempt 2 of 2]" in text
 
 
 def test_the_output_of_a_failed_attempt_stays_when_a_later_attempt_passed(tmp_path, flaky_state):
-    code, run_dir, _, _ = go(tmp_path, [sql_case("b_flaky2.test", retries=1)])
+    code, run_dir, _, _ = go(tmp_path, [sql_test("b_flaky2.test", retries=1)])
     assert code == 0
     assert "Wrong result in query" in (run_dir / "batches" / "b001" / "output.txt").read_text()
 
@@ -1059,13 +1062,13 @@ def test_a_python_body_with_retries_runs_again_in_a_directory_of_its_own(tmp_pat
         assert len(seen) == 2
 
     store = FakeStore()
-    case = py_case(flaky, services=["store"], retries=2)
-    code, run_dir, report, _ = go(tmp_path, [case], services=[store.service()])
+    test = py_test(flaky, services=["store"], retries=2)
+    code, run_dir, report, _ = go(tmp_path, [test], services=[store.service()])
     assert code == 0
-    assert [(name, files) for name, files, _ in seen] == [(case.dir_name, []), (case.dir_name + ".attempt2", [])]
-    assert (report["cases"][0]["attempts"], report["cases"][0]["note"]) == (2, "passed on attempt 2 of 3")
+    assert [(name, files) for name, files, _ in seen] == [(test.dir_name, []), (test.dir_name + ".attempt2", [])]
+    assert (report["tests"][0]["attempts"], report["tests"][0]["note"]) == (2, "passed on attempt 2 of 3")
     assert store.cleaned == [uri for _, _, uri in seen] and len(set(store.cleaned)) == 2
-    assert list((run_dir / "cases").iterdir()) == []
+    assert list((run_dir / "tests").iterdir()) == []
 
 
 def test_a_python_body_that_never_passes_keeps_its_first_failure(tmp_path):
@@ -1075,10 +1078,10 @@ def test_a_python_body_that_never_passes_keeps_its_first_failure(tmp_path):
         seen.append(1)
         assert False, f"attempt {len(seen)}"
 
-    _, run_dir, report, _ = go(tmp_path, [py_case(never, retries=1)])
-    case = report["cases"][0]
-    assert (case["outcome"], case["attempts"], len(case["kept"])) == ("failed", 2, 2)
-    assert "attempt 1" in case["problems"][0] and len(case["problems"]) == 1
+    _, run_dir, report, _ = go(tmp_path, [py_test(never, retries=1)])
+    test = report["tests"][0]
+    assert (test["outcome"], test["attempts"], len(test["kept"])) == ("failed", 2, 2)
+    assert "attempt 1" in test["problems"][0] and len(test["problems"]) == 1
 
 
 def test_duckdb_gets_a_home_under_the_run_dir_for_both_kinds_of_session(tmp_path):
@@ -1088,7 +1091,7 @@ def test_duckdb_gets_a_home_under_the_run_dir_for_both_kinds_of_session(tmp_path
         seen["session"] = ctx._duckdb_session.home
         seen["per_call"] = ctx.duckdb(session="per_call")._run.__self__._home.path
 
-    _, run_dir, _, _ = go(tmp_path, [py_case(body)])
+    _, run_dir, _, _ = go(tmp_path, [py_test(body)])
     assert seen == {"session": str(run_dir / "home"), "per_call": str(run_dir / "home")}
 
 
@@ -1101,13 +1104,13 @@ def test_the_timeout_of_a_duckdb_client_reaches_each_of_its_statements(tmp_path)
         seen.extend(ctx._duckdb_session.timeouts)
         seen.append(ctx.duckdb(session="per_call", timeout=9)._run.__self__._timeout)
 
-    assert go(tmp_path, [py_case(body)])[0] == 0
+    assert go(tmp_path, [py_test(body)])[0] == 0
     assert seen == [7, 120, 9]
 
 
 def test_the_scan_record_names_the_version_of_an_engine(tmp_path):
     project = Project(str(tmp_path), {"fake": FakeEngine().engine()}, {}, {}, {}, ())
-    record = py_case(passes, engines=["fake"]).record(project)
+    record = py_test(passes, engines=["fake"]).record(project)
     assert record["preconditions"]["engines"] == [{"id": "fake", "version": "fake:1"}]
 
 
@@ -1121,7 +1124,7 @@ def test_a_run_writes_the_report_files_it_is_asked_for(tmp_path):
 
     out_json, out_xml = str(tmp_path / "r.json"), str(tmp_path / "r.xml")
     _, run_dir, _, text = go(
-        tmp_path, [sql_case("a.test"), sql_case("b_fail.test")], report_json=out_json, junit_file=out_xml
+        tmp_path, [sql_test("a.test"), sql_test("b_fail.test")], report_json=out_json, junit_file=out_xml
     )
     assert "PASSED   a.test::a" in text  # the live output still goes to the terminal
     assert json.loads(open(out_json).read()) == json.loads((run_dir / "05-report.json").read_text())
@@ -1130,7 +1133,7 @@ def test_a_run_writes_the_report_files_it_is_asked_for(tmp_path):
 
 
 def test_a_terse_run_prints_blocks_and_one_summary_line_instead_of_the_live_output(tmp_path):
-    _, _, _, text = go(tmp_path, [sql_case("a.test"), sql_case("b_fail.test")], level="terse")
+    _, _, _, text = go(tmp_path, [sql_test("a.test"), sql_test("b_fail.test")], level="terse")
     assert "PASSED" not in text
-    assert text.splitlines()[0] == "case: b_fail.test::b_fail"
+    assert text.splitlines()[0] == "test: b_fail.test::b_fail"
     assert text.splitlines()[-1].startswith("summary: 1 passed, 1 failed, 0 error, 0 blocked, 0 skipped in ")

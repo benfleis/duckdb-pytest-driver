@@ -83,11 +83,11 @@ def test_a_list_of_statements_is_not_split():
     assert seen == ["BEGIN SELECT 1; SELECT 2; END", "SELECT * FROM cat.t"]
 
 
-def test_a_struct_literal_is_left_alone_and_a_case_table_cannot_shadow_a_verb_option():
+def test_a_struct_literal_is_left_alone_and_a_params_row_cannot_shadow_a_verb_option():
     seen = []
     client = Client("fake", lambda statements: seen.extend(statements) or (["x"], [(3,)]), table="cat.t")
-    case = {"x": 3, "sort": "this is a column of the case table, not the option", "on_fail": "nor this"}
-    client.expects("SELECT {'a': 1}, {{literal}} FROM {t} WHERE x = {x}", [3], case)
+    row = {"x": 3, "sort": "this is a column of the params row, not the option", "on_fail": "nor this"}
+    client.expects("SELECT {'a': 1}, {{literal}} FROM {t} WHERE x = {x}", [3], row)
     assert seen == ["SELECT {'a': 1}, {literal} FROM cat.t WHERE x = 3"]
 
 

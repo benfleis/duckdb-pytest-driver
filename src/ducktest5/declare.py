@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .binary import UsageError
+
 CONF_FILE = "ducktest_conf.py"  # not `ducktest.py`: that name would shadow the package on a sys.path entry
 
 
@@ -61,7 +63,7 @@ class ServiceDef:
 @dataclass(frozen=True)
 class Variant:
     """One alternative on a variant axis, with everything it brings. The list of what it may hold is
-    closed on purpose; what a value gives goes into the case environment, and both kinds of body are
+    closed on purpose; what a value gives goes into the test environment, and both kinds of body are
     given it the same way, in this order:
 
     `requires`   extensions to load before anything else. A setting, a function or a secret type of
@@ -75,11 +77,11 @@ class Variant:
                  `local_temp_dir_root` (a dict, or a function of the blocks). A remote root and its
                  local mirror are one storage seen two ways. A Python body reads them as `ctx.roots`,
                  and `ctx.location()` puts what it makes under `temp_dir_root`.
-    `env`        the process environment of the engine that runs the case, and `env_unset` what to
+    `env`        the process environment of the engine that runs the test, and `env_unset` what to
                  take out of it: for what DuckDB or a library inside it reads with getenv (AWS_*,
                  AZURE_*, HTTP_PROXY). The absence of a variable is a fact a literal cannot express.
 
-    `services` and `engines` are what the case then needs, `tags` name it for a selection, and
+    `services` and `engines` are what the test then needs, `tags` name it for a selection, and
     `location_on` is the service on which `ctx.location()` puts what the body creates."""
 
     id: str
@@ -97,11 +99,16 @@ class Variant:
 
 
 @dataclass(frozen=True)
-class Test:
+class TestMark:
+    """What `@test(...)` attaches to a body: the author's own words, before the scan gives them a
+    path and a name and puts the rules under them in a `TestDef`."""
+
+    __test__ = False  # not a pytest class
+
     body: Callable
     engines: tuple = ()
     services: tuple = ()
-    cases: dict = field(default_factory=dict)
+    params: dict = field(default_factory=dict)
     tags: tuple = ()
     variants: tuple = ()
     mutex: tuple = ()
@@ -113,23 +120,28 @@ def as_mutex(value):
     return (value,) if isinstance(value, str) else tuple(value or ())
 
 
-def test(*, engines=(), services=(), cases=None, tags=(), variants=(), mutex=(), suites=()):
-    """Mark `body(ctx)` as a test. `cases` maps a case id to the params the body reads as `ctx.case`;
-    `variants` names the project's axes the test takes part in. The test runs once for each
-    combination of a case and one value of every axis.
+def test(*, engines=(), services=(), params=None, tags=(), variants=(), mutex=(), suites=(), **unknown):
+    """Mark `body(ctx)` as a test definition. `params` maps a key to the params the body reads as
+    `ctx.params`; the key is the first part of the test id. `variants` names the project's axes the
+    definition takes part in. It makes one test for each combination of a params row and one value
+    of every axis.
 
-    `mutex` names what the test must have to itself: a name, or several. Two cases that name one of
-    them never run at the same time, however many workers the run has.
+    `mutex` names what each of its tests must have to itself: a name, or several. Two tests that
+    name one of them never run at the same time, however many workers the run has.
 
-    `suites` says which suites the test is in: `"smoke"` declares it in whatever the suite's own
-    definition selects, `"!smoke"` declares it out and nothing but `--id` puts it back."""
+    `suites` says which suites its tests are in: `"smoke"` declares them in whatever the suite's own
+    definition selects, `"!smoke"` declares them out and nothing but `--id` puts one back."""
+    if "cases" in unknown:
+        raise UsageError("@test(cases=...) is now @test(params=...); the body reads its row as ctx.params")
+    if unknown:
+        raise TypeError(f"test() got unexpected keyword arguments {sorted(unknown)}")
 
     def mark(body):
-        body.__ducktest__ = Test(
+        body.__ducktest__ = TestMark(
             body,
             tuple(engines),
             tuple(services),
-            dict(cases or {}),
+            dict(params or {}),
             tuple(tags),
             tuple(variants),
             as_mutex(mutex),

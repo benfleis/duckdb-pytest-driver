@@ -49,7 +49,7 @@ class _Home:
     def __init__(self, path=None, env=None):
         self._temporary = None if path else tempfile.TemporaryDirectory(prefix="ducktest-home-")
         self.path = os.path.abspath(path or self._temporary.name)
-        self._env = env  # the case environment's, where it has one; else this process's
+        self._env = env  # the test environment's, where it has one; else this process's
 
     def env(self):
         os.makedirs(self.path, exist_ok=True)  # DuckDB fails on a home directory that is set and absent

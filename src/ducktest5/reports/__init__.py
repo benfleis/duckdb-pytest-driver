@@ -1,11 +1,11 @@
 """Every renderer here reads `04-events.jsonl` and nothing else.
 
 `Report.of(events)` is the one reading of the stream: it merges the runs that were given, keeps the
-last `case_end` for a case id, and answers the questions a reader asks (counts, the slowest cases,
+last `test_end` for a test id, and answers the questions a reader asks (counts, the slowest tests,
 what was retried). The renderers turn that into text, JSON, JUnit XML or DuckDB tables. A fact no
 renderer can find here belongs in an event, not in a renderer.
 
-    live       one line per case as it ends, failures in full at the end, then a summary
+    live       one line per test as it ends, failures in full at the end, then a summary
     text       the same without cursor control, at three levels (terse, normal, verbose)
     json       the event lines as they are, and one document as `05-report.json`/`.yaml`
     junit      JUnit XML for CI annotations: one testsuite per test file
@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from ..events import CASE_END, CASE_START, RUN_END, RUN_START, SERVICE
+from ..events import RUN_END, RUN_START, SERVICE, TEST_END, TEST_START
 from ..outcomes import ALL as OUTCOMES
 from ..outcomes import BLOCKED, ERROR, FAILED, PASSED
 
@@ -30,8 +30,8 @@ REPORT_YAML, REPORT_JSON = "05-report.yaml", "05-report.json"
 class Report:
     runs: list = field(default_factory=list)  # run_start events, in the order the run dirs were given
     ends: dict = field(default_factory=dict)  # run id -> run_end
-    cases: list = field(default_factory=list)  # case_end, merged; a later run wins a shared case id
-    starts: dict = field(default_factory=dict)  # case id -> case_start
+    tests: list = field(default_factory=list)  # test_end, merged; a later run wins a shared test id
+    starts: dict = field(default_factory=dict)  # test id -> test_start
     services: list = field(default_factory=list)
     events: list = field(default_factory=list)  # every line as it was read, for `--format json`
 
@@ -47,21 +47,21 @@ class Report:
                 report.ends[event.get("run")] = event
             elif kind == SERVICE:
                 report.services.append(event)
-            elif kind == CASE_START:
+            elif kind == TEST_START:
                 report.starts[event.get("id")] = event
-            elif kind == CASE_END:
+            elif kind == TEST_END:
                 by_id[event.get("id")] = event
-        report.cases = list(by_id.values())
+        report.tests = list(by_id.values())
         return report
 
     @property
     def merged(self):
-        """True when more than one run contributed, so a reader must be told where a case came from."""
-        return len({c.get("run") for c in self.cases}) > 1 or len(self.runs) > 1
+        """True when more than one run contributed, so a reader must be told where a test came from."""
+        return len({c.get("run") for c in self.tests}) > 1 or len(self.runs) > 1
 
     @property
     def run_id(self):
-        return self.runs[-1].get("run") if self.runs else next((c.get("run") for c in self.cases), None)
+        return self.runs[-1].get("run") if self.runs else next((c.get("run") for c in self.tests), None)
 
     @property
     def run_dir(self):
@@ -69,14 +69,14 @@ class Report:
 
     @property
     def counts(self):
-        return {o: sum(c.get("outcome") == o for c in self.cases) for o in OUTCOMES}
+        return {o: sum(c.get("outcome") == o for c in self.tests) for o in OUTCOMES}
 
     @property
     def seconds(self):
-        """Wall time: what the runs reported, else the sum of the cases."""
+        """Wall time: what the runs reported, else the sum of the tests."""
         if self.ends:
             return round(sum(e.get("seconds") or 0 for e in self.ends.values()), 2)
-        return round(sum(c.get("seconds") or 0 for c in self.cases), 2)
+        return round(sum(c.get("seconds") or 0 for c in self.tests), 2)
 
     @property
     def exit_code(self):
@@ -90,8 +90,8 @@ class Report:
 
     @property
     def bad(self):
-        """The cases a reader must look at, in the order they ended."""
-        return [c for c in self.cases if c.get("outcome") in (FAILED, ERROR, BLOCKED)]
+        """The tests a reader must look at, in the order they ended."""
+        return [c for c in self.tests if c.get("outcome") in (FAILED, ERROR, BLOCKED)]
 
     @property
     def not_provisioned(self):
@@ -99,22 +99,22 @@ class Report:
 
     @property
     def weak(self):
-        """The cases whose outcome is not the binary's own word but a runner's summary."""
-        return [c for c in self.cases if c.get("evidence") == "run-summary"]
+        """The tests whose outcome is not the binary's own word but a runner's summary."""
+        return [c for c in self.tests if c.get("evidence") == "run-summary"]
 
     def slowest(self, n=5):
-        return sorted((c for c in self.cases if c.get("seconds") is not None), key=lambda c: -c["seconds"])[:n]
+        return sorted((c for c in self.tests if c.get("seconds") is not None), key=lambda c: -c["seconds"])[:n]
 
     def retried(self):
-        return [c for c in self.cases if (c.get("attempts") or 1) > 1]
+        return [c for c in self.tests if (c.get("attempts") or 1) > 1]
 
     def by_reason(self, outcome):
-        """{reason: [case ids]}, most cases first: one line per reason beats one per case."""
+        """{reason: [test ids]}, most tests first: one line per reason beats one per test."""
         out = {}
-        for case in self.cases:
-            if case.get("outcome") == outcome:
-                out.setdefault(case.get("reason") or (case.get("problems") or ["no reason given"])[0], []).append(
-                    case["id"]
+        for test in self.tests:
+            if test.get("outcome") == outcome:
+                out.setdefault(test.get("reason") or (test.get("problems") or ["no reason given"])[0], []).append(
+                    test["id"]
                 )
         return dict(sorted(out.items(), key=lambda kv: -len(kv[1])))
 

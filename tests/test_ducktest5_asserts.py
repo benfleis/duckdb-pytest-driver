@@ -10,15 +10,15 @@ import pytest
 import yaml
 
 from ducktest5 import asserts
-from ducktest5.events import CASE_END
+from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
 from ducktest5.run import run
 from ducktest5.scan import scan
 
 
-def case_events(run_dir):
-    """The `case_end` lines of a run: one per case, whatever else the stream holds."""
-    return [e for e in read_events(str(run_dir)) if e["event"] == CASE_END]
+def end_events(run_dir):
+    """The `test_end` lines of a run: one per test, whatever else the stream holds."""
+    return [e for e in read_events(str(run_dir)) if e["event"] == TEST_END]
 
 
 def load(tmp_path, source, name="probe"):
@@ -168,10 +168,10 @@ def test_the_failure_text_reaches_the_terminal_the_report_and_the_events(tmp_pat
             """
         )
     )
-    cases, project = scan(str(root), working_dir=str(tmp_path))
+    tests, project = scan(str(root), working_dir=str(tmp_path))
     printed = io.StringIO()
     code = run(
-        cases,
+        tests,
         project,
         duckdb_bin="no-duckdb",
         working_dir=str(tmp_path),
@@ -182,13 +182,13 @@ def test_the_failure_text_reaches_the_terminal_the_report_and_the_events(tmp_pat
     assert code == 1
     (run_dir,) = (tmp_path / "runs").iterdir()
     report = yaml.safe_load((run_dir / "05-report.yaml").read_text())
-    (problem,) = report["cases"][0]["problems"]
+    (problem,) = report["tests"][0]["problems"]
     assert "assert ids == list(range(1, len(ids) + 1))" in problem
     assert "diff, - left + right" in problem
     assert problem.endswith("body.py:7")
     # the terminal shows the message and the place, laid out; the event keeps the text as it was
     assert "assert ids == list(range(1, len(ids) + 1))" in printed.getvalue()
     assert "body.py:7" in printed.getvalue()
-    (event,) = case_events(run_dir)
+    (event,) = end_events(run_dir)
     assert event["problems"] == [problem]
     assert event["failure"]["where"].endswith("body.py:7")

@@ -36,8 +36,8 @@ def binaries(*more):
     return ["--duckdb-bin", FAKE, "--unittest-bin", FAKE, "--run-bin", WRAPPER, "--no-binary-check", *more]
 
 
-def cases_of(run_dir="runs"):
-    return {e["id"]: e for e in events.read(str(run_dir)) if e["event"] == events.CASE_END}
+def ends_of(run_dir="runs"):
+    return {e["id"]: e for e in events.read(str(run_dir)) if e["event"] == events.TEST_END}
 
 
 def go(*more, run_dir="one"):
@@ -50,27 +50,27 @@ def the_run(run_dir="one"):
 
 
 # -----------------------------------------------------------------------------
-# The wrapper runs the batches and every case gets its own outcome
+# The wrapper runs the batches and every test gets its own outcome
 #
 
 
-def test_the_run_wrapper_gives_every_case_an_outcome_of_its_own(tree):
+def test_the_run_wrapper_gives_every_test_an_outcome_of_its_own(tree):
     assert go() == 1
-    cases = cases_of(the_run())
-    assert {i.split("::")[-1]: c["outcome"] for i, c in cases.items()} == {
+    tests = ends_of(the_run())
+    assert {i.split("::")[-1]: c["outcome"] for i, c in tests.items()} == {
         "x": "passed",
         "y": "passed",
         "z_fail": "failed",
         "c_skip": "skipped",
     }
-    assert all(c["runner"] == "run" for c in cases.values())
-    assert all(c["seconds"] >= 0 for c in cases.values())  # from the binary's own progress line
+    assert all(c["runner"] == "run" for c in tests.values())
+    assert all(c["seconds"] >= 0 for c in tests.values())  # from the binary's own progress line
     # the output of the process that ran it is what says so, not the wrapper's summary
-    assert {c["evidence"] for c in cases.values()} == {"event"}
-    assert "Wrong result in query" in cases["b/z_fail.test::z_fail"]["problems"][0]
+    assert {c["evidence"] for c in tests.values()} == {"event"}
+    assert "Wrong result in query" in tests["b/z_fail.test::z_fail"]["problems"][0]
 
 
-def test_one_call_of_the_wrapper_for_each_case_environment(tree):
+def test_one_call_of_the_wrapper_for_each_test_environment(tree):
     (tree / "test/ducktest_conf.py").write_text(
         textwrap.dedent("""
             from ducktest5 import match
@@ -99,9 +99,9 @@ def test_a_test_the_wrapper_never_reported_falls_back_to_its_summary(tree, capsy
     # No process output at all: the shim is the only place events come from, so the summary decides.
     monkeypatch.setattr("ducktest5.runners._kept_output", lambda group_dir: [])
     assert go() == 1
-    cases = cases_of(the_run())
-    assert {c["evidence"] for c in cases.values()} == {"run-summary"}
-    assert [c["outcome"] for c in cases.values()] == ["error"] * 4  # the wrapper did not end green
+    tests = ends_of(the_run())
+    assert {c["evidence"] for c in tests.values()} == {"run-summary"}
+    assert [c["outcome"] for c in tests.values()] == ["error"] * 4  # the wrapper did not end green
     assert "no event of their own" in capsys.readouterr().out
 
 
@@ -109,11 +109,11 @@ def test_the_report_says_that_an_outcome_from_the_summary_is_weaker(tree, capsys
     monkeypatch.setattr("ducktest5.runners._kept_output", lambda group_dir: [])
     os.remove("test/b/z_fail.test")
     assert go() == 0  # every test passed, says the wrapper
-    cases = cases_of(the_run())
-    assert {c["outcome"] for c in cases.values()} == {"passed"}
-    assert all("seconds" not in c or c["seconds"] is None for c in cases.values())
+    tests = ends_of(the_run())
+    assert {c["outcome"] for c in tests.values()} == {"passed"}
+    assert all("seconds" not in c or c["seconds"] is None for c in tests.values())
     said = capsys.readouterr().out
-    assert "3 of 3 cases have no event of their own" in said
+    assert "3 of 3 tests have no event of their own" in said
     capsys.readouterr()
     assert main(["report", "--run-dir", the_run(), "--format", "text", "--level", "terse"]) == 0
     assert "; from-run-summary=3" in capsys.readouterr().out
@@ -130,8 +130,8 @@ def test_a_python_body_runs_here_whatever_the_runner_says(tree):
         """)
     )
     assert go() == 1
-    cases = cases_of(the_run())
-    assert cases["b/body.py::passes"]["runner"] == "python"
+    tests = ends_of(the_run())
+    assert tests["b/body.py::passes"]["runner"] == "python"
 
 
 def test_a_missing_wrapper_is_a_usage_error_that_names_the_other_runner(tree, capsys):
@@ -160,5 +160,5 @@ def test_the_wrapper_is_given_paths_that_do_not_depend_on_where_it_runs(tree):
     assert main(["scan", "test/a", "--run-dir", "apart"]) == 0
     assert main(["plan", "--run-dir", "apart", "--runner", "run"]) == 0
     assert main(["exec", "--run-dir", "apart", *binaries()]) == 0
-    assert {c["outcome"] for c in cases_of("apart").values()} == {"passed"}
-    assert {c["evidence"] for c in cases_of("apart").values()} == {"event"}
+    assert {c["outcome"] for c in ends_of("apart").values()} == {"passed"}
+    assert {c["evidence"] for c in ends_of("apart").values()} == {"event"}

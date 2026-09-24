@@ -65,7 +65,7 @@ def provisioned(run_dir):
 
 
 def outcomes(run_dir):
-    return {e["id"]: e["outcome"] for e in events.read(run_dir) if e["event"] == events.CASE_END}
+    return {e["id"]: e["outcome"] for e in events.read(run_dir) if e["event"] == events.TEST_END}
 
 
 def plan(run_dir="apart"):
@@ -113,7 +113,7 @@ def test_cleanup_stops_what_provision_started_and_may_run_twice(tree, tmp_path, 
     assert main(["cleanup", "--run-dir", "apart"]) == 0
 
 
-def test_exec_with_no_service_provisioned_blocks_the_cases_and_says_what_to_run(tree, capsys):
+def test_exec_with_no_service_provisioned_blocks_the_tests_and_says_what_to_run(tree, capsys):
     tree()
     plan()
     assert main(["exec", "--run-dir", "apart", *binaries()]) == 1

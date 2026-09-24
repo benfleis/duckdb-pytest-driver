@@ -5,7 +5,7 @@
 count, its retry and its batch timeout. Its own options are passed through as they are, with
 `--run-args '...'`, and are not re-invented here.
 
-ducktest gives it one call for each set of batches that share a case environment, because a call
+ducktest gives it one call for each set of batches that share a test environment, because a call
 takes one `--test-config`:
 
     run/g001/tests.txt     every test of those batches           (--test-list)
@@ -13,7 +13,7 @@ takes one `--test-config`:
     run/g001/output.txt    what the wrapper printed
     run/g001/processes/    one file for each unittest process the wrapper started
 
-The last of these is how a case gets a real outcome. The wrapper forwards the output of a failing
+The last of these is how a test gets a real outcome. The wrapper forwards the output of a failing
 batch only, so a test that passed leaves nothing in what it prints; but it takes `--test-command`,
 the template it runs a batch with, and the test list in that template is a new file for every batch.
 So ducktest puts a two-line shim in front of the binary that writes the process's own output to
@@ -24,7 +24,7 @@ event`).
 A test the shim's files say nothing about -- a process the wrapper killed at its batch timeout, a
 crash before the first event -- falls back to what the wrapper's own text and exit code say: passed
 with no seconds when the wrapper says every test passed, an error with the wrapper's text when it
-does not (`evidence: run-summary`). A report says so in one line when any case was decided that way.
+does not (`evidence: run-summary`). A report says so in one line when any test was decided that way.
 """
 
 from __future__ import annotations
@@ -85,19 +85,19 @@ def find_wrapper(unittest_bin, *, explicit=None):
 
 
 def _groups(units):
-    """The batches, gathered by the case environment they share: one wrapper call takes one
+    """The batches, gathered by the test environment they share: one wrapper call takes one
     `--test-config`. A file is in a call once, as in a batch, so that the binary's events can be
-    told apart; a second case of one file goes into another call."""
+    told apart; a second test of one file goes into another call."""
     groups, keys = [], {}
-    for cases, batch in units:
-        key = batch.case_env.key()
+    for tests, batch in units:
+        key = batch.test_env.key()
         for n in keys.get(key, []):
-            if not {c.test.body_file for c in cases} & {c.test.body_file for c in groups[n][0]}:
-                groups[n][0].extend(cases)
+            if not {c.definition.body_file for c in tests} & {c.definition.body_file for c in groups[n][0]}:
+                groups[n][0].extend(tests)
                 break
         else:
             keys.setdefault(key, []).append(len(groups))
-            groups.append(([*cases], batch.case_env))
+            groups.append(([*tests], batch.test_env))
     return groups
 
 
@@ -165,14 +165,14 @@ def _call(args, working_dir, env):
 
 
 def run_wrapper(unittest_bin, units, working_dir, *, run_dir, workers=4, run_args="", run_bin=None):
-    """Run every batch through the wrapper. `units` is [(cases, batch)] as the exec phase made them;
-    returns [(cases, the batch of the wrapper call, {case id: TestResult})], one for each call."""
+    """Run every batch through the wrapper. `units` is [(tests, batch)] as the exec phase made them;
+    returns [(tests, the batch of the wrapper call, {test id: TestResult})], one for each call."""
     wrapper = find_wrapper(unittest_bin, explicit=run_bin)
     out = []
-    for n, (cases, case_env) in enumerate(_groups(units), 1):
+    for n, (tests, test_env) in enumerate(_groups(units), 1):
         # Absolute: the wrapper runs from the DuckDB source root, not from where ducktest was started.
         group_dir = os.path.abspath(os.path.join(run_dir, "run", f"g{n:03d}"))
-        group = sqllogic.Batch(group_dir, [(c.id, c.test.body_file) for c in cases], case_env)
+        group = sqllogic.Batch(group_dir, [(c.id, c.definition.body_file) for c in tests], test_env)
         group.write()
         flags = [
             "--test-dir",
@@ -194,10 +194,10 @@ def run_wrapper(unittest_bin, units, working_dir, *, run_dir, workers=4, run_arg
             _shim_command(group_dir),
             *shlex.split(run_args),
         ]
-        done = _call(args, working_dir, group.case_env.environ())
+        done = _call(args, working_dir, group.test_env.environ())
         text, code = done
         with open(os.path.join(group_dir, "output.txt"), "w") as f:
             f.write(text)
         by_name = _results(group, _kept_output(group_dir), text, code)
-        out.append((cases, group, {c.id: by_name[c.test.body_file] for c in cases}))
+        out.append((tests, group, {c.id: by_name[c.definition.body_file] for c in tests}))
     return out

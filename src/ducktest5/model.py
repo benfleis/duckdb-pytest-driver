@@ -1,8 +1,8 @@
-"""The test model: a test is a definition, a case is what runs.
+"""The test model: a `TestDef` is a definition, a `Test` is what runs.
 
-A case is a test with one set of parameters applied: one entry of the test's own `cases=` table and one
-value of every variant axis the test takes part in. A test with no parameters has exactly one case.
-Groups, tags and selection work on cases.
+A test is a definition with one set of parameters applied: one row of the definition's own `params=`
+table and one value of every variant axis it takes part in. A definition with no parameters makes
+exactly one test. Groups, tags and selection work on tests.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
-from .caseenv import resolve
+from .testenv import resolve
 
 SQLLOGIC, PAIRED, PYTHON = "sqllogic", "paired", "python"
 BODY_SUFFIXES = (".test", ".test_slow", ".test_coverage")
@@ -20,21 +20,25 @@ BODY_SUFFIXES = (".test", ".test_slow", ".test_coverage")
 
 @dataclass
 class TestDef:
+    """A `@test` body or a `.test` file, after the rules. Its timeout, retries, mutex and suites
+    apply to every test made from it."""
+
+    __test__ = False  # not a pytest class
     path: str  # relative to the working directory; for a .test body also its name in the unittest binary
     name: str
     type: str
-    # Relative to the project root, so that a case id is the same from every working directory. The
+    # Relative to the project root, so that a test id is the same from every working directory. The
     # binary and the PATH arguments keep using `path`, which is relative to the working directory.
     root_path: str | None = None
     body: object = None  # the Python callable, for python and paired tests
     body_file: str | None = None  # the .test file, for sqllogic and paired tests
-    cases: dict = field(default_factory=dict)
+    params: dict = field(default_factory=dict)
     tags: list = field(default_factory=list)
     services: list = field(default_factory=list)
     engines: list = field(default_factory=list)
     variants: list = field(default_factory=list)
-    mutex: list = field(default_factory=list)  # what the test must have to itself while it runs
-    suites: list = field(default_factory=list)  # a suite this test declares itself in, or out of as `!NAME`
+    mutex: list = field(default_factory=list)  # what each of its tests must have to itself while it runs
+    suites: list = field(default_factory=list)  # a suite it declares itself in, or out of as `!NAME`
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     timeout: float | None = None
@@ -46,30 +50,32 @@ class TestDef:
         self.root_path = self.root_path or self.path
 
     def source_of(self, field_name, key):
-        """Which rule gave one entry; what no rule gave, the test declared itself."""
+        """Which rule gave one entry; what no rule gave, the definition declared itself."""
         return self.sources.get((field_name, key), "@test")
 
 
 @dataclass
-class Case:
-    test: TestDef
-    case_id: str | None
+class Test:
+    __test__ = False  # not a pytest class
+
+    definition: TestDef
+    params_key: str | None  # the row of `definition.params`, or None
     axis_values: dict  # axis name -> Variant
 
     @property
     def id(self):
-        parts = ([self.case_id] if self.case_id is not None else []) + [
+        parts = ([self.params_key] if self.params_key is not None else []) + [
             f"{a}={v.id}" for a, v in self.axis_values.items()
         ]
-        return f"{self.test.root_path}::{self.test.name}" + (f"[{','.join(parts)}]" if parts else "")
+        return f"{self.definition.root_path}::{self.definition.name}" + (f"[{','.join(parts)}]" if parts else "")
 
     @property
     def params(self):
-        return self.test.cases.get(self.case_id, {})
+        return self.definition.params.get(self.params_key, {})
 
     @property
     def tags(self):
-        tags = list(self.test.tags) + [f"type={self.test.type}"]
+        tags = list(self.definition.tags) + [f"type={self.definition.type}"]
         for v in self.axis_values.values():
             tags += [t for t in v.tags if t not in tags]
         return tags
@@ -82,23 +88,23 @@ class Case:
 
     @property
     def services(self):
-        return self._with_variants(self.test.services, "services")
+        return self._with_variants(self.definition.services, "services")
 
     @property
     def engines(self):
-        return self._with_variants(self.test.engines, "engines")
+        return self._with_variants(self.definition.engines, "engines")
 
     @property
     def mutex(self):
-        """The names this case must have to itself; no case that names one of them runs beside it."""
-        return list(self.test.mutex)
+        """The names this test must have to itself; no test that names one of them runs beside it."""
+        return list(self.definition.mutex)
 
     @property
     def dir_name(self):
-        """A directory name that says which case it holds, and is its own: two tests of one file
+        """A directory name that says which test it holds, and is its own: two tests of one file
         name in two directories must not share it."""
         readable = re.sub(
-            r"[^A-Za-z0-9._=,\[\]-]+", "_", self.id.split("::", 1)[-1] + "@" + os.path.basename(self.test.path)
+            r"[^A-Za-z0-9._=,\[\]-]+", "_", self.id.split("::", 1)[-1] + "@" + os.path.basename(self.definition.path)
         )
         return f"{readable}-{hashlib.sha1(self.id.encode()).hexdigest()[:6]}"
 
@@ -106,25 +112,28 @@ class Case:
         return {
             "identity": {
                 "id": self.id,
-                "test": f"{self.test.root_path}::{self.test.name}",
-                "type": self.test.type,
-                "case": self.case_id,
+                "test": f"{self.definition.root_path}::{self.definition.name}",
+                "type": self.definition.type,
+                "params": self.params_key,
                 "variants": {a: v.id for a, v in self.axis_values.items()},
             },
-            "selection": {"tags": self.tags, **({"suites": list(self.test.suites)} if self.test.suites else {})},
+            "selection": {
+                "tags": self.tags,
+                **({"suites": list(self.definition.suites)} if self.definition.suites else {}),
+            },
             "preconditions": {
                 "services": self.services,
                 "engines": [{"id": e, "version": project.engines[e].version} for e in self.engines],
                 **({"mutex": self.mutex} if self.mutex else {}),
             },
             "runtime": {
-                "case": _plain(self.params),
+                "params": _plain(self.params),
                 # Before provisioning, so what a variant makes out of a service's block is not in it.
                 "environment": resolve(self).record(),
-                "timeout": self.test.timeout,
-                "retries": self.test.retries,
+                "timeout": self.definition.timeout,
+                "retries": self.definition.retries,
             },
-            "why": self.test.why,
+            "why": self.definition.why,
         }
 
 

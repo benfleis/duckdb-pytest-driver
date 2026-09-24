@@ -1,11 +1,11 @@
-"""The case environment: everything the engine process of one case is given, in one record.
+"""The test environment: everything the engine process of one test is given, in one record.
 
-A case is a test body with one set of parameters. What a parameter contributes used to reach a
+A test is a definition with one set of parameters. What a parameter contributes used to reach a
 `.test` body (the batch's config and init file) and a Python body (the `ctx.duckdb()` preamble) by
 two separate paths, which could and did disagree. `resolve()` builds this record once, after
-provisioning and before exec, out of the rules, the test's own declaration, the case's params and
+provisioning and before exec, out of the rules, the definition's own declaration, the test's params and
 the chosen value of every variant axis; both deliveries read it and nothing else, and the batch key
-of a `.test` case is made of it.
+of a test of a `.test` file is made of it.
 
     requires    extensions to load first: `require` in the init file, `LOAD` in the preamble
     init_sql    the statements after them, in order: the settings as `SET`, then the variants' SQL
@@ -14,7 +14,7 @@ of a `.test` case is made of it.
     env         the process environment of the engine, and `env_unset` what to take out of it
     services    service id -> the mode it was provisioned in and its block, secrets masked
 
-Every entry carries the source that asked for it, so `scan --env` and a failed case can say where
+Every entry carries the source that asked for it, so `scan --env` and a failed test can say where
 each part came from. A part a variant computes from the services' blocks is not known before
 provisioning, nor once provisioning has run if a service it needs did not come up; `resolve()`
 lists those in `pending` instead of calling the variant's code with an incomplete `blocks`.
@@ -46,7 +46,7 @@ _LABELS = {
 
 @dataclass(frozen=True)
 class Entry:
-    """One part of a case environment and what asked for it. `shown` is what printing says in place
+    """One part of a test environment and what asked for it. `shown` is what printing says in place
     of the value: `""` for init SQL, which is named by its source only -- it may hold a secret."""
 
     value: object
@@ -68,7 +68,7 @@ def _masked(text, secrets):
 
 
 @dataclass
-class CaseEnv:
+class TestEnv:
     requires: list = field(default_factory=list)  # Entry(value=extension name)
     init_sql: list = field(default_factory=list)  # Entry(value=one statement), in delivery order
     values: dict = field(default_factory=dict)  # name -> Entry
@@ -107,7 +107,7 @@ class CaseEnv:
         return bool(self.env or self.env_unset)
 
     def environ(self, base=None):
-        """The process environment for the engine of this case, or None when it is this process's."""
+        """The process environment for the engine of this test, or None when it is this process's."""
         if not self.changes_environment:
             return None
         base = os.environ if base is None else base
@@ -130,7 +130,7 @@ class CaseEnv:
         return out
 
     def key(self):
-        """Two `.test` cases may share a unittest process when this is equal; everything the process
+        """Two tests of `.test` files may share a unittest process when this is equal; everything the process
         is given is in it, and nothing else is."""
         return json.dumps(
             {
@@ -209,44 +209,44 @@ def _from_services(variant):
     return "<from service " + ", ".join(variant.services) + ">" if variant.services else "<from a service>"
 
 
-def resolve(case, provisioned=None):
-    """The case environment of `case`. `provisioned` maps a service id to its `Provisioned`; with
+def resolve(test, provisioned=None):
+    """The test environment of `test`. `provisioned` maps a service id to its `Provisioned`; with
     None (before provisioning, as `scan` sees it) a part a variant computes from the blocks is
     listed in `pending` instead of being called."""
     blocks = {sid: p.block for sid, p in provisioned.items()} if provisioned is not None else None
-    test = case.test
-    env = CaseEnv(
+    definition = test.definition
+    env = TestEnv(
         secrets=tuple(
             str(p.block[k]) for p in (provisioned or {}).values() for k in p.service.secrets if p.block.get(k)
         )
     )
 
     # Two axis-tier entries (an id or an explicit value) naming one thing is a scan-time error, not
-    # an overwrite; a rule or the case's own row may still lose to an axis value, silently.
+    # an overwrite; a rule or the test's params row may still lose to an axis value, silently.
     axis_given = {}
 
     def _axis_value(name, value, source):
         seen = axis_given.get(name)
         if seen is not None and seen != source:
-            raise UsageError(f"{case.id}: {name!r} is given by both {seen} and {source}")
+            raise UsageError(f"{test.id}: {name!r} is given by both {seen} and {source}")
         axis_given[name] = source
         env.values[name] = _value_entry(name, value, source)
 
     # An axis value's id is a name the body can use without the author repeating it.
-    for axis, v in case.axis_values.items():
+    for axis, v in test.axis_values.items():
         _axis_value(axis, v.id, f"AXES {axis}")
-    for name, value in test.values.items():
-        env.values[name] = _value_entry(name, value, test.source_of("values", name))
-    if case.case_id is not None:
-        for name, value in case.params.items():
-            env.values[name] = _value_entry(name, value, f"case {case.case_id!r}")
+    for name, value in definition.values.items():
+        env.values[name] = _value_entry(name, value, definition.source_of("values", name))
+    if test.params_key is not None:
+        for name, value in test.params.items():
+            env.values[name] = _value_entry(name, value, f"params {test.params_key!r}")
 
-    for name, value in test.settings.items():
-        env.init_sql.append(_set_entry(name, value, test.source_of("settings", name)))
-    for service_id in test.services:
-        env.services[service_id] = _service_entry(service_id, provisioned, test.source_of("services", service_id))
+    for name, value in definition.settings.items():
+        env.init_sql.append(_set_entry(name, value, definition.source_of("settings", name)))
+    for service_id in definition.services:
+        env.services[service_id] = _service_entry(service_id, provisioned, definition.source_of("services", service_id))
 
-    for axis, v in case.axis_values.items():
+    for axis, v in test.axis_values.items():
         where = f"AXES {axis}={v.id}"
         for extension in v.requires:
             if extension not in env.extensions:

@@ -9,23 +9,23 @@ What a worker owns, and never shares:
 
 - Its own DuckDB shell. A shell takes one statement at a time behind a lock, so two workers on one
   shell would wait for each other; no shell is ever shared between workers. It is the machinery a
-  client of its own already uses, one warm shell for each worker and not one for each case. A case
+  client of its own already uses, one warm shell for each worker and not one for each test. A test
   whose environment sets or unsets process variables still gets a shell of its own, as it did when
-  cases ran one after another: the environment of a thread cannot differ from the process's.
+  tests ran one after another: the environment of a thread cannot differ from the process's.
 - Its own Spark session, a clone of the run's. Temp views are session state, so the drop of them
-  before a test would else reach into the case running beside it. A brand new session isolates the
+  before a test would else reach into the test running beside it. A brand new session isolates the
   views too, but starts with an empty configuration -- the `fs.s3a.*` settings the engine was given
   for a service were gone. A clone inherits them, and shares the JVM, the context and the cache:
-  still one boot for every case that needs the engine.
+  still one boot for every test that needs the engine.
 
-On a suite of 43 cases that drive Spark and DuckDB in turn, this is 400 s of wall time at one
-worker, 271 s at two and 196 s at four, for the same outcome of every case. Four workers are not
+On a suite of 43 tests that drive Spark and DuckDB in turn, this is 400 s of wall time at one
+worker, 271 s at two and 196 s at four, for the same outcome of every test. Four workers are not
 four times as fast: the engine is one local Spark with two task slots, and that is what they queue
 for.
 
-`.test` batches and Python cases share one budget of `--workers` slots -- a batch or a case takes
-one, whichever is ready for it first -- and take them in plan order. Two cases that name the same
-mutex never overlap: a case takes all its named locks, in sorted order, so no two can take theirs in
+`.test` batches and Python tests share one budget of `--workers` slots -- a batch or a test takes
+one, whichever is ready for it first -- and take them in plan order. Two tests that name the same
+mutex never overlap: a test takes all its named locks, in sorted order, so no two can take theirs in
 an order that would deadlock.
 """
 
@@ -49,14 +49,14 @@ class Pool:
         self._mine = threading.local()
         self._sessions = []  # every shell handed out, so that the run can close them all
         self._mutexes = {}
-        self._running = {}  # case id -> (its worker's shell, its worker's engines), while it runs
+        self._running = {}  # test id -> (its worker's shell, its worker's engines), while it runs
         self._guard = threading.Lock()
 
     def submit(self, fn, *args):
         return self._pool.submit(fn, *args)
 
     def session(self):
-        """This worker's DuckDB shell: made when it first runs a case, warm for every case after."""
+        """This worker's DuckDB shell: made when it first runs a test, warm for every test after."""
         shell = getattr(self._mine, "session", None)
         if shell is None:
             shell = self._mine.session = self._make_session()
@@ -76,25 +76,25 @@ class Pool:
         return handles
 
     @contextlib.contextmanager
-    def running(self, case_id):
-        """This worker's shell and engines, registered under `case_id` for as long as its body runs,
+    def running(self, test_id):
+        """This worker's shell and engines, registered under `test_id` for as long as its body runs,
         so a timeout noticed on another thread can reach them (`cancel`)."""
         shell, engine_handles = self.session(), self.engines()
         with self._guard:
-            self._running[case_id] = (shell, engine_handles)
+            self._running[test_id] = (shell, engine_handles)
         try:
             yield shell, engine_handles
         finally:
             with self._guard:
-                self._running.pop(case_id, None)
+                self._running.pop(test_id, None)
 
-    def cancel(self, case_id):
-        """A case's timeout expired: close the shell its worker is using, so a statement stuck in it
+    def cancel(self, test_id):
+        """A test's timeout expired: close the shell its worker is using, so a statement stuck in it
         releases as a dead-shell exception, and ask any engine handle that offers it to cancel this
-        case's jobs. The worker's thread is not touched -- Python cannot kill it -- and keeps running
+        test's jobs. The worker's thread is not touched -- Python cannot kill it -- and keeps running
         whatever it was doing until that releases it too."""
         with self._guard:
-            entry = self._running.get(case_id)
+            entry = self._running.get(test_id)
         if entry is None:
             return
         shell, engine_handles = entry
@@ -103,9 +103,9 @@ class Pool:
         except Exception:
             pass
         for handle in engine_handles.values():
-            if hasattr(handle, "cancel_case"):
+            if hasattr(handle, "cancel_jobs"):
                 try:
-                    handle.cancel_case(case_id)
+                    handle.cancel_jobs(test_id)
                 except Exception:
                     pass
 
@@ -136,7 +136,7 @@ class Pool:
 
     def join(self, timeout=JOIN_GRACE_S):
         """What still runs, run out, for up to `timeout`. It is called after everything a body can
-        wait for is already gone -- what is left past `timeout` is a thread a case's own timeout gave
+        wait for is already gone -- what is left past `timeout` is a thread a test's own timeout gave
         up on; it cannot be killed, so it is left to finish on its own, unobserved, and the run ends
         without it."""
         deadline = time.monotonic() + timeout

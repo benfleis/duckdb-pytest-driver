@@ -40,7 +40,7 @@ def run_args(*more):
 
 
 def test_select_says_what_runs_what_does_not_and_with_explain_which_rule_gave_what(tree, capsys):
-    # test/a is a directory PATH: it brings in the slow case under it too
+    # test/a is a directory PATH: it brings in the slow test under it too
     assert main(["select", "test/a", "--explain"]) == 0
     assert capsys.readouterr().out == textwrap.dedent(
         """\
@@ -52,7 +52,7 @@ def test_select_says_what_runs_what_does_not_and_with_explain_which_rule_gave_wh
                 timeout=30  <- ducktest_conf.py: match 'a/**'
         skip  b/z_fail.test::z_fail  -- outside the given paths
 
-        2 of 3 cases
+        2 of 3 tests
         """
     )
 
@@ -62,7 +62,7 @@ def test_select_without_explain_prints_no_rules(tree, capsys):
     assert "<-" not in capsys.readouterr().out
 
 
-def test_skip_removes_a_case_and_says_which_skip(tree, capsys):
+def test_skip_removes_a_test_and_says_which_skip(tree, capsys):
     assert main(["select", "test/a", "--skip", "tag=all", "--explain"]) == 0
     assert capsys.readouterr().out == textwrap.dedent(
         """\
@@ -70,17 +70,17 @@ def test_skip_removes_a_case_and_says_which_skip(tree, capsys):
         skip  a/y.test_slow::y  -- --skip tag=all
         skip  b/z_fail.test::z_fail  -- outside the given paths
 
-        0 of 3 cases
+        0 of 3 tests
         """
     )
 
 
-def test_scan_prints_the_record_of_each_selected_case(tree, capsys):
+def test_scan_prints_the_record_of_each_selected_test(tree, capsys):
     assert main(["scan", "test/a/x.test"]) == 0
     assert "id: a/x.test::x" in capsys.readouterr().out
 
 
-def test_scan_env_prints_what_each_case_is_given_and_where_it_came_from(tree, capsys):
+def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, capsys):
     (tree / "test" / "ducktest_conf.py").write_text(
         textwrap.dedent("""
             from ducktest5 import ServiceDef, Variant, default, match
@@ -120,13 +120,13 @@ def test_scan_env_prints_what_each_case_is_given_and_where_it_came_from(tree, ca
     "argv, message",
     [
         (["select", "test/nowhere"], "path 'test/nowhere' holds no test"),
-        (["select", "--select", "tag=typo"], "no scanned case has tag ['typo']"),
-        (["select", "--id", "a/x.test::nope"], "--id: no such case"),
+        (["select", "--select", "tag=typo"], "no scanned test has tag ['typo']"),
+        (["select", "--id", "a/x.test::nope"], "--id: no such test"),
         (["select", "--suite", "nightly"], "no suite ['nightly']; known suites: []"),
         (["select", "--skip", "not:tag=all"], "write !tag=all"),
         (["select", "--select", "tag=!all"], "write !tag=all"),
-        (["run", "--select", "!tag=all"], "no case selected"),
-        (["select", "--select", "test/nope"], "matches no scanned case"),
+        (["run", "--select", "!tag=all"], "no test selected"),
+        (["select", "--select", "test/nope"], "matches no scanned test"),
         (["select", "--select", "nope/outside"], "is outside the project root"),
         (["select", "--select", "a/b=c"], "a bare path can't contain '='"),
         (["run", "test/a"], "duckdb shell not found"),
@@ -158,14 +158,14 @@ def test_run_gives_the_exit_code_of_the_run(tree, capsys):
     assert "FAILED   b/z_fail.test::z_fail" in capsys.readouterr().out
 
 
-def test_an_id_names_the_same_case_from_any_directory(tree, monkeypatch, capsys):
+def test_an_id_names_the_same_test_from_any_directory(tree, monkeypatch, capsys):
     assert main(run_args("--id", "b/z_fail.test::z_fail", "--no-binary-check")) == 1
     monkeypatch.chdir(tree / "test" / "a")
     assert main(run_args("--id", "b/z_fail.test::z_fail", "--no-binary-check")) == 1
     assert capsys.readouterr().out.count("FAILED   b/z_fail.test::z_fail") == 2
 
 
-def test_lldb_starts_the_debugger_on_the_one_selected_case(tree, monkeypatch, capsys):
+def test_lldb_starts_the_debugger_on_the_one_selected_test(tree, monkeypatch, capsys):
     record = tree / "debugger.json"
     monkeypatch.setenv("FAKE_DEBUGGER_RECORD", str(record))
     monkeypatch.setenv("DUCKTEST_DEBUGGER", f"{sys.executable} {DEBUGGER} --")
@@ -175,10 +175,10 @@ def test_lldb_starts_the_debugger_on_the_one_selected_case(tree, monkeypatch, ca
     assert "batch kept: " in capsys.readouterr().out
 
 
-def test_lldb_on_more_than_one_case_is_a_usage_error_that_lists_them(tree, capsys):
+def test_lldb_on_more_than_one_test_is_a_usage_error_that_lists_them(tree, capsys):
     assert main(run_args("--lldb", "test", "--no-binary-check")) == 2
     err = capsys.readouterr().err
-    assert "exactly one .test case" in err and "a/x.test::x" in err and "b/z_fail.test::z_fail" in err
+    assert "exactly one test of a .test file" in err and "a/x.test::x" in err and "b/z_fail.test::z_fail" in err
 
 
 def test_an_excluded_file_that_the_binary_knows_is_not_a_stale_build(tree, monkeypatch, capsys):

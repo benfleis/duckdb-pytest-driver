@@ -13,7 +13,7 @@ records the failure and lets the body go on, for independent checks a reader wan
 `sql` is one statement, a block of them split on `;`, or a list of statements taken as they are (for
 a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
 and `rows` / `text` belong to the last one. `{t}` is this client's spelling of the table under test;
-other `{name}` placeholders come from the case's values, from a dict given after the SQL (a case table
+other `{name}` placeholders come from the test's values, from a dict given after the SQL (a params row
 goes there), or from keyword arguments; an unknown one is an error, and `{{word}}` is a literal brace
 pair. A value that is a list of rows goes in as a SQL VALUES list, so the values a test inserts and the rows it expects back are one definition
 (`L("...")` puts hand-written SQL in a value; rows can then not be derived and must be given).
@@ -123,7 +123,7 @@ class Client:
             self._record(failure)
 
     def _statements(self, sql, params, more):
-        """`params` is a dict of placeholder values (a case table goes here, so its keys cannot collide
+        """`params` is a dict of placeholder values (a params row goes here, so its keys cannot collide
         with a verb's own options); `more` are the same as keywords, for the odd single value."""
         known = {**self._params, **(params or {}), **more}
 

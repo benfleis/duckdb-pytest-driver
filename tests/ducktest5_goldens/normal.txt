@@ -34,8 +34,8 @@ BLOCKED  py/spark.py::roundtrip[backend=oss]  [spark did not come up]
       SELECT * FROM t;
 
   require: httpfs  <- AXES storage=s3
-  dir: /runs/2026-09-21T10-00-00Z--amber-koala-01/cases/write_then_read@write.py-ab12cd
-  kept: /runs/2026-09-21T10-00-00Z--amber-koala-01/cases/write_then_read@write.py-ab12cd
+  dir: /runs/2026-09-21T10-00-00Z--amber-koala-01/tests/write_then_read@write.py-ab12cd
+  kept: /runs/2026-09-21T10-00-00Z--amber-koala-01/tests/write_then_read@write.py-ab12cd
   again: ducktest5 run --id py/write.py::write_then_read
 
 --- py/spark.py::roundtrip[backend=oss]
@@ -49,7 +49,7 @@ BLOCKED  py/spark.py::roundtrip[backend=oss]  [spark did not come up]
      1  require-env DAT_PATH
           sql/needs_env.test::needs_env
 
-'spark' did not come up: 1 cases blocked
+'spark' did not come up: 1 tests blocked
   RuntimeError: no JVM (log: /runs/2026-09-21T10-00-00Z--amber-koala-01/engine-spark.log)
 
 slowest:
