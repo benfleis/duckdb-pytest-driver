@@ -217,9 +217,20 @@ def resolve(case, provisioned=None):
         )
     )
 
+    # Two axis-tier entries (an id or an explicit value) naming one thing is a scan-time error, not
+    # an overwrite; a rule or the case's own row may still lose to an axis value, silently.
+    axis_given = {}
+
+    def _axis_value(name, value, source):
+        seen = axis_given.get(name)
+        if seen is not None and seen != source:
+            raise UsageError(f"{case.id}: {name!r} is given by both {seen} and {source}")
+        axis_given[name] = source
+        env.values[name] = Entry(value, source, name=name)
+
     # An axis value's id is a name the body can use without the author repeating it.
     for axis, v in case.axis_values.items():
-        env.values[axis] = Entry(v.id, f"AXES {axis}", name=axis)
+        _axis_value(axis, v.id, f"AXES {axis}")
     for name, value in test.values.items():
         env.values[name] = Entry(value, test.source_of("values", name), name=name)
     if case.case_id is not None:
@@ -239,7 +250,7 @@ def resolve(case, provisioned=None):
         for name, value in v.settings.items():
             env.init_sql.append(_set_entry(name, value, where))
         for name, value in _given(v, "values", blocks, env, where).items():
-            env.values[name] = Entry(value, where, name=name)
+            _axis_value(name, value, where)
         for name, value in _given(v, "roots", blocks, env, where).items():
             if name not in ROOTS:
                 raise UsageError(f"AXES {axis}={v.id}: root {name!r} is not one of {ROOTS}")

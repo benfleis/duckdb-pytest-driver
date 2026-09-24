@@ -47,6 +47,19 @@ def test_values_merge_rules_then_the_test_then_the_case_then_the_variant():
     assert env.values["width"].source == "case 'wide'"
 
 
+def test_two_axis_values_giving_one_name_is_a_scan_error():
+    axis_values = {"a": Variant("one", values={"ROOT": "/a"}), "b": Variant("two", values={"ROOT": "/b"})}
+    with pytest.raises(UsageError, match=r"'ROOT' is given by both AXES a=one and AXES b=two"):
+        resolve(case(axis_values))
+
+
+def test_a_rule_and_the_cases_row_giving_one_name_is_fine_the_case_wins():
+    c = case(case_id="wide", cases={"wide": {"who": "case"}}, values={"who": "rule"})
+    env = resolve(c)
+    assert env.value_map == {"who": "case"}
+    assert env.values["who"].source == "case 'wide'"
+
+
 def test_a_setting_is_a_statement_after_the_requires_and_the_init_sql_comes_last():
     variant = Variant("s3", requires=("httpfs", "json"), settings={"s3_region": "eu"}, init_sql="CREATE SECRET s")
     env = resolve(case({"storage": variant}, settings={"threads": 2}))
