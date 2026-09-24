@@ -121,6 +121,22 @@ def test_a_secret_of_a_service_and_a_name_that_says_credential_are_masked():
     assert env.env["AWS_SECRET_ACCESS_KEY"].value == "hunter2"  # masked for a reader, delivered whole
 
 
+def test_a_secret_named_value_is_masked_however_it_was_given():
+    via_values = resolve(case({"a": Variant("v", values={"AWS_SECRET_ACCESS_KEY": "s3cr3t-1"})}))
+    via_env = resolve(case({"a": Variant("v", env={"AWS_SECRET_ACCESS_KEY": "s3cr3t-2"})}))
+    via_settings = resolve(case({"a": Variant("v", settings={"AWS_SECRET_ACCESS_KEY": "s3cr3t-3"})}))
+    for env, secret in ((via_values, "s3cr3t-1"), (via_env, "s3cr3t-2"), (via_settings, "s3cr3t-3")):
+        printed = "\n".join(env.lines())
+        assert "AWS_SECRET_ACCESS_KEY=***" in printed
+        assert secret not in printed
+        assert secret not in "\n".join(r["is"] for r in env.record())
+
+
+def test_env_unset_is_never_masked():
+    env = resolve(case({"a": Variant("v", env_unset=("AWS_SECRET_ACCESS_KEY",))}))
+    assert "env unset: AWS_SECRET_ACCESS_KEY  <- AXES a=v" in env.lines()
+
+
 def test_init_sql_is_named_by_its_source_and_never_printed():
     env = resolve(case({"storage": Variant("s3", init_sql="CREATE SECRET (SECRET 'hunter2')")}))
     assert env.lines() == ["init sql  <- AXES storage=s3", "values: storage=s3  <- AXES storage"]

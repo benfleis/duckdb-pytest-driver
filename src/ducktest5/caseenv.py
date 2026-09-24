@@ -124,7 +124,7 @@ class CaseEnv:
         """A copy with what a Python body adds for the `.test` file beside it."""
         out = replace(self, values=dict(self.values), init_sql=list(self.init_sql))
         for name, value in (values or {}).items():
-            out.values[name] = Entry(value, source, name=name)
+            out.values[name] = _value_entry(name, value, source)
         if init_sql:
             out.init_sql.append(Entry(init_sql.strip().rstrip(";") + ";", source, kind="sql", shown=""))
         return out
@@ -190,6 +190,10 @@ def _service_entry(service_id, provisioned, source):
     )
 
 
+def _value_entry(name, value, source):
+    return Entry(value, source, name=name, secret=bool(_SECRET_NAME.search(name)))
+
+
 def _set_entry(name, value, source):
     return Entry(
         set_statement(name, value),
@@ -226,16 +230,16 @@ def resolve(case, provisioned=None):
         if seen is not None and seen != source:
             raise UsageError(f"{case.id}: {name!r} is given by both {seen} and {source}")
         axis_given[name] = source
-        env.values[name] = Entry(value, source, name=name)
+        env.values[name] = _value_entry(name, value, source)
 
     # An axis value's id is a name the body can use without the author repeating it.
     for axis, v in case.axis_values.items():
         _axis_value(axis, v.id, f"AXES {axis}")
     for name, value in test.values.items():
-        env.values[name] = Entry(value, test.source_of("values", name), name=name)
+        env.values[name] = _value_entry(name, value, test.source_of("values", name))
     if case.case_id is not None:
         for name, value in case.params.items():
-            env.values[name] = Entry(value, f"case {case.case_id!r}", name=name)
+            env.values[name] = _value_entry(name, value, f"case {case.case_id!r}")
 
     for name, value in test.settings.items():
         env.init_sql.append(_set_entry(name, value, test.source_of("settings", name)))
