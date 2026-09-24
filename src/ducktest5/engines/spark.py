@@ -1,10 +1,10 @@
-"""An embedded PySpark session with Delta Lake, as an `Engine`. pyspark is imported at boot, not here."""
+"""An embedded PySpark session with Delta Lake, as an `EngineDef`. pyspark is imported at boot, not here."""
 
 import contextlib
 import os
 
 from ..client import SqlError
-from ..declare import Engine
+from ..declare import EngineDef
 
 
 class SparkHandle:
@@ -151,4 +151,4 @@ def delta_spark(id="spark", *, s3a=False, uses=()):
 
     packages = (f"org.apache.hadoop:hadoop-aws:{_hadoop_version()}",) if s3a else ()
     booted = f"spark:{v('pyspark')}:delta-{v('delta-spark')}:local" + (":s3a" if s3a else "")
-    return Engine(id, booted, lambda log: _boot_delta(log, packages)[0], uses=tuple(uses))
+    return EngineDef(id, booted, lambda log: _boot_delta(log, packages)[0], uses=tuple(uses))

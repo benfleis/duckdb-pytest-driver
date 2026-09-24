@@ -1,4 +1,4 @@
-"""MinIO, an S3-compatible object store, as a `Service`. The block has the field names of the pytest
+"""MinIO, an S3-compatible object store, as a `ServiceDef`. The block has the field names of the pytest
 driver's `ducktest.resources.minio`, so one `--existing-service minio={json}` serves both.
 
 The credentials are those of a local emulator, not secrets, but they are redacted in reports all the
@@ -9,7 +9,7 @@ import os
 import urllib.error
 import urllib.request
 
-from ..declare import Service
+from ..declare import ServiceDef
 from ..host import docker
 
 _IMAGE = os.environ.get("DUCKTEST_MINIO_IMAGE", "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1")
@@ -112,7 +112,7 @@ def duckdb_secret(block, name="ducktest_minio"):
 
 
 def minio_service(id="minio"):
-    return Service(
+    return ServiceDef(
         id,
         block=minio_block,
         alive=minio_alive,

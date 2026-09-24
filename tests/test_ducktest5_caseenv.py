@@ -4,11 +4,11 @@ import pytest
 
 from ducktest5.binary import UsageError
 from ducktest5.caseenv import resolve
-from ducktest5.declare import Service, Variant
+from ducktest5.declare import ServiceDef, Variant
 from ducktest5.model import SQLLOGIC, Case, TestDef
 from ducktest5.provision import EXISTING, Provisioned
 
-STORE = Service(
+STORE = ServiceDef(
     "store",
     block=lambda **o: {"endpoint": "http://store", "secret_key": "s3cr3t"},
     alive=lambda block: True,

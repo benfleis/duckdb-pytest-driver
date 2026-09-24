@@ -15,7 +15,7 @@ from ducktest5.caseenv import resolve
 from ducktest5.client import SqlError
 from ducktest5.conf import Project
 from ducktest5.ctx import Ctx
-from ducktest5.declare import Engine, Service, Variant
+from ducktest5.declare import EngineDef, ServiceDef, Variant
 from ducktest5.events import CASE_END
 from ducktest5.events import read as read_events
 from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Case, TestDef
@@ -33,7 +33,7 @@ class FakeEngine:
         self.boots, self.calls, self.statements = boots, [], []
 
     def engine(self, id="fake", uses=()):
-        return Engine(id, "fake:1", self._boot, uses=uses)
+        return EngineDef(id, "fake:1", self._boot, uses=uses)
 
     def _boot(self, log_path):
         self.calls.append("boot")
@@ -69,7 +69,7 @@ class FakeStore:
                 raise RuntimeError("access denied")
             self.cleaned.append(uri)
 
-        return Service(
+        return ServiceDef(
             id,
             block=lambda **o: {"endpoint": "http://store", "secret_key": "s3cr3t"},
             alive=lambda block: self.up,
@@ -563,7 +563,7 @@ def test_a_service_whose_start_raises_blocks_only_cases_with_a_callable_variant(
     def start(block):
         raise RuntimeError("minio image unpullable: exit 125")
 
-    broken = Service("minio", block=lambda **o: {"endpoint": "http://minio"}, alive=lambda block: False, start=start)
+    broken = ServiceDef("minio", block=lambda **o: {"endpoint": "http://minio"}, alive=lambda block: False, start=start)
     variant = Variant(
         "s3",
         services=("minio",),

@@ -15,7 +15,7 @@ FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest
 
 CONF = """
     import os
-    from ducktest5 import Service, match
+    from ducktest5 import ServiceDef, match
 
     MARK = os.environ["FAKE_SERVICE_MARK"]
 
@@ -30,7 +30,7 @@ CONF = """
             os.remove(MARK)
 
     SERVICES = [
-        Service(
+        ServiceDef(
             "store",
             block=block,
             alive=lambda b: os.path.exists(MARK),

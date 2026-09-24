@@ -3,7 +3,7 @@
 import pytest
 
 from ducktest5.binary import UsageError
-from ducktest5.declare import Service
+from ducktest5.declare import ServiceDef
 from ducktest5.provision import EXISTING, KEPT, MANAGED, attach_argument, existing_overrides, provision, release
 
 
@@ -22,7 +22,7 @@ class Fake:
             self.calls.append("stop")
             self.up = False
 
-        return Service(
+        return ServiceDef(
             "store",
             block=lambda **o: {"endpoint": o.get("endpoint", "http://default"), "secret_key": "s3cr3t"},
             alive=lambda block: self.up,
@@ -72,7 +72,7 @@ def test_keep_finds_a_running_instance_or_starts_one_and_leaves_both_running():
 
 def test_a_service_with_no_start_is_always_existing():
     fake = Fake(up=True)
-    external = Service("cloud", block=lambda **o: {"endpoint": "https://cloud"}, alive=lambda block: fake.up)
+    external = ServiceDef("cloud", block=lambda **o: {"endpoint": "https://cloud"}, alive=lambda block: fake.up)
     assert provision(external).mode == EXISTING
 
 
@@ -139,7 +139,7 @@ def test_a_setup_that_fails_does_not_leave_a_started_instance_behind():
         fake.calls.append("setup")
         raise RuntimeError("no boto3")
 
-    service = Service(
+    service = ServiceDef(
         "store",
         block=lambda **o: {},
         alive=lambda b: fake.up,

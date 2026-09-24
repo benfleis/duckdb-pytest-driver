@@ -83,8 +83,8 @@ def test_scan_prints_the_record_of_each_selected_case(tree, capsys):
 def test_scan_env_prints_what_each_case_is_given_and_where_it_came_from(tree, capsys):
     (tree / "test" / "ducktest_conf.py").write_text(
         textwrap.dedent("""
-            from ducktest5 import Service, Variant, default, match
-            SERVICES = [Service("store", block=lambda **o: {"endpoint": "http://store"}, alive=lambda b: True)]
+            from ducktest5 import ServiceDef, Variant, default, match
+            SERVICES = [ServiceDef("store", block=lambda **o: {"endpoint": "http://store"}, alive=lambda b: True)]
             AXES = {"storage": [Variant(
                 "s3",
                 services=["store"],

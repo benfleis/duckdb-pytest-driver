@@ -1,4 +1,4 @@
-"""What a test author writes: `@test` on a body, and `Engine` in the project file."""
+"""What a test author writes: `@test` on a body, and `EngineDef` in the project file."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ CONF_FILE = "ducktest_conf.py"  # not `ducktest.py`: that name would shadow the 
 
 
 @dataclass(frozen=True)
-class Engine:
+class EngineDef:
     """A non-DuckDB SQL engine a body can drive, booted once per run and shared by every test.
 
     `boot(log_path)` returns a handle with `run(statements)` (as `Client` describes it) and `stop()`.
@@ -27,7 +27,7 @@ class Engine:
 
 
 @dataclass(frozen=True)
-class Service:
+class ServiceDef:
     """Infrastructure a test needs and the run provides: an object store, a catalog server.
 
     `block(**overrides)` gives the facts of one instance (endpoint, bucket, credentials) as a plain

@@ -35,7 +35,7 @@ import sys
 from dataclasses import dataclass, field
 
 from .binary import UsageError
-from .declare import CONF_FILE, Engine, Service, Variant, as_mutex
+from .declare import CONF_FILE, EngineDef, ServiceDef, Variant, as_mutex
 
 _LISTS = ("tags", "services", "engines", "variants", "mutex", "suites")
 _DICTS = ("values", "settings")
@@ -276,10 +276,10 @@ def _prune(project, root, dirpath, dirnames):
 
 
 def _check(path, project):
-    if not all(isinstance(e, Engine) for e in project.engines.values()):
-        raise UsageError(f"{path}: ENGINES must hold Engine")
-    if not all(isinstance(s, Service) for s in project.services.values()):
-        raise UsageError(f"{path}: SERVICES must hold Service")
+    if not all(isinstance(e, EngineDef) for e in project.engines.values()):
+        raise UsageError(f"{path}: ENGINES must hold EngineDef")
+    if not all(isinstance(s, ServiceDef) for s in project.services.values()):
+        raise UsageError(f"{path}: SERVICES must hold ServiceDef")
     for axis, values in project.axes.items():
         if not values or not all(isinstance(v, Variant) for v in values.values()):
             raise UsageError(f"{path}: AXES[{axis!r}] must be a non-empty list of Variant")
