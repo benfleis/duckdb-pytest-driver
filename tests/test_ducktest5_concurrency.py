@@ -71,7 +71,7 @@ def proof(tmp_path, mutate=lambda text: text):
     """Run the concurrent-writers test as its own project; `mutate` breaks it on purpose."""
     root = tmp_path / "test"
     root.mkdir()
-    (root / "ducktestconf.py").write_text("RULES = []\n")
+    (root / "ducktest_conf.py").write_text("RULES = []\n")
     with open(PROOF) as f:
         (root / "concurrent_rw.py").write_text(mutate(f.read()))
     cases, project = scan(str(root), working_dir=str(tmp_path))

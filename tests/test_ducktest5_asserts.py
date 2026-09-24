@@ -155,7 +155,7 @@ class NoSession:
 def test_the_failure_text_reaches_the_terminal_the_report_and_the_events(tmp_path):
     root = tmp_path / "test"
     root.mkdir()
-    (root / "ducktestconf.py").write_text("RULES = []\n")
+    (root / "ducktest_conf.py").write_text("RULES = []\n")
     (root / "body.py").write_text(
         textwrap.dedent(
             """

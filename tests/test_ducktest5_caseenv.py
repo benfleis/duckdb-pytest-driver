@@ -39,11 +39,11 @@ def test_values_merge_rules_then_the_test_then_the_case_then_the_variant():
         case_id="wide",
         cases={"wide": {"who": "case", "width": 9}},
         values={"who": "rule", "region": "eu"},
-        sources={("values", "region"): "ducktestconf.py: default"},
+        sources={("values", "region"): "ducktest_conf.py: default"},
     )
     env = resolve(c)
     assert env.value_map == {"storage": "s3", "who": "variant", "region": "eu", "width": 9}
-    assert env.values["region"].source == "ducktestconf.py: default"
+    assert env.values["region"].source == "ducktest_conf.py: default"
     assert env.values["width"].source == "case 'wide'"
 
 
@@ -119,7 +119,7 @@ def test_two_cases_share_a_key_only_when_everything_the_process_gets_is_the_same
 
 def test_the_key_does_not_change_with_the_rule_that_gave_a_value():
     plain = case(values={"region": "eu"})
-    named = case(values={"region": "eu"}, sources={("values", "region"): "ducktestconf.py: default"})
+    named = case(values={"region": "eu"}, sources={("values", "region"): "ducktest_conf.py: default"})
     assert resolve(plain).key() == resolve(named).key()
 
 

@@ -1,4 +1,4 @@
-"""`ducktestconf.py`: configuration for a directory and everything below it.
+"""`ducktest_conf.py`: configuration for a directory and everything below it.
 
 The file at the root of the scanned tree is the project file; it may also declare ENGINES, SERVICES,
 AXES, SUITES and EXCLUDE. Any directory may have its own file with RULES. A rule speaks about the whole
@@ -222,7 +222,7 @@ def _load(path, name):
 
 
 def find_root(start):
-    """The directory of the highest `ducktestconf.py` at or above `start`, else `start` itself."""
+    """The directory of the highest `ducktest_conf.py` at or above `start`, else `start` itself."""
     here = os.path.abspath(start if os.path.isdir(start) else os.path.dirname(start))
     found = None
     while True:
@@ -242,7 +242,9 @@ def load_project(start):
             _prune(project, root, dirpath, dirnames)
             continue
         path = os.path.join(dirpath, CONF_FILE)
-        module = _load(path, "ducktestconf_" + os.path.relpath(dirpath, root).replace(os.sep, "_").replace(".", "root"))
+        module = _load(
+            path, "ducktest_conf_" + os.path.relpath(dirpath, root).replace(os.sep, "_").replace(".", "root")
+        )
         rules = list(getattr(module, "RULES", ()))
         if not all(isinstance(r, Rule) for r in rules):
             raise UsageError(f"{path}: RULES must hold default(...) and match(...) rules")

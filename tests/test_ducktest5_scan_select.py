@@ -36,8 +36,8 @@ def project(tmp_path):
     return tree(
         tmp_path,
         {
-            "test/ducktestconf.py": ROOT_CONF,
-            "test/a/ducktestconf.py": """
+            "test/ducktest_conf.py": ROOT_CONF,
+            "test/a/ducktest_conf.py": """
                 from ducktest5 import default, match
                 RULES = [default(values={"region": "us"}), match("x.test", variants=["backend"], timeout=5)]
             """,
@@ -66,7 +66,7 @@ def dnf_project(tmp_path):
     return tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import Variant, default, match
                 AXES = {"backend": [Variant("oss"), Variant("dbx")], "storage": [Variant("s3"), Variant("gcs")]}
                 RULES = [default(variants=["backend", "storage"]), match("spark/**", tags=["spark"])]
@@ -116,7 +116,7 @@ def test_the_axis_parts_of_an_id_come_in_the_order_of_axes(tmp_path):
     cases, _ = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import Variant, default
                 AXES = {"backend": [Variant("oss")], "storage": [Variant("s3")]}
                 RULES = [default(variants=["storage", "backend"])]
@@ -132,10 +132,10 @@ def test_rules_apply_from_the_root_down_and_the_test_itself_last(project):
     assert x.test.tags == ["all", "a"]
     # the deeper file replaced `region`, the variant added `catalog`, and the axis brings its own id
     assert resolve(x).value_map == {"backend": "oss", "region": "us", "catalog": "duck"}
-    assert resolve(x).values["region"].source == "a/ducktestconf.py: default"
+    assert resolve(x).values["region"].source == "a/ducktest_conf.py: default"
     assert resolve(x).values["catalog"].source == "AXES backend=oss"
     assert x.test.timeout == 5  # a single value: the last rule that set it
-    assert any("a/ducktestconf.py: match 'x.test'" in line for line in x.test.why)
+    assert any("a/ducktest_conf.py: match 'x.test'" in line for line in x.test.why)
     paired = next(c for c in project[0] if c.id == "b/paired.py::body[cmt]")
     assert paired.test.tags == ["all", "mine"]
     assert "needs-credentials" in next(c for c in project[0] if c.id.endswith("[backend=dbx]")).tags
@@ -146,7 +146,7 @@ def test_a_rule_that_matches_nothing_is_an_error(tmp_path):
         tree(
             tmp_path,
             {
-                "test/ducktestconf.py": "from ducktest5 import match\nRULES = [match('s3/authentcated/**', tags=['x'])]",
+                "test/ducktest_conf.py": "from ducktest5 import match\nRULES = [match('s3/authentcated/**', tags=['x'])]",
                 "test/s3/authenticated/a.test": "",
             },
         )
@@ -157,7 +157,7 @@ def test_an_unknown_rule_field_or_axis_is_an_error(tmp_path):
         tree(
             tmp_path,
             {
-                "test/ducktestconf.py": "from ducktest5 import default\nRULES = [default(needs_env=['X'])]",
+                "test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(needs_env=['X'])]",
                 "test/a.test": "",
             },
         )
@@ -165,7 +165,7 @@ def test_an_unknown_rule_field_or_axis_is_an_error(tmp_path):
         tree(
             tmp_path / "2",
             {
-                "test/ducktestconf.py": "from ducktest5 import default\nRULES = [default(variants=['nope'])]",
+                "test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(variants=['nope'])]",
                 "test/a.test": "",
             },
         )
@@ -355,7 +355,7 @@ def test_a_bare_run_uses_a_project_default_suite(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {"default": {"paths": ["test/keep"], "skip": ["tag=spark"]}}
                 RULES = [match("keep/spark.test", tags=["spark"]), match("keep/other.test", tags=["quiet"])]
@@ -375,7 +375,7 @@ def test_a_skip_given_alone_replaces_the_default_entirely(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {"default": {"paths": ["test/keep"], "skip": ["tag=spark"]}}
                 RULES = [match("keep/spark.test", tags=["spark"]), match("keep/other.test", tags=["quiet"])]
@@ -400,7 +400,7 @@ def test_a_suites_skip_applies_on_top_of_its_own_selection(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {
                     "default": {"paths": ["test/keep"], "skip": ["tag=spark"]},
@@ -430,7 +430,7 @@ def test_a_negation_only_select_alone_replaces_the_default_entirely(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {"default": {"paths": ["test/keep"]}}
                 RULES = [match("keep/spark.test", tags=["spark"]), match("keep/other.test", tags=["quiet"])]
@@ -468,15 +468,15 @@ def test_a_suites_skip_entry_may_be_a_clause(project):
 
 
 def test_suites_is_read_and_an_unrelated_top_level_name_is_ignored(tmp_path):
-    cases, proj = tree(tmp_path, {"test/ducktestconf.py": "SETS = {}", "test/a.test": ""})
+    cases, proj = tree(tmp_path, {"test/ducktest_conf.py": "SETS = {}", "test/a.test": ""})
     assert proj.suites == {}
-    cases, proj = tree(tmp_path / "ok", {"test/ducktestconf.py": 'SUITES = {"x": {}}', "test/a.test": ""})
+    cases, proj = tree(tmp_path / "ok", {"test/ducktest_conf.py": 'SUITES = {"x": {}}', "test/a.test": ""})
     assert proj.suites == {"x": {}}
 
 
 def test_a_project_suite_named_all_is_an_error(tmp_path):
     with pytest.raises(UsageError, match="may not define a suite named 'all'"):
-        tree(tmp_path, {"test/ducktestconf.py": 'SUITES = {"all": {}}', "test/a.test": ""})
+        tree(tmp_path, {"test/ducktest_conf.py": 'SUITES = {"all": {}}', "test/a.test": ""})
 
 
 def test_repeated_suite_unions_the_suites(project):
@@ -498,7 +498,7 @@ def test_suite_default_is_a_legal_term(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {"default": {"paths": ["test/keep"]}}
                 RULES = [match("keep/a.test", tags=["a"]), match("outside/b.test", tags=["b"])]
@@ -514,7 +514,7 @@ def test_suite_term_combines_with_a_negated_suite_term_in_one_clause(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {"smoke": {"select": ["tag=smoke"]}, "databricks": {"select": ["tag=databricks"]}}
                 RULES = [
@@ -536,7 +536,7 @@ def test_a_negated_suite_term_alone_replaces_the_default_entirely(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {"default": {"paths": ["test/keep"]}, "spark": {"select": ["tag=spark"]}}
                 RULES = [match("keep/spark.test", tags=["spark"]), match("keep/other.test", tags=["quiet"])]
@@ -555,7 +555,7 @@ def test_why_line_for_a_suite_skip(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {"spark": {"select": ["tag=spark"]}}
                 RULES = [match("a.test", tags=["spark"]), match("b.test", tags=["other"])]
@@ -572,7 +572,7 @@ def test_a_suite_may_refer_to_another_suite(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {
                     "core": {"select": ["tag=core"]},
@@ -592,7 +592,7 @@ def test_a_suite_cycle_is_an_error_that_prints_it(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 SUITES = {
                     "smoke": {"select": ["suite=nightly"]},
                     "nightly": {"select": ["suite=smoke"]},
@@ -609,7 +609,7 @@ def test_a_case_in_two_suites_is_selected_once(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {"a": {"select": ["tag=x"]}, "b": {"select": ["tag=y"]}}
                 RULES = [match("both.test", tags=["x", "y"])]
@@ -635,7 +635,7 @@ def test_a_suite_may_refer_to_suite_all_or_suite_default(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 SUITES = {"everything": {"select": ["suite=all"]}, "base": {"select": ["suite=default"]}}
             """,
             "test/a.test": "",
@@ -653,7 +653,7 @@ def declared(tmp_path):
     return tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 SUITES = {"smoke": {"select": ["tag=smoke"]}}
                 RULES = [match("a.test", tags=["smoke"])]
@@ -700,7 +700,7 @@ def test_declaring_a_test_out_of_the_default_suite_leaves_a_bare_run(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 RULES = [match("slow.test_slow", suites=["default"])]
             """,
@@ -723,7 +723,7 @@ def test_a_rule_declares_a_suite_for_a_directory_and_one_test_declares_itself_ou
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": """
+            "test/ducktest_conf.py": """
                 from ducktest5 import match
                 RULES = [match("cloud/**", suites=["cloud"])]
             """,
@@ -746,8 +746,8 @@ def test_the_last_word_on_a_suite_name_wins(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": "from ducktest5 import default\nRULES = [default(suites=['x'])]",
-            "test/sub/ducktestconf.py": "from ducktest5 import default\nRULES = [default(suites=['!x'])]",
+            "test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(suites=['x'])]",
+            "test/sub/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(suites=['!x'])]",
             "test/sub/in.py": "from ducktest5 import test\n@test(suites=['x'])\ndef t(ctx): pass",
             "test/sub/out.test": "",
             "test/top.test": "",
@@ -755,14 +755,14 @@ def test_the_last_word_on_a_suite_name_wins(tmp_path):
     )
     selected, why_not = apply(cases, Selection(suites=["x"]), proj)
     assert ids(selected) == ["sub/in.py::t", "top.test::top"]
-    assert why_not["sub/out.test::out"] == "not in suite 'x': declared out  <- sub/ducktestconf.py: default"
+    assert why_not["sub/out.test::out"] == "not in suite 'x': declared out  <- sub/ducktest_conf.py: default"
 
 
 def test_the_scan_record_carries_the_declared_suites(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": "from ducktest5 import default\nRULES = [default(suites=['nightly', 'quick'])]",
+            "test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(suites=['nightly', 'quick'])]",
             "test/a.py": "from ducktest5 import test\n@test(suites=['!nightly'])\ndef a(ctx): pass",
             "test/b.test": "",
         },
@@ -778,7 +778,7 @@ def test_the_scan_record_carries_the_declared_suites(tmp_path):
     "files, message",
     [
         (
-            {"test/ducktestconf.py": "from ducktest5 import default\nRULES = [default(suites=['!all'])]"},
+            {"test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(suites=['!all'])]"},
             r"rule '\*\*': '!all'",
         ),
         (
@@ -852,7 +852,7 @@ def test_a_suites_path_term_is_not_affected_by_the_working_directory(tmp_path):
     cases, proj = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": 'SUITES = {"onlya": {"select": ["path=a"]}}',
+            "test/ducktest_conf.py": 'SUITES = {"onlya": {"select": ["path=a"]}}',
             "test/a/x.test": "",
             "test/b/y.test": "",
         },
@@ -883,7 +883,7 @@ def test_a_star_stays_inside_one_directory_and_two_stars_cross(tmp_path):
     cases, _ = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": "from ducktest5 import match\nRULES = [match('*.test', tags=['top']), match('**/*.test', tags=['any']), match('sub/**', tags=['below'])]",
+            "test/ducktest_conf.py": "from ducktest5 import match\nRULES = [match('*.test', tags=['top']), match('**/*.test', tags=['any']), match('sub/**', tags=['below'])]",
             "test/x.test": "",
             "test/sub/deep/y.test": "",
         },
@@ -896,10 +896,10 @@ def test_an_excluded_directory_is_not_scanned_and_its_configuration_is_not_loade
     cases, project = tree(
         tmp_path,
         {
-            "test/ducktestconf.py": "EXCLUDE = ['old']",
+            "test/ducktest_conf.py": "EXCLUDE = ['old']",
             "test/a.test": "",
             "test/old/b.test": "",
-            "test/old/ducktestconf.py": "from ducktest5 import match\nRULES = [match('gone.test', tags=['x'])]",
+            "test/old/ducktest_conf.py": "from ducktest5 import match\nRULES = [match('gone.test', tags=['x'])]",
         },
     )
     assert ids(cases) == ["a.test::a"]
@@ -946,8 +946,8 @@ def test_a_path_names_its_paired_file_and_nothing_wider(project):
 
 
 def test_retries_is_a_rule_field_and_a_whole_number(tmp_path):
-    files = {"test/ducktestconf.py": "from ducktest5 import match\nRULES = [match('net.test', retries=2)]"}
+    files = {"test/ducktest_conf.py": "from ducktest5 import match\nRULES = [match('net.test', retries=2)]"}
     cases, _ = tree(tmp_path, {**files, "test/net.test": "", "test/plain.test": ""})
     assert [(c.test.name, c.test.retries) for c in cases] == [("net", 2), ("plain", 0)]
     with pytest.raises(UsageError, match="retries=-1; it is a whole number, 0 or more"):
-        tree(tmp_path, {"test/ducktestconf.py": "from ducktest5 import default\nRULES = [default(retries=-1)]"})
+        tree(tmp_path, {"test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(retries=-1)]"})

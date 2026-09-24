@@ -13,7 +13,7 @@ FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest
 DEBUGGER = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_debugger.py")
 
 FILES = {
-    "test/ducktestconf.py": """
+    "test/ducktest_conf.py": """
         from ducktest5 import default, match
         EXCLUDE = ["generated"]
         RULES = [default(tags=["all"]), match("a/**", timeout=30)]
@@ -45,11 +45,11 @@ def test_select_says_what_runs_what_does_not_and_with_explain_which_rule_gave_wh
     assert capsys.readouterr().out == textwrap.dedent(
         """\
         run   a/x.test::x
-                tags=['all']  <- ducktestconf.py: default
-                timeout=30  <- ducktestconf.py: match 'a/**'
+                tags=['all']  <- ducktest_conf.py: default
+                timeout=30  <- ducktest_conf.py: match 'a/**'
         run   a/y.test_slow::y
-                tags=['all']  <- ducktestconf.py: default
-                timeout=30  <- ducktestconf.py: match 'a/**'
+                tags=['all']  <- ducktest_conf.py: default
+                timeout=30  <- ducktest_conf.py: match 'a/**'
         skip  b/z_fail.test::z_fail  -- outside the given paths
 
         2 of 3 cases
@@ -81,7 +81,7 @@ def test_scan_prints_the_record_of_each_selected_case(tree, capsys):
 
 
 def test_scan_env_prints_what_each_case_is_given_and_where_it_came_from(tree, capsys):
-    (tree / "test" / "ducktestconf.py").write_text(
+    (tree / "test" / "ducktest_conf.py").write_text(
         textwrap.dedent("""
             from ducktest5 import Service, Variant, default, match
             SERVICES = [Service("store", block=lambda **o: {"endpoint": "http://store"}, alive=lambda b: True)]
@@ -106,7 +106,7 @@ def test_scan_env_prints_what_each_case_is_given_and_where_it_came_from(tree, ca
           require: httpfs  <- AXES storage=s3
           set: s3_region=eu  <- AXES storage=s3
           values: storage=s3  <- AXES storage
-          values: region=eu  <- ducktestconf.py: default
+          values: region=eu  <- ducktest_conf.py: default
           root: data_dir=s3://bucket/data  <- AXES storage=s3
           env: AWS_PROFILE=ducktest  <- AXES storage=s3
           env unset: AWS_ACCESS_KEY_ID  <- AXES storage=s3

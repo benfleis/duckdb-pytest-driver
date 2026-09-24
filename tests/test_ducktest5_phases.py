@@ -17,7 +17,7 @@ from ducktest5.cli import main
 FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
 
 FILES = {
-    "test/ducktestconf.py": """
+    "test/ducktest_conf.py": """
         from ducktest5 import default
         RULES = [default(tags=["all"])]
     """,
@@ -265,7 +265,7 @@ def still_running(mark):
 @pytest.mark.skipif(not os.path.isdir("/proc"), reason="the check for leftovers reads /proc")
 def test_a_run_that_is_stopped_leaves_nothing_running_and_can_be_taken_up_again(tree, tmp_path):
     (tree / "test/a/hang.test").write_text("")
-    (tree / "test/ducktestconf.py").write_text(
+    (tree / "test/ducktest_conf.py").write_text(
         textwrap.dedent("""
             from ducktest5 import match
             RULES = [match("a/hang.test", timeout=2)]

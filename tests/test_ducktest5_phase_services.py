@@ -47,7 +47,7 @@ CONF = """
 def tree(tmp_path, monkeypatch):
     def make(*, detached=True):
         (tmp_path / "test/s").mkdir(parents=True)
-        (tmp_path / "test/ducktestconf.py").write_text(textwrap.dedent(CONF).replace("{DETACHED}", str(detached)))
+        (tmp_path / "test/ducktest_conf.py").write_text(textwrap.dedent(CONF).replace("{DETACHED}", str(detached)))
         (tmp_path / "test/s/x.test").write_text("")
         monkeypatch.setenv("FAKE_SERVICE_MARK", str(tmp_path / "store.up"))
         monkeypatch.chdir(tmp_path)

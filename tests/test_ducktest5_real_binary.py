@@ -53,7 +53,7 @@ def test_a_setting_of_an_extension_reaches_a_test_body(tmp_path, monkeypatch, ca
     """The binary applies its own `settings` before any extension is loaded, so this used to fail
     with "options were not recognized". As a SET after the requires it passes."""
     (tmp_path / "test").mkdir()
-    (tmp_path / "test" / "ducktestconf.py").write_text(textwrap.dedent(CONF))
+    (tmp_path / "test" / "ducktest_conf.py").write_text(textwrap.dedent(CONF))
     (tmp_path / "test" / "client_setting.test").write_text(textwrap.dedent(BODY).lstrip())
     monkeypatch.chdir(tmp_path)
     code = main(

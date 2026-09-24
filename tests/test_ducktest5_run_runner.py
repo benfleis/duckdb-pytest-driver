@@ -14,7 +14,7 @@ FAKES = os.path.join(os.path.dirname(__file__), "ducktest5_fakes")
 FAKE, WRAPPER = os.path.join(FAKES, "fake_unittest.py"), os.path.join(FAKES, "fake_run.py")
 
 FILES = {
-    "test/ducktestconf.py": "RULES = []\n",
+    "test/ducktest_conf.py": "RULES = []\n",
     "test/a/x.test": "",
     "test/a/y.test": "",
     "test/b/z_fail.test": "",
@@ -71,7 +71,7 @@ def test_the_run_wrapper_gives_every_case_an_outcome_of_its_own(tree):
 
 
 def test_one_call_of_the_wrapper_for_each_case_environment(tree):
-    (tree / "test/ducktestconf.py").write_text(
+    (tree / "test/ducktest_conf.py").write_text(
         textwrap.dedent("""
             from ducktest5 import match
             RULES = [match("b/**", settings={"threads": 2})]

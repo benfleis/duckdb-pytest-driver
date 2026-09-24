@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-CONF_FILE = "ducktestconf.py"  # not `ducktest.py`: that name would shadow the package on a sys.path entry
+CONF_FILE = "ducktest_conf.py"  # not `ducktest.py`: that name would shadow the package on a sys.path entry
 
 
 @dataclass(frozen=True)

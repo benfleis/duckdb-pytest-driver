@@ -532,9 +532,9 @@ def test_the_failing_statement_of_the_init_sql_names_its_own_source(tmp_path):
 
 def test_a_setting_that_fails_in_the_init_sql_names_the_rule_that_asked_for_it(tmp_path):
     case = sql_case("a_initfail.test", settings={"threads": 2})
-    case.test.sources = {("settings", "threads"): "ducktestconf.py: default"}
+    case.test.sources = {("settings", "threads"): "ducktest_conf.py: default"}
     _, _, report, _ = go(tmp_path, [case])
-    assert "in the init SQL of ducktestconf.py: default (" in report["cases"][0]["problems"][0]
+    assert "in the init SQL of ducktest_conf.py: default (" in report["cases"][0]["problems"][0]
 
 
 def test_a_failure_in_the_body_stays_a_failure_when_the_batch_has_init_sql(tmp_path):

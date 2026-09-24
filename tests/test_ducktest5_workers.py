@@ -207,7 +207,7 @@ def test_the_live_lines_come_one_by_one_in_the_order_the_cases_ended(tmp_path):
 #
 
 TREE = {
-    "test/ducktestconf.py": "RULES = []",
+    "test/ducktest_conf.py": "RULES = []",
     "test/slow.py": """
         import time
 
