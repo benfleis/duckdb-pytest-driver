@@ -1,0 +1,20 @@
+# name: default.test
+# description: Named by no match() rule; it runs with what default() gives.
+# group: [ladder]
+
+# -----------------------------------------------------------------------------
+# The storage default() binds
+#
+
+query I
+SELECT '{TEMP_DIR}' LIKE '%/scratch_a/%'
+----
+true
+
+statement ok
+COPY (SELECT 42 AS answer) TO '{TEMP_DIR}/answer.csv'
+
+query I
+SELECT answer FROM read_csv('{TEMP_DIR}/answer.csv')
+----
+42

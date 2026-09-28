@@ -1,0 +1,12 @@
+# name: paired_own_inputs.test
+# description: Run by paired_own_inputs.py, with the storage its @test binds.
+# group: [ladder]
+
+# -----------------------------------------------------------------------------
+# The storage @test binds, not the one default() binds
+#
+
+query I
+SELECT '{TEMP_DIR}' LIKE '%/scratch_b/%'
+----
+true
