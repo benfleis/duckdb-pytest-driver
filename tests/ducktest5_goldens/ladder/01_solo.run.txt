@@ -1,0 +1,8 @@
+[1/1] PASSED   solo_body.py::solo_body  (<s>)
+
+
+1 passed in <s>
+run dir: <run>
+
+02-plan.yaml batches:
+  b001  python    key1  solo_body.py

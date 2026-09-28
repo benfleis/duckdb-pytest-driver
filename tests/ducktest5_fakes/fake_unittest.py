@@ -15,6 +15,9 @@
     *initfailN* the same, on the Nth statement of the init file
     *showenv* prints the process environment it was started with, for the names in $FAKE_UNITTEST_ENV
 
+As the binary does, a name in the config's `env_passthrough` that is not in its environment fails
+the whole invocation before any test.
+
 `-l` lists the names in the file that $FAKE_UNITTEST_LIST names.
 """
 
@@ -58,6 +61,10 @@ def main(argv):
         return 3
     names = [line.strip() for line in open(argv[argv.index("-f") + 1]) if line.strip()]
     config = json.load(open(argv[argv.index("--test-config") + 1]))
+    missing = [name for name in config.get("env_passthrough", []) if name not in os.environ]
+    if missing:
+        print(f"--env-passthrough: not set in the environment: {', '.join(missing)}", flush=True)
+        return 1
     failed = False
     for n, name in enumerate(names):
         temp = f"{config['temp_dir_root']}/run/{name.replace('/', '_')}"

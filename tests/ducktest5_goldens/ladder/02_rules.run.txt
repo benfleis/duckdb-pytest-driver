@@ -1,0 +1,15 @@
+[1/5] PASSED   default.test::default  (<s>)
+[2/5] PASSED   rule_matched.test::rule_matched  (<s>)
+[3/5] PASSED   own_inputs.py::own_inputs  (<s>)
+[4/5] PASSED   paired_own_inputs.py::paired_own_inputs  (<s>)
+[5/5] PASSED   rule_matched_body.py::rule_matched_body  (<s>)
+
+
+5 passed in <s>
+run dir: <run>
+
+02-plan.yaml batches:
+  b001  unittest  key1  default.test, rule_matched.test
+  b002  python    key2  own_inputs.py
+  b003  python    key2  paired_own_inputs.py
+  b004  python    key1  rule_matched_body.py

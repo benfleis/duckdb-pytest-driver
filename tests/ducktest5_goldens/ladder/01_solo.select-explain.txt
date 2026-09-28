@@ -1,0 +1,3 @@
+run   solo_body.py::solo_body
+
+1 of 1 tests
