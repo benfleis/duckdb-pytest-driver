@@ -110,7 +110,8 @@ def init_file_text(test_env):
     `SET` or a secret type of one fails before that. Then the scoped secrets, then the statements,
     one block each, so a failure can be traced back to the one thing that asked for it."""
     lines, sources = [], {}
-    for line in render("unittest", "requires", test_env.extensions).sql:
+    extensions = test_env.extensions + [e.value for e in test_env.secret_requires]
+    for line in render("unittest", "requires", extensions).sql:
         lines += [line, ""]
     for entry in [*test_env.secret_sql, *test_env.init_sql]:
         lines.append("statement ok")

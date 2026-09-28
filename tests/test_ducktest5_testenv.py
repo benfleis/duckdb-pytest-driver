@@ -219,3 +219,15 @@ def test_a_test_file_creates_its_scoped_secret_from_a_template_the_binary_fills(
     )
     assert resolved.passthrough == ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
     assert "k-value" not in "\n".join(resolved.lines()) + text
+
+
+def test_the_scoped_secret_of_a_test_file_does_not_change_its_key(monkeypatch):
+    monkeypatch.setenv("DT_KEY", "k-value")
+    storage = StorageDef("bucket", "s3://bucket")
+    credential = CredentialDef("key", sources=[env_source({"AWS_ACCESS_KEY_ID": "DT_KEY"})], scope="bucket")
+    sql_file = make_test()
+    python = Test(TestDef(path="t.py", name="t", type="python"), None, {})
+    for test in (sql_file, python):
+        test.inputs = ((storage, RW), (credential, RO))
+    assert resolve(sql_file).secret_sql and not resolve(python).secret_sql
+    assert resolve(sql_file).key() == resolve(python).key()

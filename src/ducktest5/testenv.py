@@ -86,6 +86,7 @@ class TestEnv:
     requires: list = field(default_factory=list)  # Entry(value=extension name)
     init_sql: list = field(default_factory=list)  # Entry(value=one statement), in delivery order
     secret_sql: list = field(default_factory=list)  # Entry(value=CREATE SECRET), for a .test body only
+    secret_requires: list = field(default_factory=list)  # Entry(value=extension) that secret_sql needs
     values: dict = field(default_factory=dict)  # name -> Entry
     roots: dict = field(default_factory=dict)  # one of ROOTS -> Entry
     env: dict = field(default_factory=dict)  # name -> Entry
@@ -149,12 +150,13 @@ class TestEnv:
 
     def key(self):
         """Two tests of `.test` files may share a unittest process when this is equal; everything the process
-        is given is in it, and nothing else is."""
+        is given is in it, and nothing else is. The scoped secrets are not: they follow from the
+        inputs, which are, and are rendered for a `.test` body only, so a key does not depend on the
+        kind of body."""
         return json.dumps(
             {
                 "requires": self.extensions,
                 "init_sql": [e.value for e in self.init_sql],
-                "secret_sql": [e.value for e in self.secret_sql],
                 "values": {k: str(e.value) for k, e in sorted(self.values.items())},
                 "roots": {k: str(e.value) for k, e in sorted(self.roots.items())},
                 # A secret read at delivery counts by where it is read from, never by its value.
@@ -171,6 +173,7 @@ class TestEnv:
         """Every entry, in the order the engine is given them."""
         return [
             *self.requires,
+            *self.secret_requires,
             *self.secret_sql,
             *self.init_sql,
             *self.values.values(),
@@ -309,8 +312,8 @@ def resolve(test, provisioned=None):
             rendered = render("unittest", "secret", storage, credential)
             where = f"credential {credential.id}, storage {storage.id}"
             for extension in rendered.requires:
-                if extension not in env.extensions:
-                    env.requires.append(Entry(extension, where, kind="require"))
+                if extension not in env.extensions + [e.value for e in env.secret_requires]:
+                    env.secret_requires.append(Entry(extension, where, kind="require"))
             env.secret_sql += [Entry(sql, where, kind="secret") for sql in rendered.sql]
     return env
 
