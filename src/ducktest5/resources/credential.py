@@ -1,4 +1,4 @@
-"""Credentials: a secret found in a source, or made by a generator, scoped to a storage."""
+"""Credentials: a secret found in a source, or made by a generator, scoped to one or more storages."""
 
 from __future__ import annotations
 
@@ -55,19 +55,36 @@ def _source(entry):
     raise UsageError(f"{entry!r} is not a credential source; use env(...) or '1password:NAME'")
 
 
+def _scope(credential_id, entry):
+    """One `scopes` entry, normalized to (storage id, mode)."""
+    if isinstance(entry, (tuple, list)):
+        if len(entry) != 2:
+            raise UsageError(
+                f"credential {credential_id!r}: scope {entry!r} is a storage id, or (storage id, {RO!r}|{RW!r})"
+            )
+        storage, mode = entry
+    else:
+        storage, mode = entry, RW
+    if mode not in (RO, RW):
+        raise UsageError(f"credential {credential_id!r}: scope mode {mode!r}; it is {RO!r} or {RW!r}")
+    return storage, mode
+
+
 @dataclass(eq=False)
 class CredentialDef(ResourceDef):
     """A secret a test needs: the first of `sources` that resolves, or what `generator` makes from
     the credential's inputs when it is acquired. It outputs `secrets` only, never `env`, under the
-    names its source gives (`AWS_ACCESS_KEY_ID`). `scope` is the storage it is for, and that
-    storage's credential when a test names none; with no scope it binds only by name."""
+    names its source gives (`AWS_ACCESS_KEY_ID`). `scopes` lists the storages it is for -- each a
+    storage id, or `(storage id, "ro" | "rw")` -- and it is that storage's credential when a test
+    names none; a credential may be scoped to several storages, and an empty list binds only by
+    name."""
 
     kind = "credential"
     sharing = SHARED_RO
 
     id: str
     sources: list = field(default_factory=list)  # env({...}) or "1password:NAME", tried in order
-    scope: object = None  # a storage id, or (storage id, "ro" | "rw"); None: bound only by name
+    scopes: list = field(default_factory=list)  # storage id, or (storage id, "ro" | "rw"), each
     generator: Callable | None = None  # generator(inputs: {id: Resource}) -> {name: value}, at acquire
     default: bool = False  # the one to pick when several share a scope
     inputs: list = field(default_factory=list)
@@ -79,8 +96,7 @@ class CredentialDef(ResourceDef):
         self.sources = [_source(s) for s in self.sources]
         if self.sources and self.generator:
             raise UsageError(f"credential {self.id!r}: sources or a generator, not both")
-        if self.scope is not None and self.scope_mode not in (RO, RW):
-            raise UsageError(f"credential {self.id!r}: scope mode {self.scope_mode!r}; it is {RO!r} or {RW!r}")
+        self.scopes = [_scope(self.id, s) for s in self.scopes]
 
     @property
     def names(self) -> tuple:
@@ -88,12 +104,12 @@ class CredentialDef(ResourceDef):
         return tuple(sorted({name for s in self.sources if isinstance(s, EnvSource) for name, _ in s.names}))
 
     @property
-    def scope_storage(self) -> str | None:
-        return self.scope[0] if isinstance(self.scope, (tuple, list)) else self.scope
+    def scope_storages(self) -> tuple:
+        """The storage ids it is scoped to, in declared order."""
+        return tuple(s for s, _ in self.scopes)
 
-    @property
-    def scope_mode(self) -> str:
-        return self.scope[1] if isinstance(self.scope, (tuple, list)) else RW
+    def scope_mode(self, storage: str) -> str:
+        return next(m for s, m in self.scopes if s == storage)
 
 
 class Credential(Resource):
@@ -130,20 +146,24 @@ def pick_credentials(
     declared: Iterable[CredentialDef],
     named: Iterable[CredentialDef] = (),
 ) -> list[CredentialDef]:
-    """The credentials of one test. `storages` maps each storage id it uses to its edge mode.
-    A named credential wins over scope; a storage with no named one gets the credential scoped to
-    it, or the one flagged `default` when several are; with none flagged, which is a usage error."""
+    """The credentials of one test. `storages` maps each storage id it uses to its edge mode. A
+    credential matches a storage if any of its `scopes` names it, so one credential may serve
+    several storages of one test. A named credential wins over scope; a storage with no named one
+    gets the credential scoped to it, or the one flagged `default` when several are; with none
+    flagged, which is a usage error (per storage)."""
     chosen = list(named)
-    covered = {c.scope_storage for c in chosen}
+    covered = {s for c in chosen for s in c.scope_storages}
     for storage, mode in storages.items():
         if storage in covered:
             continue
-        matches = [c for c in declared if c.scope_storage == storage and (c.scope_mode == RW or mode == RO)]
+        matches = [c for c in declared if storage in c.scope_storages and (c.scope_mode(storage) == RW or mode == RO)]
         if len(matches) > 1:
             defaults = [c for c in matches if c.default]
             if len(defaults) != 1:
                 ids = sorted(c.id for c in matches)
                 raise UsageError(f"storage {storage!r} has credentials {ids} and none is named or flagged default=True")
             matches = defaults
-        chosen += matches
+        for c in matches:
+            if c not in chosen:
+                chosen.append(c)
     return chosen

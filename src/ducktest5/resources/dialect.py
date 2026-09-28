@@ -7,7 +7,7 @@
     spark      runtime configuration of a Spark session; a secret is a per-bucket s3a setting
 
 The actions are `requires` (a list of extensions), `settings` (name -> value) and `secret` (a
-Storage and the Credential scoped to it).
+Credential and the Storages it is scoped to, among a Test's inputs).
 """
 
 from __future__ import annotations
@@ -53,35 +53,40 @@ def render(dialect, action, *args) -> Preamble:
 
 
 def preamble(dialect, definition, inputs) -> Preamble:
-    """`definition`'s requires, settings, a secret for each storage input that has a credential
-    scoped to it among `inputs`, then its init statements."""
+    """`definition`'s requires, settings, a secret for each credential input matched to the
+    storages among `inputs` it is scoped to, then its init statements."""
     out = Preamble()
     if definition.requires:
         out += render(dialect, "requires", list(definition.requires))
     if definition.settings:
         out += render(dialect, "settings", dict(definition.settings))
-    for storage, credential in pairs(inputs):
-        out += render(dialect, "secret", storage, credential)
+    for credential, storages in pairs(inputs):
+        out += render(dialect, "secret", storages, credential)
     return out + Preamble(sql=list(definition.init))
 
 
 def pairs(inputs):
-    """(storage, credential) for each storage among `inputs` with a credential scoped to it."""
+    """(credential, [storage, ...]) for each credential among `inputs` matched to the storages among
+    `inputs` it is scoped to, in the credential's declared scope order. A credential scoped to
+    nothing among `inputs` is left out."""
     inputs = list(inputs)
     storages = {r.id: r for r in inputs if r.definition.kind == "storage"}
-    return [
-        (storages[c.definition.scope_storage], c)
-        for c in inputs
-        if c.definition.kind == "credential" and c.definition.scope_storage in storages
-    ]
+    out = []
+    for c in inputs:
+        if c.definition.kind != "credential":
+            continue
+        matched = [storages[s] for s in c.definition.scope_storages if s in storages]
+        if matched:
+            out.append((c, matched))
+    return out
 
 
 def quote(value) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _secret_name(storage):
-    return "ducktest_" + re.sub(r"\W", "_", storage.id)
+def _secret_name(storages):
+    return "ducktest_" + "_".join(re.sub(r"\W", "_", s.id) for s in storages)
 
 
 def _facts(storage):
@@ -118,9 +123,9 @@ _S3_OPTIONS = {
 _AZURE_SPN = {"TENANT_ID": "AZURE_TENANT_ID", "CLIENT_ID": "AZURE_CLIENT_ID", "CLIENT_SECRET": "AZURE_CLIENT_SECRET"}
 
 
-def _secret_options(storage, value_of):
-    """The options of the storage's secret, a secret value as `value_of(name)` gives it; None for a
-    storage that needs no secret."""
+def _storage_options(storage, value_of):
+    """The type and connection options of `storage`'s secret, without its scope; None for a storage
+    that needs no secret (a local path)."""
     facts = _facts(storage)
     if facts["scheme"] == "file":
         return None
@@ -141,19 +146,47 @@ def _secret_options(storage, value_of):
             options["ACCOUNT_NAME"] = facts["account"]
     else:
         raise UsageError(f"storage {storage.id!r}: the duckdb dialect has no secret for {facts['scheme']}")
-    options["SCOPE"] = facts["root"]
     return options
 
 
-def _create_secret(storage, options):
-    body = ", ".join(f"{k} {str(v).lower() if isinstance(v, bool) else quote(v)}" for k, v in options.items())
-    return f"CREATE SECRET {_secret_name(storage)} ({body});"
+def _secret_options(storages, value_of):
+    """The options of one secret covering `storages`, a secret value as `value_of(name)` gives it;
+    None when none of them need one. SCOPE is the plain root when one storage needs a secret, a list
+    of roots when several do -- both are valid DuckDB syntax, and this keeps the common, one-storage
+    case unchanged."""
+    needed = [(s, _storage_options(s, value_of)) for s in storages]
+    needed = [(s, o) for s, o in needed if o is not None]
+    if not needed:
+        return None
+    first, options = needed[0]
+    for storage, other in needed[1:]:
+        if other != options:
+            raise UsageError(
+                f"credential scoped to storages {[s.id for s, _ in needed]}: {first.id!r} and {storage.id!r} "
+                "need different secrets, so one credential cannot cover both"
+            )
+    roots = [_facts(s)["root"] for s, _ in needed]
+    options = dict(options, SCOPE=roots[0] if len(roots) == 1 else roots)
+    return options
+
+
+def _render_value(value) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, list):
+        return "[" + ", ".join(quote(v) for v in value) + "]"
+    return quote(value)
+
+
+def _create_secret(storages, options):
+    body = ", ".join(f"{k} {_render_value(v)}" for k, v in options.items())
+    return f"CREATE SECRET {_secret_name(storages)} ({body});"
 
 
 @renders("duckdb", "secret")
-def _duckdb_secret(storage, credential):
-    options = _secret_options(storage, _values(credential).get)
-    return Preamble() if options is None else Preamble(sql=[_create_secret(storage, options)])
+def _duckdb_secret(storages, credential):
+    options = _secret_options(storages, _values(credential).get)
+    return Preamble() if options is None else Preamble(sql=[_create_secret(storages, options)])
 
 
 # -----------------------------------------------------------------------------
@@ -173,16 +206,16 @@ _EXTENSION_OF = {"s3": "httpfs", "azure": "azure"}
 
 
 @renders("unittest", "secret")
-def _unittest_secret(storage, credential):
+def _unittest_secret(storages, credential):
     """The same secret, with `{NAME}` for each value: the binary fills it from the variables passed
     through to it, so the init file holds no value. The binary loads no extension by itself, so the
     one of the secret type is required first."""
     names = sorted(name for name, out in credential.secrets.items() if not out.unset)
-    options = _secret_options(storage, lambda name: f"{{{name}}}" if name in names else None)
+    options = _secret_options(storages, lambda name: f"{{{name}}}" if name in names else None)
     if options is None:
         return Preamble(passthrough=names)
     return Preamble(
-        sql=[_create_secret(storage, options)], passthrough=names, requires=[_EXTENSION_OF[options["TYPE"]]]
+        sql=[_create_secret(storages, options)], passthrough=names, requires=[_EXTENSION_OF[options["TYPE"]]]
     )
 
 
@@ -202,28 +235,32 @@ def _spark_settings(settings):
 
 
 @renders("spark", "secret")
-def _spark_secret(storage, credential):
-    """Settings of one bucket, so buckets of several stores coexist. They are set on a running
-    session, where the Hadoop configuration takes them without the `spark.hadoop.` prefix that
-    configures a session at boot."""
-    facts, values = _facts(storage), _values(credential)
-    if facts["scheme"] == "file":
-        return Preamble()
-    if facts["scheme"] != "s3":
-        raise UsageError(f"storage {storage.id!r}: the spark dialect has no secret for {facts['scheme']}")
-    bucket = facts["root"].split("://", 1)[1].split("/", 1)[0]
-    per_bucket = {
-        "access.key": values.get("AWS_ACCESS_KEY_ID"),
-        "secret.key": values.get("AWS_SECRET_ACCESS_KEY"),
-        "endpoint.region": values.get("AWS_REGION"),
-        "aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
-    }
-    if facts["endpoint"]:
-        per_bucket["endpoint"] = facts["endpoint"]
-        per_bucket["path.style.access"] = "true"
-        per_bucket["connection.ssl.enabled"] = str(facts["endpoint"].startswith("https://")).lower()
-    conf = {f"fs.s3a.bucket.{bucket}.{k}": v for k, v in per_bucket.items() if v is not None}
-    conf["fs.s3.impl"] = (
-        "org.apache.hadoop.fs.s3a.S3AFileSystem"  # so a body gives Spark the `s3://` URI it gives DuckDB
-    )
+def _spark_secret(storages, credential):
+    """Settings of each scoped bucket, so buckets of several stores coexist. They are set on a
+    running session, where the Hadoop configuration takes them without the `spark.hadoop.` prefix
+    that configures a session at boot."""
+    values = _values(credential)
+    conf = {}
+    for storage in storages:
+        facts = _facts(storage)
+        if facts["scheme"] == "file":
+            continue
+        if facts["scheme"] != "s3":
+            raise UsageError(f"storage {storage.id!r}: the spark dialect has no secret for {facts['scheme']}")
+        bucket = facts["root"].split("://", 1)[1].split("/", 1)[0]
+        per_bucket = {
+            "access.key": values.get("AWS_ACCESS_KEY_ID"),
+            "secret.key": values.get("AWS_SECRET_ACCESS_KEY"),
+            "endpoint.region": values.get("AWS_REGION"),
+            "aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+        }
+        if facts["endpoint"]:
+            per_bucket["endpoint"] = facts["endpoint"]
+            per_bucket["path.style.access"] = "true"
+            per_bucket["connection.ssl.enabled"] = str(facts["endpoint"].startswith("https://")).lower()
+        conf.update({f"fs.s3a.bucket.{bucket}.{k}": v for k, v in per_bucket.items() if v is not None})
+    if conf:
+        conf["fs.s3.impl"] = (
+            "org.apache.hadoop.fs.s3a.S3AFileSystem"  # so a body gives Spark the `s3://` URI it gives DuckDB
+        )
     return Preamble(conf=conf)

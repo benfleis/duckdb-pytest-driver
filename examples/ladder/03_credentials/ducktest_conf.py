@@ -8,7 +8,7 @@ CREDENTIALS = [
     CredentialDef(
         "fake_key",
         sources=[env({"AWS_ACCESS_KEY_ID": "LADDER_FAKE_KEY_ID", "AWS_SECRET_ACCESS_KEY": "LADDER_FAKE_SECRET"})],
-        scope="fake_s3",
+        scopes=["fake_s3"],
     )
 ]
 

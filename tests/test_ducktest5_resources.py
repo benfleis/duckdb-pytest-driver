@@ -262,10 +262,10 @@ def test_sources_and_a_generator_is_a_usage_error():
         CredentialDef("key", sources=[env(["X"])], generator=lambda inputs: {})
 
 
-S3_KEY = CredentialDef("s3-key", scope="s3store")
-S3_OTHER = CredentialDef("s3-other", scope="s3store")
-S3_READ = CredentialDef("s3-read", scope=("s3store", RO))
-AZ_KEY = CredentialDef("az-key", scope="azstore")
+S3_KEY = CredentialDef("s3-key", scopes=["s3store"])
+S3_OTHER = CredentialDef("s3-other", scopes=["s3store"])
+S3_READ = CredentialDef("s3-read", scopes=[("s3store", RO)])
+AZ_KEY = CredentialDef("az-key", scopes=["azstore"])
 
 
 def test_a_storage_gets_the_credential_scoped_to_it():
@@ -283,15 +283,30 @@ def test_two_credentials_for_one_storage_none_named_is_a_usage_error_listing_the
 
 
 def test_the_default_credential_breaks_the_tie():
-    default = CredentialDef("s3-default", scope="s3store", default=True)
+    default = CredentialDef("s3-default", scopes=["s3store"], default=True)
     assert pick_credentials({"s3store": RW}, [S3_KEY, S3_OTHER, default]) == [default]
 
 
 def test_a_named_credential_wins_over_scope_so_a_wrong_credential_test_can_be_declared():
-    wrong = CredentialDef("wrong", scope="s3store")
+    wrong = CredentialDef("wrong", scopes=["s3store"])
     none = CredentialDef("none")
     assert pick_credentials({"s3store": RW}, [S3_KEY, S3_OTHER], named=[wrong]) == [wrong]
     assert pick_credentials({"s3store": RW}, [S3_KEY], named=[none]) == [none, S3_KEY]
+
+
+def test_a_credential_scoped_to_two_storages_serves_both():
+    both = CredentialDef("both", scopes=["s3store", "azstore"])
+    assert pick_credentials({"s3store": RW, "azstore": RW}, [both]) == [both]
+
+
+def test_a_storage_matched_by_two_credentials_still_errors_unless_one_is_named_or_default():
+    both = CredentialDef("both", scopes=["s3store", "azstore"])
+    with pytest.raises(UsageError, match=r"storage 's3store' has credentials \['both', 's3-key'\]"):
+        pick_credentials({"s3store": RW, "azstore": RW}, [both, S3_KEY])
+
+
+def test_a_credential_scoped_to_storage_a_is_not_delivered_for_a_test_that_uses_only_storage_b():
+    assert pick_credentials({"azstore": RW}, [S3_KEY]) == []
 
 
 def test_credential_contract(monkeypatch):
@@ -410,7 +425,7 @@ CONF = """
 from ducktest5 import Variant, default, match
 from ducktest5.resources import CredentialDef, StorageDef, env
 STORAGES = [StorageDef("local", "{root}/store")]
-CREDENTIALS = [CredentialDef("local-key", sources=[env({"AWS_SECRET_ACCESS_KEY": "DT_SECRET"})], scope="local")]
+CREDENTIALS = [CredentialDef("local-key", sources=[env({"AWS_SECRET_ACCESS_KEY": "DT_SECRET"})], scopes=["local"])]
 AXES = {"storage": [Variant("local", inputs=["local"])]}
 RULES = [match("a/**", variants=["storage"])]
 """

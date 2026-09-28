@@ -204,7 +204,7 @@ def test_a_test_file_creates_its_scoped_secret_from_a_template_the_binary_fills(
     credential = CredentialDef(
         "key",
         sources=[env_source({"AWS_ACCESS_KEY_ID": "DT_KEY", "AWS_SECRET_ACCESS_KEY": "DT_SECRET"})],
-        scope="bucket",
+        scopes=["bucket"],
     )
     test = make_test()
     test.inputs = ((storage, RW), (credential, RO))
@@ -224,7 +224,7 @@ def test_a_test_file_creates_its_scoped_secret_from_a_template_the_binary_fills(
 def test_the_scoped_secret_of_a_test_file_does_not_change_its_key(monkeypatch):
     monkeypatch.setenv("DT_KEY", "k-value")
     storage = StorageDef("bucket", "s3://bucket")
-    credential = CredentialDef("key", sources=[env_source({"AWS_ACCESS_KEY_ID": "DT_KEY"})], scope="bucket")
+    credential = CredentialDef("key", sources=[env_source({"AWS_ACCESS_KEY_ID": "DT_KEY"})], scopes=["bucket"])
     sql_file = make_test()
     python = Test(TestDef(path="t.py", name="t", type="python"), None, {})
     for test in (sql_file, python):

@@ -308,9 +308,9 @@ def resolve(test, provisioned=None):
             env.init_sql.append(Entry(v.init_sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
     made = [_deliver(env, resource, mode, provisioned is None, _axis_value) for resource, mode in test.inputs]
     if definition.body_file:
-        for storage, credential in pairs(m for m in made if m is not None):
-            rendered = render("unittest", "secret", storage, credential)
-            where = f"credential {credential.id}, storage {storage.id}"
+        for credential, storages in pairs(m for m in made if m is not None):
+            rendered = render("unittest", "secret", storages, credential)
+            where = f"credential {credential.id}, storage {', '.join(s.id for s in storages)}"
             for extension in rendered.requires:
                 if extension not in env.extensions + [e.value for e in env.secret_requires]:
                     env.secret_requires.append(Entry(extension, where, kind="require"))

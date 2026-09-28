@@ -17,9 +17,21 @@ def minio(monkeypatch):
     monkeypatch.setenv("DT_KEY", "admin")
     monkeypatch.setenv("DT_SECRET", "it's-secret")
     storage = StorageDef("minio", "s3://ducktest/delta", endpoint="http://172.18.0.1:9999").make()
-    credential = CredentialDef("minio-key", sources=[env(KEYS)], scope="minio").make()
+    credential = CredentialDef("minio-key", sources=[env(KEYS)], scopes=["minio"]).make()
     credential.start()
     return storage, credential
+
+
+@pytest.fixture
+def two_storages(monkeypatch):
+    """One credential scoped to two S3-compatible storages, both started."""
+    monkeypatch.setenv("DT_KEY", "admin")
+    monkeypatch.setenv("DT_SECRET", "it's-secret")
+    a = StorageDef("bucket-a", "s3://bucket-a", endpoint="http://172.18.0.1:9999").make()
+    b = StorageDef("bucket-b", "s3://bucket-b", endpoint="http://172.18.0.1:9999").make()
+    credential = CredentialDef("shared-key", sources=[env(KEYS)], scopes=["bucket-a", "bucket-b"]).make()
+    credential.start()
+    return [a, b], credential
 
 
 # -----------------------------------------------------------------------------
@@ -53,14 +65,24 @@ def test_an_unknown_dialect_or_action_is_a_usage_error():
 
 
 def test_duckdb_gets_one_secret_scoped_to_the_storage_root(minio):
-    assert render("duckdb", "secret", *minio).sql == [
+    storage, credential = minio
+    assert render("duckdb", "secret", [storage], credential).sql == [
         "CREATE SECRET ducktest_minio (TYPE 's3', KEY_ID 'admin', SECRET 'it''s-secret', "
         "ENDPOINT '172.18.0.1:9999', USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/delta');"
     ]
 
 
+def test_a_credential_scoped_to_two_storages_gets_one_duckdb_secret_with_both_scopes(two_storages):
+    assert render("duckdb", "secret", *two_storages).sql == [
+        "CREATE SECRET ducktest_bucket_a_bucket_b (TYPE 's3', KEY_ID 'admin', SECRET 'it''s-secret', "
+        "ENDPOINT '172.18.0.1:9999', USE_SSL false, URL_STYLE 'path', "
+        "SCOPE ['s3://bucket-a', 's3://bucket-b']);"
+    ]
+
+
 def test_spark_gets_the_settings_of_the_one_bucket(minio):
-    assert render("spark", "secret", *minio).conf == {
+    storage, credential = minio
+    assert render("spark", "secret", [storage], credential).conf == {
         "fs.s3a.bucket.ducktest.access.key": "admin",
         "fs.s3a.bucket.ducktest.secret.key": "it's-secret",
         "fs.s3a.bucket.ducktest.aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
@@ -71,8 +93,18 @@ def test_spark_gets_the_settings_of_the_one_bucket(minio):
     }
 
 
+def test_a_credential_scoped_to_two_storages_gets_spark_settings_for_both_buckets(two_storages):
+    conf = render("spark", "secret", *two_storages).conf
+    assert conf["fs.s3a.bucket.bucket-a.access.key"] == "admin"
+    assert conf["fs.s3a.bucket.bucket-b.access.key"] == "admin"
+    assert conf["fs.s3a.bucket.bucket-a.secret.key"] == "it's-secret"
+    assert conf["fs.s3a.bucket.bucket-b.secret.key"] == "it's-secret"
+    assert conf["fs.s3.impl"] == "org.apache.hadoop.fs.s3a.S3AFileSystem"
+
+
 def test_the_unittest_binary_gets_the_names_of_the_secrets_never_their_values(minio):
-    delivered = render("unittest", "secret", *minio)
+    storage, credential = minio
+    delivered = render("unittest", "secret", [storage], credential)
     assert delivered == Preamble(
         sql=[
             "CREATE SECRET ducktest_minio (TYPE 's3', KEY_ID '{AWS_ACCESS_KEY_ID}', SECRET '{AWS_SECRET_ACCESS_KEY}', "
@@ -88,9 +120,9 @@ def test_an_azure_storage_gets_a_service_principal_secret(monkeypatch):
     for n in names:
         monkeypatch.setenv(n, n.lower())
     storage = StorageDef("az", "abfss://c@acct.dfs.core.windows.net/x").make()
-    credential = CredentialDef("spn", sources=[env(list(names))], scope="az").make()
+    credential = CredentialDef("spn", sources=[env(list(names))], scopes=["az"]).make()
     credential.start()
-    assert render("duckdb", "secret", storage, credential).sql == [
+    assert render("duckdb", "secret", [storage], credential).sql == [
         "CREATE SECRET ducktest_az (TYPE 'azure', PROVIDER 'service_principal', TENANT_ID 'azure_tenant_id', "
         "CLIENT_ID 'azure_client_id', CLIENT_SECRET 'azure_client_secret', ACCOUNT_NAME 'acct', "
         "SCOPE 'abfss://c@acct.dfs.core.windows.net/x');"
@@ -101,10 +133,10 @@ def test_a_local_storage_needs_no_secret(tmp_path, monkeypatch):
     monkeypatch.setenv("DT_KEY", "k")
     monkeypatch.setenv("DT_SECRET", "s")
     storage = StorageDef("local", str(tmp_path)).make()
-    credential = CredentialDef("c", sources=[env(KEYS)], scope="local").make()
+    credential = CredentialDef("c", sources=[env(KEYS)], scopes=["local"]).make()
     credential.start()
-    assert render("duckdb", "secret", storage, credential) == render("spark", "secret", storage, credential)
-    assert render("duckdb", "secret", storage, credential) == Preamble()
+    assert render("duckdb", "secret", [storage], credential) == render("spark", "secret", [storage], credential)
+    assert render("duckdb", "secret", [storage], credential) == Preamble()
 
 
 # -----------------------------------------------------------------------------
@@ -115,14 +147,20 @@ def test_a_local_storage_needs_no_secret(tmp_path, monkeypatch):
 def test_a_credential_pairs_with_the_storage_it_is_scoped_to(minio):
     storage, credential = minio
     other = StorageDef("other", "s3://elsewhere").make()
-    assert pairs([credential, other, storage]) == [(storage, credential)]
+    assert pairs([credential, other, storage]) == [(credential, [storage])]
+
+
+def test_a_credential_pairs_with_every_storage_it_is_scoped_to(two_storages):
+    storages, credential = two_storages
+    assert pairs([*storages, credential]) == [(credential, storages)]
 
 
 def test_the_preamble_is_requires_then_settings_then_secrets_then_init(minio):
+    storage, credential = minio
     session = SimpleNamespace(requires=["httpfs"], settings={"threads": 1}, init=["SELECT 42;"])
     assert preamble("duckdb", session, minio).sql == [
         "LOAD httpfs;",
         "SET threads = '1';",
-        render("duckdb", "secret", *minio).sql[0],
+        render("duckdb", "secret", [storage], credential).sql[0],
         "SELECT 42;",
     ]
