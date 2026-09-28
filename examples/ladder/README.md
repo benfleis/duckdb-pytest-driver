@@ -27,3 +27,14 @@ leaves it out and `select --explain` names that rule; `--suite all` runs it.
 Tests with the same bindings share a Session. The two `.test` files run in one `unittest` process,
 although `rule_matched.test` has an inline `require json`: that is part of its body. A binding on
 `@test` gives another Session. The batches in `02-plan.yaml`, in the run directory, show both.
+
+## 03_credentials
+
+The storage is now an S3 bucket that nothing reads. A credential scoped to it takes a fake key from
+`LADDER_FAKE_KEY_ID` and `LADDER_FAKE_SECRET`; set both before a run. The axis `auth` makes two tests
+of each body: `key` binds the credential, and `none` unsets the names it delivers, which hides it.
+Each body asks DuckDB for its secrets: one, scoped to the bucket, under `auth=key`, and none under
+`auth=none`. A Python body's Session creates the secret with the values. For a `.test` body the
+init file holds only a template, `KEY_ID '{AWS_ACCESS_KEY_ID}'`, and the binary fills it from the
+variables passed through to it; `scan --env` shows it as the `secret:` line. The init file and the
+run's own records hold the names of the secrets, never their values.
