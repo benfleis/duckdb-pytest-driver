@@ -16,10 +16,12 @@ from ducktest5.resources import (
     SHARED_RO,
     Output,
     Resource,
+    StorageDef,
     CredentialDef,
     check_contract,
     env,
     pick_credentials,
+    scheme_of,
 )
 
 # A small kind, as source text, so that another process can declare the very same one.
@@ -286,3 +288,94 @@ def test_a_named_credential_wins_over_scope_so_a_wrong_credential_test_can_be_de
 def test_credential_contract(monkeypatch):
     monkeypatch.setenv("DT_KEY", "k")
     check_contract(lambda tag: CredentialDef("key", sources=[env(["DT_KEY"])]).make(tag=tag))
+
+
+# -----------------------------------------------------------------------------
+# Storages
+#
+
+
+@pytest.mark.parametrize(
+    "root, scheme",
+    [
+        ("/data", "file"),
+        ("file:///data", "file"),
+        ("s3://bucket", "s3"),
+        ("az://container", "az"),
+        ("abfss://c@acct.dfs.core.windows.net", "abfss"),
+        ("https://host/x", "https"),
+    ],
+)
+def test_the_scheme_is_the_roots(root, scheme):
+    assert scheme_of(root) == scheme
+    assert StorageDef("s", root).make().scheme == scheme
+
+
+def test_an_unknown_scheme_is_a_usage_error():
+    with pytest.raises(UsageError, match="scheme 'gs' is not one of"):
+        StorageDef("s", "gs://bucket").make()
+
+
+def test_a_local_storage_delivers_the_four_roots(tmp_path):
+    env, secrets = StorageDef("local", f"file://{tmp_path}").make().delivery()
+    assert {k: v.get() for k, v in env.items()} == {
+        "TEMP_DIR": f"{tmp_path}/temp",
+        "DATA_DIR": str(tmp_path),
+        "LOCAL_TEMP_DIR": f"{tmp_path}/temp",
+        "LOCAL_DATA_DIR": str(tmp_path),
+    }
+    assert secrets == {} and env["TEMP_DIR"].source == "storage local"
+
+
+def test_an_s3_storage_takes_its_bucket_and_endpoint_from_an_input():
+    minio = ThingDef("minio").make()
+    minio.env = {"bucket": Output("ducktest", "minio"), "endpoint": Output("http://10.0.0.1:9000", "minio")}
+    store = StorageDef("s3", "s3://{minio.bucket}", endpoint="{minio.endpoint}", inputs=["minio"])
+    env, _ = store.make({"minio": minio}).delivery()
+    assert {k: v.get() for k, v in env.items()} == {
+        "TEMP_DIR": "s3://ducktest/temp",
+        "DATA_DIR": "s3://ducktest",
+        "S3_ENDPOINT": "10.0.0.1:9000",
+        "S3_USE_SSL": "false",
+    }
+
+
+def test_an_azure_storage_delivers_its_account():
+    env, _ = StorageDef("dfs", "abfss://c@acct.dfs.core.windows.net").make().delivery()
+    assert env["AZ_ACCOUNT"].get() == "acct"
+    assert StorageDef("blob", "az://c", account="other").make().delivery()[0]["AZ_ACCOUNT"].get() == "other"
+
+
+def test_a_reference_to_what_no_input_gives_is_a_usage_error():
+    with pytest.raises(UsageError, match=r"\{minio.bucket\} is not an output of an input"):
+        StorageDef("s3", "s3://{minio.bucket}").make()
+
+
+def test_a_writer_with_a_token_gets_a_prefix_of_its_own(tmp_path):
+    store = StorageDef("local", str(tmp_path)).make(tag="run1")
+    child = store.acquire(RW, "t1")
+    assert child.root == f"{tmp_path}/temp/run1/t1" and child.owned and not store.owned
+    assert child.identity != store.identity != store.acquire(RW, "t2").identity
+    env = {k: v.get() for k, v in child.delivery()[0].items()}
+    assert env["TEMP_DIR"] == f"{tmp_path}/temp/run1/t1" and env["DATA_DIR"] == str(tmp_path)
+
+
+def test_a_writer_without_a_token_has_the_whole_root_under_a_lock():
+    store = StorageDef("bucket", "s3://bucket").make(tag="run1")
+    assert store.acquire(RW) is store
+    assert store._writer
+
+
+def test_deleting_a_child_removes_what_is_under_it_and_never_the_root(tmp_path):
+    store = StorageDef("local", str(tmp_path)).make(tag="run1")
+    store.create()
+    child = store.acquire(RW, "t1")
+    child.create()
+    (tmp_path / "temp" / "run1" / "t1" / "made.parquet").write_text("x")
+    child.delete()
+    store.delete()
+    assert not (tmp_path / "temp" / "run1" / "t1").exists() and tmp_path.exists()
+
+
+def test_storage_contract(tmp_path):
+    check_contract(lambda tag: StorageDef("local", str(tmp_path)).make(tag=tag))
