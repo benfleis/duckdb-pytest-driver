@@ -86,10 +86,9 @@ def test_an_input_may_be_a_def_object():
     assert ThingDef("a", inputs=[{up: RO}]).edges() == [("up", RO, up)]
 
 
-def test_the_acquire_mode_and_a_key_split_identity():
+def test_the_acquire_mode_splits_identity():
     d = ThingDef("a")
     assert d.identity(mode=RW) != d.identity(mode=RO)
-    assert d.identity(key="t1") != d.identity(key="t2") != d.identity()
 
 
 def test_make_gives_the_instance_the_identity_of_its_fulfilled_inputs():
@@ -137,7 +136,7 @@ def test_readers_of_an_exclusive_kind_share_it():
 
 
 def test_an_exclusive_writer_gets_a_minted_child_per_key_instead_of_a_lock():
-    kind = _kind(EXCLUSIVE, mint=lambda parent, key: ThingDef("c").make(run_token=parent.run_token, key=key))
+    kind = _kind(EXCLUSIVE, mint=lambda parent, key: ThingDef("c").make(run_token=parent.run_token))
     thing = kind("a").make(run_token="run1")
     one, two = thing.acquire(RW, "t1"), thing.acquire(RW, "t2")
     assert one is not thing and one is not two
@@ -371,10 +370,12 @@ def test_a_storage_is_shared_rw_and_mints_children_for_an_exclusive_writer():
 
 def test_a_writer_with_a_key_gets_a_prefix_of_its_own(tmp_path):
     store = StorageDef("local", str(tmp_path)).make(run_token="run1")
-    child = store.acquire(RW, "t1")
-    assert child.root == f"{tmp_path}/temp/run1/t1" and child.owned and not store.owned
-    assert child.identity != store.identity != store.acquire(RW, "t2").identity
-    env = {k: v.get() for k, v in child.delivery()[0].items()}
+    parent_identity = store.identity
+    one, two = store.acquire(RW, "t1"), store.acquire(RW, "t2")
+    assert one.root == f"{tmp_path}/temp/run1/t1" and one.owned and not store.owned
+    assert one.identity != two.identity, "two keys gave the same child identity"
+    assert store.identity == parent_identity, "minting a child changed the parent's identity"
+    env = {k: v.get() for k, v in one.delivery()[0].items()}
     assert env["TEMP_DIR"] == f"{tmp_path}/temp/run1/t1" and env["DATA_DIR"] == str(tmp_path)
 
 

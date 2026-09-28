@@ -83,15 +83,16 @@ class ResourceDef:
     def content(self) -> dict:
         return {f.name: getattr(self, f.name) for f in dataclasses.fields(self) if f.name not in self.not_content}
 
-    def identity(self, inputs: Mapping[str, str] | None = None, mode: str = RW, key: str | None = None) -> str:
+    def identity(self, inputs: Mapping[str, str] | None = None, mode: str = RW) -> str:
         """sha(kind, content, identities of the fulfilled inputs, mode). `inputs` maps each input id
-        to the identity of the instance that fulfilled it; `key` tells apart rw instances of one Def."""
+        to the identity of the instance that fulfilled it. A minted child's identity is not this: it
+        is sha(parent identity, key), given to the child where it is minted (see `mint_child`)."""
         inputs = dict(inputs or {})
         missing = [ref for ref, _, _ in self.edges() if ref not in inputs]
         if missing:
             raise ValueError(f"{self.id}: inputs {missing} are not fulfilled")
         edges = sorted([inputs[ref], m] for ref, m, _ in self.edges())
-        return digest({"kind": self.kind, "content": self.content(), "inputs": edges, "mode": mode, "key": key})
+        return digest({"kind": self.kind, "content": self.content(), "inputs": edges, "mode": mode})
 
     def make(
         self,
@@ -99,11 +100,10 @@ class ResourceDef:
         *,
         run_token: str | None = None,
         mode: str = RW,
-        key: str | None = None,
     ) -> Resource:
         """The instance for these fulfilled inputs. Nothing is allocated yet: that is `create()`."""
         inputs = dict(inputs or {})
-        identity = self.identity({k: r.identity for k, r in inputs.items()}, mode, key)
+        identity = self.identity({k: r.identity for k, r in inputs.items()}, mode)
         return self.instance(self, identity, run_token, inputs)
 
 
@@ -153,7 +153,8 @@ class Resource:
     def renew(self): ...
 
     def mint_child(self, key: str) -> Resource | None:
-        """What an exclusive acquirer gets instead of a lock, or None: the kind locks."""
+        """What an exclusive acquirer gets instead of a lock, or None: the kind locks. Give the
+        child identity `digest([self.identity, key])`: `key` is not part of a Def's own identity."""
         return None
 
     # -- the handler contract -------------------------------------------------
