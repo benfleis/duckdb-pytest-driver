@@ -14,3 +14,4 @@ from .base import (  # noqa: F401
     ResourceDef,
 )
 from .contract import check_contract  # noqa: F401
+from .credential import CredentialDef, env, pick_credentials  # noqa: F401

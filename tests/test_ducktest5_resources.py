@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from ducktest5.binary import UsageError
 from ducktest5.resources import (
     EXCLUSIVE,
     NEVER,
@@ -15,7 +16,10 @@ from ducktest5.resources import (
     SHARED_RO,
     Output,
     Resource,
+    CredentialDef,
     check_contract,
+    env,
+    pick_credentials,
 )
 
 # A small kind, as source text, so that another process can declare the very same one.
@@ -184,3 +188,101 @@ def test_the_contract_helper_fails_a_kind_whose_delete_of_a_missing_instance_rai
 
 def test_the_contract_helper_passes_the_base_kind():
     check_contract(lambda tag: ThingDef("a").make(tag=tag))
+
+
+# -----------------------------------------------------------------------------
+# Credentials
+#
+
+
+def test_a_credential_takes_the_first_source_that_resolves(monkeypatch):
+    monkeypatch.delenv("DT_MISSING", raising=False)
+    monkeypatch.setenv("DT_KEY", "k1")
+    cred = CredentialDef("key", sources=[env(["DT_MISSING"]), env({"AWS_ACCESS_KEY_ID": "DT_KEY"})]).make()
+    cred.create()
+    assert cred.env == {}
+    assert cred.secrets["AWS_ACCESS_KEY_ID"].source == "env DT_KEY"
+    monkeypatch.setenv("DT_KEY", "k2")  # read when delivered, not when resolved
+    assert cred.delivery()[1]["AWS_ACCESS_KEY_ID"].get() == "k2"
+
+
+def test_a_credential_none_of_whose_sources_resolve_says_which_it_tried(monkeypatch):
+    monkeypatch.delenv("DT_MISSING", raising=False)
+    with pytest.raises(UsageError, match=r"'key': none of its sources resolved: \{'env': \{'DT_MISSING'"):
+        CredentialDef("key", sources=[env(["DT_MISSING"])]).make().create()
+
+
+def test_1password_is_not_available_here(monkeypatch):
+    monkeypatch.delenv("DT_MISSING", raising=False)
+    cred = CredentialDef("key", sources=[env(["DT_MISSING"]), "1password:ducktest-aws"]).make()
+    with pytest.raises(UsageError, match=r"'key': source 1password:ducktest-aws is not available here"):
+        cred.create()
+
+
+def test_a_credential_counts_by_its_source_never_its_value(monkeypatch):
+    d = CredentialDef("key", sources=[env(["DT_KEY"])])
+    monkeypatch.setenv("DT_KEY", "one")
+    before = d.identity()
+    monkeypatch.setenv("DT_KEY", "two")
+    assert d.identity() == before
+    assert CredentialDef("key", sources=[env(["DT_OTHER"])]).identity() != before
+
+
+def test_a_generator_makes_the_secret_from_the_inputs_at_acquire(monkeypatch):
+    monkeypatch.setenv("DT_KEY", "root")
+    calls = []
+
+    def token(inputs):
+        calls.append(1)
+        return {"UC_TOKEN": "t-" + inputs["root"].secrets["KEY"].get()}
+
+    root = CredentialDef("root", sources=[env({"KEY": "DT_KEY"})]).make()
+    root.create()
+    cred = CredentialDef("token", generator=token, inputs=["root"]).make({"root": root})
+    cred.create()
+    assert calls == [] and cred.secrets == {}
+    cred.acquire()
+    assert cred.secrets["UC_TOKEN"].get() == "t-root"
+    assert cred.secrets["UC_TOKEN"].source.startswith("generator ")
+
+
+def test_sources_and_a_generator_is_a_usage_error():
+    with pytest.raises(UsageError, match="sources or a generator, not both"):
+        CredentialDef("key", sources=[env(["X"])], generator=lambda inputs: {})
+
+
+S3_KEY = CredentialDef("s3-key", scope="s3store")
+S3_OTHER = CredentialDef("s3-other", scope="s3store")
+S3_READ = CredentialDef("s3-read", scope=("s3store", RO))
+AZ_KEY = CredentialDef("az-key", scope="azstore")
+
+
+def test_a_storage_gets_the_credential_scoped_to_it():
+    assert pick_credentials({"s3store": RW, "azstore": RW}, [S3_KEY, AZ_KEY]) == [S3_KEY, AZ_KEY]
+
+
+def test_a_read_only_credential_serves_a_read_only_edge_only():
+    assert pick_credentials({"s3store": RW}, [S3_READ]) == []
+    assert pick_credentials({"s3store": RO}, [S3_READ]) == [S3_READ]
+
+
+def test_two_credentials_for_one_storage_none_named_is_a_usage_error_listing_them():
+    with pytest.raises(UsageError, match=r"storage 's3store' has credentials \['s3-key', 's3-other'\]"):
+        pick_credentials({"s3store": RW}, [S3_KEY, S3_OTHER])
+
+
+def test_the_default_credential_breaks_the_tie():
+    default = CredentialDef("s3-default", scope="s3store", default=True)
+    assert pick_credentials({"s3store": RW}, [S3_KEY, S3_OTHER, default]) == [default]
+
+
+def test_a_named_credential_wins_over_scope_so_a_wrong_credential_test_can_be_declared():
+    wrong = CredentialDef("wrong", scope="s3store")
+    none = CredentialDef("none")
+    assert pick_credentials({"s3store": RW}, [S3_KEY, S3_OTHER], named=[wrong]) == [wrong]
+    assert pick_credentials({"s3store": RW}, [S3_KEY], named=[none]) == [none, S3_KEY]
+
+
+def test_credential_contract(monkeypatch):
+    monkeypatch.setenv("DT_KEY", "k")
+    check_contract(lambda tag: CredentialDef("key", sources=[env(["DT_KEY"])]).make(tag=tag))
