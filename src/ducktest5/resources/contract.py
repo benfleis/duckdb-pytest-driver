@@ -8,39 +8,40 @@ from typing import Callable
 from .base import RW, Resource, canonical
 
 
-def check_contract(make: Callable[[str], Resource], *, tag: str = "contract-run", key: str = "contract-test"):
-    """Asserts the handler contract on the instances `make(tag)` returns: identity is the same for
-    the same Def and inputs; create is safe to repeat; delete of what is not there is not an error;
-    an owned instance is found by `list(tag)` after create and not after delete; a secret value is
-    not in the Def's content. A kind that mints a child for a writer has the child checked too."""
-    first, second = make(tag), make(tag)
+def check_contract(make: Callable[[str], Resource], *, run_token: str = "contract-run", key: str = "contract-test"):
+    """Asserts the handler contract on the instances `make(run_token)` returns: identity is the same
+    for the same Def and inputs; create is safe to repeat; delete of what is not there is not an
+    error; an owned instance is found by `list(run_token)` after create and not after delete; a
+    secret value is not in the Def's content. A kind that mints a child for a writer has the child
+    checked too."""
+    first, second = make(run_token), make(run_token)
     assert first.identity == second.identity, "one Def with the same inputs gave two identities"
-    _check(first, first, tag)
+    _check(first, first, run_token)
     first.create()
     try:
         child = first.acquire(RW, key)
         if child is not first:
             assert child.owned, "a minted child is made by the run, so it is owned"
             assert first.acquire(RW, key) is child, "one key was given two children"
-            _check(child, first, tag)
+            _check(child, first, run_token)
         first.release(child, RW)
     finally:
         first.delete()
 
 
-def _check(instance: Resource, lister: Resource, tag: str):
+def _check(instance: Resource, lister: Resource, run_token: str):
     what = f"{instance.definition.kind} {instance.id}"
     instance.delete()  # nothing made yet, or made by an earlier failed attempt
     if instance.owned:
         assert instance.read() is None, f"{what}: read() found it before create()"
-        assert instance.handle not in lister.list(tag), f"{what}: list(tag) found it before create()"
+        assert instance.handle not in lister.list(run_token), f"{what}: list(run_token) found it before create()"
     instance.create()
     instance.create()
     assert instance.read() is not None, f"{what}: read() did not find it after create()"
     assert instance.ready(), f"{what}: not ready after create()"
     if instance.owned:
-        assert instance.tag == tag, f"{what}: an owned instance carries the run's tag"
-        assert instance.handle in lister.list(tag), f"{what}: list(tag) did not find it after create()"
+        assert instance.run_token == run_token, f"{what}: an owned instance carries the run's run_token"
+        assert instance.handle in lister.list(run_token), f"{what}: list(run_token) did not find it after create()"
     content = json.dumps(canonical(instance.definition.content()))
     for name, out in instance.secrets.items():
         value = out.get()
@@ -49,6 +50,6 @@ def _check(instance: Resource, lister: Resource, tag: str):
     instance.delete()
     if instance.owned:
         assert instance.read() is None, f"{what}: read() found it after delete()"
-        assert instance.handle not in lister.list(tag), f"{what}: list(tag) found it after delete()"
+        assert instance.handle not in lister.list(run_token), f"{what}: list(run_token) found it after delete()"
     else:
         assert instance.read() is not None, f"{what}: delete() removed what the run did not make"

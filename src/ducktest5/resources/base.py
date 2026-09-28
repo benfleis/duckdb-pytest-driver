@@ -97,14 +97,14 @@ class ResourceDef:
         self,
         inputs: Mapping[str, Resource] | None = None,
         *,
-        tag: str | None = None,
+        run_token: str | None = None,
         mode: str = RW,
         key: str | None = None,
     ) -> Resource:
         """The instance for these fulfilled inputs. Nothing is allocated yet: that is `create()`."""
         inputs = dict(inputs or {})
         identity = self.identity({k: r.identity for k, r in inputs.items()}, mode, key)
-        return self.instance(self, identity, tag, inputs)
+        return self.instance(self, identity, run_token, inputs)
 
 
 class Resource:
@@ -113,12 +113,14 @@ class Resource:
     Outputs are two maps, `env` and `secrets`, name -> `Output`, named as the kind names them;
     `delivery()` gives them the names a body reads. A secret is never written to a file."""
 
-    owned: ClassVar[bool] = False  # the run makes and removes it: it carries `tag` and `list(tag)` finds it
+    owned: ClassVar[bool] = False  # the run makes and removes it: it carries `run_token` and `list(run_token)` finds it
 
-    def __init__(self, definition, identity: str, tag: str | None, inputs: Mapping[str, Resource] | None = None):
+    def __init__(self, definition, identity: str, run_token: str | None, inputs: Mapping[str, Resource] | None = None):
         self.definition = definition
         self.identity = identity
-        self.tag = tag  # the run token, on everything the run makes, so a stopped run can be swept
+        self.run_token = (
+            run_token  # one value per ducktest invocation, on everything the run makes, so a stopped run can be swept
+        )
         self.inputs = dict(inputs or {})
         self.env: dict[str, Output] = {}
         self.secrets: dict[str, Output] = {}
@@ -132,7 +134,7 @@ class Resource:
 
     @property
     def handle(self) -> str:
-        """What `list(tag)` returns for this instance."""
+        """What `list(run_token)` returns for this instance."""
         return self.identity
 
     # -- lifecycle hooks: a kind overrides what it has --------------------------
@@ -169,8 +171,8 @@ class Resource:
         """A description of the instance as it exists, or None when it does not."""
         return {"id": self.id, "identity": self.identity}
 
-    def list(self, tag: str) -> list[str]:
-        """The handles of what carries `tag`, made from this instance."""
+    def list(self, run_token: str) -> list[str]:
+        """The handles of what carries `run_token`, made from this instance."""
         return []
 
     def retained(self, failed: bool) -> bool:

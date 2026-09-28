@@ -62,8 +62,8 @@ class Storage(Resource):
     """A storage with its root filled in. A child is owned: the run removes it, where the scheme
     has a way to remove things."""
 
-    def __init__(self, definition, identity, tag, inputs=None, *, parent=None, root=None):
-        super().__init__(definition, identity, tag, inputs)
+    def __init__(self, definition, identity, run_token, inputs=None, *, parent=None, root=None):
+        super().__init__(definition, identity, run_token, inputs)
         self.parent = parent
         self.root = (root or fill(definition.root, self.inputs)).rstrip("/")
         self.scheme = scheme_of(self.root)
@@ -96,10 +96,12 @@ class Storage(Resource):
         return self.root[len("file://") :] if self.root.startswith("file://") else self.root
 
     def mint_child(self, key):
-        if self.tag is None:
-            raise ValueError(f"storage {self.id}: a child needs the run's tag")
-        root = f"{self.root}/{self.definition.temp_prefix}/{self.tag}/{key}"
-        return Storage(self.definition, digest([self.identity, key]), self.tag, self.inputs, parent=self, root=root)
+        if self.run_token is None:
+            raise ValueError(f"storage {self.id}: a child needs the run's run_token")
+        root = f"{self.root}/{self.definition.temp_prefix}/{self.run_token}/{key}"
+        return Storage(
+            self.definition, digest([self.identity, key]), self.run_token, self.inputs, parent=self, root=root
+        )
 
     def alloc(self):
         if self.scheme == "file":
@@ -120,12 +122,12 @@ class Storage(Resource):
     def ready(self):
         return self.scheme != "file" or os.path.isdir(self.path)
 
-    def list(self, tag):
+    def list(self, run_token):
         if self.scheme != "file":
-            return []  # TODO: list the prefixes under `<root>/<temp prefix>/<tag>` of a remote store
-        under = f"{self.path}/{self.definition.temp_prefix}/{tag}"
+            return []  # TODO: list the prefixes under `<root>/<temp prefix>/<run_token>` of a remote store
+        under = f"{self.path}/{self.definition.temp_prefix}/{run_token}"
         names = sorted(os.listdir(under)) if os.path.isdir(under) else []
-        return [f"{self.root}/{self.definition.temp_prefix}/{tag}/{n}" for n in names]
+        return [f"{self.root}/{self.definition.temp_prefix}/{run_token}/{n}" for n in names]
 
     def delivery(self):
         facts = {name: out.value for name, out in self.env.items()}

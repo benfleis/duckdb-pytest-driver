@@ -93,10 +93,10 @@ def test_the_acquire_mode_and_a_key_split_identity():
 
 
 def test_make_gives_the_instance_the_identity_of_its_fulfilled_inputs():
-    up = ThingDef("up").make(tag="run1")
-    a = ThingDef("a", inputs=["up"]).make({"up": up}, tag="run1")
+    up = ThingDef("up").make(run_token="run1")
+    a = ThingDef("a", inputs=["up"]).make({"up": up}, run_token="run1")
     assert a.identity == ThingDef("a", inputs=["up"]).identity({"up": up.identity})
-    assert a.tag == "run1" and a.inputs == {"up": up}
+    assert a.run_token == "run1" and a.inputs == {"up": up}
 
 
 # -----------------------------------------------------------------------------
@@ -137,8 +137,8 @@ def test_readers_of_an_exclusive_kind_share_it():
 
 
 def test_an_exclusive_writer_gets_a_minted_child_per_key_instead_of_a_lock():
-    kind = _kind(EXCLUSIVE, mint=lambda parent, key: ThingDef("c").make(tag=parent.tag, key=key))
-    thing = kind("a").make(tag="run1")
+    kind = _kind(EXCLUSIVE, mint=lambda parent, key: ThingDef("c").make(run_token=parent.run_token, key=key))
+    thing = kind("a").make(run_token="run1")
     one, two = thing.acquire(RW, "t1"), thing.acquire(RW, "t2")
     assert one is not thing and one is not two
     assert thing.acquire(RW, "t1") is one
@@ -194,11 +194,11 @@ def test_the_contract_helper_fails_a_kind_whose_delete_of_a_missing_instance_rai
 
     kind = type("F", (ThingDef,), {"instance": Fragile})
     with pytest.raises(FileNotFoundError):
-        check_contract(lambda tag: kind("a").make(tag=tag))
+        check_contract(lambda run_token: kind("a").make(run_token=run_token))
 
 
 def test_the_contract_helper_passes_the_base_kind():
-    check_contract(lambda tag: ThingDef("a").make(tag=tag))
+    check_contract(lambda run_token: ThingDef("a").make(run_token=run_token))
 
 
 # -----------------------------------------------------------------------------
@@ -296,7 +296,7 @@ def test_a_named_credential_wins_over_scope_so_a_wrong_credential_test_can_be_de
 
 def test_credential_contract(monkeypatch):
     monkeypatch.setenv("DT_KEY", "k")
-    check_contract(lambda tag: CredentialDef("key", sources=[env(["DT_KEY"])]).make(tag=tag))
+    check_contract(lambda run_token: CredentialDef("key", sources=[env(["DT_KEY"])]).make(run_token=run_token))
 
 
 # -----------------------------------------------------------------------------
@@ -361,7 +361,7 @@ def test_a_reference_to_what_no_input_gives_is_a_usage_error():
 
 
 def test_a_storage_is_shared_rw_and_mints_children_for_an_exclusive_writer():
-    store = StorageDef("bucket", "s3://bucket").make(tag="run1")
+    store = StorageDef("bucket", "s3://bucket").make(run_token="run1")
     assert store.definition.capacity == SHARED_RW and store.definition.mints_children
     assert store.acquire(RW) is store and store._writer
     store.release(store, RW)
@@ -370,7 +370,7 @@ def test_a_storage_is_shared_rw_and_mints_children_for_an_exclusive_writer():
 
 
 def test_a_writer_with_a_key_gets_a_prefix_of_its_own(tmp_path):
-    store = StorageDef("local", str(tmp_path)).make(tag="run1")
+    store = StorageDef("local", str(tmp_path)).make(run_token="run1")
     child = store.acquire(RW, "t1")
     assert child.root == f"{tmp_path}/temp/run1/t1" and child.owned and not store.owned
     assert child.identity != store.identity != store.acquire(RW, "t2").identity
@@ -379,13 +379,13 @@ def test_a_writer_with_a_key_gets_a_prefix_of_its_own(tmp_path):
 
 
 def test_a_writer_without_a_key_has_the_whole_root_under_a_lock():
-    store = StorageDef("bucket", "s3://bucket").make(tag="run1")
+    store = StorageDef("bucket", "s3://bucket").make(run_token="run1")
     assert store.acquire(RW) is store
     assert store._writer
 
 
 def test_deleting_a_child_removes_what_is_under_it_and_never_the_root(tmp_path):
-    store = StorageDef("local", str(tmp_path)).make(tag="run1")
+    store = StorageDef("local", str(tmp_path)).make(run_token="run1")
     store.create()
     child = store.acquire(RW, "t1")
     child.create()
@@ -396,7 +396,7 @@ def test_deleting_a_child_removes_what_is_under_it_and_never_the_root(tmp_path):
 
 
 def test_storage_contract(tmp_path):
-    check_contract(lambda tag: StorageDef("local", str(tmp_path)).make(tag=tag))
+    check_contract(lambda run_token: StorageDef("local", str(tmp_path)).make(run_token=run_token))
 
 
 # -----------------------------------------------------------------------------
