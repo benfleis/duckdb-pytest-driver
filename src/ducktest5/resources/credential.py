@@ -1,13 +1,14 @@
-"""Credentials: a secret found in a source, or made by a generator, scoped to one or more storages."""
+"""Credentials: a secret from the first of an ordered list of sources, scoped to one or more storages."""
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Mapping
+from typing import Iterable, Mapping
 
 from ..binary import UsageError
-from .base import RO, RW, SHARED_RO, Output, Resource, ResourceDef
+from .base import RO, RW, SHARED_RO, Output, Resource, ResourceDef, canonical
 
 
 @dataclass(frozen=True)
@@ -47,12 +48,23 @@ class OnePasswordSource:
         )
 
 
+_SIMPLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def _source(entry):
-    if isinstance(entry, str) and entry.startswith("1password:"):
-        return OnePasswordSource(entry.split(":", 1)[1])
+    if callable(entry):
+        return entry
     if isinstance(entry, (EnvSource, OnePasswordSource)):
         return entry
-    raise UsageError(f"{entry!r} is not a credential source; use env(...) or '1password:NAME'")
+    if isinstance(entry, str):
+        if entry.startswith("1password:"):
+            return OnePasswordSource(entry.split(":", 1)[1])
+        if entry.startswith("env:") and _SIMPLE_NAME.fullmatch(entry[len("env:") :]):
+            return env([entry[len("env:") :]])
+        raise UsageError(
+            f"{entry!r}: a string source names where a secret lives, e.g. '1password:NAME'; never the secret itself"
+        )
+    raise UsageError(f"{entry!r} is not a credential source; use env(...), a string reference, or a callable")
 
 
 def _scope(credential_id, entry):
@@ -72,30 +84,31 @@ def _scope(credential_id, entry):
 
 @dataclass(eq=False)
 class CredentialDef(ResourceDef):
-    """A secret a test needs: the first of `sources` that resolves, or what `generator` makes from
-    the credential's inputs when it is acquired. It outputs `secrets` only, never `env`, under the
-    names its source gives (`AWS_ACCESS_KEY_ID`). `scopes` lists the storages it is for -- each a
-    storage id, or `(storage id, "ro" | "rw")` -- and it is that storage's credential when a test
+    """A secret a test needs. `sources` is one ordered list, tried at acquire: an `env(...)` source,
+    a string reference with a known scheme (`"1password:NAME"`; `"env:NAME"` is shorthand for
+    `env([NAME])`), or a callable. A callable is called with the credential's resolved inputs (as
+    `env(...)` sources are) and returns the secret mapping, or None to try the next source; it is
+    late-bound, called at acquire and never at plan. It outputs `secrets` only, never `env`, under
+    the names its source gives (`AWS_ACCESS_KEY_ID`). `scopes` lists the storages it is for -- each
+    a storage id, or `(storage id, "ro" | "rw")` -- and it is that storage's credential when a test
     names none; a credential may be scoped to several storages, and an empty list binds only by
-    name."""
+    name. When a source made something (a callable that logs in), `dealloc` is its revoke or
+    logout, and `retain` decides whether it runs; a credential is not kept after a run by default."""
 
     kind = "credential"
     sharing = SHARED_RO
 
     id: str
-    sources: list = field(default_factory=list)  # env({...}) or "1password:NAME", tried in order
+    sources: list = field(default_factory=list)  # env(...), "1password:NAME"/"env:NAME", or a callable, in order
     scopes: list = field(default_factory=list)  # storage id, or (storage id, "ro" | "rw"), each
-    generator: Callable | None = None  # generator(inputs: {id: Resource}) -> {name: value}, at acquire
     default: bool = False  # the one to pick when several share a scope
     inputs: list = field(default_factory=list)
-    retain: str = "on_failure"
+    retain: str = "never"
 
     not_content = ResourceDef.not_content + ("default",)
 
     def __post_init__(self):
         self.sources = [_source(s) for s in self.sources]
-        if self.sources and self.generator:
-            raise UsageError(f"credential {self.id!r}: sources or a generator, not both")
         self.scopes = [_scope(self.id, s) for s in self.scopes]
 
     @property
@@ -113,26 +126,36 @@ class CredentialDef(ResourceDef):
 
 
 class Credential(Resource):
-    """A resolved credential. Its secrets are getters, read when delivered; a generated one is
-    made again at every acquire."""
+    """A resolved credential. Its secrets are getters, read when delivered; one a callable source
+    makes is made again at every acquire."""
 
     def start(self):
+        # A callable is late-bound: resolving it (and anything after it, in order) waits for acquire.
+        if not any(callable(s) for s in self.definition.sources):
+            self._try_sources()
+
+    def acquire(self, mode=RO, key=None):
+        held = super().acquire(mode, key)
+        if any(callable(s) for s in self.definition.sources):
+            self._try_sources()
+        return held
+
+    def _try_sources(self):
+        """The first of `sources` that resolves, tried in order."""
         for source in self.definition.sources:
+            if callable(source):
+                found = source(self.inputs)
+                if found is None:
+                    continue
+                self.secrets = {name: Output(v, f"callable {source.__qualname__}") for name, v in found.items()}
+                return
             found = source.resolve(self.id)
             if found is not None:
                 self.secrets = found
                 return
         if self.definition.sources:
-            shown = ", ".join(str(s.content()) for s in self.definition.sources)
+            shown = ", ".join(str(canonical(s)) for s in self.definition.sources)
             raise UsageError(f"credential {self.id!r}: none of its sources resolved: {shown}")
-
-    def acquire(self, mode=RO, key=None):
-        held = super().acquire(mode, key)
-        generator = self.definition.generator
-        if generator is not None:
-            source = f"generator {generator.__qualname__}"
-            self.secrets = {name: Output(v, source) for name, v in generator(self.inputs).items()}
-        return held
 
     def read(self):
         return {"id": self.id, "names": sorted(self.secrets)}

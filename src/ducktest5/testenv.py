@@ -321,13 +321,13 @@ def resolve(test, provisioned=None):
 def _deliver(env, definition, mode, scanning, value):
     """One input's outputs into the test environment, and the instance that gave them, or None when
     they are not known yet. Nothing is allocated here and nothing is held: that is for the walk of
-    the resource graph. At scan a credential that does not resolve, or one a generator makes, is
-    listed in `pending`: its value is not needed before the run."""
+    the resource graph. At scan a credential that does not resolve, or one a callable source makes,
+    is listed in `pending`: its value is not needed before the run."""
     where = f"{definition.kind} {definition.id}"
     instance = definition.make({ref: sub.make() for ref, _, sub in definition.edges() if sub}, mode=mode)
     try:
-        if scanning and getattr(definition, "generator", None):
-            raise UsageError("made by its generator when the test runs")
+        if scanning and any(callable(s) for s in getattr(definition, "sources", ())):
+            raise UsageError("made by a callable source when the test runs")
         instance.start()
         instance.release(instance.acquire(RO), RO)
         values, secrets = instance.delivery()

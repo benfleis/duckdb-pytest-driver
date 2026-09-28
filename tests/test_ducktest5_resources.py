@@ -239,7 +239,13 @@ def test_a_credential_counts_by_its_source_never_its_value(monkeypatch):
     assert CredentialDef("key", sources=[env(["DT_OTHER"])]).identity() != before
 
 
-def test_a_generator_makes_the_secret_from_the_inputs_at_acquire(monkeypatch):
+def test_two_env_sourced_credentials_differ_by_the_names_they_read():
+    a = CredentialDef("key", sources=[env(["DT_A"])]).identity()
+    b = CredentialDef("key", sources=[env(["DT_B"])]).identity()
+    assert a != b
+
+
+def test_a_callable_source_makes_the_secret_from_the_inputs_at_acquire(monkeypatch):
     monkeypatch.setenv("DT_KEY", "root")
     calls = []
 
@@ -249,17 +255,43 @@ def test_a_generator_makes_the_secret_from_the_inputs_at_acquire(monkeypatch):
 
     root = CredentialDef("root", sources=[env({"KEY": "DT_KEY"})]).make()
     root.create()
-    cred = CredentialDef("token", generator=token, inputs=["root"]).make({"root": root})
+    cred = CredentialDef("token", sources=[token], inputs=["root"]).make({"root": root})
     cred.create()
     assert calls == [] and cred.secrets == {}
     cred.acquire()
     assert cred.secrets["UC_TOKEN"].get() == "t-root"
-    assert cred.secrets["UC_TOKEN"].source.startswith("generator ")
+    assert cred.secrets["UC_TOKEN"].source.startswith("callable ")
 
 
-def test_sources_and_a_generator_is_a_usage_error():
-    with pytest.raises(UsageError, match="sources or a generator, not both"):
-        CredentialDef("key", sources=[env(["X"])], generator=lambda inputs: {})
+def test_a_callable_source_returning_none_falls_through_to_the_next_source(monkeypatch):
+    monkeypatch.setenv("DT_KEY", "k")
+    calls = []
+
+    def skip(inputs):
+        calls.append(1)
+        return None
+
+    cred = CredentialDef("key", sources=[skip, env(["DT_KEY"])]).make()
+    cred.create()
+    cred.acquire()
+    assert calls == [1]
+    assert cred.secrets["DT_KEY"].source == "env DT_KEY"
+
+
+def test_env_colon_name_is_shorthand_for_env_of_one_name(monkeypatch):
+    monkeypatch.setenv("DT_KEY", "k")
+    cred = CredentialDef("key", sources=["env:DT_KEY"]).make()
+    cred.create()
+    assert cred.secrets["DT_KEY"].source == "env DT_KEY"
+
+
+def test_a_plain_string_source_that_is_not_a_reference_is_a_usage_error():
+    with pytest.raises(UsageError, match="names where a secret lives"):
+        CredentialDef("key", sources=["oops"])
+
+
+def test_a_credentials_default_retain_is_never():
+    assert CredentialDef("key").retain == NEVER
 
 
 S3_KEY = CredentialDef("s3-key", scopes=["s3store"])
