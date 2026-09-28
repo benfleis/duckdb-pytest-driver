@@ -42,6 +42,7 @@ class TestDef:
     sessions: list = field(default_factory=list)  # ids of the project's SESSIONS it drives
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
+    bind: dict = field(default_factory=dict)  # role -> the id of a storage or credential
     timeout: float | None = None
     retries: int = 0  # how often a FAILED or ERROR may run again
     why: list = field(default_factory=list)
@@ -62,7 +63,7 @@ class Test:
     definition: TestDef
     params_key: str | None  # the row of `definition.params`, or None
     axis_values: dict  # axis name -> Variant
-    inputs: tuple = ()  # (ResourceDef, mode): the axis values' inputs, with a credential for each storage
+    inputs: tuple = ()  # (ResourceDef, mode): what it binds and its axis values' inputs, with a credential for each storage
 
     @property
     def id(self):

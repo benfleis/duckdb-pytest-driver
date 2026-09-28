@@ -955,3 +955,42 @@ def test_retries_is_a_rule_field_and_a_whole_number(tmp_path):
     assert [(c.definition.name, c.definition.retries) for c in tests] == [("net", 2), ("plain", 0)]
     with pytest.raises(UsageError, match="retries=-1; it is a whole number, 0 or more"):
         tree(tmp_path, {"test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(retries=-1)]"})
+
+
+BIND_CONF = """
+    from ducktest5 import default
+    from ducktest5.resources import StorageDef
+
+    STORAGES = [StorageDef("a", "file:///tmp/a"), StorageDef("b", "file:///tmp/b")]
+    RULES = [default(bind={"storage": "a"})]
+"""
+
+
+def test_a_tests_own_binding_of_a_role_replaces_the_rules(tmp_path):
+    tests, _ = tree(
+        tmp_path,
+        {
+            "test/ducktest_conf.py": BIND_CONF,
+            "test/ruled.test": "",
+            "test/own.py": "from ducktest5 import test\n@test(bind={'storage': 'b'})\ndef own(ctx): pass",
+        },
+    )
+    by_name = {c.definition.name: c for c in tests}
+    assert [d.id for d, _ in by_name["ruled"].inputs] == ["a"]
+    assert [d.id for d, _ in by_name["own"].inputs] == ["b"]
+    assert by_name["own"].definition.why == [
+        "bind={'storage': 'a'}  <- ducktest_conf.py: default",
+        "bind={'storage': 'b'}  <- @test",
+    ]
+    assert resolve(by_name["own"]).roots["temp_dir_root"].value == "/tmp/b/temp"
+
+
+def test_a_binding_names_a_declared_storage_or_credential(tmp_path):
+    with pytest.raises(UsageError, match="binds 'storage' to 'c', which is not in STORAGES or CREDENTIALS"):
+        tree(
+            tmp_path,
+            {
+                "test/ducktest_conf.py": BIND_CONF,
+                "test/own.py": "from ducktest5 import test\n@test(bind={'storage': 'c'})\ndef own(ctx): pass",
+            },
+        )

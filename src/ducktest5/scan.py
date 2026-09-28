@@ -21,14 +21,26 @@ from .resources import RO, RW, CredentialDef, StorageDef, pick_credentials
 _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 
 
-def _inputs(combo, project):
-    """What a test's axis values name as inputs, a writer's mode winning, and a credential for each
-    storage by scope unless one is named."""
+def _bound(definition, project):
+    """The Defs a definition binds, by role."""
+    declared = {**project.storages, **project.credentials}
+    out = []
+    for role, ref in definition.bind.items():
+        if ref not in declared:
+            raise UsageError(
+                f"{definition.path}::{definition.name} binds {role!r} to {ref!r}, which is not in STORAGES or CREDENTIALS"
+            )
+        out.append({declared[ref]: RW})
+    return out
+
+
+def _inputs(definition, combo, project):
+    """What a test binds and its axis values name as inputs, a writer's mode winning, and a
+    credential for each storage by scope unless one is named."""
     modes = {}
-    for _, variant in combo:
-        for entry in variant.inputs:
-            for d, mode in entry.items():
-                modes[d] = RW if RW in (mode, modes.get(d)) else mode
+    for entry in [*_bound(definition, project), *(e for _, variant in combo for e in variant.inputs)]:
+        for d, mode in entry.items():
+            modes[d] = RW if RW in (mode, modes.get(d)) else mode
     storages = {d.id: mode for d, mode in modes.items() if isinstance(d, StorageDef)}
     named = [d for d in modes if isinstance(d, CredentialDef)]
     credentials = pick_credentials(storages, project.credentials.values(), named)
@@ -125,6 +137,7 @@ def scan(start, *, working_dir="."):
                     mutex=list(decl.mutex),
                     suites=list(decl.suites),
                     sessions=list(decl.sessions),
+                    bind=dict(decl.bind),
                 )
             )
     for path in bodies:
@@ -157,7 +170,7 @@ def scan(start, *, working_dir="."):
         ]
         for params_key in definition.params or [None]:
             for combo in itertools.product(*axes):
-                tests.append(Test(definition, params_key, dict(combo), _inputs(combo, project)))
+                tests.append(Test(definition, params_key, dict(combo), _inputs(definition, combo, project)))
     project.note_unused_rules()
     if project.unused_rules:
         raise UsageError(
@@ -196,9 +209,11 @@ def _settle(definition, project, working_dir):
     for name in ("tags", "services", "engines", "variants", "mutex"):
         merged = getattr(settled, name) + [x for x in own[name] if x not in getattr(settled, name)]
         setattr(definition, name, merged)
+    if definition.bind:
+        settled.apply({"bind": definition.bind}, "@test")
     check_suites(definition.suites, f"{definition.path}::{definition.name}")
     merge_suites(settled.suites, definition.suites, None, settled.sources)
     definition.suites = settled.suites
-    definition.values, definition.settings = settled.values, settled.settings
+    definition.values, definition.settings, definition.bind = settled.values, settled.settings, settled.bind
     definition.timeout, definition.retries = settled.timeout, settled.retries
     definition.why, definition.sources = settled.why, settled.sources

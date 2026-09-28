@@ -120,6 +120,7 @@ class TestMark:
     mutex: tuple = ()
     suites: tuple = ()
     sessions: tuple = ()
+    bind: dict = field(default_factory=dict)
 
 
 def as_mutex(value):
@@ -127,7 +128,19 @@ def as_mutex(value):
     return (value,) if isinstance(value, str) else tuple(value or ())
 
 
-def test(*, engines=(), services=(), params=None, tags=(), variants=(), mutex=(), suites=(), sessions=(), **unknown):
+def test(
+    *,
+    engines=(),
+    services=(),
+    params=None,
+    tags=(),
+    variants=(),
+    mutex=(),
+    suites=(),
+    sessions=(),
+    bind=None,
+    **unknown,
+):
     """Mark `body(ctx)` as a test definition. `params` maps a key to the params the body reads as
     `ctx.params`; the key is the first part of the test id. `variants` names the project's axes the
     definition takes part in. It makes one test for each combination of a params row and one value
@@ -140,7 +153,10 @@ def test(*, engines=(), services=(), params=None, tags=(), variants=(), mutex=()
     definition selects, `"!smoke"` declares them out and nothing but `--id` puts one back.
 
     `sessions` names the project's SESSIONS the body drives, as `ctx.session(name)`. A test that
-    names no DuckDB one gets a default DuckDB Session."""
+    names no DuckDB one gets a default DuckDB Session.
+
+    `bind` maps a role to one of the project's STORAGES or CREDENTIALS, by id; it replaces what a
+    rule binds to the same role."""
     if "cases" in unknown:
         raise UsageError("@test(cases=...) is now @test(params=...); the body reads its row as ctx.params")
     if unknown:
@@ -157,6 +173,7 @@ def test(*, engines=(), services=(), params=None, tags=(), variants=(), mutex=()
             as_mutex(mutex),
             tuple(suites),
             tuple(sessions),
+            dict(bind or {}),
         )
         return body
 
