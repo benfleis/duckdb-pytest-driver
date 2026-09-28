@@ -63,7 +63,7 @@ class CredentialDef(ResourceDef):
     storage's credential when a test names none; with no scope it binds only by name."""
 
     kind = "credential"
-    capacity = SHARED_RO
+    sharing = SHARED_RO
 
     id: str
     sources: list = field(default_factory=list)  # env({...}) or "1password:NAME", tried in order

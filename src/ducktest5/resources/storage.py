@@ -46,7 +46,7 @@ class StorageDef(ResourceDef):
     and `S3_ENDPOINT`, `S3_USE_SSL`, `AZ_ACCOUNT` where they apply."""
 
     kind = "storage"
-    capacity = SHARED_RW
+    sharing = SHARED_RW
     mints_children = True
 
     id: str

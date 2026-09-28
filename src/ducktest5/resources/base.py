@@ -60,7 +60,7 @@ class ResourceDef:
     one. `retain` says when the run leaves what it made in place: never, on_failure, always."""
 
     kind: ClassVar[str] = "resource"
-    capacity: ClassVar[str] = SHARED_RW
+    sharing: ClassVar[str] = SHARED_RW  # the kind declares its sharing; the edge declares its mode
     mints_children: ClassVar[bool] = False  # an exclusive acquirer gets a child instead of the parent lock
     instance: ClassVar[Callable[..., Resource]]
     not_content: ClassVar[tuple] = ("id", "inputs", "retain")  # the name is a label, not what it is
@@ -182,7 +182,7 @@ class Resource:
 
     # -- ownership ------------------------------------------------------------
     def _exclusive(self, mode):
-        return mode == RW and (self.definition.capacity == EXCLUSIVE or self.definition.mints_children)
+        return mode == RW and (self.definition.sharing == EXCLUSIVE or self.definition.mints_children)
 
     def acquire(self, mode: str = RW, key: str | None = None) -> Resource:
         """The instance to use: this one, shared or locked, or a child minted for `key`. A

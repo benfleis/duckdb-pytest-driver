@@ -1,4 +1,4 @@
-"""Resources: identity by content, ownership against capacity, outputs, and the handler contract."""
+"""Resources: identity by content, ownership against sharing, outputs, and the handler contract."""
 
 import json
 import os
@@ -103,12 +103,12 @@ def test_make_gives_the_instance_the_identity_of_its_fulfilled_inputs():
 #
 
 
-def _kind(capacity, mint=None):
+def _kind(sharing, mint=None):
     class Instance(Resource):
         def mint_child(self, key):
             return mint(self, key) if mint else None
 
-    return type("K", (ThingDef,), {"capacity": capacity, "instance": Instance})
+    return type("K", (ThingDef,), {"sharing": sharing, "instance": Instance})
 
 
 def test_a_writer_of_an_exclusive_kind_waits_for_the_one_before_it():
@@ -361,7 +361,7 @@ def test_a_reference_to_what_no_input_gives_is_a_usage_error():
 
 def test_a_storage_is_shared_rw_and_mints_children_for_an_exclusive_writer():
     store = StorageDef("bucket", "s3://bucket").make(run_token="run1")
-    assert store.definition.capacity == SHARED_RW and store.definition.mints_children
+    assert store.definition.sharing == SHARED_RW and store.definition.mints_children
     assert store.acquire(RW) is store and store._writer
     store.release(store, RW)
     child = store.acquire(RW, "t1")
