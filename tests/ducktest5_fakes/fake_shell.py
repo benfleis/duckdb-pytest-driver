@@ -4,13 +4,20 @@ answers `.print X` with X, and a statement that holds a word below with what the
 
     drip    a line of output every 50 ms, for 5 s
     echoN   the line `[{"v":N}]`, after 20 ms
+
+With FAKE_SHELL_RECORD set, every line it reads is appended to that file.
 """
 
+import os
 import re
 import sys
 import time
 
+record = os.environ.get("FAKE_SHELL_RECORD")
 for line in sys.stdin:
+    if record:
+        with open(record, "a") as f:
+            f.write(line)
     if line.startswith(".print "):
         print(line[len(".print ") :].strip(), flush=True)
     elif "drip" in line:

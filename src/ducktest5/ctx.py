@@ -4,6 +4,7 @@ import os
 
 from .client import Client, SetupFailed, SqlError
 from .engines.duckdb import DEFAULT_TIMEOUT_S, DuckDBPerCall, DuckDBSession
+from .resources.session import process_env
 from .steps import step
 
 SESSIONS = ("per_run", "per_client", "per_call")
@@ -23,8 +24,7 @@ class Ctx:
         *,
         temp_dir,
         duckdb_bin,
-        duckdb_session,
-        engines,
+        sessions,
         test_env,
         duckdb_home=None,
         services=None,
@@ -42,10 +42,11 @@ class Ctx:
         self._location_on = next((v.location_on for v in test.axis_values.values() if v.location_on), None)
         self.temp_dir = temp_dir
         self._duckdb_bin = duckdb_bin
-        self._duckdb_session = duckdb_session
+        self._sessions = sessions  # id -> the Session this test holds
+        self._duck = next(s for s in sessions.values() if s.definition.engine == "duckdb")
         self._duckdb_home = duckdb_home
         self._session_factory = session_factory
-        self._engines = {e: engines[e] for e in test.engines}
+        self._engines = list(test.engines)
         self._services = {s: services[s] for s in test.services} if services else {}
         self._remote_parts = remote_parts
         self.remote_locations = []  # (service id, uri): what this test may have written outside temp_dir
@@ -60,12 +61,9 @@ class Ctx:
         (new instance, then the test's preambles again) and `respawn()` (new process, the same).
         `per_client`: the same, on a shell of this client's own, closed when the test ends. `per_call`:
         a cold process for every call, running `preamble` each time. All three get the same private
-        HOME and the same test
-        environment: the extensions loaded, the settings set, then the init SQL.
-
-        A test whose environment sets or unsets process variables gets a shell of its own even when
-        `per_run` was asked for: the run's one shell was started before the test was known and
-        cannot change its environment.
+        HOME and the same test environment: the preamble of the test's DuckDB Session (the
+        extensions loaded, the settings set, the scoped secrets created, then the init SQL) and its
+        process variables.
 
         `timeout`, in seconds, is for each statement (`per_call`: for each call); after it the shell
         is killed and the statement has failed.
@@ -76,13 +74,14 @@ class Ctx:
         a cold process per call, with nothing shared but files."""
         if session not in SESSIONS:
             raise ValueError(f"session={session!r}; it is one of {SESSIONS}")
-        preamble = "\n".join(x for x in (self._test_preamble(), preamble) if x)
-        environ = self.environment.environ()
+        shell = self._duck.live
+        if session != "per_run":
+            preamble = "\n".join(x for x in (*self._duck.preamble().sql, preamble) if x)
+            environ = process_env(self._duck.definition.env)
         if session == "per_call":
             per_call = DuckDBPerCall(self._duckdb_bin, preamble, timeout=timeout, home=self._duckdb_home, env=environ)
             return self._client("duckdb", per_call.run, table)
-        shell = self._duckdb_session
-        if session == "per_client" or environ is not None:
+        if session == "per_client":
             shell = self._session_factory(self._duckdb_bin, home=self._duckdb_home, env=environ)
             shell.begin_test()
             self.teardowns.append(shell.close)
@@ -94,14 +93,27 @@ class Ctx:
         client.restart, client.respawn, client.reconnect = shell.restart, shell.respawn, _no_reconnect
         return client
 
+    def session(self, name, *, table=None):
+        """A client on the Session `name` this test holds: the SQL vocabulary of `Client`, on the
+        engine that Session opened, reset and given its preamble before the body began. `.session`
+        is the Session itself."""
+        if name not in self._sessions:
+            raise KeyError(f"session {name!r} is not one this test holds (sessions={sorted(self._sessions)})")
+        held = self._sessions[name]
+        if held.definition.engine == "duckdb":
+            timeout = held.definition.timeout or DEFAULT_TIMEOUT_S
+            client = self._client(name, lambda statements: held.live.run(statements, timeout=timeout), table)
+        else:
+            client = self._client(name, lambda statements: held.live.run(statements), table)
+        client.session = held
+        return client
+
     def engine(self, name, *, table=None):
+        """A client on the engine `name`, through the Session this test holds on it."""
         if name not in self._engines:
             raise KeyError(f"engine {name!r} is not declared by this test (engines={sorted(self._engines)})")
-        return self._client(name, self._engines[name].run, table)
-
-    def _test_preamble(self):
-        """The test environment as SQL, in the order the `.test` init file has it."""
-        return "\n".join([f"LOAD {x};" for x in self.environment.extensions] + [self.environment.sql]).strip()
+        held = next(s for s in self._sessions.values() if s.definition.engine == name)
+        return self._client(name, lambda statements: held.live.run(statements), table)
 
     def run_test(self, *, env=None, init_sql=""):
         """For a paired test: run the `.test` file of this body's stem through the unittest binary.

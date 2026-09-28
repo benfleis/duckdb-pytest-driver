@@ -20,12 +20,16 @@ class EngineDef:
     `uses` names services the engine can talk to. It never makes a run provision one: when a
     selected test needs such a service, the handle's `use_service(id, block)` is called once, after
     boot, with the facts of the instance.
+
+    `dialect` names how a Session on it is given its preamble (`resources/dialect.py`); an engine
+    without one takes no inputs through its Session.
     """
 
     id: str
     version: str
     boot: Callable
     uses: tuple = ()
+    dialect: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,7 @@ class TestMark:
     variants: tuple = ()
     mutex: tuple = ()
     suites: tuple = ()
+    sessions: tuple = ()
 
 
 def as_mutex(value):
@@ -122,7 +127,7 @@ def as_mutex(value):
     return (value,) if isinstance(value, str) else tuple(value or ())
 
 
-def test(*, engines=(), services=(), params=None, tags=(), variants=(), mutex=(), suites=(), **unknown):
+def test(*, engines=(), services=(), params=None, tags=(), variants=(), mutex=(), suites=(), sessions=(), **unknown):
     """Mark `body(ctx)` as a test definition. `params` maps a key to the params the body reads as
     `ctx.params`; the key is the first part of the test id. `variants` names the project's axes the
     definition takes part in. It makes one test for each combination of a params row and one value
@@ -132,7 +137,10 @@ def test(*, engines=(), services=(), params=None, tags=(), variants=(), mutex=()
     name one of them never run at the same time, however many workers the run has.
 
     `suites` says which suites its tests are in: `"smoke"` declares them in whatever the suite's own
-    definition selects, `"!smoke"` declares them out and nothing but `--id` puts one back."""
+    definition selects, `"!smoke"` declares them out and nothing but `--id` puts one back.
+
+    `sessions` names the project's SESSIONS the body drives, as `ctx.session(name)`. A test that
+    names no DuckDB one gets a default DuckDB Session."""
     if "cases" in unknown:
         raise UsageError("@test(cases=...) is now @test(params=...); the body reads its row as ctx.params")
     if unknown:
@@ -148,6 +156,7 @@ def test(*, engines=(), services=(), params=None, tags=(), variants=(), mutex=()
             tuple(variants),
             as_mutex(mutex),
             tuple(suites),
+            tuple(sessions),
         )
         return body
 

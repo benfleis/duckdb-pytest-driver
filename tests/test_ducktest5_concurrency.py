@@ -12,6 +12,7 @@ from ducktest5.model import PYTHON, Test, TestDef
 from ducktest5.run import run
 from ducktest5.scan import scan
 from ducktest5.testenv import resolve
+from test_ducktest5_run import held
 
 
 def _shell():
@@ -31,9 +32,8 @@ def ctx(tmp_path):
         test,
         temp_dir=str(tmp_path),
         duckdb_bin=_shell(),
-        duckdb_session=shared,
+        sessions={"duckdb": held(shared)},
         duckdb_home=home,
-        engines={},
         test_env=resolve(test),
     )
     yield context

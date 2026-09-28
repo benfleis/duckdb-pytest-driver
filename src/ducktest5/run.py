@@ -32,7 +32,7 @@ import threading
 import time
 import traceback
 
-from . import events, phases, runners, sqllogic, testenv
+from . import events, phases, runners, sessions, sqllogic, testenv
 from .binary import UsageError
 from .client import SetupFailed
 from .ctx import Ctx
@@ -43,6 +43,8 @@ from .model import SQLLOGIC
 from .outcomes import ALL as OUTCOMES
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
 from .provision import KEPT, attach_argument
+from .resources import Opener
+from .resources.session import process_env
 from .reports import Report, render, write_files
 from .reports.live import Live
 from .workers import Pool
@@ -379,7 +381,17 @@ def execute(
         writer.emit(SERVICE, id=service_id, kind=kind, **fields)
 
     duckdb_home = os.path.join(run_dir, "home")
-    pool = Pool(workers, make_session=lambda: session_factory(duckdb_bin, home=duckdb_home), handles=handles)
+
+    def opener(definition):
+        if definition.engine == "duckdb":
+            return Opener("duckdb", lambda d: session_factory(duckdb_bin, home=duckdb_home, env=process_env(d.env)))
+        handle = handles[definition.engine]
+        return Opener(
+            sessions.dialect_of(definition, engines),
+            lambda d: handle.for_worker() if hasattr(handle, "for_worker") else handle,
+        )
+
+    pool = Pool(workers, opener=opener)
     stopped = _stop_on_signal()
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
     code = 1
@@ -471,27 +483,25 @@ def execute(
                     begin(test, runner)
                 return sqllogic.run_batch(unittest_bin, batch, working_dir)
 
-        def attempt(test, n, shell, engine_handles):
+        def attempt(test, n):
             """Returns (outcome, problems, the failure in parts, the test's directory, its ctx)."""
             # An attempt after the first has its own directory and prefix, so it does not see what
             # the one before it left.
             dir_name = test.dir_name if n == 1 else f"{test.dir_name}.attempt{n}"
             temp_dir = os.path.join(run_dir, "tests", dir_name)
+            held = {}
             try:
                 os.makedirs(temp_dir)
-                shell.begin_test()
-                for handle in engine_handles.values():
-                    if hasattr(handle, "begin_test"):
-                        handle.begin_test()
-                    if hasattr(handle, "scope_jobs"):  # scopes its jobs, so a timeout can cancel just this test's
-                        handle.scope_jobs(test.id)
+                held = pool.take(test.id, sessions.bind(test, test_env(test), project))
+                for session in held.values():
+                    if hasattr(session.live, "scope_jobs"):  # so a timeout can cancel just this test's jobs
+                        session.live.scope_jobs(test.id)
                 ctx = Ctx(
                     test,
                     temp_dir=temp_dir,
                     duckdb_bin=duckdb_bin,
-                    duckdb_session=shell,
+                    sessions=held,
                     duckdb_home=duckdb_home,
-                    engines=engine_handles,
                     services=provisioned,
                     remote_parts=(run_id, dir_name),
                     test_env=test_env(test),
@@ -499,15 +509,17 @@ def execute(
                     session_factory=session_factory,
                 )
             except Exception as exc:
+                pool.give_back(test.id, held, failed=True)
                 problems = [f"the test could not be set up: {type(exc).__name__}: {exc}"]
                 return ERROR, problems, {"summary": problems[0]}, temp_dir, None
-            return *_run_body(test, ctx), temp_dir, ctx
+            outcome, problems, failure = _run_body(test, ctx)
+            pool.give_back(test.id, held, failed=outcome in (FAILED, ERROR))
+            return outcome, problems, failure, temp_dir, ctx
 
         def python_test(test):
-            """One Python body, in the worker that took the slot: its own warm shell, its own
-            session of every engine, and the locks its mutexes name held for as long as it runs.
-            Registered under `pool.running` while it does, so the exec loop below can reach it once
-            its timeout passes; `report_once` then keeps this from also reporting it, however late it
+            """One Python body, in the worker that took the slot: the worker's Sessions, and the
+            locks its mutexes name held for as long as it runs. Its Sessions are registered under
+            its id while it does, so the exec loop below can reach them once its timeout passes; `report_once` then keeps this from also reporting it, however late it
             is released."""
             if sqllogic.stopped():  # a test still waiting when the run was stopped never began
                 return
@@ -515,14 +527,13 @@ def execute(
                 begin(test, phases.PYTHON_RUNNER)
                 test_started[test.id] = time.perf_counter()
                 t0 = time.perf_counter()
-                with pool.running(test.id) as (shell, engine_handles):
-                    allowed, tried, first, ctx = 1 + test.definition.retries, [], None, None
-                    for n in range(1, allowed + 1):
-                        outcome, problems, failure, temp_dir, ctx = attempt(test, n, shell, engine_handles)
-                        tried.append((temp_dir, ctx))
-                        if outcome not in (FAILED, ERROR):
-                            break
-                        first = first or (outcome, problems, failure)
+                allowed, tried, first, ctx = 1 + test.definition.retries, [], None, None
+                for n in range(1, allowed + 1):
+                    outcome, problems, failure, temp_dir, ctx = attempt(test, n)
+                    tried.append((temp_dir, ctx))
+                    if outcome not in (FAILED, ERROR):
+                        break
+                    first = first or (outcome, problems, failure)
                 note = ""
                 if outcome in (FAILED, ERROR):
                     outcome, problems, failure = first

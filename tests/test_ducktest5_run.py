@@ -19,6 +19,7 @@ from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
 from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.provision import EXISTING, Provisioned
+from ducktest5.resources import Opener, SessionDef
 from ducktest5.run import _run_body, run
 from ducktest5.testenv import resolve
 
@@ -115,9 +116,10 @@ def py_test(body, axis_values=None, *, path="test/body.py", body_file=None, **fi
     return Test(definition, None, axis_values or {})
 
 
-def go(tmp_path, tests, *, engines=(), services=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
+def go(tmp_path, tests, *, engines=(), services=(), sessions=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
     """Returns (exit code, run dir, report, printed text)."""
     project = Project(str(tmp_path), {e.id: e for e in engines}, {s.id: s for s in services}, {}, {}, ())
+    project.sessions = {s.id: s for s in sessions}
     out = io.StringIO()
     kwargs.setdefault("session_factory", FakeSession)
     code = run(
@@ -736,6 +738,13 @@ def test_each_test_has_one_event_line(tmp_path):
 #
 
 
+def held(live, engine="duckdb"):
+    """An open Session on `live`, as the run hands one to a test."""
+    session = SessionDef(engine, engine=engine).make(opener=Opener(None, lambda d: live))
+    session.start()
+    return session
+
+
 def ctx_for(test, tmp_path, *, engine=None, session=None, services=None, **kwargs):
     kwargs.setdefault("session_factory", FakeSession)
     kwargs.setdefault("test_env", resolve(test, services))
@@ -743,8 +752,7 @@ def ctx_for(test, tmp_path, *, engine=None, session=None, services=None, **kwarg
         test,
         temp_dir=str(tmp_path),
         duckdb_bin="no-duckdb",
-        duckdb_session=session or FakeSession(),
-        engines={"fake": engine or FakeEngine()},
+        sessions={"duckdb": held(session or FakeSession()), "fake": held(engine or FakeEngine(), "fake")},
         services=services,
         **kwargs,
     )
@@ -942,7 +950,7 @@ def test_the_test_environment_comes_before_the_bodys_own_preamble_in_the_order_o
 
     def body(ctx):
         ctx.duckdb("SELECT 1;")
-        seen.extend(ctx._duckdb_session.preambles)
+        seen.extend(ctx._duck.live.preambles)
 
     variant = Variant(
         "s3",
@@ -954,8 +962,8 @@ def test_the_test_environment_comes_before_the_bodys_own_preamble_in_the_order_o
     code, _, _, _ = go(tmp_path, [py_test(body, {"k": variant})], services=[FakeStore().service()])
     assert code == 0
     assert seen == [
-        "LOAD httpfs;\nSET threads = '2';\nSET s3_region = 'it''s';\n"
-        "CREATE SECRET (ENDPOINT 'http://store');\nSELECT 1;"
+        "LOAD httpfs;\nSET threads = '2';\nSET s3_region = 'it''s';\nCREATE SECRET (ENDPOINT 'http://store');",
+        "SELECT 1;",
     ]
 
 
@@ -974,22 +982,21 @@ def test_a_python_body_reads_the_roots_and_puts_what_it_makes_under_the_temp_roo
 
 
 def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(tmp_path):
-    made, seen = [], {}
+    made = []
 
     def factory(binary, *, home=None, env=None):
         made.append(FakeSession(binary, home=home, env=env))
         return made[-1]
 
     def body(ctx):
-        seen["shared"] = ctx.duckdb() is not None
-        seen["is_the_runs_shell"] = ctx._duckdb_session in made[1:]
+        ctx.duckdb().oks("SELECT 1")
 
     variant = Variant("no-key", env={"AWS_PROFILE": "ducktest"}, env_unset=("AWS_ACCESS_KEY_ID",))
-    assert go(tmp_path, [py_test(body, {"auth": variant})], session_factory=factory)[0] == 0
-    run_shell, own = made  # the run's own shell, then the one this test had to have
-    assert (run_shell.env, own.env["AWS_PROFILE"]) == (None, "ducktest")
+    tests = [py_test(body, path="test/plain.py"), py_test(body, {"auth": variant}, path="test/env.py")]
+    assert go(tmp_path, tests, session_factory=factory, workers=1)[0] == 0
+    plain, own = sorted(made, key=lambda s: s.env is not None)
+    assert (plain.env, own.env["AWS_PROFILE"]) == (None, "ducktest")
     assert "AWS_ACCESS_KEY_ID" not in own.env
-    assert seen["is_the_runs_shell"] is False
 
 
 def test_a_preamble_that_fails_is_a_setup_error(tmp_path):
@@ -1088,7 +1095,7 @@ def test_duckdb_gets_a_home_under_the_run_dir_for_both_kinds_of_session(tmp_path
     seen = {}
 
     def body(ctx):
-        seen["session"] = ctx._duckdb_session.home
+        seen["session"] = ctx._duck.live.home
         seen["per_call"] = ctx.duckdb(session="per_call")._run.__self__._home.path
 
     _, run_dir, _, _ = go(tmp_path, [py_test(body)])
@@ -1101,7 +1108,7 @@ def test_the_timeout_of_a_duckdb_client_reaches_each_of_its_statements(tmp_path)
     def body(ctx):
         ctx.duckdb(timeout=7).oks("SELECT 1")
         ctx.duckdb().oks("SELECT 2")
-        seen.extend(ctx._duckdb_session.timeouts)
+        seen.extend(ctx._duck.live.timeouts)
         seen.append(ctx.duckdb(session="per_call", timeout=9)._run.__self__._timeout)
 
     assert go(tmp_path, [py_test(body)])[0] == 0

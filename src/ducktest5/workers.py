@@ -5,13 +5,14 @@ Spark session boots in 13.3 s, so four processes would boot four JVMs and hold f
 JVM holds. Four threads on one session ran their SQL at the same time instead -- four bodies whose
 own times add up to 11.0 s took 2.9 s of wall time, against 2.0 s for one of them alone.
 
-What a worker owns, and never shares:
+What a worker owns, and never shares, are its Sessions (`resources/session.py`), one for each
+identity its tests need, reset between tests and reopened after a failed one:
 
 - Its own DuckDB shell. A shell takes one statement at a time behind a lock, so two workers on one
   shell would wait for each other; no shell is ever shared between workers. It is the machinery a
   client of its own already uses, one warm shell for each worker and not one for each test. A test
-  whose environment sets or unsets process variables still gets a shell of its own, as it did when
-  tests ran one after another: the environment of a thread cannot differ from the process's.
+  whose environment sets or unsets process variables has a Session of another identity, so a shell
+  of its own: the environment of a thread cannot differ from the process's.
 - Its own Spark session, a clone of the run's. Temp views are session state, so the drop of them
   before a test would else reach into the test running beside it. A brand new session isolates the
   views too, but starts with an empty configuration -- the `fs.s3a.*` settings the engine was given
@@ -36,78 +37,77 @@ import contextlib
 import threading
 import time
 
+from .resources import RW
+from .resources.session import WORKER
+from .sessions import made_inputs
+
 JOIN_GRACE_S = 2.0  # how long join() waits for a thread a timeout already gave up on
 
 
 class Pool:
-    """The `--workers` slots, the DuckDB shell and engine handles of each worker, and the mutexes."""
+    """The `--workers` slots, the Sessions of each worker, and the mutexes."""
 
-    def __init__(self, workers, *, make_session, handles=None):
+    def __init__(self, workers, *, opener):
         self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="ducktest")
-        self._make_session = make_session
-        self._handles = handles if handles is not None else {}
+        self._opener = opener  # SessionDef -> Opener
         self._mine = threading.local()
-        self._sessions = []  # every shell handed out, so that the run can close them all
+        self._sessions = []  # every Session made, so that the run can close them all
         self._mutexes = {}
-        self._running = {}  # test id -> (its worker's shell, its worker's engines), while it runs
+        self._running = {}  # test id -> {session id: Session}, while it runs
         self._guard = threading.Lock()
 
     def submit(self, fn, *args):
         return self._pool.submit(fn, *args)
 
-    def session(self):
-        """This worker's DuckDB shell: made when it first runs a test, warm for every test after."""
-        shell = getattr(self._mine, "session", None)
-        if shell is None:
-            shell = self._mine.session = self._make_session()
-            with self._guard:
-                self._sessions.append(shell)
-        return shell
-
-    def engines(self):
-        """This worker's engine handles. An engine that can give a worker one of its own is asked
-        for it; the rest are the run's handle itself. A worker's handle is never stopped: the engine
-        it belongs to is the run's, and the run stops that one."""
-        handles = getattr(self._mine, "engines", None)
-        if handles is None:
-            handles = self._mine.engines = {
-                i: h.for_worker() if hasattr(h, "for_worker") else h for i, h in self._handles.items()
-            }
-        return handles
-
-    @contextlib.contextmanager
-    def running(self, test_id):
-        """This worker's shell and engines, registered under `test_id` for as long as its body runs,
-        so a timeout noticed on another thread can reach them (`cancel`)."""
-        shell, engine_handles = self.session(), self.engines()
-        with self._guard:
-            self._running[test_id] = (shell, engine_handles)
+    def take(self, test_id, definitions):
+        """The test's Sessions, acquired: a worker-scoped one is this worker's instance of that
+        identity, made when it is first needed and warm after; any other is made for this test.
+        Registered under `test_id` until `give_back`, so a timeout noticed on another thread can
+        reach them (`cancel`)."""
+        mine = getattr(self._mine, "sessions", None)
+        if mine is None:
+            mine = self._mine.sessions = {}
+        taken = {}
         try:
-            yield shell, engine_handles
-        finally:
-            with self._guard:
-                self._running.pop(test_id, None)
+            for d in definitions:
+                session = d.make(made_inputs(d), opener=self._opener(d))
+                if d.scope == WORKER:
+                    session = mine.setdefault(session.identity, session)
+                with self._guard:
+                    if session not in self._sessions:
+                        self._sessions.append(session)
+                session.acquire(RW)
+                taken[d.id] = session
+        except BaseException:
+            self.give_back(test_id, taken, failed=True)
+            raise
+        with self._guard:
+            self._running[test_id] = taken
+        return taken
+
+    def give_back(self, test_id, sessions, *, failed):
+        with self._guard:
+            self._running.pop(test_id, None)
+        for session in sessions.values():
+            session.release(session, RW, failed=failed)
+            if session.definition.scope != WORKER:
+                session.close()
 
     def cancel(self, test_id):
-        """A test's timeout expired: close the shell its worker is using, so a statement stuck in it
-        releases as a dead-shell exception, and ask any engine handle that offers it to cancel this
-        test's jobs. The worker's thread is not touched -- Python cannot kill it -- and keeps running
-        whatever it was doing until that releases it too."""
+        """A test's timeout expired: cancel its jobs where the engine can, and close its Sessions,
+        so a statement stuck in one releases as an exception and the next test opens them again.
+        The worker's thread is not touched -- Python cannot kill it -- and keeps running whatever
+        it was doing until that releases it too."""
         with self._guard:
-            entry = self._running.get(test_id)
-        if entry is None:
-            return
-        shell, engine_handles = entry
-        try:
-            shell.close()
-        except Exception:
-            pass
-        for handle in engine_handles.values():
-            if hasattr(handle, "cancel_jobs"):
-                try:
-                    handle.cancel_jobs(test_id)
-                except Exception:
-                    pass
+            sessions = self._running.get(test_id, {})
+        for session in sessions.values():
+            live = session.live
+            try:
+                if hasattr(live, "cancel_jobs"):
+                    live.cancel_jobs(test_id)
+                session.close()
+            except Exception:
+                pass
 
     @contextlib.contextmanager
     def holding(self, names):
@@ -125,12 +125,12 @@ class Pool:
                 lock.release()
 
     def stop(self):
-        """Nothing that is still waiting starts, and every shell this pool made is closed -- which
-        is what ends the statement a body of a stopped run is waiting for."""
+        """Nothing that is still waiting starts, and every Session this pool made is closed --
+        which is what ends the statement a body of a stopped run is waiting for."""
         self._pool.shutdown(wait=False, cancel_futures=True)
-        for shell in list(self._sessions):
+        for session in list(self._sessions):
             try:
-                shell.close()
+                session.close()
             except Exception:
                 pass
 

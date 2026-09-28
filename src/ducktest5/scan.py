@@ -124,6 +124,7 @@ def scan(start, *, working_dir="."):
                     variants=list(decl.variants),
                     mutex=list(decl.mutex),
                     suites=list(decl.suites),
+                    sessions=list(decl.sessions),
                 )
             )
     for path in bodies:
@@ -144,6 +145,7 @@ def scan(start, *, working_dir="."):
     tests = []
     for definition in sorted(definitions, key=lambda d: (d.root_path, d.name)):
         _settle(definition, project, working_dir)
+        _sessions(definition, project)
         for axis in definition.variants:
             if axis not in project.axes:
                 raise UsageError(
@@ -167,6 +169,18 @@ def scan(start, *, working_dir="."):
             if unknown:
                 raise UsageError(f"{test.id} needs {kind} {unknown}, not declared in the root {CONF_FILE}")
     return tests, project
+
+
+def _sessions(definition, project):
+    """The sessions a definition names exist, and the engines they run on are ones it uses."""
+    for name in definition.sessions:
+        if name not in project.sessions:
+            raise UsageError(
+                f"{definition.path}::{definition.name} names session {name!r}; the project has {sorted(project.sessions)}"
+            )
+        engine = project.sessions[name].engine
+        if engine != "duckdb" and engine not in definition.engines:
+            definition.engines.append(engine)
 
 
 def _settle(definition, project, working_dir):

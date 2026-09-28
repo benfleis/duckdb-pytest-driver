@@ -146,7 +146,7 @@ def test_nothing_is_written_beside_the_test_file(tmp_path):
 class NoSession:
     """The run's DuckDB shell, for a body that never asks for one."""
 
-    def __init__(self, binary, *, home=None):
+    def __init__(self, binary, *, home=None, env=None):
         pass
 
     begin_test = close = lambda self: None

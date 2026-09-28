@@ -62,6 +62,13 @@ class SparkHandle:
             self.session.conf.set(key, value)
             self.session.sparkContext._jsc.hadoopConfiguration().set(key, value)
 
+    def set_conf(self, key, value):
+        self.session.conf.set(key, value)
+
+    def close(self):
+        """A worker's clone shares the run's context; stopping it would stop the run's. The run
+        stops that one."""
+
     def stop(self):
         self.session.stop()
 
@@ -151,4 +158,4 @@ def delta_spark(id="spark", *, s3a=False, uses=()):
 
     packages = (f"org.apache.hadoop:hadoop-aws:{_hadoop_version()}",) if s3a else ()
     booted = f"spark:{v('pyspark')}:delta-{v('delta-spark')}:local" + (":s3a" if s3a else "")
-    return EngineDef(id, booted, lambda log: _boot_delta(log, packages)[0], uses=tuple(uses))
+    return EngineDef(id, booted, lambda log: _boot_delta(log, packages)[0], uses=tuple(uses), dialect="spark")
