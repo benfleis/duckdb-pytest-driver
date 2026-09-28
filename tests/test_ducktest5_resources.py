@@ -26,6 +26,7 @@ from ducktest5.resources import (
     check_contract,
     env,
     pick_credentials,
+    local_path,
     scheme_of,
 )
 from ducktest5.scan import scan
@@ -325,7 +326,7 @@ def test_an_unknown_scheme_is_a_usage_error():
 
 
 def test_a_local_storage_delivers_the_four_roots(tmp_path):
-    env, secrets = StorageDef("local", f"file://{tmp_path}").make().delivery()
+    env, secrets = StorageDef("local", str(tmp_path)).make().delivery()
     assert {k: v.get() for k, v in env.items()} == {
         "TEMP_DIR": f"{tmp_path}/temp",
         "DATA_DIR": str(tmp_path),
@@ -478,3 +479,16 @@ def test_a_credential_that_does_not_resolve_waits_at_scan(tree, monkeypatch, cap
     monkeypatch.delenv("DT_SECRET")
     assert main(["scan", "test/a/x.test", "--env"]) == 0
     assert "env: <credential 'local-key': none of its sources resolved" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "root, path",
+    [("/data/x", "/data/x"), ("file:///data/x", "/data/x"), ("file://localhost/data/x", "/data/x")],
+)
+def test_a_local_root_is_a_plain_path_or_a_full_file_url(root, path):
+    assert local_path(root) == path
+
+
+def test_a_file_url_with_two_slashes_is_refused():
+    with pytest.raises(UsageError, match="file:///path"):
+        local_path("file://data/x")

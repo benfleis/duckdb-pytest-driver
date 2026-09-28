@@ -8,8 +8,8 @@ from ducktest5.resources import StorageDef
 SCRATCH = os.path.join(tempfile.gettempdir(), "ducktest-ladder")
 
 STORAGES = [
-    StorageDef("scratch_a", f"file://{SCRATCH}/scratch_a"),
-    StorageDef("scratch_b", f"file://{SCRATCH}/scratch_b"),
+    StorageDef("scratch_a", f"{SCRATCH}/scratch_a"),
+    StorageDef("scratch_b", f"{SCRATCH}/scratch_b"),
 ]
 
 RULES = [

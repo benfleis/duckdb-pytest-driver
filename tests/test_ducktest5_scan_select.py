@@ -961,7 +961,7 @@ BIND_CONF = """
     from ducktest5 import default
     from ducktest5.resources import StorageDef
 
-    STORAGES = [StorageDef("a", "file:///tmp/a"), StorageDef("b", "file:///tmp/b")]
+    STORAGES = [StorageDef("a", "/tmp/a"), StorageDef("b", "/tmp/b")]
     RULES = [default(bind={"storage": "a"})]
 """
 

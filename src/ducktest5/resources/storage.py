@@ -15,6 +15,16 @@ SCHEMES = ("file", "s3", "az", "abfss", "http", "https")
 _REF = re.compile(r"\{([\w-]+)\.(\w+)\}")
 
 
+def local_path(root: str) -> str:
+    """The path of a local root: a plain path, `file:///path` or `file://localhost/path`."""
+    for prefix in ("file://localhost/", "file:///"):
+        if root.startswith(prefix):
+            return "/" + root[len(prefix) :]
+    if root.startswith("file://"):
+        raise UsageError(f"storage root {root!r}: write a plain path, file:///path or file://localhost/path")
+    return root
+
+
 def scheme_of(root: str) -> str:
     """The scheme of a root; a plain path is `file`."""
     if "://" not in root:
@@ -93,7 +103,7 @@ class Storage(Resource):
     @property
     def path(self) -> str:
         """The local path of a `file` root."""
-        return self.root[len("file://") :] if self.root.startswith("file://") else self.root
+        return local_path(self.root)
 
     def mint_child(self, key):
         if self.run_token is None:
@@ -133,7 +143,7 @@ class Storage(Resource):
         facts = {name: out.value for name, out in self.env.items()}
         out = {"TEMP_DIR": facts["temp_root"], "DATA_DIR": facts["data_root"]}
         if self.scheme == "file":
-            out = {k: v[len("file://") :] if v.startswith("file://") else v for k, v in out.items()}
+            out = {k: local_path(v) for k, v in out.items()}
             out["LOCAL_TEMP_DIR"], out["LOCAL_DATA_DIR"] = out["TEMP_DIR"], out["DATA_DIR"]
         if self.scheme == "s3" and facts["endpoint"]:
             out["S3_ENDPOINT"] = facts["endpoint"].split("://", 1)[-1]
