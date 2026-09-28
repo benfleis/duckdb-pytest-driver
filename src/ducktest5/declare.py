@@ -84,6 +84,8 @@ class Variant:
     `env`        the process environment of the engine that runs the test, and `env_unset` what to
                  take out of it: for what DuckDB or a library inside it reads with getenv (AWS_*,
                  AZURE_*, HTTP_PROXY). The absence of a variable is a fact a literal cannot express.
+                 A name set to None in `env` is unset too. A test that unsets every name a
+                 credential delivers does not get that credential, even where its scope matches.
 
     `services` and `engines` are what the test then needs, `tags` name it for a selection, and
     `location_on` is the service on which `ctx.location()` puts what the body creates. `inputs` names

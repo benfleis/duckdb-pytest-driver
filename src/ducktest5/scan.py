@@ -36,14 +36,23 @@ def _bound(definition, project):
 
 def _inputs(definition, combo, project):
     """What a test binds and its axis values name as inputs, a writer's mode winning, and a
-    credential for each storage by scope unless one is named."""
+    credential for each storage by scope unless one is named. A credential all of whose names the
+    axis values unset is left out."""
     modes = {}
     for entry in [*_bound(definition, project), *(e for _, variant in combo for e in variant.inputs)]:
         for d, mode in entry.items():
             modes[d] = RW if RW in (mode, modes.get(d)) else mode
     storages = {d.id: mode for d, mode in modes.items() if isinstance(d, StorageDef)}
     named = [d for d in modes if isinstance(d, CredentialDef)]
-    credentials = pick_credentials(storages, project.credentials.values(), named)
+    unset = {name for _, v in combo for name, value in v.env.items() if value is None} | {
+        name for _, v in combo for name in v.env_unset
+    }
+    # A test that unsets every name a credential delivers must not see it, whatever its scope.
+    credentials = [
+        c
+        for c in pick_credentials(storages, project.credentials.values(), named)
+        if not (c.names and set(c.names) <= unset)
+    ]
     return tuple((d, m) for d, m in modes.items() if not isinstance(d, CredentialDef)) + tuple(
         (c, RO) for c in credentials
     )

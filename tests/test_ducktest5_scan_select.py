@@ -994,3 +994,21 @@ def test_a_binding_names_a_declared_storage_or_credential(tmp_path):
                 "test/own.py": "from ducktest5 import test\n@test(bind={'storage': 'c'})\ndef own(ctx): pass",
             },
         )
+
+
+def test_an_axis_value_that_unsets_a_credentials_names_hides_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("DT_KEY", "k")
+    conf = """
+        from ducktest5 import Variant, default
+        from ducktest5.resources import CredentialDef, StorageDef, env
+
+        STORAGES = [StorageDef("bucket", "s3://bucket")]
+        CREDENTIALS = [CredentialDef("key", sources=[env({"AWS_ACCESS_KEY_ID": "DT_KEY"})], scope="bucket")]
+        AXES = {"auth": [Variant("key"), Variant("none", env={"AWS_ACCESS_KEY_ID": None})]}
+        RULES = [default(bind={"storage": "bucket"}, variants=["auth"])]
+    """
+    tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
+    by_auth = {c.axis_values["auth"].id: c for c in tests}
+    assert [d.id for d, _ in by_auth["key"].inputs] == ["bucket", "key"]
+    assert [d.id for d, _ in by_auth["none"].inputs] == ["bucket"]
+    assert "env unset: AWS_ACCESS_KEY_ID  <- AXES auth=none" in resolve(by_auth["none"]).lines()

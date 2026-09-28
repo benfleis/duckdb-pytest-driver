@@ -283,6 +283,10 @@ def resolve(test, provisioned=None):
         # One ordered pass in axis order: within an axis, its env entries set before its env_unset
         # entries remove; the last of the two to touch a name, across axes, wins (see environ()).
         for name, value in v.env.items():
+            if value is None:
+                env.env_unset[name] = Entry(name, where, kind="unset")
+                env.env_state[name] = "unset"
+                continue
             env.env[name] = Entry(value, where, kind="env", name=name, secret=bool(_SECRET_NAME.search(name)))
             env.env_state[name] = "set"
         for name in v.env_unset:

@@ -83,6 +83,11 @@ class CredentialDef(ResourceDef):
             raise UsageError(f"credential {self.id!r}: scope mode {self.scope_mode!r}; it is {RO!r} or {RW!r}")
 
     @property
+    def names(self) -> tuple:
+        """The names its sources deliver, as far as they are known before it is acquired."""
+        return tuple(sorted({name for s in self.sources if isinstance(s, EnvSource) for name, _ in s.names}))
+
+    @property
     def scope_storage(self) -> str | None:
         return self.scope[0] if isinstance(self.scope, (tuple, list)) else self.scope
 
