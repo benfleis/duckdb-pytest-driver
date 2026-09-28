@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 
 from .binary import UsageError
 from .outcomes import ERROR, FAILED, PASSED, SKIPPED
+from .resources.dialect import render
 from .testenv import TestEnv
 
 _EVENT = re.compile(r"\[TEST_EVENT\] (\{.*\})")
@@ -109,8 +110,8 @@ def init_file_text(test_env):
     `SET` or a secret type of one fails before that. Then the statements, one block each, so a
     failure can be traced back to the one thing that asked for it."""
     lines, sources = [], {}
-    for entry in test_env.requires:
-        lines += [f"require {entry.value}", ""]
+    for line in render("unittest", "requires", test_env.extensions).sql:
+        lines += [line, ""]
     for entry in test_env.init_sql:
         lines.append("statement ok")
         sources[len(lines)] = entry.source
