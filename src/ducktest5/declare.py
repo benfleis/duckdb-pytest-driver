@@ -82,7 +82,8 @@ class Variant:
                  AZURE_*, HTTP_PROXY). The absence of a variable is a fact a literal cannot express.
 
     `services` and `engines` are what the test then needs, `tags` name it for a selection, and
-    `location_on` is the service on which `ctx.location()` puts what the body creates."""
+    `location_on` is the service on which `ctx.location()` puts what the body creates. `inputs` names
+    STORAGES and CREDENTIALS: a bare id is read-write, `{"id": "ro"}` read-only."""
 
     id: str
     services: tuple = ()
@@ -96,6 +97,7 @@ class Variant:
     roots: object = None
     env: dict = field(default_factory=dict)
     env_unset: tuple = ()
+    inputs: tuple = ()
 
 
 @dataclass(frozen=True)

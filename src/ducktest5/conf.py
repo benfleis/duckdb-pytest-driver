@@ -1,8 +1,9 @@
 """`ducktest_conf.py`: configuration for a directory and everything below it.
 
 The file at the root of the scanned tree is the project file; it may also declare ENGINES, SERVICES,
-AXES, SUITES and EXCLUDE. Any directory may have its own file with RULES. A rule speaks about the whole
-subtree (`default`) or about a pattern relative to its file (`match`); a pattern may name one file.
+STORAGES, CREDENTIALS, AXES, SUITES and EXCLUDE. Any directory may have its own file with RULES. A rule
+speaks about the whole subtree (`default`) or about a pattern relative to its file (`match`); a
+pattern may name one file.
 
 How rules combine, in one order: the root file first, then each file on the way down to the test definition;
 in a file, the rules as listed; then the definition's own `@test(...)`. Along that order, list fields (tags,
@@ -33,10 +34,11 @@ import importlib.util
 import os
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .binary import UsageError
 from .declare import CONF_FILE, EngineDef, ServiceDef, Variant, as_mutex
+from .resources import CredentialDef, ResourceDef, StorageDef
 
 _LISTS = ("tags", "services", "engines", "variants", "mutex", "suites")
 _DICTS = ("values", "settings")
@@ -165,6 +167,8 @@ class Project:
     axes: dict
     suites: dict
     exclude: tuple
+    storages: dict = field(default_factory=dict)
+    credentials: dict = field(default_factory=dict)
     _rules_by_dir: dict = field(default_factory=dict)
     _used: set = field(default_factory=set)
     unused_rules: list = field(default_factory=list)
@@ -253,6 +257,8 @@ def load_project(start):
         if dirpath == root:
             project.engines = {e.id: e for e in getattr(module, "ENGINES", ())}
             project.services = {s.id: s for s in getattr(module, "SERVICES", ())}
+            project.storages = {s.id: s for s in getattr(module, "STORAGES", ())}
+            project.credentials = {c.id: c for c in getattr(module, "CREDENTIALS", ())}
             project.axes = {axis: {v.id: v for v in values} for axis, values in getattr(module, "AXES", {}).items()}
             project.suites = dict(getattr(module, "SUITES", {}))
             if "all" in project.suites:
@@ -260,7 +266,7 @@ def load_project(start):
             project.exclude = tuple(getattr(module, "EXCLUDE", ()))
             _check(path, project)
         else:
-            for name in ("ENGINES", "SERVICES", "AXES", "SUITES", "EXCLUDE"):
+            for name in ("ENGINES", "SERVICES", "STORAGES", "CREDENTIALS", "AXES", "SUITES", "EXCLUDE"):
                 if hasattr(module, name):
                     raise UsageError(f"{path}: {name} belongs in the root {CONF_FILE} only; this file may hold RULES")
         _prune(project, root, dirpath, dirnames)
@@ -281,6 +287,12 @@ def _check(path, project):
         raise UsageError(f"{path}: ENGINES must hold EngineDef")
     if not all(isinstance(s, ServiceDef) for s in project.services.values()):
         raise UsageError(f"{path}: SERVICES must hold ServiceDef")
+    for name, kind, declared in (
+        ("STORAGES", StorageDef, project.storages),
+        ("CREDENTIALS", CredentialDef, project.credentials),
+    ):
+        if not all(isinstance(d, kind) for d in declared.values()):
+            raise UsageError(f"{path}: {name} must hold {kind.__name__}")
     for axis, values in project.axes.items():
         if not values or not all(isinstance(v, Variant) for v in values.values()):
             raise UsageError(f"{path}: AXES[{axis!r}] must be a non-empty list of Variant")
@@ -291,3 +303,16 @@ def _check(path, project):
                     raise UsageError(
                         f"{path}: AXES[{axis!r}] value {v.id!r} names {kind} {unknown} that are not declared"
                     )
+            values[v.id] = replace(v, inputs=_bound(path, f"AXES[{axis!r}] value {v.id!r}", v.inputs, project))
+
+
+def _bound(path, where, inputs, project):
+    """A variant's inputs with each id replaced by the Def it names, as `({Def: mode}, ...)`."""
+    declared = {**project.storages, **project.credentials}
+    out = []
+    for entry in inputs:
+        for ref, mode in entry.items() if isinstance(entry, dict) else [(entry, "rw")]:
+            if not isinstance(ref, ResourceDef) and ref not in declared:
+                raise UsageError(f"{path}: {where} names input {ref!r}, which is not in STORAGES or CREDENTIALS")
+            out.append({declared[ref] if isinstance(ref, str) else ref: mode})
+    return tuple(out)

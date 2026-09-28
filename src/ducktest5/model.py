@@ -61,6 +61,7 @@ class Test:
     definition: TestDef
     params_key: str | None  # the row of `definition.params`, or None
     axis_values: dict  # axis name -> Variant
+    inputs: tuple = ()  # (ResourceDef, mode): the axis values' inputs, with a credential for each storage
 
     @property
     def id(self):

@@ -14,6 +14,9 @@ of a test of a `.test` file is made of it.
     env         the process environment of the engine, and `env_unset` what to take out of it
     services    service id -> the mode it was provisioned in and its block, secrets masked
 
+A storage input gives roots and values; a credential gives secrets, which reach the engine only as
+process environment (named to the binary in `env_passthrough`), read when the process starts.
+
 Every entry carries the source that asked for it, so `scan --env` and a failed test can say where
 each part came from. A part a variant computes from the services' blocks is not known before
 provisioning, nor once provisioning has run if a service it needs did not come up; `resolve()`
@@ -29,8 +32,15 @@ from dataclasses import dataclass, field, replace
 from .binary import UsageError
 from .provision import MASK
 from .provision import SECRET_NAME as _SECRET_NAME
+from .resources import RO
 
 ROOTS = ("data_dir", "local_data_dir", "temp_dir_root", "local_temp_dir_root")
+_ROOT_OF = {
+    "DATA_DIR": "data_dir",
+    "LOCAL_DATA_DIR": "local_data_dir",
+    "TEMP_DIR": "temp_dir_root",
+    "LOCAL_TEMP_DIR": "local_temp_dir_root",
+}
 
 _LABELS = {
     "require": "require",
@@ -78,6 +88,7 @@ class TestEnv:
     env_state: dict = field(default_factory=dict)  # name -> "set"/"unset", whichever last touched it
     services: dict = field(default_factory=dict)  # service id -> Entry(value={"mode", "block"})
     pending: list = field(default_factory=list)  # Entry(value=field name) a service must fill in
+    passthrough: list = field(default_factory=list)  # names of the credentials' secrets in `env`
     secrets: tuple = ()  # what must never be printed: the secret fields of the services' blocks
 
     # -- what the deliveries read ---------------------------------------------
@@ -114,10 +125,12 @@ class TestEnv:
         out = dict(base)
         # Replay in axis order so an env_unset after an env from an earlier axis wins, and vice versa.
         for name, action in self.env_state.items():
-            if action == "unset":
+            value = self.env[name].value if action == "set" else None
+            value = value() if callable(value) else value
+            if value is None:
                 out.pop(name, None)
             else:
-                out[name] = str(self.env[name].value)
+                out[name] = str(value)
         return out
 
     def plus(self, *, values=None, init_sql="", source="ctx.run_test()"):
@@ -138,7 +151,8 @@ class TestEnv:
                 "init_sql": [e.value for e in self.init_sql],
                 "values": {k: str(e.value) for k, e in sorted(self.values.items())},
                 "roots": {k: str(e.value) for k, e in sorted(self.roots.items())},
-                "env": {k: str(e.value) for k, e in sorted(self.env.items())},
+                # A secret read at delivery counts by where it is read from, never by its value.
+                "env": {k: e.source if callable(e.value) else str(e.value) for k, e in sorted(self.env.items())},
                 "env_unset": sorted(self.env_unset),
                 "services": sorted(self.services),
             },
@@ -278,7 +292,41 @@ def resolve(test, provisioned=None):
                 env.init_sql.append(Entry("", where, kind="sql", shown=""))  # a function of blocks we do not have
         elif v.init_sql:
             env.init_sql.append(Entry(v.init_sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
+    for resource, mode in test.inputs:
+        _deliver(env, resource, mode, provisioned is None, _axis_value)
     return env
+
+
+def _deliver(env, definition, mode, scanning, value):
+    """One input's outputs into the test environment. Nothing is allocated here and nothing is held:
+    that is for the walk of the resource graph. At scan a credential that does not resolve, or one a
+    generator makes, is listed in `pending`: its value is not needed before the run."""
+    where = f"{definition.kind} {definition.id}"
+    instance = definition.make({ref: sub.make() for ref, _, sub in definition.edges() if sub}, mode=mode)
+    try:
+        if scanning and getattr(definition, "generator", None):
+            raise UsageError("made by its generator when the test runs")
+        instance.start()
+        instance.release(instance.acquire(RO), RO)
+        values, secrets = instance.delivery()
+    except UsageError as exc:
+        if not scanning:
+            raise
+        env.pending.append(Entry("secrets", where, kind="env", shown=f"<{exc}>"))
+        return
+    for name, out in values.items():
+        if name in _ROOT_OF:
+            # The binary derives a local root equal to its twin; it takes local_temp_dir_root only beside a remote one.
+            if not (name.startswith("LOCAL_") and out.get() == values[name[len("LOCAL_") :]].get()):
+                env.roots[_ROOT_OF[name]] = Entry(out.get(), where, kind="root", name=_ROOT_OF[name])
+        else:
+            value(name, out.get(), where)
+    for name, out in secrets.items():
+        if name in env.env:
+            raise UsageError(f"{name!r} is given by both {env.env[name].source} and {where}")
+        env.env[name] = Entry(out.value, f"{where}: {out.source}", kind="env", name=name, secret=True)
+        env.env_state[name] = "unset" if out.unset else "set"
+        env.passthrough.append(name)
 
 
 def _ready(variant, blocks):

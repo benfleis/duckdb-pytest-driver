@@ -164,6 +164,8 @@ class Batch:
             "skip_error_messages": [],
         }
         config.update(self.test_env.root_paths)
+        if self.test_env.passthrough:
+            config["env_passthrough"] = sorted(self.test_env.passthrough)  # names only: values stay in the process env
         text, self.init_sources = init_file_text(self.test_env)
         if text:
             init = os.path.join(self.dir, INIT_FILE)

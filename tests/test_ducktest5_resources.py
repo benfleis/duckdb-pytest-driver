@@ -1,13 +1,17 @@
 """Resources: identity by content, ownership against capacity, outputs, and the handler contract."""
 
+import json
+import os
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 
 import pytest
 
 from ducktest5.binary import UsageError
+from ducktest5.cli import main
 from ducktest5.resources import (
     EXCLUSIVE,
     NEVER,
@@ -23,6 +27,10 @@ from ducktest5.resources import (
     pick_credentials,
     scheme_of,
 )
+from ducktest5.scan import scan
+from ducktest5.testenv import resolve
+
+FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
 
 # A small kind, as source text, so that another process can declare the very same one.
 THING = """
@@ -379,3 +387,83 @@ def test_deleting_a_child_removes_what_is_under_it_and_never_the_root(tmp_path):
 
 def test_storage_contract(tmp_path):
     check_contract(lambda tag: StorageDef("local", str(tmp_path)).make(tag=tag))
+
+
+# -----------------------------------------------------------------------------
+# A variant names a storage; its credential comes by scope
+#
+
+SECRET = "s3cr3t-value-never-written"
+CONF = """
+from ducktest5 import Variant, default, match
+from ducktest5.resources import CredentialDef, StorageDef, env
+STORAGES = [StorageDef("local", "{root}/store")]
+CREDENTIALS = [CredentialDef("local-key", sources=[env({"AWS_SECRET_ACCESS_KEY": "DT_SECRET"})], scope="local")]
+AXES = {"storage": [Variant("local", inputs=["local"])]}
+RULES = [match("a/**", variants=["storage"])]
+"""
+
+
+@pytest.fixture
+def tree(tmp_path, monkeypatch):
+    (tmp_path / "test" / "a").mkdir(parents=True)
+    (tmp_path / "test" / "ducktest_conf.py").write_text(CONF.replace("{root}", str(tmp_path)))
+    (tmp_path / "test" / "a" / "x.test").write_text("")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DT_SECRET", SECRET)
+    return tmp_path
+
+
+def test_scan_env_shows_the_storage_roots_and_the_credential_masked(tree, capsys):
+    assert main(["scan", "test/a/x.test", "--env"]) == 0
+    assert capsys.readouterr().out.replace(str(tree), "ROOT") == textwrap.dedent(
+        """\
+        a/x.test::x[storage=local]
+          values: storage=local  <- AXES storage
+          root: temp_dir_root=ROOT/store/temp  <- storage local
+          root: data_dir=ROOT/store  <- storage local
+          env: AWS_SECRET_ACCESS_KEY=***  <- credential local-key: env DT_SECRET
+        """
+    )
+
+
+def test_the_secret_reaches_the_process_environment_and_no_file_the_run_writes(tree):
+    assert (
+        main(
+            [
+                "run",
+                "--duckdb-bin",
+                FAKE,
+                "--unittest-bin",
+                FAKE,
+                "--temp-dir-root",
+                "runs",
+                "--keep",
+                "--no-binary-check",
+            ]
+        )
+        == 0
+    )
+    configs, leaked = [], []
+    for dirpath, _, filenames in os.walk(tree / "runs"):
+        for name in filenames:
+            text = open(os.path.join(dirpath, name), errors="replace").read()
+            leaked += [name] if SECRET in text else []
+            configs += [json.loads(text)] if name == "config.json" else []
+    assert leaked == []
+    assert [c["env_passthrough"] for c in configs] == [["AWS_SECRET_ACCESS_KEY"]]
+    test = scan(str(tree / "test"), working_dir=str(tree))[0][0]
+    assert resolve(test, {}).environ({})["AWS_SECRET_ACCESS_KEY"] == SECRET
+
+
+def test_a_variant_naming_an_undeclared_input_is_a_usage_error(tree, capsys):
+    conf = tree / "test" / "ducktest_conf.py"
+    conf.write_text(conf.read_text().replace('inputs=["local"]', 'inputs=["nope"]'))
+    assert main(["scan", "test/a/x.test", "--env"]) == 2
+    assert "names input 'nope', which is not in STORAGES or CREDENTIALS" in capsys.readouterr().err
+
+
+def test_a_credential_that_does_not_resolve_waits_at_scan(tree, monkeypatch, capsys):
+    monkeypatch.delenv("DT_SECRET")
+    assert main(["scan", "test/a/x.test", "--env"]) == 0
+    assert "env: <credential 'local-key': none of its sources resolved" in capsys.readouterr().out
