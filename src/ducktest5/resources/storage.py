@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 from ..binary import UsageError
-from .base import EXCLUSIVE, Output, Resource, ResourceDef, digest
+from .base import SHARED_RW, Output, Resource, ResourceDef, digest
 
 SCHEMES = ("file", "s3", "az", "abfss", "http", "https")
 _REF = re.compile(r"\{([\w-]+)\.(\w+)\}")
@@ -39,14 +39,15 @@ def fill(template: str, inputs: Mapping[str, Resource]) -> str:
 
 @dataclass(eq=False)
 class StorageDef(ResourceDef):
-    """A location: a local directory, a bucket, a container, with the scheme its `root` says. A
-    reader shares it; a writer with a test token gets a child of its own, a prefix under the root;
+    """A location: a local directory, a bucket, a container, with the scheme its `root` says. The
+    storage itself is shared; a writer with a key gets a child of its own, a prefix under the root;
     a writer with none has the whole root to itself, under a lock. It outputs its roots and
     endpoint, delivered as the binary's roots (`TEMP_DIR`, `DATA_DIR` and their `LOCAL_` twins)
     and `S3_ENDPOINT`, `S3_USE_SSL`, `AZ_ACCOUNT` where they apply."""
 
     kind = "storage"
-    capacity = EXCLUSIVE
+    capacity = SHARED_RW
+    mints_children = True
 
     id: str
     root: str  # a URI or a path; `{minio.bucket}` takes an input's output
@@ -94,11 +95,11 @@ class Storage(Resource):
         """The local path of a `file` root."""
         return self.root[len("file://") :] if self.root.startswith("file://") else self.root
 
-    def mint_child(self, token):
+    def mint_child(self, key):
         if self.tag is None:
             raise ValueError(f"storage {self.id}: a child needs the run's tag")
-        root = f"{self.root}/{self.definition.temp_prefix}/{self.tag}/{token}"
-        return Storage(self.definition, digest([self.identity, token]), self.tag, self.inputs, parent=self, root=root)
+        root = f"{self.root}/{self.definition.temp_prefix}/{self.tag}/{key}"
+        return Storage(self.definition, digest([self.identity, key]), self.tag, self.inputs, parent=self, root=root)
 
     def alloc(self):
         if self.scheme == "file":

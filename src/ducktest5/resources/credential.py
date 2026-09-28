@@ -105,8 +105,8 @@ class Credential(Resource):
             shown = ", ".join(str(s.content()) for s in self.definition.sources)
             raise UsageError(f"credential {self.id!r}: none of its sources resolved: {shown}")
 
-    def acquire(self, mode=RO, token=None):
-        held = super().acquire(mode, token)
+    def acquire(self, mode=RO, key=None):
+        held = super().acquire(mode, key)
         generator = self.definition.generator
         if generator is not None:
             source = f"generator {generator.__qualname__}"

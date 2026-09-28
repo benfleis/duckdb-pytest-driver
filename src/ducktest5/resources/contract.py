@@ -8,7 +8,7 @@ from typing import Callable
 from .base import RW, Resource, canonical
 
 
-def check_contract(make: Callable[[str], Resource], *, tag: str = "contract-run", token: str = "contract-test"):
+def check_contract(make: Callable[[str], Resource], *, tag: str = "contract-run", key: str = "contract-test"):
     """Asserts the handler contract on the instances `make(tag)` returns: identity is the same for
     the same Def and inputs; create is safe to repeat; delete of what is not there is not an error;
     an owned instance is found by `list(tag)` after create and not after delete; a secret value is
@@ -18,10 +18,10 @@ def check_contract(make: Callable[[str], Resource], *, tag: str = "contract-run"
     _check(first, first, tag)
     first.create()
     try:
-        child = first.acquire(RW, token)
+        child = first.acquire(RW, key)
         if child is not first:
             assert child.owned, "a minted child is made by the run, so it is owned"
-            assert first.acquire(RW, token) is child, "one token was given two children"
+            assert first.acquire(RW, key) is child, "one key was given two children"
             _check(child, first, tag)
         first.release(child, RW)
     finally:

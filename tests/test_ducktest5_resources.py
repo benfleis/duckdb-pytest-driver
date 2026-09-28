@@ -18,6 +18,7 @@ from ducktest5.resources import (
     RO,
     RW,
     SHARED_RO,
+    SHARED_RW,
     Output,
     Resource,
     StorageDef,
@@ -85,10 +86,10 @@ def test_an_input_may_be_a_def_object():
     assert ThingDef("a", inputs=[{up: RO}]).edges() == [("up", RO, up)]
 
 
-def test_the_acquire_mode_and_a_nonce_split_identity():
+def test_the_acquire_mode_and_a_key_split_identity():
     d = ThingDef("a")
     assert d.identity(mode=RW) != d.identity(mode=RO)
-    assert d.identity(nonce="t1") != d.identity(nonce="t2") != d.identity()
+    assert d.identity(key="t1") != d.identity(key="t2") != d.identity()
 
 
 def test_make_gives_the_instance_the_identity_of_its_fulfilled_inputs():
@@ -105,8 +106,8 @@ def test_make_gives_the_instance_the_identity_of_its_fulfilled_inputs():
 
 def _kind(capacity, mint=None):
     class Instance(Resource):
-        def mint_child(self, token):
-            return mint(self, token) if mint else None
+        def mint_child(self, key):
+            return mint(self, key) if mint else None
 
     return type("K", (ThingDef,), {"capacity": capacity, "instance": Instance})
 
@@ -135,8 +136,8 @@ def test_readers_of_an_exclusive_kind_share_it():
     assert thing.acquire(RO) is thing and thing.acquire(RO) is thing
 
 
-def test_an_exclusive_writer_gets_a_minted_child_per_token_instead_of_a_lock():
-    kind = _kind(EXCLUSIVE, mint=lambda parent, token: ThingDef("c").make(tag=parent.tag, nonce=token))
+def test_an_exclusive_writer_gets_a_minted_child_per_key_instead_of_a_lock():
+    kind = _kind(EXCLUSIVE, mint=lambda parent, key: ThingDef("c").make(tag=parent.tag, key=key))
     thing = kind("a").make(tag="run1")
     one, two = thing.acquire(RW, "t1"), thing.acquire(RW, "t2")
     assert one is not thing and one is not two
@@ -152,7 +153,7 @@ def test_a_read_only_kind_serves_a_writer_as_a_reader():
 def test_an_expired_instance_is_renewed_at_acquire():
     thing = ThingDef("a").make()
     renewed = []
-    thing.expires, thing.renew = (lambda: time.time() - 1), (lambda: renewed.append(1))
+    thing.expires_at, thing.renew = (lambda: time.time() - 1), (lambda: renewed.append(1))
     thing.acquire(RO)
     assert renewed == [1]
 
@@ -359,7 +360,16 @@ def test_a_reference_to_what_no_input_gives_is_a_usage_error():
         StorageDef("s3", "s3://{minio.bucket}").make()
 
 
-def test_a_writer_with_a_token_gets_a_prefix_of_its_own(tmp_path):
+def test_a_storage_is_shared_rw_and_mints_children_for_an_exclusive_writer():
+    store = StorageDef("bucket", "s3://bucket").make(tag="run1")
+    assert store.definition.capacity == SHARED_RW and store.definition.mints_children
+    assert store.acquire(RW) is store and store._writer
+    store.release(store, RW)
+    child = store.acquire(RW, "t1")
+    assert child is not store and child.owned
+
+
+def test_a_writer_with_a_key_gets_a_prefix_of_its_own(tmp_path):
     store = StorageDef("local", str(tmp_path)).make(tag="run1")
     child = store.acquire(RW, "t1")
     assert child.root == f"{tmp_path}/temp/run1/t1" and child.owned and not store.owned
@@ -368,7 +378,7 @@ def test_a_writer_with_a_token_gets_a_prefix_of_its_own(tmp_path):
     assert env["TEMP_DIR"] == f"{tmp_path}/temp/run1/t1" and env["DATA_DIR"] == str(tmp_path)
 
 
-def test_a_writer_without_a_token_has_the_whole_root_under_a_lock():
+def test_a_writer_without_a_key_has_the_whole_root_under_a_lock():
     store = StorageDef("bucket", "s3://bucket").make(tag="run1")
     assert store.acquire(RW) is store
     assert store._writer
