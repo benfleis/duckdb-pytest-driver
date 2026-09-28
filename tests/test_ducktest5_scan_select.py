@@ -1000,10 +1000,10 @@ def test_an_axis_value_that_unsets_a_credentials_names_hides_it(tmp_path, monkey
     monkeypatch.setenv("DT_KEY", "k")
     conf = """
         from ducktest5 import Variant, default
-        from ducktest5.resources import CredentialDef, StorageDef, env
+        from ducktest5.resources import CredentialDef, StorageDef, from_env
 
         STORAGES = [StorageDef("bucket", "s3://bucket")]
-        CREDENTIALS = [CredentialDef("key", sources=[env({"AWS_ACCESS_KEY_ID": "DT_KEY"})], scopes=["bucket"])]
+        CREDENTIALS = [CredentialDef("key", sources=[from_env({"DT_KEY": "AWS_ACCESS_KEY_ID"})], scopes=["bucket"])]
         AXES = {"auth": [Variant("key"), Variant("none", env={"AWS_ACCESS_KEY_ID": None})]}
         RULES = [default(bind={"storage": "bucket"}, variants=["auth"])]
     """

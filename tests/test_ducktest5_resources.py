@@ -24,7 +24,7 @@ from ducktest5.resources import (
     StorageDef,
     CredentialDef,
     check_contract,
-    env,
+    from_env,
     pick_credentials,
     local_path,
     scheme_of,
@@ -209,7 +209,7 @@ def test_the_contract_helper_passes_the_base_kind():
 def test_a_credential_takes_the_first_source_that_resolves(monkeypatch):
     monkeypatch.delenv("DT_MISSING", raising=False)
     monkeypatch.setenv("DT_KEY", "k1")
-    cred = CredentialDef("key", sources=[env(["DT_MISSING"]), env({"AWS_ACCESS_KEY_ID": "DT_KEY"})]).make()
+    cred = CredentialDef("key", sources=[from_env(["DT_MISSING"]), from_env({"DT_KEY": "AWS_ACCESS_KEY_ID"})]).make()
     cred.create()
     assert cred.env == {}
     assert cred.secrets["AWS_ACCESS_KEY_ID"].source == "env DT_KEY"
@@ -220,28 +220,28 @@ def test_a_credential_takes_the_first_source_that_resolves(monkeypatch):
 def test_a_credential_none_of_whose_sources_resolve_says_which_it_tried(monkeypatch):
     monkeypatch.delenv("DT_MISSING", raising=False)
     with pytest.raises(UsageError, match=r"'key': none of its sources resolved: \{'env': \{'DT_MISSING'"):
-        CredentialDef("key", sources=[env(["DT_MISSING"])]).make().create()
+        CredentialDef("key", sources=[from_env(["DT_MISSING"])]).make().create()
 
 
 def test_1password_is_not_available_here(monkeypatch):
     monkeypatch.delenv("DT_MISSING", raising=False)
-    cred = CredentialDef("key", sources=[env(["DT_MISSING"]), "1password:ducktest-aws"]).make()
+    cred = CredentialDef("key", sources=[from_env(["DT_MISSING"]), "1password:ducktest-aws"]).make()
     with pytest.raises(UsageError, match=r"'key': source 1password:ducktest-aws is not available here"):
         cred.create()
 
 
 def test_a_credential_counts_by_its_source_never_its_value(monkeypatch):
-    d = CredentialDef("key", sources=[env(["DT_KEY"])])
+    d = CredentialDef("key", sources=[from_env(["DT_KEY"])])
     monkeypatch.setenv("DT_KEY", "one")
     before = d.identity()
     monkeypatch.setenv("DT_KEY", "two")
     assert d.identity() == before
-    assert CredentialDef("key", sources=[env(["DT_OTHER"])]).identity() != before
+    assert CredentialDef("key", sources=[from_env(["DT_OTHER"])]).identity() != before
 
 
 def test_two_env_sourced_credentials_differ_by_the_names_they_read():
-    a = CredentialDef("key", sources=[env(["DT_A"])]).identity()
-    b = CredentialDef("key", sources=[env(["DT_B"])]).identity()
+    a = CredentialDef("key", sources=[from_env(["DT_A"])]).identity()
+    b = CredentialDef("key", sources=[from_env(["DT_B"])]).identity()
     assert a != b
 
 
@@ -253,7 +253,7 @@ def test_a_callable_source_makes_the_secret_from_the_inputs_at_acquire(monkeypat
         calls.append(1)
         return {"UC_TOKEN": "t-" + inputs["root"].secrets["KEY"].get()}
 
-    root = CredentialDef("root", sources=[env({"KEY": "DT_KEY"})]).make()
+    root = CredentialDef("root", sources=[from_env({"DT_KEY": "KEY"})]).make()
     root.create()
     cred = CredentialDef("token", sources=[token], inputs=["root"]).make({"root": root})
     cred.create()
@@ -271,7 +271,7 @@ def test_a_callable_source_returning_none_falls_through_to_the_next_source(monke
         calls.append(1)
         return None
 
-    cred = CredentialDef("key", sources=[skip, env(["DT_KEY"])]).make()
+    cred = CredentialDef("key", sources=[skip, from_env(["DT_KEY"])]).make()
     cred.create()
     cred.acquire()
     assert calls == [1]
@@ -343,7 +343,7 @@ def test_a_credential_scoped_to_storage_a_is_not_delivered_for_a_test_that_uses_
 
 def test_credential_contract(monkeypatch):
     monkeypatch.setenv("DT_KEY", "k")
-    check_contract(lambda run_token: CredentialDef("key", sources=[env(["DT_KEY"])]).make(run_token=run_token))
+    check_contract(lambda run_token: CredentialDef("key", sources=[from_env(["DT_KEY"])]).make(run_token=run_token))
 
 
 # -----------------------------------------------------------------------------
@@ -455,9 +455,9 @@ def test_storage_contract(tmp_path):
 SECRET = "s3cr3t-value-never-written"
 CONF = """
 from ducktest5 import Variant, default, match
-from ducktest5.resources import CredentialDef, StorageDef, env
+from ducktest5.resources import CredentialDef, StorageDef, from_env
 STORAGES = [StorageDef("local", "{root}/store")]
-CREDENTIALS = [CredentialDef("local-key", sources=[env({"AWS_SECRET_ACCESS_KEY": "DT_SECRET"})], scopes=["local"])]
+CREDENTIALS = [CredentialDef("local-key", sources=[from_env({"DT_SECRET": "AWS_SECRET_ACCESS_KEY"})], scopes=["local"])]
 AXES = {"storage": [Variant("local", inputs=["local"])]}
 RULES = [match("a/**", variants=["storage"])]
 """

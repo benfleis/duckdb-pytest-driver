@@ -27,10 +27,10 @@ class EnvSource:
         return {name: Output(lambda var=var: os.environ.get(var), f"env {var}") for name, var in self.names}
 
 
-def env(names: Mapping[str, str] | Iterable[str]) -> EnvSource:
-    """A source from the process environment: `{"AWS_ACCESS_KEY_ID": "MY_KEY_VAR"}`, or a list of
-    names that are delivered as they are called here."""
-    pairs = names.items() if isinstance(names, Mapping) else ((n, n) for n in names)
+def from_env(names: Mapping[str, str] | Iterable[str]) -> EnvSource:
+    """A source from the process environment. A mapping reads each key and delivers it under its
+    value, `{"MY_KEY_VAR": "AWS_ACCESS_KEY_ID"}`; a list delivers each name as it is."""
+    pairs = ((out, var) for var, out in names.items()) if isinstance(names, Mapping) else ((n, n) for n in names)
     return EnvSource(tuple(sorted(pairs)))
 
 
@@ -44,7 +44,7 @@ class OnePasswordSource:
     def resolve(self, credential_id: str):
         raise UsageError(
             f"credential {credential_id!r}: source 1password:{self.item} is not available here; "
-            "put an env(...) source before it"
+            "put a from_env(...) source before it"
         )
 
 
@@ -60,11 +60,11 @@ def _source(entry):
         if entry.startswith("1password:"):
             return OnePasswordSource(entry.split(":", 1)[1])
         if entry.startswith("env:") and _SIMPLE_NAME.fullmatch(entry[len("env:") :]):
-            return env([entry[len("env:") :]])
+            return from_env([entry[len("env:") :]])
         raise UsageError(
             f"{entry!r}: a string source names where a secret lives, e.g. '1password:NAME'; never the secret itself"
         )
-    raise UsageError(f"{entry!r} is not a credential source; use env(...), a string reference, or a callable")
+    raise UsageError(f"{entry!r} is not a credential source; use from_env(...), a string reference, or a callable")
 
 
 def _scope(credential_id, entry):
@@ -84,10 +84,10 @@ def _scope(credential_id, entry):
 
 @dataclass(eq=False)
 class CredentialDef(ResourceDef):
-    """A secret a test needs. `sources` is one ordered list, tried at acquire: an `env(...)` source,
+    """A secret a test needs. `sources` is one ordered list, tried at acquire: a `from_env(...)` source,
     a string reference with a known scheme (`"1password:NAME"`; `"env:NAME"` is shorthand for
-    `env([NAME])`), or a callable. A callable is called with the credential's resolved inputs (as
-    `env(...)` sources are) and returns the secret mapping, or None to try the next source; it is
+    `from_env([NAME])`), or a callable. A callable is called with the credential's resolved inputs (as
+    `from_env(...)` sources are) and returns the secret mapping, or None to try the next source; it is
     late-bound, called at acquire and never at plan. It outputs `secrets` only, never `env`, under
     the names its source gives (`AWS_ACCESS_KEY_ID`). `scopes` lists the storages it is for -- each
     a storage id, or `(storage id, "ro" | "rw")` -- and it is that storage's credential when a test
@@ -99,7 +99,7 @@ class CredentialDef(ResourceDef):
     sharing = SHARED_RO
 
     id: str
-    sources: list = field(default_factory=list)  # env(...), "1password:NAME"/"env:NAME", or a callable, in order
+    sources: list = field(default_factory=list)  # from_env(...), "1password:NAME"/"env:NAME", or a callable, in order
     scopes: list = field(default_factory=list)  # storage id, or (storage id, "ro" | "rw"), each
     default: bool = False  # the one to pick when several share a scope
     inputs: list = field(default_factory=list)

@@ -18,7 +18,7 @@ from ducktest5.resources import (
     StorageDef,
     check_contract,
     duckdb_session,
-    env,
+    from_env,
     spark_session,
 )
 from ducktest5.scan import scan
@@ -128,8 +128,8 @@ def minio_inputs(monkeypatch):
     monkeypatch.setenv("DT_KEY", "admin")
     monkeypatch.setenv("DT_SECRET", "password")
     storage = StorageDef("minio", "s3://ducktest/delta", endpoint="http://172.18.0.1:9999")
-    keys = {"AWS_ACCESS_KEY_ID": "DT_KEY", "AWS_SECRET_ACCESS_KEY": "DT_SECRET"}
-    credential = CredentialDef("minio-key", sources=[env(keys)], scopes=["minio"])
+    keys = {"DT_KEY": "AWS_ACCESS_KEY_ID", "DT_SECRET": "AWS_SECRET_ACCESS_KEY"}
+    credential = CredentialDef("minio-key", sources=[from_env(keys)], scopes=["minio"])
     return [storage, credential], {"minio": storage.make(), "minio-key": credential.make()}
 
 
