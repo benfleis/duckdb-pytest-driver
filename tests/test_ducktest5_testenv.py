@@ -6,6 +6,9 @@ from ducktest5.binary import UsageError
 from ducktest5.declare import ServiceDef, Variant
 from ducktest5.model import SQLLOGIC, Test, TestDef
 from ducktest5.provision import EXISTING, Provisioned
+from ducktest5.resources import RO, RW, CredentialDef, StorageDef
+from ducktest5.resources import env as env_source
+from ducktest5.sqllogic import init_file_text
 from ducktest5.testenv import resolve
 
 STORE = ServiceDef(
@@ -192,3 +195,27 @@ def test_a_python_body_adds_values_and_sql_for_the_test_file_beside_it():
     assert more.names["TABLE"] == "id_name"
     assert "values: TABLE=id_name  <- ctx.run_test()" in more.lines()
     assert env.sql == "SET a = 1;" and "TABLE" not in env.names  # the test's own is untouched
+
+
+def test_a_test_file_creates_its_scoped_secret_from_a_template_the_binary_fills(monkeypatch):
+    monkeypatch.setenv("DT_KEY", "k-value")
+    monkeypatch.setenv("DT_SECRET", "s-value")
+    storage = StorageDef("bucket", "s3://bucket")
+    credential = CredentialDef(
+        "key",
+        sources=[env_source({"AWS_ACCESS_KEY_ID": "DT_KEY", "AWS_SECRET_ACCESS_KEY": "DT_SECRET"})],
+        scope="bucket",
+    )
+    test = make_test()
+    test.inputs = ((storage, RW), (credential, RO))
+    resolved = resolve(test)
+    text, _ = init_file_text(resolved)
+    assert text == (
+        "require httpfs\n"
+        "\n"
+        "statement ok\n"
+        "CREATE SECRET ducktest_bucket (TYPE 's3', KEY_ID '{AWS_ACCESS_KEY_ID}', "
+        "SECRET '{AWS_SECRET_ACCESS_KEY}', SCOPE 's3://bucket');\n"
+    )
+    assert resolved.passthrough == ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+    assert "k-value" not in "\n".join(resolved.lines()) + text

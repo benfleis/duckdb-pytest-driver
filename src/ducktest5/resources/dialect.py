@@ -1,8 +1,9 @@
 """How resource outputs become an engine's preamble: one renderer per (dialect, action).
 
     duckdb     SQL sent to a DuckDB shell over its stdin: LOAD, SET, CREATE SECRET ... SCOPE
-    unittest   the init file of a `.test` batch: `require`, SET; a secret is only a name passed
-               through from the process environment, never its value in a file
+    unittest   the init file of a `.test` batch: `require`, SET, CREATE SECRET ... SCOPE; a secret
+               value is a `{NAME}` the binary fills from a variable passed through to it, never
+               the value in a file
     spark      runtime configuration of a Spark session; a secret is a per-bucket s3a setting
 
 The actions are `requires` (a list of extensions), `settings` (name -> value) and `secret` (a
@@ -24,9 +25,15 @@ class Preamble:
     sql: list = field(default_factory=list)  # statements, in order
     conf: dict = field(default_factory=dict)  # runtime settings of the engine
     passthrough: list = field(default_factory=list)  # process variables the engine reads secrets from
+    requires: list = field(default_factory=list)  # extensions the statements need loaded first
 
     def __add__(self, other):
-        return Preamble(self.sql + other.sql, {**self.conf, **other.conf}, self.passthrough + other.passthrough)
+        return Preamble(
+            self.sql + other.sql,
+            {**self.conf, **other.conf},
+            self.passthrough + other.passthrough,
+            self.requires + [r for r in other.requires if r not in self.requires],
+        )
 
 
 def renders(dialect, action):
@@ -111,31 +118,42 @@ _S3_OPTIONS = {
 _AZURE_SPN = {"TENANT_ID": "AZURE_TENANT_ID", "CLIENT_ID": "AZURE_CLIENT_ID", "CLIENT_SECRET": "AZURE_CLIENT_SECRET"}
 
 
-@renders("duckdb", "secret")
-def _duckdb_secret(storage, credential):
-    facts, values = _facts(storage), _values(credential)
+def _secret_options(storage, value_of):
+    """The options of the storage's secret, a secret value as `value_of(name)` gives it; None for a
+    storage that needs no secret."""
+    facts = _facts(storage)
     if facts["scheme"] == "file":
-        return Preamble()
+        return None
     if facts["scheme"] == "s3":
         options = {"TYPE": "s3"}
-        options.update({opt: values[name] for opt, name in _S3_OPTIONS.items() if values.get(name)})
+        options.update({opt: value_of(name) for opt, name in _S3_OPTIONS.items() if value_of(name)})
         if facts["endpoint"]:
             options["ENDPOINT"] = facts["endpoint"].split("://", 1)[-1]
             options["USE_SSL"] = facts["endpoint"].startswith("https://")
             options["URL_STYLE"] = "path"
     elif facts["scheme"] in ("az", "abfss"):
         options = {"TYPE": "azure"}
-        if values.get("AZURE_STORAGE_CONNECTION_STRING"):
-            options["CONNECTION_STRING"] = values["AZURE_STORAGE_CONNECTION_STRING"]
+        if value_of("AZURE_STORAGE_CONNECTION_STRING"):
+            options["CONNECTION_STRING"] = value_of("AZURE_STORAGE_CONNECTION_STRING")
         else:
             options["PROVIDER"] = "service_principal"
-            options.update({opt: values[name] for opt, name in _AZURE_SPN.items() if values.get(name)})
+            options.update({opt: value_of(name) for opt, name in _AZURE_SPN.items() if value_of(name)})
             options["ACCOUNT_NAME"] = facts["account"]
     else:
         raise UsageError(f"storage {storage.id!r}: the duckdb dialect has no secret for {facts['scheme']}")
     options["SCOPE"] = facts["root"]
+    return options
+
+
+def _create_secret(storage, options):
     body = ", ".join(f"{k} {str(v).lower() if isinstance(v, bool) else quote(v)}" for k, v in options.items())
-    return Preamble(sql=[f"CREATE SECRET {_secret_name(storage)} ({body});"])
+    return f"CREATE SECRET {_secret_name(storage)} ({body});"
+
+
+@renders("duckdb", "secret")
+def _duckdb_secret(storage, credential):
+    options = _secret_options(storage, _values(credential).get)
+    return Preamble() if options is None else Preamble(sql=[_create_secret(storage, options)])
 
 
 # -----------------------------------------------------------------------------
@@ -151,9 +169,21 @@ def _unittest_requires(names):
 renders("unittest", "settings")(_duckdb_settings)
 
 
+_EXTENSION_OF = {"s3": "httpfs", "azure": "azure"}
+
+
 @renders("unittest", "secret")
 def _unittest_secret(storage, credential):
-    return Preamble(passthrough=sorted(credential.secrets))
+    """The same secret, with `{NAME}` for each value: the binary fills it from the variables passed
+    through to it, so the init file holds no value. The binary loads no extension by itself, so the
+    one of the secret type is required first."""
+    names = sorted(name for name, out in credential.secrets.items() if not out.unset)
+    options = _secret_options(storage, lambda name: f"{{{name}}}" if name in names else None)
+    if options is None:
+        return Preamble(passthrough=names)
+    return Preamble(
+        sql=[_create_secret(storage, options)], passthrough=names, requires=[_EXTENSION_OF[options["TYPE"]]]
+    )
 
 
 # -----------------------------------------------------------------------------

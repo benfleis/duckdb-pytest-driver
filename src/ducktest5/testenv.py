@@ -15,7 +15,9 @@ of a test of a `.test` file is made of it.
     services    service id -> the mode it was provisioned in and its block, secrets masked
 
 A storage input gives roots and values; a credential gives secrets, which reach the engine only as
-process environment (named to the binary in `env_passthrough`), read when the process starts.
+process environment (named to the binary in `env_passthrough`), read when the process starts. For a
+`.test` body, `secret_sql` creates the secret scoped to the storage in the init file, with `{NAME}`
+where a value goes: the binary fills it from that environment.
 
 Every entry carries the source that asked for it, so `scan --env` and a failed test can say where
 each part came from. A part a variant computes from the services' blocks is not known before
@@ -33,6 +35,7 @@ from .binary import UsageError
 from .provision import MASK
 from .provision import SECRET_NAME as _SECRET_NAME
 from .resources import RO
+from .resources.dialect import pairs, render
 
 ROOTS = ("data_dir", "local_data_dir", "temp_dir_root", "local_temp_dir_root")
 _ROOT_OF = {
@@ -44,6 +47,7 @@ _ROOT_OF = {
 
 _LABELS = {
     "require": "require",
+    "secret": "secret",
     "set": "set",
     "sql": "init sql",
     "value": "values",
@@ -81,6 +85,7 @@ def _masked(text, secrets):
 class TestEnv:
     requires: list = field(default_factory=list)  # Entry(value=extension name)
     init_sql: list = field(default_factory=list)  # Entry(value=one statement), in delivery order
+    secret_sql: list = field(default_factory=list)  # Entry(value=CREATE SECRET), for a .test body only
     values: dict = field(default_factory=dict)  # name -> Entry
     roots: dict = field(default_factory=dict)  # one of ROOTS -> Entry
     env: dict = field(default_factory=dict)  # name -> Entry
@@ -149,6 +154,7 @@ class TestEnv:
             {
                 "requires": self.extensions,
                 "init_sql": [e.value for e in self.init_sql],
+                "secret_sql": [e.value for e in self.secret_sql],
                 "values": {k: str(e.value) for k, e in sorted(self.values.items())},
                 "roots": {k: str(e.value) for k, e in sorted(self.roots.items())},
                 # A secret read at delivery counts by where it is read from, never by its value.
@@ -165,6 +171,7 @@ class TestEnv:
         """Every entry, in the order the engine is given them."""
         return [
             *self.requires,
+            *self.secret_sql,
             *self.init_sql,
             *self.values.values(),
             *self.roots.values(),
@@ -292,15 +299,23 @@ def resolve(test, provisioned=None):
                 env.init_sql.append(Entry("", where, kind="sql", shown=""))  # a function of blocks we do not have
         elif v.init_sql:
             env.init_sql.append(Entry(v.init_sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
-    for resource, mode in test.inputs:
-        _deliver(env, resource, mode, provisioned is None, _axis_value)
+    made = [_deliver(env, resource, mode, provisioned is None, _axis_value) for resource, mode in test.inputs]
+    if definition.body_file:
+        for storage, credential in pairs(m for m in made if m is not None):
+            rendered = render("unittest", "secret", storage, credential)
+            where = f"credential {credential.id}, storage {storage.id}"
+            for extension in rendered.requires:
+                if extension not in env.extensions:
+                    env.requires.append(Entry(extension, where, kind="require"))
+            env.secret_sql += [Entry(sql, where, kind="secret") for sql in rendered.sql]
     return env
 
 
 def _deliver(env, definition, mode, scanning, value):
-    """One input's outputs into the test environment. Nothing is allocated here and nothing is held:
-    that is for the walk of the resource graph. At scan a credential that does not resolve, or one a
-    generator makes, is listed in `pending`: its value is not needed before the run."""
+    """One input's outputs into the test environment, and the instance that gave them, or None when
+    they are not known yet. Nothing is allocated here and nothing is held: that is for the walk of
+    the resource graph. At scan a credential that does not resolve, or one a generator makes, is
+    listed in `pending`: its value is not needed before the run."""
     where = f"{definition.kind} {definition.id}"
     instance = definition.make({ref: sub.make() for ref, _, sub in definition.edges() if sub}, mode=mode)
     try:
@@ -313,7 +328,7 @@ def _deliver(env, definition, mode, scanning, value):
         if not scanning:
             raise
         env.pending.append(Entry("secrets", where, kind="env", shown=f"<{exc}>"))
-        return
+        return None
     for name, out in values.items():
         if name in _ROOT_OF:
             # The binary derives a local root equal to its twin; it takes local_temp_dir_root only beside a remote one.
@@ -327,6 +342,7 @@ def _deliver(env, definition, mode, scanning, value):
         env.env[name] = Entry(out.value, f"{where}: {out.source}", kind="env", name=name, secret=True)
         env.env_state[name] = "unset" if out.unset else "set"
         env.passthrough.append(name)
+    return instance
 
 
 def _ready(variant, blocks):

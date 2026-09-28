@@ -107,12 +107,12 @@ def init_file_text(test_env):
     """The init file, and {line of a statement header: what asked for that statement}.
 
     The requires come first, as `require`, which is the binary's own way to load an extension: a
-    `SET` or a secret type of one fails before that. Then the statements, one block each, so a
-    failure can be traced back to the one thing that asked for it."""
+    `SET` or a secret type of one fails before that. Then the scoped secrets, then the statements,
+    one block each, so a failure can be traced back to the one thing that asked for it."""
     lines, sources = [], {}
     for line in render("unittest", "requires", test_env.extensions).sql:
         lines += [line, ""]
-    for entry in test_env.init_sql:
+    for entry in [*test_env.secret_sql, *test_env.init_sql]:
         lines.append("statement ok")
         sources[len(lines)] = entry.source
         lines += [line for line in entry.value.splitlines() if line.strip()] + [""]

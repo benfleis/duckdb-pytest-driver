@@ -73,7 +73,14 @@ def test_spark_gets_the_settings_of_the_one_bucket(minio):
 
 def test_the_unittest_binary_gets_the_names_of_the_secrets_never_their_values(minio):
     delivered = render("unittest", "secret", *minio)
-    assert delivered == Preamble(passthrough=["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"])
+    assert delivered == Preamble(
+        sql=[
+            "CREATE SECRET ducktest_minio (TYPE 's3', KEY_ID '{AWS_ACCESS_KEY_ID}', SECRET '{AWS_SECRET_ACCESS_KEY}', "
+            "ENDPOINT '172.18.0.1:9999', USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/delta');"
+        ],
+        passthrough=["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+        requires=["httpfs"],
+    )
 
 
 def test_an_azure_storage_gets_a_service_principal_secret(monkeypatch):
