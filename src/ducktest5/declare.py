@@ -17,18 +17,14 @@ class EngineDef:
     `boot(log_path)` returns a handle with `run(statements)` (as `Client` describes it) and `stop()`.
     `version` names what was booted (e.g. "spark:4.2:delta-4.4") for the scan record and the report.
 
-    `uses` names services the engine can talk to. It never makes a run provision one: when a
-    selected test needs such a service, the handle's `use_service(id, block)` is called once, after
-    boot, with the facts of the instance.
-
-    `dialect` names how a Session on it is given its preamble (`resources/dialect.py`); an engine
-    without one takes no inputs through its Session.
+    `dialect` names how a Session on it is given its preamble (`resources/dialect.py`), the
+    storages and credentials a test binds among it; an engine without one takes no inputs through
+    its Session.
     """
 
     id: str
     version: str
     boot: Callable
-    uses: tuple = ()
     dialect: str | None = None
 
 

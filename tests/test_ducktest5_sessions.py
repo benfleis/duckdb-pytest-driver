@@ -168,7 +168,7 @@ class SparkRecorder(FakeEngine):
         super().__init__()
         self.conf = {}
 
-    def engine(self, id="spark", uses=()):
+    def engine(self, id="spark"):
         return EngineDef(id, "spark:fake", self._boot, dialect="spark")
 
     def set_conf(self, key, value):

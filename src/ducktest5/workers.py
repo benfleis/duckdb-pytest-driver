@@ -15,8 +15,8 @@ identity its tests need, reset between tests and reopened after a failed one:
   of its own: the environment of a thread cannot differ from the process's.
 - Its own Spark session, a clone of the run's. Temp views are session state, so the drop of them
   before a test would else reach into the test running beside it. A brand new session isolates the
-  views too, but starts with an empty configuration -- the `fs.s3a.*` settings the engine was given
-  for a service were gone. A clone inherits them, and shares the JVM, the context and the cache:
+  views too, but starts with an empty configuration -- what the engine was booted with was gone.
+  A clone inherits it, and shares the JVM, the context and the cache:
   still one boot for every test that needs the engine.
 
 On a suite of 43 tests that drive Spark and DuckDB in turn, this is 400 s of wall time at one

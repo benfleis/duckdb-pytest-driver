@@ -33,17 +33,14 @@ class FakeEngine:
     def __init__(self, *, boots=True):
         self.boots, self.calls, self.statements = boots, [], []
 
-    def engine(self, id="fake", uses=()):
-        return EngineDef(id, "fake:1", self._boot, uses=uses)
+    def engine(self, id="fake"):
+        return EngineDef(id, "fake:1", self._boot)
 
     def _boot(self, log_path):
         self.calls.append("boot")
         if not self.boots:
             raise RuntimeError("no JVM")
         return self
-
-    def use_service(self, service_id, block):
-        self.calls.append(f"use {service_id}")
 
     def begin_test(self):
         self.calls.append("begin_test")
@@ -592,13 +589,6 @@ def test_an_engine_that_does_not_boot_blocks_its_tests(tmp_path):
     _, _, report, _ = go(tmp_path, tests, engines=[engine.engine()])
     assert outcomes(report) == {"passes": "blocked", "a": "passed"}
     assert "no JVM" in report["not_provisioned"]["fake"]
-
-
-def test_an_engine_is_told_about_the_services_it_uses_and_is_stopped(tmp_path):
-    store, engine = FakeStore(), FakeEngine()
-    test = py_test(passes, services=["store"], engines=["fake"])
-    go(tmp_path, [test], engines=[engine.engine(uses=("store", "absent"))], services=[store.service()])
-    assert engine.calls == ["boot", "use store", "begin_test", "stop"]
 
 
 def test_secrets_of_a_service_are_not_in_the_provision_record(tmp_path):

@@ -438,9 +438,6 @@ def execute(
             t0 = time.perf_counter()
             try:
                 handles[engine_id] = engines[engine_id].boot(log)
-                for service_id in engines[engine_id].uses:
-                    if service_id in provisioned:
-                        handles[engine_id].use_service(service_id, provisioned[service_id].block)
                 service_event(
                     engine_id,
                     kind="engine",
