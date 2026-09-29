@@ -35,7 +35,7 @@ import shutil
 
 import yaml
 
-from . import events, sqllogic, testenv
+from . import events, sessions, sqllogic, testenv
 from .binary import UsageError
 from .model import SQLLOGIC
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED
@@ -148,9 +148,10 @@ def _key_record(test_env):
     return {"digest": hashlib.sha1(key.encode()).hexdigest()[:12], "environment": test_env.record()}
 
 
-def build_plan(tests, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_args="", keep=False):
-    """`02-plan.yaml` as a document. Tests of `.test` files with one test environment share a batch; a Python
-    body is a batch of one, whatever `--runner` says, because only this process can run it.
+def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_args="", keep=False):
+    """`02-plan.yaml` as a document. Tests of `.test` files whose DuckDB Sessions have one identity,
+    over one test environment, share a batch; a Python body is a batch of one, whatever `--runner`
+    says, because only this process can run it. Without `project` every test has the default Session.
 
     A batch: `id`, `runner`, `order`, `tests` (the test ids), `files` (the `.test` files, relative to
     the project root), `timeout` and `timeouts`/`retries` where a test has its own, `mutex` where a
@@ -159,9 +160,13 @@ def build_plan(tests, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_a
     plan can be read by another engine without being believed."""
     if runner not in RUNNERS:
         raise UsageError(f"--runner {runner!r}; it is one of {RUNNERS}")
+
+    def environment(test):
+        return sessions.environment(test, testenv.resolve(test), project)
+
     batches, groups = [], {}
     for test in (c for c in tests if c.definition.type == SQLLOGIC):
-        groups.setdefault(testenv.resolve(test).key(), []).append(test)
+        groups.setdefault(environment(test).key(), []).append(test)
     for group in groups.values():
         for chunk in _chunks(group, batch_size):
             batches.append(
@@ -175,7 +180,7 @@ def build_plan(tests, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_a
                     "timeouts": {c.id: c.definition.timeout for c in chunk if c.definition.timeout},
                     "retries": {c.id: c.definition.retries for c in chunk if c.definition.retries},
                     **({"mutex": sorted({m for c in chunk for m in c.mutex})} if any(c.mutex for c in chunk) else {}),
-                    "key": _key_record(testenv.resolve(chunk[0])),
+                    "key": _key_record(environment(chunk[0])),
                 }
             )
     for test in (c for c in tests if c.definition.type != SQLLOGIC):
@@ -189,7 +194,7 @@ def build_plan(tests, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_a
                 "timeout": test.definition.timeout or sqllogic.DEFAULT_TIMEOUT_S,
                 "retries": {test.id: test.definition.retries} if test.definition.retries else {},
                 **({"mutex": sorted(test.mutex)} if test.mutex else {}),
-                "key": _key_record(testenv.resolve(test)),
+                "key": _key_record(environment(test)),
             }
         )
     for batch in batches:

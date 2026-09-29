@@ -3,12 +3,15 @@
 import os
 
 import pytest
-from test_ducktest5_run import FakeEngine, FakeSession, go, passes, py_test
+from test_ducktest5_run import FakeEngine, FakeSession, go, passes, py_test, sql_test
 
+from ducktest5 import phases, sessions
 from ducktest5.binary import UsageError
-from ducktest5.declare import EngineDef
+from ducktest5.cli import main
+from ducktest5.conf import Project
+from ducktest5.declare import EngineDef, Variant
 from ducktest5.engines.duckdb import DuckDBSession
-from ducktest5.model import Test
+from ducktest5.model import SQLLOGIC, Test
 from ducktest5.resources import (
     RO,
     RW,
@@ -22,6 +25,8 @@ from ducktest5.resources import (
     spark_session,
 )
 from ducktest5.scan import scan
+from ducktest5.sqllogic import init_file_text
+from ducktest5.testenv import resolve
 
 
 class Live:
@@ -290,4 +295,97 @@ def test_a_session_on_an_engine_the_project_lacks_is_a_usage_error(tmp_path):
         "from ducktest5.resources import spark_session\nSESSIONS = [spark_session('spark')]\n"
     )
     with pytest.raises(UsageError, match="engine 'spark', which is not in ENGINES"):
+        scan(str(tmp_path), working_dir=str(tmp_path))
+
+
+# -----------------------------------------------------------------------------
+# A .test batch is a Session
+#
+
+SESSIONS_CONF = """
+from ducktest5 import match
+from ducktest5.resources import duckdb_session
+
+SESSIONS = [
+    duckdb_session("delta", requires=["delta"]),
+    duckdb_session("json", requires=["json"]),
+    duckdb_session("also_json", requires=["json"]),
+]
+RULES = [
+    match("delta.test", sessions=["delta"]),
+    match("json.test", sessions=["json"]),
+    match("also_json.test", sessions=["also_json"]),
+    match("inline_require.test", sessions=["json"]),
+]
+"""
+
+
+@pytest.fixture
+def bound(tmp_path, monkeypatch):
+    """A project whose `.test` files a rule each binds to a Session."""
+    (tmp_path / "ducktest_conf.py").write_text(SESSIONS_CONF)
+    for name in ("delta", "json", "also_json"):
+        (tmp_path / f"{name}.test").write_text("query I\nSELECT 1\n----\n1\n")
+    (tmp_path / "inline_require.test").write_text("require json\n\nquery I\nSELECT 1\n----\n1\n")
+    (tmp_path / "body.py").write_text(
+        "from ducktest5 import test\n\n@test(sessions=['json'])\ndef body(ctx):\n    pass\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def batch_of_each_file(tmp_path):
+    tests, project = scan(str(tmp_path), working_dir=str(tmp_path))
+    plan = phases.build_plan([c for c in tests if c.definition.type == SQLLOGIC], project)
+    return {f: b["id"] for b in plan["batches"] for f in b["files"]}
+
+
+def test_test_files_share_a_batch_exactly_when_their_sessions_have_one_identity(bound):
+    batch = batch_of_each_file(bound)
+    assert batch["delta.test"] != batch["json.test"]
+    # two names for one content are one Session; an inline `require` is part of the body, not of it
+    assert batch["json.test"] == batch["also_json.test"] == batch["inline_require.test"]
+
+
+def test_scan_env_shows_the_session_of_each_test_and_what_it_renders(bound, capsys):
+    assert main(["scan", "--env"]) == 0
+    printed = capsys.readouterr().out
+    assert (
+        "delta.test::delta\n  session: delta (unittest)  <- SESSIONS delta\n    require: delta  <- session delta\n"
+        in printed
+    )
+    assert "body.py::body\n  session: json (duckdb)  <- SESSIONS json\n    require: json  <- session json\n" in printed
+
+
+def test_the_session_comes_first_in_the_init_file_and_nothing_is_given_twice():
+    duck = duckdb_session("duck", requires=["httpfs", "json"], settings={"threads": 2, "memory_limit": "1GB"})
+    project = Project("/p", {}, {}, {}, {}, ())
+    project.sessions = {"duck": duck}
+    test = sql_test(
+        "a.test", {"storage": Variant("s3", requires=["httpfs"])}, sessions=["duck"], settings={"threads": 4}
+    )
+    env = sessions.environment(test, resolve(test), project)
+    text, _ = init_file_text(env)
+    assert text == (
+        "require json\n\nrequire httpfs\n\n"
+        "statement ok\nSET memory_limit = '1GB';\n\n"
+        "statement ok\nSET threads = '4';\n"
+    )
+
+
+def test_the_batch_of_a_test_file_is_given_its_session(tmp_path):
+    (tmp_path / "a.test").write_text("query I\nSELECT 1\n----\n1\n")
+    test = sql_test("a.test", sessions=["duck"])
+    _, run_dir, _, _ = go(tmp_path, [test], sessions=[duckdb_session("duck", requires=["delta"])], keep=True)
+    (init,) = run_dir.glob("batches/*/init.sqllogic")
+    assert init.read_text() == "require delta\n"
+
+
+def test_a_test_file_runs_in_one_session(tmp_path):
+    (tmp_path / "ducktest_conf.py").write_text(
+        "from ducktest5 import default\nfrom ducktest5.resources import duckdb_session\n"
+        "SESSIONS = [duckdb_session('a'), duckdb_session('b')]\nRULES = [default(sessions=['a', 'b'])]\n"
+    )
+    (tmp_path / "x.test").write_text("query I\nSELECT 1\n----\n1\n")
+    with pytest.raises(UsageError, match=r"names sessions \['a', 'b'\]; a .test body runs in one"):
         scan(str(tmp_path), working_dir=str(tmp_path))

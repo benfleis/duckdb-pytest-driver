@@ -4,8 +4,8 @@ A test is a definition with one set of parameters. What a parameter contributes 
 `.test` body (the batch's config and init file) and a Python body (the `ctx.duckdb()` preamble) by
 two separate paths, which could and did disagree. `resolve()` builds this record once, after
 provisioning and before exec, out of the rules, the definition's own declaration, the test's params and
-the chosen value of every variant axis; both deliveries read it and nothing else, and the batch key
-of a test of a `.test` file is made of it.
+the chosen value of every variant axis; both deliveries read it, under the test's Session
+(`sessions.py`), and nothing else, and the batch key of a test of a `.test` file is made of that.
 
     requires    extensions to load first: `require` in the init file, `LOAD` in the preamble
     init_sql    the statements after them, in order: the settings as `SET`, then the variants' SQL
@@ -194,7 +194,7 @@ def _value_entry(name, value, source):
     return Entry(value, source, name=name, secret=bool(_SECRET_NAME.search(name)))
 
 
-def _set_entry(name, value, source):
+def set_entry(name, value, source):
     return Entry(
         set_statement(name, value),
         source,
@@ -233,7 +233,7 @@ def resolve(test, made=None):
             env.values[name] = _value_entry(name, value, f"params {test.params_key!r}")
 
     for name, value in definition.settings.items():
-        env.init_sql.append(_set_entry(name, value, definition.source_of("settings", name)))
+        env.init_sql.append(set_entry(name, value, definition.source_of("settings", name)))
 
     for axis, v in test.axis_values.items():
         where = f"AXES {axis}={v.id}"
@@ -241,7 +241,7 @@ def resolve(test, made=None):
             if extension not in env.extensions:
                 env.requires.append(Entry(extension, where, kind="require"))
         for name, value in v.settings.items():
-            env.init_sql.append(_set_entry(name, value, where))
+            env.init_sql.append(set_entry(name, value, where))
         for name, value in v.values.items():
             _axis_value(name, value, where)
         for name, value in v.roots.items():

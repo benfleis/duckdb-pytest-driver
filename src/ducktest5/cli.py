@@ -29,7 +29,7 @@ import sys
 
 import yaml
 
-from . import events, phases, sqllogic, testenv
+from . import events, phases, sessions, sqllogic, testenv
 from .binary import UsageError, find_duckdb
 from .conf import load_project
 from .provision import bring_up
@@ -256,7 +256,7 @@ def main(argv=None):
                 for c in selected:
                     print(c.id)
                     # No service is started here, so what a variant makes out of one is named, not called.
-                    for line in testenv.resolve(c).lines():
+                    for line in sessions.lines(c, project) + testenv.resolve(c).lines():
                         print(f"  {line}")
                 return 0
             yaml.safe_dump([c.record(project) for c in selected], sys.stdout, sort_keys=False, width=100)
@@ -348,9 +348,9 @@ def _binaries(args, selected, tests, project, working_dir):
 
 def _plan(args):
     cwd = os.getcwd()
-    tests, _, _ = _tests_by_id(args, phases.ids_of_tests(phases.read_tests(args.run_dir)), cwd)
+    tests, _, project = _tests_by_id(args, phases.ids_of_tests(phases.read_tests(args.run_dir)), cwd)
     doc = phases.build_plan(
-        tests, batch_size=args.batch_size, workers=args.workers, runner=args.runner, run_args=args.run_args
+        tests, project, batch_size=args.batch_size, workers=args.workers, runner=args.runner, run_args=args.run_args
     )
     path = phases.write_plan(args.run_dir, doc, force=args.force)
     print(f"{len(doc['batches'])} batches for {len(tests)} tests -> {path}")

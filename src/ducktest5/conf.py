@@ -7,7 +7,7 @@ pattern may name one file.
 
 How rules combine, in one order: the root file first, then each file on the way down to the test definition;
 in a file, the rules as listed; then the definition's own `@test(...)`. Along that order, list fields (tags,
-engines, variants, mutex, suites) add up, dict fields (values, settings, bind) update by key, and
+engines, variants, mutex, suites, sessions) add up, dict fields (values, settings, bind) update by key, and
 single values (timeout, retries) are replaced. `why` records which rule gave what. All of them are on
 the definition and apply to every test made from it.
 
@@ -48,7 +48,7 @@ from .declare import CONF_FILE, EngineDef, Variant, as_mutex
 from .resources import CredentialDef, ResourceDef, ServiceDef, SessionDef, StorageDef
 from .resources.made import services_in
 
-_LISTS = ("tags", "engines", "variants", "mutex", "suites")
+_LISTS = ("tags", "engines", "variants", "mutex", "suites", "sessions")
 _DICTS = ("values", "settings", "bind")
 _SINGLES = ("timeout", "retries")
 
@@ -141,6 +141,7 @@ class Settled:
     variants: list = field(default_factory=list)
     mutex: list = field(default_factory=list)
     suites: list = field(default_factory=list)
+    sessions: list = field(default_factory=list)
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     bind: dict = field(default_factory=dict)

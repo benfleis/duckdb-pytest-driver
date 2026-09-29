@@ -11,7 +11,7 @@ import itertools
 import os
 import sys
 
-from . import asserts
+from . import asserts, sessions
 from .binary import UsageError
 from .conf import check_suites, load_project, merge_suites
 from .declare import CONF_FILE
@@ -202,6 +202,7 @@ def _sessions(definition, project):
         engine = project.sessions[name].engine
         if engine != "duckdb" and engine not in definition.engines:
             definition.engines.append(engine)
+    sessions.check(definition, [project.sessions[name] for name in definition.sessions])
 
 
 def _settle(definition, project, working_dir):
@@ -212,8 +213,9 @@ def _settle(definition, project, working_dir):
         "engines": definition.engines,
         "variants": definition.variants,
         "mutex": definition.mutex,
+        "sessions": definition.sessions,
     }
-    for name in ("tags", "engines", "variants", "mutex"):
+    for name in own:
         merged = getattr(settled, name) + [x for x in own[name] if x not in getattr(settled, name)]
         setattr(definition, name, merged)
     if definition.bind:

@@ -209,7 +209,9 @@ def run(
     run_dir = os.path.join(os.path.abspath(temp_root), make_run_id())
     os.makedirs(run_dir)
     phases.write_tests(run_dir, tests, project, working_dir=working_dir, selection=selection)
-    plan = phases.build_plan(tests, batch_size=batch_size, workers=workers, runner=runner, run_args=run_args, keep=keep)
+    plan = phases.build_plan(
+        tests, project, batch_size=batch_size, workers=workers, runner=runner, run_args=run_args, keep=keep
+    )
     phases.write_plan(run_dir, plan)
     return execute(
         tests,
@@ -362,9 +364,11 @@ def execute(
     resolved = {}
 
     def test_env(test):
-        """The test's environment, computed once: after provisioning, before anything runs."""
+        """The test's environment, computed once: after provisioning, before anything runs. A `.test`
+        body gets it under its Session; a Python body's Sessions are bound to it as it is."""
         if id(test) not in resolved:
-            resolved[id(test)] = testenv.resolve(test, made)
+            env = testenv.resolve(test, made)
+            resolved[id(test)] = sessions.environment(test, env, project) if test.definition.type == SQLLOGIC else env
         return resolved[id(test)]
 
     # A Python test's timeout, counted from its own begin event (`test_started`), is watched by the
@@ -497,7 +501,14 @@ def execute(
                     services={s: made.services[s] for s in test.services},
                     remote_parts=(run_id, dir_name),
                     test_env=test_env(test),
-                    run_test=lambda **kw: _run_paired(test, test_env(test), unittest_bin, working_dir, temp_dir, **kw),
+                    run_test=lambda **kw: _run_paired(
+                        test,
+                        sessions.environment(test, test_env(test), project),
+                        unittest_bin,
+                        working_dir,
+                        temp_dir,
+                        **kw,
+                    ),
                     session_factory=session_factory,
                 )
             except Exception as exc:
