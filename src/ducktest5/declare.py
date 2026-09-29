@@ -73,12 +73,12 @@ class Variant:
                  an extension does not exist until it is loaded.
     `settings`   DuckDB settings, delivered as `SET` after the requires -- never as the binary's own
                  `settings`, which it applies before any extension is there.
-    `init_sql`   statements after those: text, or a function of the provisioned services' blocks.
-    `values`     what a body writes as `{name}`: a dict, or a function of the blocks. The axis name
-                 itself is always a value, so a body can write `{storage}` for the id of this value.
+    `init_sql`   statements after those.
+    `values`     what a body writes as `{name}`. The axis name itself is always a value, so a body
+                 can write `{storage}` for the id of this value.
     `roots`      the binary's roots, any of `data_dir`, `local_data_dir`, `temp_dir_root`,
-                 `local_temp_dir_root` (a dict, or a function of the blocks). A remote root and its
-                 local mirror are one storage seen two ways. A Python body reads them as `ctx.roots`,
+                 `local_temp_dir_root`. A remote root and its local mirror are one storage seen two
+                 ways. A Python body reads them as `ctx.roots`,
                  and `ctx.location()` puts what it makes under `temp_dir_root`.
     `env`        the process environment of the engine that runs the test, and `env_unset` what to
                  take out of it: for what DuckDB or a library inside it reads with getenv (AWS_*,
@@ -93,12 +93,12 @@ class Variant:
     id: str
     services: tuple = ()
     engines: tuple = ()
-    values: object = field(default_factory=dict)
+    values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
-    init_sql: object = None
+    init_sql: str | None = None
     tags: tuple = ()
     requires: tuple = ()
-    roots: object = None
+    roots: dict = field(default_factory=dict)
     env: dict = field(default_factory=dict)
     env_unset: tuple = ()
     inputs: tuple = ()

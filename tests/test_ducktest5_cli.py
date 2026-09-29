@@ -93,7 +93,6 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
                 roots={"data_dir": "s3://bucket/data"},
                 env={"AWS_PROFILE": "ducktest"},
                 env_unset=["AWS_ACCESS_KEY_ID"],
-                values=lambda services: {"root": services["store"]["endpoint"]},
             )]}
             EXCLUDE = ["generated"]
             RULES = [default(tags=["all"], values={"region": "eu"}), match("a/**", variants=["storage"])]
@@ -111,7 +110,6 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
           env: AWS_PROFILE=ducktest  <- AXES storage=s3
           env unset: AWS_ACCESS_KEY_ID  <- AXES storage=s3
           service: store  <- AXES storage=s3
-          values: <from service store>  <- AXES storage=s3
         """
     )
 

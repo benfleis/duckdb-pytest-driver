@@ -247,7 +247,7 @@ def test_a_test_with_a_service_runs_alone_and_its_failure_is_not_run_a_second_ti
 
 def test_a_variant_init_sql_is_the_batch_init_file(tmp_path):
     store = FakeStore()
-    variant = Variant("s3", services=("store",), init_sql=lambda blocks: f"ATTACH '{blocks['store']['endpoint']}'")
+    variant = Variant("s3", services=("store",), init_sql="ATTACH 'http://store'")
     _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"k": variant})], services=[store.service()], keep=True)
     init = run_dir / report["tests"][0]["batch"] / "init.sqllogic"
     assert init.read_text() == "statement ok\nATTACH 'http://store';\n"
@@ -552,28 +552,6 @@ def test_a_service_that_is_down_blocks_its_tests_and_their_engine_is_not_booted(
     assert "does not answer" in report["not_provisioned"]["store"]
     assert engine.calls == []
     assert "'store' did not come up: 1 tests blocked" in text
-
-
-def test_a_service_whose_start_raises_blocks_only_tests_with_a_callable_variant(tmp_path):
-    def start(block):
-        raise RuntimeError("minio image unpullable: exit 125")
-
-    broken = ServiceDef("minio", block=lambda **o: {"endpoint": "http://minio"}, alive=lambda block: False, start=start)
-    variant = Variant(
-        "s3",
-        services=("minio",),
-        values=lambda blocks: {"root": blocks["minio"]["endpoint"]},
-        init_sql=lambda blocks: f"ATTACH '{blocks['minio']['endpoint']}'",
-    )
-    tests = [sql_test("a.test", {"storage": variant}), sql_test("b.test")]
-    code, run_dir, report, text = go(tmp_path, tests, services=[broken])
-    assert outcomes(report) == {"a[storage=s3]": "blocked", "b": "passed"}
-    assert report["tests"][0]["blocked_by"] == ["minio"]
-    made_of = report["tests"][0]["made_of"]["environment"]
-    assert {"what": "values", "is": "<from service minio>", "from": "AXES storage=s3"} in made_of
-    assert {"what": "service", "is": "minio (did not come up)", "from": "AXES storage=s3"} in made_of
-    assert "'minio' did not come up: 1 tests blocked" in text
-    assert code == 1
 
 
 def test_an_engine_that_does_not_boot_blocks_its_tests(tmp_path):
@@ -904,7 +882,7 @@ def test_the_test_environment_comes_before_the_bodys_own_preamble_in_the_order_o
         services=("store",),
         requires=("httpfs",),
         settings={"threads": 2, "s3_region": "it's"},
-        init_sql=lambda blocks: f"CREATE SECRET (ENDPOINT '{blocks['store']['endpoint']}')",
+        init_sql="CREATE SECRET (ENDPOINT 'http://store')",
     )
     code, _, _, _ = go(tmp_path, [py_test(body, {"k": variant})], services=[FakeStore().service()])
     assert code == 0

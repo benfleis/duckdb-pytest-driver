@@ -80,22 +80,6 @@ def test_a_root_the_binary_does_not_have_is_refused():
         resolve(make_test({"storage": Variant("s3", roots={"tmp": "/x"})}))
 
 
-def test_what_a_variant_makes_out_of_a_service_waits_for_provisioning():
-    variant = Variant(
-        "s3",
-        services=("store",),
-        values=lambda blocks: {"root": blocks["store"]["endpoint"]},
-        init_sql=lambda blocks: f"ATTACH '{blocks['store']['endpoint']}'",
-    )
-    before = resolve(make_test({"storage": variant}))
-    assert "root" not in before.value_map
-    assert "values: <from service store>  <- AXES storage=s3" in before.lines()
-    after = resolve(make_test({"storage": variant}), provisioned())
-    assert after.value_map["root"] == "http://store"
-    assert after.sql == "ATTACH 'http://store';"
-    assert "service: store (existing)  <- AXES storage=s3" in after.lines()
-
-
 def test_the_environment_of_the_engine_process_is_this_process_with_the_variant_on_top():
     variant = Variant("no-key", env={"AWS_PROFILE": "ducktest"}, env_unset=("PATH",))
     env = resolve(make_test({"auth": variant}))
@@ -164,28 +148,6 @@ def test_the_key_does_not_change_with_the_rule_that_gave_a_value():
     plain = make_test(values={"region": "eu"})
     named = make_test(values={"region": "eu"}, sources={("values", "region"): "ducktest_conf.py: default"})
     assert resolve(plain).key() == resolve(named).key()
-
-
-def test_a_service_that_did_not_come_up_leaves_its_parts_pending_not_called():
-    variant = Variant(
-        "s3",
-        services=("store",),
-        values=lambda blocks: {"root": blocks["store"]["endpoint"]},
-        init_sql=lambda blocks: f"ATTACH '{blocks['store']['endpoint']}'",
-    )
-    env = resolve(make_test({"storage": variant}), provisioned={})  # provisioning ran; store is not in it
-    assert "root" not in env.value_map
-    assert "values: <from service store>  <- AXES storage=s3" in env.lines()
-    assert "service: store (did not come up)  <- AXES storage=s3" in env.lines()
-
-
-def test_a_callable_that_raises_is_a_usage_error_naming_the_variant():
-    def boom(blocks):
-        raise RuntimeError("no bucket configured")
-
-    variant = Variant("s3", services=("store",), values=boom)
-    with pytest.raises(UsageError, match=r"AXES storage=s3.*values.*no bucket configured"):
-        resolve(make_test({"storage": variant}), provisioned())
 
 
 def test_a_python_body_adds_values_and_sql_for_the_test_file_beside_it():

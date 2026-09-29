@@ -20,9 +20,8 @@ process environment (named to the binary in `env_passthrough`), read when the pr
 where a value goes: the binary fills it from that environment.
 
 Every entry carries the source that asked for it, so `scan --env` and a failed test can say where
-each part came from. A part a variant computes from the services' blocks is not known before
-provisioning, nor once provisioning has run if a service it needs did not come up; `resolve()`
-lists those in `pending` instead of calling the variant's code with an incomplete `blocks`.
+each part came from. What an input gives is not known before its services are up, nor once they
+failed to come up; `resolve()` lists those in `pending`.
 """
 
 from __future__ import annotations
@@ -231,16 +230,10 @@ def _set_entry(name, value, source):
     )
 
 
-def _from_services(variant):
-    return "<from service " + ", ".join(variant.services) + ">" if variant.services else "<from a service>"
-
-
 def resolve(test, provisioned=None, made=None):
-    """The test environment of `test`. `provisioned` maps a service id to its `Provisioned`; with
-    None (before provisioning, as `scan` sees it) a part a variant computes from the blocks is
-    listed in `pending` instead of being called. `made` is what the run made, its services among
-    them; an input that needs a service that is not up is listed in `pending` too."""
-    blocks = {sid: p.block for sid, p in provisioned.items()} if provisioned is not None else None
+    """The test environment of `test`. `provisioned` maps a service id to its `Provisioned`, None
+    before provisioning, as `scan` sees it. `made` is what the run made, its services among them;
+    an input that needs a service that is not up is listed in `pending`."""
     definition = test.definition
     env = TestEnv(
         secrets=tuple(
@@ -280,9 +273,9 @@ def resolve(test, provisioned=None, made=None):
                 env.requires.append(Entry(extension, where, kind="require"))
         for name, value in v.settings.items():
             env.init_sql.append(_set_entry(name, value, where))
-        for name, value in _given(v, "values", blocks, env, where).items():
+        for name, value in v.values.items():
             _axis_value(name, value, where)
-        for name, value in _given(v, "roots", blocks, env, where).items():
+        for name, value in v.roots.items():
             if name not in ROOTS:
                 raise UsageError(f"AXES {axis}={v.id}: root {name!r} is not one of {ROOTS}")
             env.roots[name] = Entry(value, where, kind="root", name=name)
@@ -300,14 +293,7 @@ def resolve(test, provisioned=None, made=None):
             env.env_state[name] = "unset"
         for service_id in v.services:
             env.services.setdefault(service_id, _service_entry(service_id, provisioned, where))
-        if callable(v.init_sql):
-            if _ready(v, blocks):
-                sql = _call(v.init_sql, blocks, where, "init sql")
-                if sql:
-                    env.init_sql.append(Entry(sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
-            else:
-                env.init_sql.append(Entry("", where, kind="sql", shown=""))  # a function of blocks we do not have
-        elif v.init_sql:
+        if v.init_sql:
             env.init_sql.append(Entry(v.init_sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
     made = made or Made()
     instances = [_deliver(env, d, mode, provisioned is None, _axis_value, made) for d, mode in test.inputs]
@@ -362,30 +348,3 @@ def _deliver(env, definition, mode, scanning, value, made):
         env.env_state[name] = "unset" if out.unset else "set"
         env.passthrough.append(name)
     return instance
-
-
-def _ready(variant, blocks):
-    """Whether every service the variant declares is up: only then can its callables be called
-    without one missing from `blocks` raising a `KeyError` inside someone else's lambda."""
-    return blocks is not None and all(service_id in blocks for service_id in variant.services)
-
-
-def _call(fn, blocks, where, field_name):
-    """A variant's callable `values`/`roots`/`init_sql`, called; its own exception becomes a usage
-    error naming what asked for it, never a traceback out of `resolve()`."""
-    try:
-        return fn(blocks)
-    except Exception as exc:
-        raise UsageError(f"{where}: {field_name} could not be computed: {type(exc).__name__}: {exc}") from exc
-
-
-def _given(variant, field_name, blocks, env, where):
-    """A variant's `values` or `roots`: a dict, or a function of the provisioned services' blocks."""
-    given = getattr(variant, field_name)
-    if not callable(given):
-        return dict(given or {})
-    if not _ready(variant, blocks):
-        kind = "value" if field_name == "values" else "root"
-        env.pending.append(Entry(field_name, where, kind=kind, shown=_from_services(variant)))
-        return {}
-    return dict(_call(given, blocks, where, field_name) or {})
