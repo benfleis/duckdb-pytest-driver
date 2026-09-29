@@ -24,6 +24,7 @@ LADDER = os.path.join(os.path.dirname(HERE), "examples", "ladder")
 GOLDENS = os.path.join(HERE, "ducktest5_goldens", "ladder")
 FAKES = os.path.join(HERE, "ducktest5_fakes")
 RUNGS = sorted(d for d in os.listdir(LADDER) if os.path.isdir(os.path.join(LADDER, d)))
+EXIT_CODES = {"04_service": 1}  # its blocked test fails the run
 FAKE_KEY = {"LADDER_FAKE_KEY_ID": "ladder-key-id-7f3a", "LADDER_FAKE_SECRET": "ladder-secret-9c1e"}
 
 
@@ -125,7 +126,7 @@ def test_run(rung, binaries, rung_copy, tmp_path, capsys):
     # One worker runs the plan in order; --keep leaves every file of the run for the search below.
     code = main(["run", *args, "--workers", "1", "--keep"])
     out = capsys.readouterr().out
-    assert code == 0, out
+    assert code == EXIT_CODES.get(rung, 0), out
     (run_dir,) = runs.iterdir()
     golden(f"{rung}.run.txt", normalized(out, tmp_path) + plan_batches(run_dir))
     assert holding(tmp_path, FAKE_KEY.values()) == []

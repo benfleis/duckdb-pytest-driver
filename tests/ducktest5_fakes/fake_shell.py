@@ -6,8 +6,9 @@ answers `.print X` with X, and a statement that holds a word below with what the
     echoN   the line `[{"v":N}]`, after 20 ms
 
 Any other statement is read up to the `;` line after it. A `CREATE SECRET` is kept until the next
-`.open`, and a statement that reads `duckdb_secrets()` gets what is kept. Any other `SELECT` is
-answered by SQLite, which is enough for a constant.
+`.open`, and a statement that reads `duckdb_secrets()` gets what is kept. `count(*)` of a
+`read_csv('http://...')` fetches the file and counts its rows. Any other `SELECT` is answered by
+SQLite, which is enough for a constant.
 
 With FAKE_SHELL_RECORD set, every line it reads is appended to that file.
 """
@@ -18,15 +19,21 @@ import re
 import sqlite3
 import sys
 import time
+import urllib.request
 
 _SECRET = re.compile(r"CREATE SECRET (\w+) \((.*)\)", re.S)
 _OPTION = re.compile(r"(\w+) '((?:[^']|'')*)'")
+_COUNT_CSV = re.compile(r"SELECT count\(\*\) FROM read_csv\('(http://[^']+)'\)", re.I)
 
 
 def answer(sql, secrets):
     if m := _SECRET.match(sql):
         options = {k: v.replace("''", "'") for k, v in _OPTION.findall(m.group(2))}
         secrets.append({"name": m.group(1), "type": options["TYPE"], "scope": [options["SCOPE"]]})
+    elif m := _COUNT_CSV.match(sql):
+        with urllib.request.urlopen(m.group(1), timeout=5) as response:
+            rows = response.read().decode().splitlines()[1:]
+        print(json.dumps([{"count_star()": len(rows)}]), flush=True)
     elif "duckdb_secrets()" in sql:
         if secrets:
             print(json.dumps(secrets), flush=True)

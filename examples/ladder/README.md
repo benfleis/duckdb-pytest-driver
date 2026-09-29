@@ -38,3 +38,16 @@ Each body asks DuckDB for its secrets: one, scoped to the bucket, under `auth=ke
 init file holds only a template, `KEY_ID '{AWS_ACCESS_KEY_ID}'`, and the binary fills it from the
 variables passed through to it; `scan --env` shows it as the `secret:` line. The init file and the
 run's own records hold the names of the secrets, never their values.
+
+## 04_service
+
+The storage is now served over HTTP by a service the run starts: `HttpServerDef` serves a copy of
+`data/` from a thread, on a free port, and the storage `served` takes it as an input, with its root
+`{http.url}`. So `{DATA_DIR}` in `served.test`, and `ctx.roots["data_dir"]` in `served_body.py`, is
+that server's address, and both read `cities.csv` from it. Before a run the address is not known:
+`scan --env` shows the root as `<from service http>`. The run starts the server before any test and
+stops it after the last one.
+
+`blocked.test` binds a second storage, whose server listens on an address no machine has, so it
+cannot start. The test ends BLOCKED with the reason, the rest of the run goes on, and the run is not
+green.

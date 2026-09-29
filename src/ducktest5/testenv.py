@@ -164,6 +164,7 @@ class TestEnv:
                 "env": {k: e.source if callable(e.value) else str(e.value) for k, e in sorted(self.env.items())},
                 "env_unset": sorted(self.env_unset),
                 "services": sorted(self.services),
+                "pending": sorted(e.source for e in self.pending),
             },
             sort_keys=True,
             default=str,

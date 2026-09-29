@@ -1,0 +1,6 @@
+blocked.test::blocked
+  root: <from service nowhere>  <- storage unserved
+served.test::served
+  root: <from service http>  <- storage served
+served_body.py::served_body
+  root: <from service http>  <- storage served

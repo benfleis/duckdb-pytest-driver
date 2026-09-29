@@ -1,0 +1,26 @@
+service nowhere ...
+service nowhere -- did not come up: OSError: [Errno 99] Cannot assign requested address
+service http ...
+service http -- managed
+[1/3] BLOCKED  blocked.test::blocked  [nowhere did not come up]
+[2/3] PASSED   served.test::served  (<s>)
+[3/3] PASSED   served_body.py::served_body  (<s>)
+
+--- blocked.test::blocked
+
+  nowhere did not come up
+
+  root: <OSError: [Errno 99] Cannot assign requested address>  <- storage unserved
+  again: ducktest5 run --id blocked.test::blocked
+
+
+'nowhere' did not come up: 1 tests blocked
+  OSError: [Errno 99] Cannot assign requested address
+
+2 passed, 1 blocked in <s>
+run dir: <run>
+
+02-plan.yaml batches:
+  b001  unittest  key1  blocked.test
+  b002  unittest  key2  served.test
+  b003  python    key2  served_body.py
