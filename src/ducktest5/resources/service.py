@@ -26,8 +26,9 @@ class ServiceDef(ResourceDef):
     `attributes` names what `read()` of a running instance gives its consumers, as `<id>.<name>`
     (`http.url`). `secret_attributes` are read the same way but reach a consumer only through a
     credential the service produces (`credential()`), under the names `delivers` gives them.
-    `detached` says an instance outlives the ducktest process that started it (a container); one
-    that lives in this process (a thread) ends with it."""
+    `detached` says an instance outlives the ducktest process that started it (a container), so
+    `ducktest5 provision` may make it apart from the exec that uses it; one that lives in this
+    process (a thread) ends with it."""
 
     kind = "service"
     sharing = SHARED_RW

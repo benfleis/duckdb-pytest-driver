@@ -37,47 +37,47 @@ def minio_settings(**overrides):
     }
 
 
-def minio_alive(block):
+def minio_alive(settings):
     try:
-        with urllib.request.urlopen(f"{block['endpoint']}/minio/health/ready", timeout=3) as response:
+        with urllib.request.urlopen(f"{settings['endpoint']}/minio/health/ready", timeout=3) as response:
             return response.status == 200
     except (urllib.error.URLError, OSError):
         return False
 
 
-def _s3(block):
+def _s3(settings):
     import boto3  # the [s3] extra; imported here so a run without this service needs no boto3
     from botocore.config import Config
 
     return boto3.resource(
         "s3",
-        endpoint_url=block["endpoint"],
-        aws_access_key_id=block["access_key"],
-        aws_secret_access_key=block["secret_key"],
-        region_name=block["region"],
+        endpoint_url=settings["endpoint"],
+        aws_access_key_id=settings["access_key"],
+        aws_secret_access_key=settings["secret_key"],
+        region_name=settings["region"],
         config=Config(s3={"addressing_style": "path"}),
     )
 
 
-def _start(block):
-    docker("rm", "-f", block["container"], check=False)  # a container leaked by an interrupted run holds the port
+def _start(settings):
+    docker("rm", "-f", settings["container"], check=False)  # a container leaked by an interrupted run holds the port
     docker(
-        "run", "-d", "--name", block["container"],
-        "-p", f"{block['publish']}:9000",
-        "-e", f"MINIO_ROOT_USER={block['access_key']}",
-        "-e", f"MINIO_ROOT_PASSWORD={block['secret_key']}",
+        "run", "-d", "--name", settings["container"],
+        "-p", f"{settings['publish']}:9000",
+        "-e", f"MINIO_ROOT_USER={settings['access_key']}",
+        "-e", f"MINIO_ROOT_PASSWORD={settings['secret_key']}",
         "--tmpfs", "/data:size=2g",  # MinIO's free-drive check otherwise depends on the host's docker storage
         _IMAGE, "server", "/data",
     )  # fmt: skip
 
 
-def _stop(block):
-    docker("rm", "-f", block["container"], check=False)
+def _stop(settings):
+    docker("rm", "-f", settings["container"], check=False)
 
 
-def _setup(block):
+def _setup(settings):
     try:
-        _s3(block).Bucket(block["bucket"]).create()
+        _s3(settings).Bucket(settings["bucket"]).create()
     except Exception as exc:
         # Create and see, not look and then create: two runs on one instance would race.
         code = getattr(exc, "response", {}).get("Error", {}).get("Code")
@@ -119,38 +119,38 @@ class Minio(Service):
             overrides["port"] = definition.port
         if definition.address is not None:
             overrides["endpoint"] = definition.address
-        self.block = minio_settings(**overrides)
+        self.settings = minio_settings(**overrides)
 
     @property
     def handle(self):
-        return self.block["container"]
+        return self.settings["container"]
 
     @property
     def address(self):
-        return self.block["endpoint"]
+        return self.settings["endpoint"]
 
     def create(self):
         super().create()
-        _setup(self.block)
+        _setup(self.settings)
 
     def start(self):
         if self.run_token is None:
             raise ValueError(f"service {self.id}: its container is named for the run, so it needs the run_token")
-        _start(self.block)
+        _start(self.settings)
 
     def stop(self):
         docker("stop", self.handle, check=False)
 
     def dealloc(self):
-        _stop(self.block)
+        _stop(self.settings)
 
     def read(self):
         if not self.existing and docker("inspect", self.handle, check=False).returncode != 0:
             return None
-        return {name: self.block[name] for name in (*self.definition.attributes, *self.definition.secret_attributes)}
+        return {name: self.settings[name] for name in (*self.definition.attributes, *self.definition.secret_attributes)}
 
     def ready(self):
-        return minio_alive(self.block)
+        return minio_alive(self.settings)
 
     def list(self, run_token):
         name = _container(self.id, run_token)

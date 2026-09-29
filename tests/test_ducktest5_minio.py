@@ -35,7 +35,7 @@ class _Bucket:
 @pytest.fixture
 def s3(monkeypatch):
     fake = FakeS3()
-    monkeypatch.setattr(minio, "_s3", lambda block: fake)
+    monkeypatch.setattr(minio, "_s3", lambda settings: fake)
     return fake
 
 
@@ -60,8 +60,8 @@ class FakeDocker:
             return subprocess.CompletedProcess(args, 0, "\n".join(n for n in self.containers if n == wanted), "")
         return subprocess.CompletedProcess(args, 0 if verb != "inspect" or found else 1, "", "")
 
-    def alive(self, block):
-        return self.containers.get(block["container"], False)
+    def alive(self, settings):
+        return self.containers.get(settings["container"], False)
 
 
 @pytest.fixture
@@ -118,7 +118,7 @@ def test_minio_produces_a_credential_scoped_to_its_storage_and_emits_no_aws_name
 
 
 def test_an_existing_minio_is_adopted_its_bucket_made_and_never_stopped(fake_docker, monkeypatch, s3):
-    monkeypatch.setattr(minio, "minio_alive", lambda block: block["endpoint"] == "http://172.18.0.1:9999")
+    monkeypatch.setattr(minio, "minio_alive", lambda settings: settings["endpoint"] == "http://172.18.0.1:9999")
     service = MinioDef().as_existing(address="http://172.18.0.1:9999").make(run_token="r1")
     service.create()
     assert service.env["endpoint"].get() == "http://172.18.0.1:9999" and s3.created == ["ducktest"]
@@ -129,13 +129,13 @@ def test_an_existing_minio_is_adopted_its_bucket_made_and_never_stopped(fake_doc
 @pytest.mark.parametrize("code", [None, "BucketAlreadyOwnedByYou", "BucketAlreadyExists"])
 def test_minio_makes_its_bucket_and_a_bucket_that_is_there_is_fine(fake_docker, monkeypatch, code):
     fake = FakeS3(create_error=code)
-    monkeypatch.setattr(minio, "_s3", lambda block: fake)
+    monkeypatch.setattr(minio, "_s3", lambda settings: fake)
     MinioDef().make(run_token="r1").create()
     assert fake.created == ([] if code else ["ducktest"])
 
 
 def test_minio_does_not_hide_another_error_of_its_bucket(fake_docker, monkeypatch):
-    monkeypatch.setattr(minio, "_s3", lambda block: FakeS3(create_error="AccessDenied"))
+    monkeypatch.setattr(minio, "_s3", lambda settings: FakeS3(create_error="AccessDenied"))
     with pytest.raises(Exception, match="AccessDenied"):
         MinioDef().make(run_token="r1").create()
 
