@@ -1,11 +1,15 @@
 """Services on the resource base: the handler contract, an existing instance, retain, and what a
 service gives its consumers."""
 
+import os
+import tempfile
+import urllib.request
 from dataclasses import dataclass, field
 
 import pytest
 
 from ducktest5.resources import ON_FAILURE, RO, SHARED_RW, Service, ServiceDef, ServiceNotUp, check_contract
+from ducktest5.services.http import HttpServerDef
 
 # What the fake kind's instances hold, by address: stands in for the world outside the process.
 WORLD = {}
@@ -145,3 +149,72 @@ def test_a_produced_credential_carries_the_services_secrets_under_the_names_it_d
     assert {k: o.get() for k, o in credential.secrets.items()} == {"FAKE_KEY": "k-fake", "FAKE_URL": "fake://r1/fake"}
     assert credential.secrets["FAKE_KEY"].source == "service fake"
     assert service.delivery() == ({"FAKE_URL": service.env["url"]}, {}), "a service delivers no secret itself"
+
+
+# -----------------------------------------------------------------------------
+# The HTTP file server
+#
+
+
+@pytest.fixture
+def served(tmp_path, monkeypatch):
+    """A source directory with one file, and the system temp dir in tmp_path."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "data.csv").write_text("a\n1\n2\n")
+    return str(source)
+
+
+def get(url):
+    with urllib.request.urlopen(url, timeout=5) as response:
+        return response.read().decode()
+
+
+def test_the_http_server_keeps_the_contract(served):
+    check_contract(lambda run_token: HttpServerDef("http", source=served).make(run_token=run_token))
+
+
+def test_the_http_server_serves_a_copy_of_its_source_at_its_url(served):
+    service = HttpServerDef("http", source=served).make(run_token="r1")
+    service.create()
+    try:
+        url = service.outputs()["http.url"].get()
+        assert url.startswith("http://127.0.0.1:")
+        assert get(f"{url}/data.csv") == "a\n1\n2\n"
+        assert service.handle == os.path.join(tempfile.gettempdir(), "ducktest-http", "r1__http")
+    finally:
+        service.delete()
+
+
+def test_list_finds_the_http_servers_directory_by_the_run_token_in_its_name(served):
+    service = HttpServerDef("http", source=served).make(run_token="r1")
+    service.create()
+    try:
+        assert service.list("r1") == [service.handle]
+        assert service.list("r2") == []
+    finally:
+        service.delete()
+    assert service.list("r1") == []
+
+
+def test_an_http_server_that_cannot_bind_is_service_not_up(served):
+    service = HttpServerDef("http", source=served, host="192.0.2.1").make(run_token="r1")
+    with pytest.raises(ServiceNotUp, match="service 'http' did not come up"):
+        service.create()
+    service.delete()
+
+
+def test_an_existing_http_server_is_adopted_at_its_address(served):
+    running = HttpServerDef("http", source=served).make(run_token="r1")
+    running.create()
+    try:
+        url = running.env["url"].get()
+        existing = HttpServerDef("http").as_existing(address=url).make(run_token="r2")
+        existing.create()
+        assert existing.env["url"].get() == url
+        existing.delete()
+        assert get(f"{url}/data.csv") == "a\n1\n2\n", "an existing server is never stopped"
+    finally:
+        running.delete()
