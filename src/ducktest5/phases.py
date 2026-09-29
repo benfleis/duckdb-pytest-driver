@@ -321,8 +321,8 @@ def _paths_by_outcome(event_lines, run_dir):
 def cleanup(run_dir, *, project=None, keep=False, event_lines=None):
     """What a run leaves behind, by what `04` says about each test: the files of a test that passed
     are removed, the files of a test that failed stay, and a service this run started is stopped.
-    A run that never ended (it was killed) did not end the services behind its storages: what
-    carries its run token is removed.
+    A run that never ended (it was killed) did not end the services behind its storages, nor remove
+    what its tests wrote under them: what carries its run token is removed.
 
     Returns {"removed": [...], "kept": [...], "stopped": [...], "swept": [...], "problems": [...]}. It may run
     twice: what is not there any more is not a problem, and a service that does not answer is not
@@ -346,8 +346,18 @@ def cleanup(run_dir, *, project=None, keep=False, event_lines=None):
     failed = any(e.get("outcome") in (FAILED, ERROR) for e in event_lines if e.get("event") == events.TEST_END)
     summary.update(end_services(run_dir, project, failed=failed))
     if project is not None and not keep and not any(e.get("event") == events.RUN_END for e in event_lines):
-        summary["swept"] = sweep_services(run_id_of(run_dir), project)
+        summary["swept"] = sweep_storages(run_id_of(run_dir), project) + sweep_services(run_id_of(run_dir), project)
     return summary
+
+
+def sweep_storages(run_token, project):
+    """Remove what the run `run_token` wrote under the project's storages; returns what it found. A
+    storage that takes inputs is not swept: its root is not known without them."""
+    swept = []
+    for d in project.storages.values():
+        if not d.inputs:
+            swept += d.make(run_token=run_token).sweep(run_token)
+    return swept
 
 
 def sweep_services(run_token, project):

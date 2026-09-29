@@ -133,6 +133,14 @@ class Storage(Resource):
             shutil.rmtree(self.path, ignore_errors=True)
         # TODO: remove an s3 child, as services/minio.py `_clean` does, once the storage has its credential.
 
+    def sweep(self, run_token):
+        """Remove what the run `run_token` left under this storage; returns what `list` found."""
+        found = self.list(run_token)
+        if found and self.scheme == "file":
+            shutil.rmtree(local_path(self.run_root(run_token)), ignore_errors=True)
+        # TODO: remove the run's prefix of a remote store, once `list` finds it.
+        return found
+
     def read(self):
         if self.scheme == "file" and not os.path.isdir(self.path):
             return None

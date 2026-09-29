@@ -67,10 +67,13 @@ def main(argv):
         return 1
     failed = False
     for n, name in enumerate(names):
-        temp = f"{config['temp_dir_root']}/run/{name.replace('/', '_')}"
+        temp = f"{config['temp_dir_root']}/{config.get('run_id', 'run')}/{name.replace('/', '_')}"
         started = time.perf_counter()
         print(f"[{n}/{len(names)}] ({n * 100 // len(names)}%): {name}", flush=True)
         event(event="begin", name=name, temp_dir=temp)
+        if "writes" in name:
+            os.makedirs(temp, exist_ok=True)
+            open(f"{temp}/out", "w").close()
         if "hang" in name:
             time.sleep(60)
         if "nap" in name:

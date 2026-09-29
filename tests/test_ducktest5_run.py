@@ -8,10 +8,12 @@ import re
 import sys
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
+from ducktest5 import phases
 from ducktest5.binary import UsageError
 from ducktest5.client import SqlError
 from ducktest5.conf import Project
@@ -21,7 +23,7 @@ from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
 from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.provision import EXISTING
-from ducktest5.resources import ON_FAILURE, RW, Opener, Service, ServiceDef, SessionDef
+from ducktest5.resources import ON_FAILURE, RW, Opener, Service, ServiceDef, SessionDef, StorageDef
 from ducktest5.resources.made import Made
 from ducktest5.run import _binary_failure, _run_body, run
 from ducktest5.testenv import resolve
@@ -926,6 +928,30 @@ def test_a_python_body_reads_the_roots_and_puts_what_it_makes_under_the_temp_roo
         "local_temp_dir_root": f"/www/temp/{run_token}/{test.dir_name}",
     }
     assert seen["location"] == f"http://origin/temp/{run_token}/{test.dir_name}/tbl"
+
+
+def test_what_a_run_writes_under_a_storage_is_under_its_run_token_and_a_killed_run_is_swept(tmp_path):
+    store = StorageDef("scratch", str(tmp_path / "store"))
+
+    def body(ctx):
+        os.makedirs(ctx.location("t"))
+
+    tests = [sql_test("test/writes.test", inputs=[store]), py_test(body, inputs=[store])]
+    code, run_dir, _, _ = go(tmp_path, tests, keep=True)
+    assert code == 0
+    run_root = tmp_path / "store" / "temp" / run_dir.name
+    ((batch_dir,),) = [list((run_dir / "batches").iterdir())]
+    config = json.loads((batch_dir / "config.json").read_text())
+    assert (config["temp_dir_root"], config["run_id"]) == (str(run_root), batch_dir.name)
+    assert (run_root / batch_dir.name / "test_writes.test" / "out").is_file()
+    assert (run_root / tests[1].dir_name / "t").is_dir()
+    other = tmp_path / "store" / "temp" / "another-run" / "b001"
+    other.mkdir(parents=True)
+
+    project = SimpleNamespace(storages={store.id: store}, services={})
+    summary = phases.cleanup(str(run_dir), project=project, event_lines=[{"event": "run_start"}])
+    assert sorted(summary["swept"]) == sorted(f"{run_root}/{name}" for name in (batch_dir.name, tests[1].dir_name))
+    assert not run_root.exists() and other.is_dir()
 
 
 def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(tmp_path):
