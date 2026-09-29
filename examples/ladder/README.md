@@ -17,8 +17,8 @@ it gets the default DuckDB Session, and it runs one query.
 
 ## 02_rules
 
-`ducktest_conf.py` declares two local storages, and `default()` binds the role `storage` to
-`scratch_a` for every test. Each `match()` rule names one file. `own_inputs.py` and
+`ducktest_conf.py` declares two local storages and a DuckDB Session, `duck`, that loads `parquet`.
+`default()` binds the role `storage` to `scratch_a` for every test and names `duck` as its Session. Each `match()` rule names one file. `own_inputs.py` and
 `paired_own_inputs.py` bind `storage` to `scratch_b` on `@test(...)`, and that wins over the rule;
 `select --explain` shows both bindings. `default.test` is named by no `match()` and runs with what
 `default()` gives. The rule of `excluded.test` declares it out of the default suite, so a bare run
