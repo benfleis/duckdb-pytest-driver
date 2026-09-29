@@ -147,7 +147,8 @@ class Credential(Resource):
                 found = source(self.inputs)
                 if found is None:
                     continue
-                self.secrets = {name: Output(v, f"callable {source.__qualname__}") for name, v in found.items()}
+                label = str(source) if hasattr(source, "content") else f"callable {source.__qualname__}"
+                self.secrets = {name: Output(v, label) for name, v in found.items()}
                 return
             found = source.resolve(self.id)
             if found is not None:

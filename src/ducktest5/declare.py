@@ -50,6 +50,9 @@ class ServiceDef:
     thread, an embedded server) is provisioned by the process that runs the tests.
 
     How an instance comes to be is the run's choice, not the test's -- see `provision`.
+
+    `resources.ServiceDef` is the same idea on the resource base, as an input of a storage; this one
+    serves SERVICES and `provision` until they move over to it.
     """
 
     id: str
