@@ -1004,7 +1004,7 @@ def test_a_tests_own_binding_of_a_role_replaces_the_rules(tmp_path):
         "bind={'storage': 'a'}  <- ducktest_conf.py: default",
         "bind={'storage': 'b'}  <- @test",
     ]
-    assert resolve(by_name["own"]).roots["temp_dir_root"].value == "/tmp/b/temp"
+    assert resolve(by_name["own"]).roots["temp_dir_root"].value == "/tmp/b/temp/<run_token>"
 
 
 def test_a_binding_names_a_declared_storage_credential_or_service(tmp_path):

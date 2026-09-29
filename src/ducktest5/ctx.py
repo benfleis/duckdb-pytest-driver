@@ -28,7 +28,6 @@ class Ctx:
         test_env,
         duckdb_home=None,
         services=None,
-        remote_parts=(),
         run_test=None,
         session_factory=DuckDBSession,
     ):
@@ -47,7 +46,6 @@ class Ctx:
         self._session_factory = session_factory
         self._engines = list(test.engines)
         self._services = dict(services or {})  # id -> the run's instance of each service behind its inputs
-        self._remote_parts = remote_parts
         self.failed_checks = []
         self.teardowns = []
         self.clients = []
@@ -148,9 +146,9 @@ class Ctx:
 
     def location(self, name):
         """A place for a table the body creates; nothing is created here. A path under this test's
-        temp dir, or, where a bound storage or a variant gives a `temp_dir_root`, a URI under this
-        run's and this test's prefix there."""
+        temp dir, or, where a bound storage or a variant gives a `temp_dir_root`, under this test's
+        own place there, which is under the run's."""
         root = self.roots.get("temp_dir_root")
-        return os.path.join(root, *self._remote_parts, name) if root else os.path.join(self.temp_dir, name)
+        return os.path.join(root or self.temp_dir, name)
 
     step = staticmethod(step)

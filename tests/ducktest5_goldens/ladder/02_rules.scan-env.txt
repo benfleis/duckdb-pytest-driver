@@ -1,25 +1,25 @@
 default.test::default
   session: duck (unittest)  <- SESSIONS duck
     require: parquet  <- session duck
-  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp  <- storage scratch_a
+  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/tmp/ducktest-ladder/scratch_a  <- storage scratch_a
 own_inputs.py::own_inputs
   session: duck (duckdb)  <- SESSIONS duck
     require: parquet  <- session duck
-  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp  <- storage scratch_b
+  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp/<run_token>  <- storage scratch_b
   root: data_dir=<tmp>/tmp/ducktest-ladder/scratch_b  <- storage scratch_b
 paired_own_inputs.py::paired_own_inputs
   session: duck (duckdb)  <- SESSIONS duck
     require: parquet  <- session duck
-  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp  <- storage scratch_b
+  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp/<run_token>  <- storage scratch_b
   root: data_dir=<tmp>/tmp/ducktest-ladder/scratch_b  <- storage scratch_b
 rule_matched.test::rule_matched
   session: duck (unittest)  <- SESSIONS duck
     require: parquet  <- session duck
-  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp  <- storage scratch_a
+  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/tmp/ducktest-ladder/scratch_a  <- storage scratch_a
 rule_matched_body.py::rule_matched_body
   session: duck (duckdb)  <- SESSIONS duck
     require: parquet  <- session duck
-  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp  <- storage scratch_a
+  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/tmp/ducktest-ladder/scratch_a  <- storage scratch_a

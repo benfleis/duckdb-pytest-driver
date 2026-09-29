@@ -363,13 +363,20 @@ def execute(
     made = Made(run_id)
     resolved = {}
 
-    def test_env(test):
+    def test_env(test, key=None):
         """The test's environment, computed once: after provisioning, before anything runs. A `.test`
-        body gets it under its Session; a Python body's Sessions are bound to it as it is."""
-        if id(test) not in resolved:
-            env = testenv.resolve(test, made)
-            resolved[id(test)] = sessions.environment(test, env, project) if test.definition.type == SQLLOGIC else env
-        return resolved[id(test)]
+        body gets it under its Session, with the run's temp roots; a Python body's Sessions are bound
+        to it as it is, with the temp roots of the child its storage mints for `key`."""
+        if test.definition.type == SQLLOGIC:
+            key = None
+        elif key is None:
+            key = test.dir_name
+        if (id(test), key) not in resolved:
+            env = testenv.resolve(test, made, key=key)
+            resolved[(id(test), key)] = (
+                sessions.environment(test, env, project) if test.definition.type == SQLLOGIC else env
+            )
+        return resolved[(id(test), key)]
 
     # A Python test's timeout, counted from its own begin event (`test_started`), is watched by the
     # main thread, not the worker running it -- see `python_test` and the exec loop below. `reported`
@@ -488,7 +495,8 @@ def execute(
             held = {}
             try:
                 os.makedirs(temp_dir)
-                held = pool.take(test.id, sessions.bind(test, test_env(test), project))
+                env = test_env(test, dir_name)
+                held = pool.take(test.id, sessions.bind(test, env, project))
                 for session in held.values():
                     if hasattr(session.live, "scope_jobs"):  # so a timeout can cancel just this test's jobs
                         session.live.scope_jobs(test.id)
@@ -499,11 +507,10 @@ def execute(
                     sessions=held,
                     duckdb_home=duckdb_home,
                     services={s: made.services[s] for s in test.services},
-                    remote_parts=(run_id, dir_name),
-                    test_env=test_env(test),
+                    test_env=env,
                     run_test=lambda **kw: _run_paired(
                         test,
-                        sessions.environment(test, test_env(test), project),
+                        sessions.environment(test, env, project),
                         unittest_bin,
                         working_dir,
                         temp_dir,

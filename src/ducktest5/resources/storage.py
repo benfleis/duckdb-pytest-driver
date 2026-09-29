@@ -13,6 +13,7 @@ from .base import SHARED_RW, Output, Resource, ResourceDef, digest
 
 SCHEMES = ("file", "s3", "az", "abfss", "http", "https")
 _REF = re.compile(r"\{([\w-]+)\.(\w+)\}")
+RUN_TOKEN_PENDING = "<run_token>"  # in a run root shown before there is a run
 
 
 def local_path(root: str) -> str:
@@ -53,7 +54,11 @@ class StorageDef(ResourceDef):
     storage itself is shared; a writer with a key gets a child of its own, a prefix under the root;
     a writer with none has the whole root to itself, under a lock. It outputs its roots and
     endpoint, delivered as the binary's roots (`TEMP_DIR`, `DATA_DIR` and their `LOCAL_` twins)
-    and `S3_ENDPOINT`, `S3_USE_SSL`, `AZ_ACCOUNT` where they apply."""
+    and `S3_ENDPOINT`, `S3_USE_SSL`, `AZ_ACCOUNT` where they apply.
+
+    Its temp roots have three levels: the root, bound to the storage; `<root>/<temp prefix>/<run
+    token>`, bound to the run (`TEMP_DIR_ROOT`); and a child minted under that with a test's key
+    (`TEMP_DIR`). The data root is where fixtures are read, so it is the root, in every run."""
 
     kind = "storage"
     sharing = SHARED_RW
@@ -86,7 +91,7 @@ class Storage(Resource):
             "root": self.root,
             "scheme": self.scheme,
             "data_root": parent.root if parent else self.root,
-            "temp_root": self.root if parent else f"{self.root}/{definition.temp_prefix}",
+            "temp_root": self.root if parent else self.run_root(run_token or RUN_TOKEN_PENDING),
             "endpoint": endpoint,
             "account": account,
         }
@@ -105,17 +110,21 @@ class Storage(Resource):
         """The local path of a `file` root."""
         return local_path(self.root)
 
+    def run_root(self, run_token):
+        """Where everything the run `run_token` makes under this storage is."""
+        return f"{self.root}/{self.definition.temp_prefix}/{run_token}"
+
     def mint_child(self, key):
         if self.run_token is None:
             raise ValueError(f"storage {self.id}: a child needs the run's run_token")
-        root = f"{self.root}/{self.definition.temp_prefix}/{self.run_token}/{key}"
+        root = f"{self.run_root(self.run_token)}/{key}"
         return Storage(
             self.definition, digest([self.identity, key]), self.run_token, self.inputs, parent=self, root=root
         )
 
     def alloc(self):
         if self.scheme == "file":
-            os.makedirs(self.path if self.owned else f"{self.path}/{self.definition.temp_prefix}", exist_ok=True)
+            os.makedirs(self.path if self.owned else local_path(self.env["temp_root"].value), exist_ok=True)
 
     def dealloc(self):
         if not self.owned:
@@ -135,9 +144,9 @@ class Storage(Resource):
     def list(self, run_token):
         if self.scheme != "file":
             return []  # TODO: list the prefixes under `<root>/<temp prefix>/<run_token>` of a remote store
-        under = f"{self.path}/{self.definition.temp_prefix}/{run_token}"
+        under = local_path(self.run_root(run_token))
         names = sorted(os.listdir(under)) if os.path.isdir(under) else []
-        return [f"{self.root}/{self.definition.temp_prefix}/{run_token}/{n}" for n in names]
+        return [f"{self.run_root(run_token)}/{n}" for n in names]
 
     def delivery(self):
         facts = {name: out.value for name, out in self.env.items()}

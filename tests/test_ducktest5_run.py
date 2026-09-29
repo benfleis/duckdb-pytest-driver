@@ -22,6 +22,7 @@ from ducktest5.events import read as read_events
 from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.provision import EXISTING
 from ducktest5.resources import ON_FAILURE, RW, Opener, Service, ServiceDef, SessionDef
+from ducktest5.resources.made import Made
 from ducktest5.run import _binary_failure, _run_body, run
 from ducktest5.testenv import resolve
 
@@ -863,10 +864,11 @@ def test_run_test_in_a_body_with_no_file_says_what_it_is_for(tmp_path):
 
 
 def test_a_location_is_under_the_temp_dir_unless_a_temp_root_is_given(tmp_path):
-    ctx = ctx_for(py_test(passes), tmp_path, remote_parts=("run1", "test1"))
+    ctx = ctx_for(py_test(passes), tmp_path, test_env=resolve(py_test(passes), Made("r"), key="c"))
     assert ctx.location("tbl") == str(tmp_path / "tbl")
     variant = Variant("s3", roots={"temp_dir_root": "s3://bucket/temp"})
-    ctx = ctx_for(py_test(passes, {"k": variant}), tmp_path, remote_parts=("r", "c"))
+    test = py_test(passes, {"k": variant})
+    ctx = ctx_for(test, tmp_path, test_env=resolve(test, Made("r"), key="c"))
     assert ctx.location("tbl") == "s3://bucket/temp/r/c/tbl"
 
 
@@ -918,8 +920,12 @@ def test_a_python_body_reads_the_roots_and_puts_what_it_makes_under_the_temp_roo
     variant = Variant("http", roots={"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"})
     test = py_test(body, {"storage": variant})
     assert go(tmp_path, [test])[0] == 0
-    assert seen["roots"] == {"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"}
-    assert seen["location"].startswith("http://origin/temp/") and seen["location"].endswith(f"/{test.dir_name}/tbl")
+    run_token = seen["location"].split("/")[4]
+    assert seen["roots"] == {
+        "temp_dir_root": f"http://origin/temp/{run_token}/{test.dir_name}",
+        "local_temp_dir_root": f"/www/temp/{run_token}/{test.dir_name}",
+    }
+    assert seen["location"] == f"http://origin/temp/{run_token}/{test.dir_name}/tbl"
 
 
 def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(tmp_path):

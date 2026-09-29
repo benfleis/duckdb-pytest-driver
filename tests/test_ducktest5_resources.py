@@ -373,23 +373,25 @@ def test_an_unknown_scheme_is_a_usage_error():
 
 
 def test_a_local_storage_delivers_the_four_roots(tmp_path):
-    env, secrets = StorageDef("local", str(tmp_path)).make().delivery()
+    env, secrets = StorageDef("local", str(tmp_path)).make(run_token="run1").delivery()
     assert {k: v.get() for k, v in env.items()} == {
-        "TEMP_DIR": f"{tmp_path}/temp",
+        "TEMP_DIR": f"{tmp_path}/temp/run1",
         "DATA_DIR": str(tmp_path),
-        "LOCAL_TEMP_DIR": f"{tmp_path}/temp",
+        "LOCAL_TEMP_DIR": f"{tmp_path}/temp/run1",
         "LOCAL_DATA_DIR": str(tmp_path),
     }
     assert secrets == {} and env["TEMP_DIR"].source == "storage local"
+    scanned, _ = StorageDef("local", str(tmp_path)).make().delivery()
+    assert scanned["TEMP_DIR"].get() == f"{tmp_path}/temp/<run_token>"
 
 
 def test_an_s3_storage_takes_its_bucket_and_endpoint_from_an_input():
     minio = ThingDef("minio").make()
     minio.env = {"bucket": Output("ducktest", "minio"), "endpoint": Output("http://10.0.0.1:9000", "minio")}
     store = StorageDef("s3", "s3://{minio.bucket}", endpoint="{minio.endpoint}", inputs=["minio"])
-    env, _ = store.make({"minio": minio}).delivery()
+    env, _ = store.make({"minio": minio}, run_token="run1").delivery()
     assert {k: v.get() for k, v in env.items()} == {
-        "TEMP_DIR": "s3://ducktest/temp",
+        "TEMP_DIR": "s3://ducktest/temp/run1",
         "DATA_DIR": "s3://ducktest",
         "S3_ENDPOINT": "10.0.0.1:9000",
         "S3_USE_SSL": "false",
@@ -479,7 +481,7 @@ def test_scan_env_shows_the_storage_roots_and_the_credential_masked(tree, capsys
         """\
         a/x.test::x[storage=local]
           values: storage=local  <- AXES storage
-          root: temp_dir_root=ROOT/store/temp  <- storage local
+          root: temp_dir_root=ROOT/store/temp/<run_token>  <- storage local
           root: data_dir=ROOT/store  <- storage local
           env: AWS_SECRET_ACCESS_KEY=***  <- credential local-key: env DT_SECRET
         """

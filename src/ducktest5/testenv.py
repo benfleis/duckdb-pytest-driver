@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, replace
 from .binary import UsageError
 from .provision import MASK
 from .provision import SECRET_NAME as _SECRET_NAME
-from .resources import RO, ServiceDef, ServiceNotUp
+from .resources import RO, RW, ServiceDef, ServiceNotUp
 from .resources.dialect import pairs, render
 from .resources.made import Made, services_in
 
@@ -205,10 +205,11 @@ def set_entry(name, value, source):
     )
 
 
-def resolve(test, made=None):
+def resolve(test, made=None, key=None):
     """The test environment of `test`. `made` is what the run made, its services among them; None
     before provisioning, as `scan` sees it. An input that needs a service that is not up is listed
-    in `pending`."""
+    in `pending`. With `key` (a Python body's), a storage gives the child it mints for `key`, so the
+    temp roots are the test's own; without it they are the run's, and the binary adds the rest."""
     definition = test.definition
     env = TestEnv()
 
@@ -263,7 +264,14 @@ def resolve(test, made=None):
         if v.init_sql:
             env.init_sql.append(Entry(v.init_sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
     scanning, made = made is None, made or Made()
-    instances = [_deliver(env, d, mode, scanning, _axis_value, made) for d, mode in test.inputs]
+    from_axes = dict(env.roots)
+    instances = [_deliver(env, d, mode, scanning, _axis_value, made, key) for d, mode in test.inputs]
+    if key is not None:
+        # No storage to mint from: the test's own place under a variant's temp root is named the same way.
+        for name in ("temp_dir_root", "local_temp_dir_root"):
+            e = env.roots.get(name)
+            if e is not None and e is from_axes.get(name):
+                env.roots[name] = replace(e, value=f"{e.value}/{made.run_token}/{key}")
     if definition.body_file:
         for credential, storages in pairs(i for i in instances if i is not None):
             rendered = render("unittest", "secret", storages, credential)
@@ -275,7 +283,7 @@ def resolve(test, made=None):
     return env
 
 
-def _deliver(env, definition, mode, scanning, value, made):
+def _deliver(env, definition, mode, scanning, value, made, key=None):
     """One input's outputs into the test environment, and the instance that gave them, or None when
     they are not known yet. Nothing is allocated here and nothing is held: that is for the walk of
     the resource graph. At scan a credential that does not resolve, or one a callable source makes,
@@ -296,8 +304,12 @@ def _deliver(env, definition, mode, scanning, value, made):
             raise UsageError("made by a callable source when the test runs")
         if not service:  # the run's one instance, already up
             instance.start()
-        instance.release(instance.acquire(RO), RO)
-        values, secrets = instance.delivery()
+        if key is not None and definition.kind == "storage":
+            given = instance.acquire(RW, key)
+        else:
+            given = instance
+            instance.release(instance.acquire(RO), RO)
+        values, secrets = given.delivery()
     except UsageError as exc:
         if not scanning:
             raise
