@@ -27,7 +27,7 @@
       </properties>
       <error message="setup failed" type="ERROR">--- py/write.py::write_then_read
   run: 2026-09-21T10-00-00Z--amber-koala-01
-  /repo/test/py/write.py:14
+  py/write.py:14
 
   setup failed
   [duckdb] statement failed: Catalog Error: Table with name t does not exist

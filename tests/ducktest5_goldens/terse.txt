@@ -32,7 +32,7 @@ outcome: ERROR
 runner: python
 seconds: 0.9
 file: test/py/write.py
-where: /repo/test/py/write.py:14
+where: py/write.py:14
 message:
   | setup failed
   | [duckdb] statement failed: Catalog Error: Table with name t does not exist

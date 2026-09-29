@@ -185,10 +185,10 @@ def test_the_failure_text_reaches_the_terminal_the_report_and_the_events(tmp_pat
     (problem,) = report["tests"][0]["problems"]
     assert "assert ids == list(range(1, len(ids) + 1))" in problem
     assert "diff, - left + right" in problem
-    assert problem.endswith("body.py:7")
+    assert problem.endswith("\n  at body.py:7")  # as the test id names it: from the project root
     # the terminal shows the message and the place, laid out; the event keeps the text as it was
     assert "assert ids == list(range(1, len(ids) + 1))" in printed.getvalue()
     assert "body.py:7" in printed.getvalue()
     (event,) = end_events(run_dir)
     assert event["problems"] == [problem]
-    assert event["failure"]["where"].endswith("body.py:7")
+    assert event["failure"]["where"] == "body.py:7"

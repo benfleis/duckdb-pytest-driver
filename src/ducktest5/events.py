@@ -92,7 +92,7 @@ RUN_START, RUN_END, TEST_START, TEST_END, SERVICE = "run_start", "run_end", "tes
 _SECRET_TOKEN = re.compile(r"^(--?[\w-]*(?:secret|token|password|key)[\w-]*=).*$", re.IGNORECASE)
 
 # "file.test:12", as both the binary and a Python traceback name a place.
-_LOCATION = re.compile(r"\b([\w./+-]+\.(?:test|test_slow|test_coverage|sqllogic|py)):(\d+)\b")
+_LOCATION = re.compile(r"(?<![\w./+-])([\w./+-]+\.(?:test|test_slow|test_coverage|sqllogic|py)):(\d+)\b")
 _RULE = re.compile(r"^=+\s*$")
 _CATCH_TAIL = re.compile(r"^(?:~{10,}|unittest is a Catch )")
 _NOISE = re.compile(r"^(?:Filters:|\d+\. [\w./+-]+:\d+$|[\w./+-]+:\d+$)")

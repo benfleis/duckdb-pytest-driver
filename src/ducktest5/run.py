@@ -51,13 +51,14 @@ from .reports.live import Live
 from .workers import Pool
 
 
-def _describe_failure(exc, body):
+def _describe_failure(exc, test):
     """The error, plus the innermost line of the test's own file: where the body failed, not where a
-    helper raised."""
+    helper raised. The file is named as the test id names it."""
+    body = test.definition.body
     text = "".join(traceback.format_exception_only(type(exc), exc)).rstrip()
     stack = getattr(exc, "stack", None) or traceback.extract_tb(exc.__traceback__)
     lines = [f.lineno for f in stack if f.filename == body.__code__.co_filename]
-    return f"{text}\n  at {body.__code__.co_filename}:{lines[-1]}" if lines else text
+    return f"{text}\n  at {test.definition.root_path}:{lines[-1]}" if lines else text
 
 
 def _failure_parts(problems, checks):
@@ -87,14 +88,14 @@ def _run_body(test, ctx):
         except UsageError as exc:
             outcome, problems = (
                 ERROR,
-                [f"usage error of the test, not of the command line\n{_describe_failure(exc, body)}"],
+                [f"usage error of the test, not of the command line\n{_describe_failure(exc, test)}"],
             )
         except SetupFailed as exc:
-            outcome, problems = ERROR, [f"setup failed\n{_describe_failure(exc, body)}"]
+            outcome, problems = ERROR, [f"setup failed\n{_describe_failure(exc, test)}"]
         except Exception as exc:
-            outcome, problems = FAILED, [_describe_failure(exc, body)]
+            outcome, problems = FAILED, [_describe_failure(exc, test)]
         if ctx.failed_checks:
-            problems = [_describe_failure(f, body) for f in ctx.failed_checks] + problems
+            problems = [_describe_failure(f, test) for f in ctx.failed_checks] + problems
             outcome = FAILED  # also over a setup that failed later: the check had already proven a failure
     finally:
         for teardown in reversed(ctx.teardowns):
@@ -730,7 +731,7 @@ def _report_batch(chunk, batch, by_test, done, run_dir, runner):
             runner=runner,
             seconds=r.seconds,
             problems=problems,
-            failure=events.binary_failure(r.detail) if r.outcome in (FAILED, ERROR) else None,
+            failure=_binary_failure(test, r.detail) if r.outcome in (FAILED, ERROR) else None,
             reason=r.detail if r.outcome == SKIPPED else None,
             kept=[r.kept] if r.kept else [],
             note=r.note,
@@ -739,6 +740,16 @@ def _report_batch(chunk, batch, by_test, done, run_dir, runner):
             evidence=r.evidence,
             **({"attempts": r.attempts} if r.attempts > 1 else {}),
         )
+
+
+def _binary_failure(test, detail):
+    """The binary names the file as it was given, relative to the working directory; a reader
+    finds it by the test id, relative to the project root."""
+    failure = events.binary_failure(detail)
+    file, _, line = failure.get("where", "").rpartition(":")
+    if file == test.definition.body_file:
+        failure["where"] = f"{test.definition.root_path}:{line}"
+    return failure
 
 
 def _identity(test):

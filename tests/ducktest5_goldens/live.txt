@@ -29,7 +29,7 @@ engine spark -- did not come up: RuntimeError: no JVM (log: /runs/2026-09-21T10-
   again: ducktest5 run --id sql/rows.test::rows
 
 --- py/write.py::write_then_read
-  /repo/test/py/write.py:14
+  py/write.py:14
 
   setup failed
   [duckdb] statement failed: Catalog Error: Table with name t does not exist

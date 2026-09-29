@@ -92,6 +92,10 @@ def test_what_the_binary_printed_comes_apart_into_message_statement_and_results(
     assert events.binary_failure(text) == parts
 
 
+def test_a_place_outside_the_project_keeps_its_leading_slash():
+    assert events.where_in("boom\n  at /opt/elsewhere/helper.py:3") == "/opt/elsewhere/helper.py:3"
+
+
 # -----------------------------------------------------------------------------
 # text: live, normal, verbose, terse
 #

@@ -22,7 +22,7 @@ from ducktest5.events import read as read_events
 from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.provision import EXISTING
 from ducktest5.resources import ON_FAILURE, RW, Opener, Service, ServiceDef, SessionDef
-from ducktest5.run import _run_body, run
+from ducktest5.run import _binary_failure, _run_body, run
 from ducktest5.testenv import resolve
 
 FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
@@ -712,7 +712,13 @@ def test_failed_checks_are_reported_before_the_abort_and_the_outcome_is_failed(t
     outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path))
     assert outcome == "failed"
     assert ["2" in problems[0], "3" in problems[1], "then the body broke" in problems[2]] == [True] * 3
-    assert f"at {__file__}:" in problems[0]
+    assert "at test/body.py:" in problems[0]
+
+
+def test_the_binary_names_a_failed_file_as_the_test_id_does():
+    test = sql_test("test/sql/a.test", root_path="sql/a.test")
+    detail = "Wrong result in query! (test/sql/a.test:4)!\nExpected result:\n2\nActual result:\n1"
+    assert _binary_failure(test, detail)["where"] == "sql/a.test:4"
 
 
 def test_failed_checks_alone_fail_the_test(tmp_path):
