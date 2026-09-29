@@ -86,9 +86,9 @@ class Variant:
                  A name set to None in `env` is unset too. A test that unsets every name a
                  credential delivers does not get that credential, even where its scope matches.
 
-    `services` and `engines` are what the test then needs, `tags` name it for a selection, and
-    `location_on` is the service on which `ctx.location()` puts what the body creates. `inputs` names
-    STORAGES and CREDENTIALS: a bare id is read-write, `{"id": "ro"}` read-only."""
+    `services` and `engines` are what the test then needs, and `tags` name it for a selection.
+    `inputs` names STORAGES and CREDENTIALS: a bare id is read-write, `{"id": "ro"}` read-only; a
+    bound storage is where `ctx.location()` puts what the body creates."""
 
     id: str
     services: tuple = ()
@@ -97,7 +97,6 @@ class Variant:
     settings: dict = field(default_factory=dict)
     init_sql: object = None
     tags: tuple = ()
-    location_on: str | None = None
     requires: tuple = ()
     roots: object = None
     env: dict = field(default_factory=dict)

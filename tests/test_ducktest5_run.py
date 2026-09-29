@@ -18,7 +18,7 @@ from ducktest5.declare import EngineDef, ServiceDef, Variant
 from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
 from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef
-from ducktest5.provision import EXISTING, Provisioned
+from ducktest5.provision import EXISTING
 from ducktest5.resources import Opener, SessionDef
 from ducktest5.run import _run_body, run
 from ducktest5.testenv import resolve
@@ -58,22 +58,15 @@ class FakeEngine:
 class FakeStore:
     """A service that is found, never started. `up` is whether it answers."""
 
-    def __init__(self, *, up=True, clean_raises=False):
-        self.up, self.clean_raises, self.cleaned, self.calls = up, clean_raises, [], []
+    def __init__(self, *, up=True):
+        self.up, self.calls = up, []
 
     def service(self, id="store"):
-        def clean(block, uri):
-            if self.clean_raises:
-                raise RuntimeError("access denied")
-            self.cleaned.append(uri)
-
         return ServiceDef(
             id,
             block=lambda **o: {"endpoint": "http://store", "secret_key": "s3cr3t"},
             alive=lambda block: self.up,
             setup=lambda block: self.calls.append("setup"),
-            clean=clean,
-            location=lambda block, *parts: "fake://" + "/".join(parts),
             secrets=("secret_key",),
         )
 
@@ -612,7 +605,6 @@ def test_secrets_of_a_service_are_not_in_the_provision_record(tmp_path):
 
 def writes(ctx):
     open(os.path.join(ctx.temp_dir, "f"), "w").close()
-    ctx.location("tbl", on="store")
 
 
 def writes_and_fails(ctx):
@@ -622,25 +614,20 @@ def writes_and_fails(ctx):
 
 @pytest.mark.parametrize("keep", [False, True])
 def test_what_a_passed_test_wrote_is_removed_unless_kept(tmp_path, keep):
-    store = FakeStore()
-    code, run_dir, report, _ = go(
-        tmp_path, [py_test(writes, services=["store"])], services=[store.service()], keep=keep
-    )
+    code, run_dir, report, _ = go(tmp_path, [py_test(writes)], keep=keep)
     assert code == 0
-    uri = f"fake://{run_dir.name}/{py_test(writes).dir_name}/tbl"
     if keep:
-        assert store.cleaned == [] and len(list((run_dir / "tests").iterdir())) == 1
-        assert report["tests"][0]["kept"][1:] == [uri]
+        assert len(list((run_dir / "tests").iterdir())) == 1
+        assert len(report["tests"][0]["kept"]) == 1
     else:
-        assert store.cleaned == [uri] and list((run_dir / "tests").iterdir()) == []
+        assert list((run_dir / "tests").iterdir()) == []
         assert "kept" not in report["tests"][0]
 
 
 def test_what_a_failed_test_wrote_stays_and_is_listed(tmp_path):
-    store = FakeStore()
-    _, run_dir, report, text = go(tmp_path, [py_test(writes_and_fails, services=["store"])], services=[store.service()])
+    _, run_dir, report, text = go(tmp_path, [py_test(writes_and_fails)])
     kept = report["tests"][0]["kept"]
-    assert store.cleaned == [] and os.path.isfile(os.path.join(kept[0], "f")) and kept[1].startswith("fake://")
+    assert os.path.isfile(os.path.join(kept[0], "f"))
     assert "kept: " + kept[0] in text and "again: ducktest5 run --id" in text
 
 
@@ -659,17 +646,6 @@ def test_a_batch_dir_with_a_failure_stays(tmp_path):
 # -----------------------------------------------------------------------------
 # Whatever goes wrong outside a body is an ERROR of the tests it hit
 #
-
-
-def test_a_clean_that_raises_is_an_error_and_the_run_goes_on(tmp_path):
-    store = FakeStore(clean_raises=True)
-    tests = [py_test(writes, services=["store"]), py_test(passes, path="test/next.py")]
-    code, _, report, _ = go(tmp_path, tests, services=[store.service()])
-    assert code == 1
-    assert outcomes(report) == {"writes": "error", "passes": "passed"}
-    first = result_of(report, "writes")
-    assert "could not be removed: RuntimeError: access denied" in first["problems"][0]
-    assert first["kept"] == [first["problems"][0].split(" at ")[1].split(" could")[0]]
 
 
 def test_a_batch_that_cannot_start_is_an_error_of_its_tests_and_python_tests_still_run(tmp_path):
@@ -903,31 +879,12 @@ def test_run_test_in_a_body_with_no_file_says_what_it_is_for(tmp_path):
 #
 
 
-def provisioned_store():
-    service = FakeStore().service()
-    return {"store": Provisioned(service, service.block(), EXISTING)}
-
-
-def test_a_location_is_under_the_temp_dir_unless_a_service_is_named(tmp_path):
-    test = py_test(passes, services=["store"])
-    ctx = ctx_for(test, tmp_path, services=provisioned_store(), remote_parts=("run1", "test1"))
+def test_a_location_is_under_the_temp_dir_unless_a_temp_root_is_given(tmp_path):
+    ctx = ctx_for(py_test(passes), tmp_path, remote_parts=("run1", "test1"))
     assert ctx.location("tbl") == str(tmp_path / "tbl")
-    assert ctx.remote_locations == []
-    assert ctx.location("tbl", on="store") == "fake://run1/test1/tbl"
-    assert ctx.remote_locations == [("store", "fake://run1/test1/tbl")]
-    assert ctx.service("store")["endpoint"] == "http://store"
-
-
-def test_a_variant_can_put_every_location_on_a_service(tmp_path):
-    variant = Variant("s3", services=("store",), location_on="store")
-    ctx = ctx_for(py_test(passes, {"k": variant}), tmp_path, services=provisioned_store(), remote_parts=("r", "c"))
-    assert ctx.location("tbl") == "fake://r/c/tbl"
-
-
-def test_a_service_the_test_did_not_declare_is_refused(tmp_path):
-    ctx = ctx_for(py_test(passes), tmp_path, services=provisioned_store())
-    with pytest.raises(KeyError, match="not declared by this test"):
-        ctx.location("tbl", on="store")
+    variant = Variant("s3", roots={"temp_dir_root": "s3://bucket/temp"})
+    ctx = ctx_for(py_test(passes, {"k": variant}), tmp_path, remote_parts=("r", "c"))
+    assert ctx.location("tbl") == "s3://bucket/temp/r/c/tbl"
 
 
 # -----------------------------------------------------------------------------
@@ -1054,17 +1011,15 @@ def test_a_python_body_with_retries_runs_again_in_a_directory_of_its_own(tmp_pat
     seen = []
 
     def flaky(ctx):
-        seen.append((os.path.basename(ctx.temp_dir), os.listdir(ctx.temp_dir), ctx.location("t", on="store")))
+        seen.append((os.path.basename(ctx.temp_dir), os.listdir(ctx.temp_dir)))
         open(os.path.join(ctx.temp_dir, "left-behind"), "w").close()
         assert len(seen) == 2
 
-    store = FakeStore()
-    test = py_test(flaky, services=["store"], retries=2)
-    code, run_dir, report, _ = go(tmp_path, [test], services=[store.service()])
+    test = py_test(flaky, retries=2)
+    code, run_dir, report, _ = go(tmp_path, [test])
     assert code == 0
-    assert [(name, files) for name, files, _ in seen] == [(test.dir_name, []), (test.dir_name + ".attempt2", [])]
+    assert seen == [(test.dir_name, []), (test.dir_name + ".attempt2", [])]
     assert (report["tests"][0]["attempts"], report["tests"][0]["note"]) == (2, "passed on attempt 2 of 3")
-    assert store.cleaned == [uri for _, _, uri in seen] and len(set(store.cleaned)) == 2
     assert list((run_dir / "tests").iterdir()) == []
 
 

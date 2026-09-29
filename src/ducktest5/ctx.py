@@ -39,7 +39,6 @@ class Ctx:
         self.values = test_env.value_map
         self.roots = test_env.root_paths
         self._run_test = run_test
-        self._location_on = next((v.location_on for v in test.axis_values.values() if v.location_on), None)
         self.temp_dir = temp_dir
         self._duckdb_bin = duckdb_bin
         self._sessions = sessions  # id -> the Session this test holds
@@ -49,7 +48,6 @@ class Ctx:
         self._engines = list(test.engines)
         self._services = {s: services[s] for s in test.services} if services else {}
         self._remote_parts = remote_parts
-        self.remote_locations = []  # (service id, uri): what this test may have written outside temp_dir
         self.failed_checks = []
         self.teardowns = []
         self.clients = []
@@ -147,17 +145,11 @@ class Ctx:
             raise KeyError(f"service {name!r} is not declared by this test (services={sorted(self._services)})")
         return self._services[name].block
 
-    def location(self, name, *, on=None):
-        """A place for a table the body creates; nothing is created here. By default a path under
-        this test's temp dir, or under the test environment's `temp_dir_root` where a variant gives
-        one; with `on=<service>`, a URI under this run's prefix on that service."""
-        on = on or self._location_on
-        if on is None:
-            root = self.roots.get("temp_dir_root")
-            return os.path.join(root, *self._remote_parts, name) if root else os.path.join(self.temp_dir, name)
-        provisioned = self._services[on] if on in self._services else self.service(on)
-        uri = provisioned.service.location(provisioned.block, *self._remote_parts, name)
-        self.remote_locations.append((on, uri))
-        return uri
+    def location(self, name):
+        """A place for a table the body creates; nothing is created here. A path under this test's
+        temp dir, or, where a bound storage or a variant gives a `temp_dir_root`, a URI under this
+        run's and this test's prefix there."""
+        root = self.roots.get("temp_dir_root")
+        return os.path.join(root, *self._remote_parts, name) if root else os.path.join(self.temp_dir, name)
 
     step = staticmethod(step)

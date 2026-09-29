@@ -550,23 +550,8 @@ def execute(
                 elif n > 1:
                     note = f"passed on attempt {n} of {allowed}"
                 kept = []
-                if outcome == PASSED and not keep:
-                    # What the test wrote on a service is its own; the files it left are the cleanup phase's.
-                    for service_id, uri in (x for _, c in tried if c for x in c.remote_locations):
-                        try:
-                            provisioned[service_id].service.clean(provisioned[service_id].block, uri)
-                        except Exception as exc:
-                            outcome = ERROR
-                            problems.append(
-                                f"what the test wrote at {uri} could not be removed: {type(exc).__name__}: {exc}"
-                            )
-                            failure = {"summary": problems[-1]}
-                            kept.append(uri)
-                else:
-                    kept = [
-                        *(temp_dir for temp_dir, _ in tried if os.path.isdir(temp_dir)),
-                        *(uri for _, c in tried if c for _, uri in c.remote_locations),
-                    ]
+                if outcome != PASSED or keep:
+                    kept = [temp_dir for temp_dir, _ in tried if os.path.isdir(temp_dir)]
                 if sqllogic.stopped():  # stopped while this body ran: a resume takes the test up again
                     return
                 if not report_once(test.id):  # its timeout already wrote an ERROR for it
