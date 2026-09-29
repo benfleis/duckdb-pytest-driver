@@ -1,9 +1,7 @@
-"""MinIO, an S3-compatible object store: as a `ServiceDef` of SERVICES, and as `MinioDef`, a Service
-on the resource base. The block has the field names of the pytest driver's `ducktest.resources.minio`,
-so one `--existing-service minio={json}` serves both.
+"""MinIO, an S3-compatible object store, as a Service.
 
-The credentials are those of a local emulator, not secrets, but they are redacted in reports all the
-same, because an existing instance may be anyone's.
+The credentials are those of a local emulator, not secrets, but they reach a test only through a
+credential all the same, because an existing instance may be anyone's.
 """
 
 from __future__ import annotations
@@ -13,15 +11,14 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from ..declare import ServiceDef
 from ..host import docker
-from ..resources import ON_FAILURE, Service
-from ..resources import ServiceDef as ResourceServiceDef
+from ..resources import ON_FAILURE, Service, ServiceDef
 
 _IMAGE = os.environ.get("DUCKTEST_MINIO_IMAGE", "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1")
 
 
-def minio_block(**overrides):
+def minio_settings(**overrides):
+    """How one instance is reached and started; `MINIO_*` of the environment give the defaults."""
     port = int(overrides.get("port", os.environ.get("DUCKTEST_MINIO_S3_PORT", "9000")))
     # Where a started instance is published, and so where it is reached. With a docker daemon that
     # is not on this machine's loopback (DOCKER_HOST), this is the address of the daemon's host as
@@ -30,15 +27,11 @@ def minio_block(**overrides):
     endpoint = overrides.get("endpoint", f"http://{host}:{port}").rstrip("/")
     return {
         "endpoint": endpoint,
-        "s3_endpoint": endpoint.split("://", 1)[-1],  # host:port, what DuckDB's ENDPOINT takes
-        "use_ssl": endpoint.startswith("https://"),
-        "url_style": overrides.get("url_style", "path"),
         "region": overrides.get("region", os.environ.get("DUCKTEST_MINIO_REGION", "us-east-1")),
         "access_key": overrides.get("access_key", os.environ.get("DUCKTEST_MINIO_ACCESS_KEY", "admin")),
         "secret_key": overrides.get("secret_key", os.environ.get("DUCKTEST_MINIO_SECRET_KEY", "password")),
         "bucket": overrides.get("bucket", os.environ.get("DUCKTEST_MINIO_BUCKET", "ducktest")),
-        "temp_prefix": overrides.get("temp_prefix", "temp"),
-        "container": overrides.get("container", os.environ.get("DUCKTEST_MINIO_CONTAINER", "ducktest-minio")),
+        "container": overrides["container"],
         "port": port,
         "publish": f"{host}:{port}",
     }
@@ -62,7 +55,7 @@ def _s3(block):
         aws_access_key_id=block["access_key"],
         aws_secret_access_key=block["secret_key"],
         region_name=block["region"],
-        config=Config(s3={"addressing_style": block["url_style"]}),
+        config=Config(s3={"addressing_style": "path"}),
     )
 
 
@@ -92,48 +85,8 @@ def _setup(block):
             raise
 
 
-def _clean(block, uri):
-    """Remove the object at `uri` and everything below it. Only ever under the bucket's temp prefix."""
-    root = _location(block) + "/"
-    below = uri[len(root) :].strip("/") if uri.startswith(root) else ""
-    if not below:
-        raise ValueError(f"{uri!r} is not below {root}: only what is there is removed")
-    key = f"{block['temp_prefix']}/{below}"
-    bucket = _s3(block).Bucket(block["bucket"])
-    bucket.Object(key).delete()
-    bucket.objects.filter(Prefix=key + "/").delete()  # with the `/`: `.../t` must not take `.../t2` with it
-
-
-def _location(block, *parts):
-    return "/".join([f"s3://{block['bucket']}", block["temp_prefix"], *parts])
-
-
-def duckdb_secret(block, name="ducktest_minio"):
-    """The DuckDB secret for this instance. A remote ATTACH also needs READ_WRITE to write."""
-    return (
-        f"CREATE OR REPLACE SECRET {name} (TYPE s3, KEY_ID '{block['access_key']}', SECRET '{block['secret_key']}', "
-        f"REGION '{block['region']}', ENDPOINT '{block['s3_endpoint']}', URL_STYLE '{block['url_style']}', "
-        f"USE_SSL {'true' if block['use_ssl'] else 'false'});"
-    )
-
-
-def minio_service(id="minio"):
-    return ServiceDef(
-        id,
-        block=minio_block,
-        alive=minio_alive,
-        start=_start,
-        stop=_stop,
-        setup=_setup,
-        clean=_clean,
-        location=_location,
-        secrets=("access_key", "secret_key"),
-        detached=True,  # a container: it stays up when the run that started it ends
-    )
-
-
 @dataclass(eq=False)
-class MinioDef(ResourceServiceDef):
+class MinioDef(ServiceDef):
     """MinIO in a docker container named for the run, with its bucket made. It outputs `endpoint`,
     `bucket` and `region`; its keys come from the environment (DUCKTEST_MINIO_ACCESS_KEY,
     DUCKTEST_MINIO_SECRET_KEY) and reach a test through `credential(id, scopes=[...])`."""
@@ -166,7 +119,7 @@ class Minio(Service):
             overrides["port"] = definition.port
         if definition.address is not None:
             overrides["endpoint"] = definition.address
-        self.block = minio_block(**overrides)
+        self.block = minio_settings(**overrides)
 
     @property
     def handle(self):

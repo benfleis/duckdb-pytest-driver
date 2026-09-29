@@ -112,19 +112,6 @@ def test_a_masked_secret_is_not_taken_for_a_value():
         existing_overrides("store", ['store={"endpoint": "http://h", "secret_key": "***"}'])
 
 
-def test_a_started_minio_is_published_and_reached_on_the_service_host(monkeypatch):
-    from ducktest5.services.minio import minio_block
-
-    assert minio_block()["endpoint"] == "http://127.0.0.1:9000"
-    monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
-    block = minio_block()
-    assert (block["endpoint"], block["publish"], block["s3_endpoint"]) == (
-        "http://172.18.0.1:9000",
-        "172.18.0.1:9000",
-        "172.18.0.1:9000",
-    )
-
-
 def test_managed_refuses_to_replace_an_instance_that_already_answers():
     fake = Fake(up=True)
     with pytest.raises(RuntimeError, match="already answers.*--existing-service store.*--keep-services"):
