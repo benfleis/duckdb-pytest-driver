@@ -985,8 +985,8 @@ def test_a_tests_own_binding_of_a_role_replaces_the_rules(tmp_path):
     assert resolve(by_name["own"]).roots["temp_dir_root"].value == "/tmp/b/temp"
 
 
-def test_a_binding_names_a_declared_storage_or_credential(tmp_path):
-    with pytest.raises(UsageError, match="binds 'storage' to 'c', which is not in STORAGES or CREDENTIALS"):
+def test_a_binding_names_a_declared_storage_credential_or_service(tmp_path):
+    with pytest.raises(UsageError, match="binds 'storage' to 'c', which is not in STORAGES, CREDENTIALS or SERVICES"):
         tree(
             tmp_path,
             {

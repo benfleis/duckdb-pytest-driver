@@ -1,6 +1,7 @@
 """Services: something that runs and that a test reaches at an address -- a file server, an object
 store, a catalog. The run starts one instance of each declaration and ends it with the run, or finds
-one already running: `.as_existing(address=...)`."""
+one already running: `.as_existing(address=...)`. A test reaches one through its inputs: a storage
+on it, a credential it produces, or the service itself."""
 
 from __future__ import annotations
 
@@ -78,6 +79,16 @@ class Service(Resource):
     @property
     def owned(self):
         return not self.existing
+
+    @property
+    def address(self) -> str | None:
+        """Where it answers: what `as_existing` takes to find this instance again."""
+        return self.definition.address
+
+    @property
+    def attributes(self) -> dict:
+        """Its attributes, by name, while it is up; never its secrets."""
+        return {name: out.get() for name, out in self.env.items()}
 
     def _up(self) -> bool:
         return self.read() is not None and self.ready()

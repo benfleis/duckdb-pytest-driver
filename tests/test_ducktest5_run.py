@@ -7,6 +7,8 @@ import os
 import re
 import sys
 
+from dataclasses import dataclass, field
+
 import pytest
 import yaml
 
@@ -14,12 +16,12 @@ from ducktest5.binary import UsageError
 from ducktest5.client import SqlError
 from ducktest5.conf import Project
 from ducktest5.ctx import Ctx
-from ducktest5.declare import EngineDef, ServiceDef, Variant
+from ducktest5.declare import EngineDef, Variant
 from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
 from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.provision import EXISTING
-from ducktest5.resources import Opener, SessionDef
+from ducktest5.resources import ON_FAILURE, RW, Opener, Service, ServiceDef, SessionDef
 from ducktest5.run import _run_body, run
 from ducktest5.testenv import resolve
 
@@ -55,20 +57,28 @@ class FakeEngine:
         self.calls.append("stop")
 
 
-class FakeStore:
-    """A service that is found, never started. `up` is whether it answers."""
+@dataclass(eq=False)
+class StoreDef(ServiceDef):
+    """A service found running at `address`, never started; `up` says whether it answers. Its
+    `token` is a secret."""
 
-    def __init__(self, *, up=True):
-        self.up, self.calls = up, []
+    kind = "store"
+    attributes = ("endpoint",)
+    secret_attributes = ("token",)
 
-    def service(self, id="store"):
-        return ServiceDef(
-            id,
-            block=lambda **o: {"endpoint": "http://store", "secret_key": "s3cr3t"},
-            alive=lambda block: self.up,
-            setup=lambda block: self.calls.append("setup"),
-            secrets=("secret_key",),
-        )
+    id: str = "store"
+    up: bool = True
+    address: str | None = "http://store"
+    inputs: list = field(default_factory=list)
+    retain: str = ON_FAILURE
+
+
+class Store(Service):
+    def read(self):
+        return {"endpoint": self.address, "token": "s3cr3t"} if self.definition.up else None
+
+
+StoreDef.instance = Store
 
 
 class FakeSession:
@@ -94,21 +104,22 @@ class FakeSession:
     restart = respawn = close = lambda self: None
 
 
-def sql_test(path, axis_values=None, **fields):
+def sql_test(path, axis_values=None, *, inputs=(), **fields):
     name = os.path.splitext(os.path.basename(path))[0]
-    return Test(TestDef(path=path, name=name, type=SQLLOGIC, body_file=path, **fields), None, axis_values or {})
+    definition = TestDef(path=path, name=name, type=SQLLOGIC, body_file=path, **fields)
+    return Test(definition, None, axis_values or {}, tuple((d, RW) for d in inputs))
 
 
-def py_test(body, axis_values=None, *, path="test/body.py", body_file=None, **fields):
+def py_test(body, axis_values=None, *, path="test/body.py", body_file=None, inputs=(), **fields):
     definition = TestDef(
         path=path, name=body.__name__, type=PAIRED if body_file else PYTHON, body=body, body_file=body_file, **fields
     )
-    return Test(definition, None, axis_values or {})
+    return Test(definition, None, axis_values or {}, tuple((d, RW) for d in inputs))
 
 
-def go(tmp_path, tests, *, engines=(), services=(), sessions=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
+def go(tmp_path, tests, *, engines=(), sessions=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
     """Returns (exit code, run dir, report, printed text)."""
-    project = Project(str(tmp_path), {e.id: e for e in engines}, {s.id: s for s in services}, {}, {}, ())
+    project = Project(str(tmp_path), {e.id: e for e in engines}, {}, {}, {}, ())
     project.sessions = {s.id: s for s in sessions}
     out = io.StringIO()
     kwargs.setdefault("session_factory", FakeSession)
@@ -176,10 +187,7 @@ def test_the_exit_code_says_whether_everything_that_ran_passed(tmp_path, names, 
 
 
 def test_a_blocked_test_fails_the_run(tmp_path):
-    store = FakeStore(up=False)
-    code, _, report, _ = go(
-        tmp_path, [py_test(passes), py_test(passes, services=["store"], path="test/s.py")], services=[store.service()]
-    )
+    code, _, report, _ = go(tmp_path, [py_test(passes), py_test(passes, inputs=[StoreDef(up=False)], path="test/s.py")])
     assert code == 1
     assert sorted(c["outcome"] for c in report["tests"]) == ["blocked", "passed"]
 
@@ -237,18 +245,17 @@ def test_a_batch_holds_at_most_batch_size_files_and_a_slow_file_runs_alone(tmp_p
 
 
 def test_a_test_with_a_service_runs_alone_and_its_failure_is_not_run_a_second_time(tmp_path, flaky_state):
-    store = FakeStore()
-    tests = [sql_test("a.test"), sql_test("b.test", services=["store"]), sql_test("c_flaky2.test", services=["store"])]
-    _, _, report, _ = go(tmp_path, tests, services=[store.service()])
+    store = StoreDef()
+    tests = [sql_test("a.test"), sql_test("b.test", inputs=[store]), sql_test("c_flaky2.test", inputs=[store])]
+    _, _, report, _ = go(tmp_path, tests)
     assert len(set(batch_of(report).values())) == 3
     assert outcomes(report)["c_flaky2"] == "failed"
     assert (tmp_path / "state" / "c_flaky2.test.runs").read_text() == "1"
 
 
 def test_a_variant_init_sql_is_the_batch_init_file(tmp_path):
-    store = FakeStore()
-    variant = Variant("s3", services=("store",), init_sql="ATTACH 'http://store'")
-    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"k": variant})], services=[store.service()], keep=True)
+    variant = Variant("s3", init_sql="ATTACH 'http://store'")
+    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"k": variant})], keep=True)
     init = run_dir / report["tests"][0]["batch"] / "init.sqllogic"
     assert init.read_text() == "statement ok\nATTACH 'http://store';\n"
 
@@ -348,8 +355,8 @@ def debugger(tmp_path, monkeypatch):
     return f"{sys.executable} {FAKE_DEBUGGER} --", started
 
 
-def debug(tmp_path, tests, command, *, services=(), **kwargs):
-    project = Project(str(tmp_path), {}, {s.id: s for s in services}, {}, {}, ())
+def debug(tmp_path, tests, command, **kwargs):
+    project = Project(str(tmp_path), {}, {}, {}, {}, ())
     out = io.StringIO()
     code = run(
         tests,
@@ -369,7 +376,7 @@ def debug(tmp_path, tests, command, *, services=(), **kwargs):
 def test_the_debugger_gets_the_binary_and_the_batch_a_normal_run_would_have_used(tmp_path, debugger):
     command, started = debugger
     test = sql_test("a.test", {"storage": MADE_OF}, values={"catalog": "duck"})
-    code, text = debug(tmp_path, [test], command, services=[FakeStore().service()])
+    code, text = debug(tmp_path, [test], command)
     argv = started()["argv"]
     batch_dir = os.path.dirname(argv[argv.index("-f") + 1])
     assert code == 0
@@ -422,7 +429,6 @@ def test_a_debugger_needs_one_test_and_says_what_was_selected(tmp_path, debugger
 
 MADE_OF = Variant(
     "s3",
-    services=("store",),
     values={"root": "s3://bucket"},
     settings={"s3_region": "eu"},
     init_sql="CREATE SECRET (SECRET 'hunter2')",
@@ -430,15 +436,15 @@ MADE_OF = Variant(
 
 
 def test_a_failed_test_says_what_it_was_made_of(tmp_path):
-    test = sql_test("b_fail.test", {"storage": MADE_OF})
-    _, run_dir, report, text = go(tmp_path, [test], services=[FakeStore().service()])
+    test = sql_test("b_fail.test", {"storage": MADE_OF}, inputs=[StoreDef()])
+    _, run_dir, report, text = go(tmp_path, [test])
     facts = report["tests"][0]["made_of"]
     assert facts["environment"] == [
         {"what": "set", "is": "s3_region=eu", "from": "AXES storage=s3"},
         {"what": "init sql", "is": "", "from": "AXES storage=s3"},
         {"what": "values", "is": "storage=s3", "from": "AXES storage"},
         {"what": "values", "is": "root=s3://bucket", "from": "AXES storage=s3"},
-        {"what": "service", "is": "store (existing)", "from": "AXES storage=s3"},
+        {"what": "values", "is": "STORE_ENDPOINT=http://store", "from": "service store"},
     ]
     assert {name: os.path.basename(p) for name, p in facts["files"].items()} == {
         "config": "config.json",
@@ -451,7 +457,7 @@ def test_a_failed_test_says_what_it_was_made_of(tmp_path):
     assert "\n  values: root=s3://bucket  <- AXES storage=s3\n" in block
     assert "\n  set: s3_region=eu  <- AXES storage=s3\n" in block
     assert "\n  init sql  <- AXES storage=s3\n" in block
-    assert "\n  service: store (existing)  <- AXES storage=s3\n" in block
+    assert "\n  values: STORE_ENDPOINT=http://store  <- service store\n" in block
     assert f"\n  init: {facts['files']['init']}\n" in block
     assert "\n  again: ducktest5 run --id " in block
     assert "hunter2" not in text  # the init SQL is named by its source, never printed
@@ -477,29 +483,29 @@ def test_a_failure_says_what_the_environment_of_the_process_was(tmp_path):
 
 
 def test_a_passed_test_says_nothing_of_the_kind(tmp_path):
-    _, _, report, text = go(tmp_path, [sql_test("a.test", {"storage": MADE_OF})], services=[FakeStore().service()])
+    _, _, report, text = go(tmp_path, [sql_test("a.test", {"storage": MADE_OF}, inputs=[StoreDef()])])
     assert "made_of" not in report["tests"][0]
     assert "values: " not in text and "config: " not in text
 
 
 def test_a_failed_python_test_names_its_test_directory(tmp_path):
-    test = py_test(writes_and_fails, services=["store"])
-    _, run_dir, report, text = go(tmp_path, [test], services=[FakeStore().service()])
+    test = py_test(writes_and_fails, inputs=[StoreDef()])
+    _, run_dir, report, text = go(tmp_path, [test])
     facts = report["tests"][0]["made_of"]
     assert facts["files"] == {"dir": str(run_dir / "tests" / test.dir_name)}
     assert f"\n  dir: {facts['files']['dir']}\n" in text
 
 
 def test_a_secret_of_a_service_never_reaches_what_the_test_was_made_of(tmp_path):
-    test = sql_test("b_fail.test", values={"token": "s3cr3t"}, services=["store"])
-    _, _, report, text = go(tmp_path, [test], services=[FakeStore().service()])
+    test = sql_test("b_fail.test", values={"token": "s3cr3t"}, inputs=[StoreDef()])
+    _, _, report, text = go(tmp_path, [test])
     assert {"what": "values", "is": "token=***", "from": "@test"} in report["tests"][0]["made_of"]["environment"]
     assert "s3cr3t" not in text
 
 
 def test_the_event_line_of_a_failure_holds_the_same_facts(tmp_path):
-    test = sql_test("b_fail.test", {"storage": MADE_OF})
-    _, run_dir, report, _ = go(tmp_path, [test], services=[FakeStore().service()])
+    test = sql_test("b_fail.test", {"storage": MADE_OF}, inputs=[StoreDef()])
+    _, run_dir, report, _ = go(tmp_path, [test])
     (event,) = end_events(run_dir)
     assert event["made_of"] == report["tests"][0]["made_of"]
 
@@ -544,9 +550,9 @@ def test_a_failure_in_the_body_stays_a_failure_when_the_batch_has_init_sql(tmp_p
 
 
 def test_a_service_that_is_down_blocks_its_tests_and_their_engine_is_not_booted(tmp_path):
-    store, engine = FakeStore(up=False), FakeEngine()
-    tests = [py_test(passes, services=["store"], engines=["fake"]), py_test(passes, path="test/free.py")]
-    code, run_dir, report, text = go(tmp_path, tests, engines=[engine.engine()], services=[store.service()])
+    engine = FakeEngine()
+    tests = [py_test(passes, inputs=[StoreDef(up=False)], engines=["fake"]), py_test(passes, path="test/free.py")]
+    code, run_dir, report, text = go(tmp_path, tests, engines=[engine.engine()])
     assert [c["outcome"] for c in report["tests"]] == ["blocked", "passed"]
     assert report["tests"][0]["blocked_by"] == ["store"]
     assert "does not answer" in report["not_provisioned"]["store"]
@@ -563,17 +569,10 @@ def test_an_engine_that_does_not_boot_blocks_its_tests(tmp_path):
 
 
 def test_secrets_of_a_service_are_not_in_the_provision_record(tmp_path):
-    _, run_dir, _, _ = go(tmp_path, [py_test(passes, services=["store"])], services=[FakeStore().service()])
-    record = yaml.safe_load((run_dir / "03-provision.yaml").read_text())["services"]
-    assert record == {
-        "store": {
-            "mode": EXISTING,
-            "detached": False,
-            "owned": False,
-            "block": {"endpoint": "http://store", "secret_key": "***"},
-            "attach": {"endpoint": "http://store"},
-        }
-    }
+    _, run_dir, _, _ = go(tmp_path, [py_test(passes, inputs=[StoreDef()])])
+    record = yaml.safe_load((run_dir / "03-provision.yaml").read_text())["services"]["store"]
+    assert (record["mode"], record["owned"], record["address"]) == (EXISTING, False, "http://store")
+    assert record["attributes"] == {"endpoint": "http://store", "token": "***"}
 
 
 # -----------------------------------------------------------------------------
@@ -691,7 +690,7 @@ def held(live, engine="duckdb"):
 
 def ctx_for(test, tmp_path, *, engine=None, session=None, services=None, **kwargs):
     kwargs.setdefault("session_factory", FakeSession)
-    kwargs.setdefault("test_env", resolve(test, services))
+    kwargs.setdefault("test_env", resolve(test))
     return Ctx(
         test,
         temp_dir=str(tmp_path),
@@ -865,6 +864,18 @@ def test_a_location_is_under_the_temp_dir_unless_a_temp_root_is_given(tmp_path):
     assert ctx.location("tbl") == "s3://bucket/temp/r/c/tbl"
 
 
+def test_ctx_service_is_the_runs_instance_of_a_service_behind_the_inputs(tmp_path):
+    seen = {}
+
+    def body(ctx):
+        seen["attributes"] = ctx.service("store").attributes
+        with pytest.raises(KeyError, match="not behind this test's inputs"):
+            ctx.service("other")
+
+    assert go(tmp_path, [py_test(body, inputs=[StoreDef()])])[0] == 0
+    assert seen["attributes"] == {"endpoint": "http://store"}
+
+
 # -----------------------------------------------------------------------------
 # What a variant brings reaches DuckDB as preamble text
 #
@@ -879,12 +890,11 @@ def test_the_test_environment_comes_before_the_bodys_own_preamble_in_the_order_o
 
     variant = Variant(
         "s3",
-        services=("store",),
         requires=("httpfs",),
         settings={"threads": 2, "s3_region": "it's"},
         init_sql="CREATE SECRET (ENDPOINT 'http://store')",
     )
-    code, _, _, _ = go(tmp_path, [py_test(body, {"k": variant})], services=[FakeStore().service()])
+    code, _, _, _ = go(tmp_path, [py_test(body, {"k": variant})])
     assert code == 0
     assert seen == [
         "LOAD httpfs;\nSET threads = '2';\nSET s3_region = 'it''s';\nCREATE SECRET (ENDPOINT 'http://store');",

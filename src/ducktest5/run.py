@@ -42,9 +42,9 @@ from .mnemonic import run_id as make_run_id
 from .model import SQLLOGIC
 from .outcomes import ALL as OUTCOMES
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
-from .provision import EXISTING, KEPT, MANAGED, attach_argument
-from .resources import Opener, ServiceNotUp
-from .resources.made import Made, services_in
+from .provision import KEPT, adopt, attach_argument, bring_up
+from .resources import Opener
+from .resources.made import Made
 from .resources.session import process_env
 from .reports import Report, render, write_files
 from .reports.live import Live
@@ -271,8 +271,8 @@ def execute(
     """The exec phase: the batches of `plan`, run, as events in `04-events.jsonl`.
 
     `tests` holds the Test of every id the plan names. With `provision_here` the services are
-    started and released here, as `run` does; without it they are attached to, from `03` or from
-    `--existing-service`. `interrupted` names tests a run before this one left half-run, so that
+    made and ended here, as `run` does; without it they are adopted where `03` or
+    `--existing-service` says they answer. `interrupted` names tests a run before this one left half-run, so that
     their event says so."""
     out = out or sys.stdout  # looked up now: a caller may have replaced it since import
     by_id = {c.id: c for c in tests}
@@ -356,14 +356,14 @@ def execute(
             line["statements"] = list(statements)
         writer.emit(TEST_END, **line)
 
-    provisioned, boot_errors, handles, debugged = {}, {}, {}, False
+    boot_errors, handles, debugged = {}, {}, False
     made = Made(run_id)
     resolved = {}
 
     def test_env(test):
         """The test's environment, computed once: after provisioning, before anything runs."""
         if id(test) not in resolved:
-            resolved[id(test)] = testenv.resolve(test, provisioned, made)
+            resolved[id(test)] = testenv.resolve(test, made)
         return resolved[id(test)]
 
     # A Python test's timeout, counted from its own begin event (`test_started`), is watched by the
@@ -395,40 +395,21 @@ def execute(
 
     pool = Pool(workers, opener=opener, made=made)
     stopped = _stop_on_signal()
-    services_of = lambda c: [s.id for s in services_in(d for d, _ in c.inputs)]  # noqa: E731
-    blocked = lambda c: [x for x in (*c.services, *services_of(c), *c.engines) if x in boot_errors]  # noqa: E731
+    blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
     code = 1
     try:
         # provision: each service some selected test needs, then each engine. One that does not come
         # up blocks its tests; the rest of the run goes on.
-        needed = {s for c in tests for s in c.services}
+        needed = phases.services_of(tests)
         if provision_here:
-            provisioned, boot_errors = phases.provision_services(
-                needed,
-                project,
-                existing_services=existing_services,
-                keep_services=keep_services,
-                on=service_event,
+            boot_errors = bring_up(
+                made, needed, existing_services=existing_services, keep=keep_services, on=service_event
             )
-            phases.write_provision(run_dir, provisioned, boot_errors, keep_services=keep_services, force=True)
+            phases.write_provision(run_dir, made, boot_errors, force=True)
         else:
-            provisioned, boot_errors = phases.services_for_exec(
-                needed,
-                project,
-                doc=phases.read_provision(run_dir),
-                existing_services=existing_services,
-                on=service_event,
-            )
-
-        # A service a test's inputs need is made here in either case: nothing records it for another process.
-        for service in services_in(d for c in tests for d, _ in c.inputs):
-            service_event(service.id, state="starting")
-            try:
-                made.create(service)
-                service_event(service.id, state="up", mode=EXISTING if service.address else MANAGED)
-            except ServiceNotUp as exc:
-                boot_errors[service.id] = str(exc)
-                service_event(service.id, state="failed", error=boot_errors[service.id])
+            recorded = phases.read_provision(run_dir).get("services") or {}
+            boot_errors = adopt(made, needed, recorded, existing_services=existing_services, on=service_event)
+            phases.write_provision(run_dir, made, boot_errors, recorded=recorded, force=True)
 
         # An engine boots only when a test that can still run needs it.
         for engine_id in sorted({e for c in tests if not blocked(c) for e in c.engines}):
@@ -512,7 +493,7 @@ def execute(
                     duckdb_bin=duckdb_bin,
                     sessions=held,
                     duckdb_home=duckdb_home,
-                    services=provisioned,
+                    services={s: made.services[s] for s in test.services},
                     remote_parts=(run_id, dir_name),
                     test_env=test_env(test),
                     run_test=lambda **kw: _run_paired(test, test_env(test), unittest_bin, working_dir, temp_dir, **kw),
@@ -662,15 +643,10 @@ def execute(
                 pass
         pool.join()
         failed = any(e.get("outcome") in (FAILED, ERROR) for e in writer.events if e.get("event") == TEST_END)
-        made.end(failed)
-        if provision_here:
-            phases.release_all(
-                provisioned,
-                on_error=lambda p, exc: service_event(p.service.id, state="stop_failed", error=str(exc)),
-            )
-            for p in provisioned.values():
-                if p.mode == KEPT:
-                    service_event(p.service.id, state="kept", attach=attach_argument(p))
+        for service_id, service in made.services.items():
+            if made.modes[service_id] == KEPT:
+                service_event(service_id, state="kept", attach=attach_argument(service))
+        made.end(failed, on_error=lambda service, exc: service_event(service.id, state="stop_failed", error=str(exc)))
         if not debugged:  # the debugger ran the test, so nothing here has an outcome to report
             ended = [e for e in writer.events if e.get("event") == TEST_END]
             counts = {o: sum(e["outcome"] == o for e in ended) for o in OUTCOMES}
@@ -692,7 +668,7 @@ def execute(
         writer.close()
         if not debugged:
             if clean:
-                phases.cleanup(run_dir, project=project, keep=keep, existing_services=existing_services)
+                phases.cleanup(run_dir, project=project, keep=keep)
             sources = events.files_in(run_dir)
             if writer.path not in sources:  # an event file beside another run's, as a slice writes
                 sources.append(writer.path)

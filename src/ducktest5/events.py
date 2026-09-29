@@ -24,9 +24,9 @@ test's own line, so no renderer has to open another file.
     service       id             the service or the engine
                   kind           "service" or "engine"
                   state          "up" or "failed"
-                  mode           how a service was provisioned (started, existing, kept)
+                  mode           how a service was provisioned (managed, existing, kept)
                   seconds        how long it took to come up
-                  block          the service's facts, secrets masked
+                  address        where a service answers
                   error          why it did not come up
                   log            the engine's log file
 

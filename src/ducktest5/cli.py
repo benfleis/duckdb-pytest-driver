@@ -1,7 +1,7 @@
 """`ducktest5 scan|select|run [PATH ...] [--select CLAUSE ...] [--skip CLAUSE ...] [--id TEST_ID ...] [--suite NAME ...]`
 
 `scan --env` prints what each selected test would be given -- the extensions, the statements, the
-values, the roots, the process environment, the services -- with the source of every part.
+values, the roots, the process environment, the inputs -- with the source of every part.
 
 The phases are subcommands over one run directory, each reading the files of the phases before it
 and writing its own (`phases.py`):
@@ -32,6 +32,8 @@ import yaml
 from . import events, phases, sqllogic, testenv
 from .binary import UsageError, find_duckdb
 from .conf import load_project
+from .provision import bring_up
+from .resources.made import Made
 from .reports import FORMATS, LEVELS, Report, render, write_files
 from .reports.live import wants_colour
 from .run import execute, run
@@ -67,8 +69,8 @@ def _service_options(parser):
         "--existing-service",
         action="append",
         default=[],
-        metavar="ID[=URL|={json}]",
-        help="use a running instance of a service; it is never stopped (also DUCKTEST_EXISTING_SERVICE_<ID>)",
+        metavar="ID=URL",
+        help="adopt the instance of a service that answers at URL; it is never stopped (also DUCKTEST_EXISTING_SERVICE_<ID>=URL)",
     )
 
 
@@ -151,7 +153,7 @@ def main(argv=None):
     )
     _service_options(run_options)
     run_options.add_argument(
-        "--keep-services", action="store_true", help="find each service or start it, and leave it running"
+        "--keep-services", action="store_true", help="leave each service it starts running, with what it holds"
     )
     run_options.add_argument(
         "--lldb",
@@ -198,11 +200,10 @@ def main(argv=None):
     provision_options = sub.add_parser("provision", help="bring up the services the plan needs and write 03")
     _service_options(provision_options)
     provision_options.add_argument(
-        "--keep-services", action="store_true", help="leave a service that was already running to the next run, too"
+        "--keep-services", action="store_true", help="leave each service running after cleanup, too"
     )
     cleanup_options = sub.add_parser("cleanup", help="remove what passed tests left, keep what failed, stop services")
     cleanup_options.add_argument("--keep", action="store_true", help="keep what passed tests wrote, too")
-    _service_options(cleanup_options)
     for name, p in (
         ("plan", plan_options),
         ("provision", provision_options),
@@ -359,19 +360,20 @@ def _plan(args):
 def _provision(args):
     cwd = os.getcwd()
     tests, _, project = _tests_by_id(args, phases.ids_of_plan(phases.read_plan(args.run_dir)), cwd)
-    provisioned, errors = phases.provision_services(
-        {s for c in tests for s in c.services},
-        project,
+    made = Made(phases.run_id_of(args.run_dir))
+    errors = bring_up(
+        made,
+        phases.services_of(tests),
         existing_services=args.existing_service,
-        keep_services=args.keep_services,
+        keep=args.keep_services,
         separate=True,
     )
-    path = phases.write_provision(args.run_dir, provisioned, errors, keep_services=args.keep_services, force=args.force)
-    for service_id, p in sorted(provisioned.items()):
-        print(f"{service_id}: {p.mode}")
+    path = phases.write_provision(args.run_dir, made, errors, owned=True, force=args.force)
+    for service_id, mode in sorted(made.modes.items()):
+        print(f"{service_id}: {mode} at {made.services[service_id].address}")
     for service_id, problem in sorted(errors.items()):
         print(f"{service_id}: {problem}", file=sys.stderr)
-    print(f"{len(provisioned)} services -> {path}")
+    print(f"{len(made.services)} services -> {path}")
     return 1 if errors else 0
 
 
@@ -431,7 +433,7 @@ def _exec(args):
 def _cleanup(args):
     # The project file alone, not a scan: cleanup needs the services, never a body.
     project = load_project(args.root or ("test" if os.path.isdir("test") else "."))
-    summary = phases.cleanup(args.run_dir, project=project, keep=args.keep, existing_services=args.existing_service)
+    summary = phases.cleanup(args.run_dir, project=project, keep=args.keep)
     print(f"removed {len(summary['removed'])} directories of tests that passed")
     for path in summary["kept"]:
         print(f"kept: {path}")

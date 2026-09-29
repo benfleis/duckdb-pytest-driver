@@ -83,11 +83,13 @@ def test_scan_prints_the_record_of_each_selected_test(tree, capsys):
 def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, capsys):
     (tree / "test" / "ducktest_conf.py").write_text(
         textwrap.dedent("""
-            from ducktest5 import ServiceDef, Variant, default, match
-            SERVICES = [ServiceDef("store", block=lambda **o: {"endpoint": "http://store"}, alive=lambda b: True)]
+            from ducktest5 import Variant, default, match
+            from ducktest5.resources import StorageDef
+            from ducktest5.services.http import HttpServerDef
+            STORAGES = [StorageDef("served", "{store.url}", inputs=[HttpServerDef("store")])]
             AXES = {"storage": [Variant(
                 "s3",
-                services=["store"],
+                inputs=["served"],
                 requires=["httpfs"],
                 settings={"s3_region": "eu"},
                 roots={"data_dir": "s3://bucket/data"},
@@ -109,7 +111,7 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
           root: data_dir=s3://bucket/data  <- AXES storage=s3
           env: AWS_PROFILE=ducktest  <- AXES storage=s3
           env unset: AWS_ACCESS_KEY_ID  <- AXES storage=s3
-          service: store  <- AXES storage=s3
+          root: <from service store>  <- storage served
         """
     )
 

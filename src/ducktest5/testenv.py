@@ -12,7 +12,6 @@ of a test of a `.test` file is made of it.
     values      the names a body writes as `{NAME}`, and each axis name -> the id of its value
     roots       the binary's four roots, where a variant gives them; `ctx.roots` for a Python body
     env         the process environment of the engine, and `env_unset` what to take out of it
-    services    service id -> the mode it was provisioned in and its block, secrets masked
 
 A storage input gives roots and values; a credential gives secrets, which reach the engine only as
 process environment (named to the binary in `env_passthrough`), read when the process starts. For a
@@ -33,7 +32,7 @@ from dataclasses import dataclass, field, replace
 from .binary import UsageError
 from .provision import MASK
 from .provision import SECRET_NAME as _SECRET_NAME
-from .resources import RO, ServiceNotUp
+from .resources import RO, ServiceDef, ServiceNotUp
 from .resources.dialect import pairs, render
 from .resources.made import Made, services_in
 
@@ -54,7 +53,6 @@ _LABELS = {
     "root": "root",
     "env": "env",
     "unset": "env unset",
-    "service": "service",
 }
 
 
@@ -75,12 +73,6 @@ def set_statement(name, value):
     return f"SET {name} = '{str(value).replace(chr(39), chr(39) * 2)}';"
 
 
-def _masked(text, secrets):
-    for secret in secrets:
-        text = text.replace(secret, MASK)
-    return text
-
-
 @dataclass
 class TestEnv:
     requires: list = field(default_factory=list)  # Entry(value=extension name)
@@ -92,10 +84,8 @@ class TestEnv:
     env: dict = field(default_factory=dict)  # name -> Entry
     env_unset: dict = field(default_factory=dict)  # name -> Entry(value=name)
     env_state: dict = field(default_factory=dict)  # name -> "set"/"unset", whichever last touched it
-    services: dict = field(default_factory=dict)  # service id -> Entry(value={"mode", "block"})
     pending: list = field(default_factory=list)  # Entry(value=field name) a service must fill in
     passthrough: list = field(default_factory=list)  # names of the credentials' secrets in `env`
-    secrets: tuple = ()  # what must never be printed: the secret fields of the services' blocks
 
     # -- what the deliveries read ---------------------------------------------
     @property
@@ -162,7 +152,6 @@ class TestEnv:
                 # A secret read at delivery counts by where it is read from, never by its value.
                 "env": {k: e.source if callable(e.value) else str(e.value) for k, e in sorted(self.env.items())},
                 "env_unset": sorted(self.env_unset),
-                "services": sorted(self.services),
                 "pending": sorted(e.source for e in self.pending),
             },
             sort_keys=True,
@@ -181,12 +170,11 @@ class TestEnv:
             *self.roots.values(),
             *self.env.values(),
             *self.env_unset.values(),
-            *self.services.values(),
             *self.pending,
         ]
 
     def _shown(self, entry):
-        text = MASK if entry.secret else _masked(str(entry.value) if entry.shown is None else entry.shown, self.secrets)
+        text = MASK if entry.secret else str(entry.value) if entry.shown is None else entry.shown
         return f"{entry.name}={text}" if entry.name else text
 
     def lines(self):
@@ -200,19 +188,6 @@ class TestEnv:
     def record(self):
         """The same, for `01-tests.yaml` and the report."""
         return [{"what": _LABELS[e.kind], "is": self._shown(e), "from": e.source} for e in self.entries()]
-
-
-def _service_entry(service_id, provisioned, source):
-    p = provisioned.get(service_id) if provisioned is not None else None
-    if p is None:
-        shown = f"{service_id} (did not come up)" if provisioned is not None else service_id
-        return Entry(service_id, source, kind="service", shown=shown)
-    return Entry(
-        {"id": service_id, "mode": p.mode, "block": p.redacted()},
-        source,
-        kind="service",
-        shown=f"{service_id} ({p.mode})",
-    )
 
 
 def _value_entry(name, value, source):
@@ -230,16 +205,12 @@ def _set_entry(name, value, source):
     )
 
 
-def resolve(test, provisioned=None, made=None):
-    """The test environment of `test`. `provisioned` maps a service id to its `Provisioned`, None
-    before provisioning, as `scan` sees it. `made` is what the run made, its services among them;
-    an input that needs a service that is not up is listed in `pending`."""
+def resolve(test, made=None):
+    """The test environment of `test`. `made` is what the run made, its services among them; None
+    before provisioning, as `scan` sees it. An input that needs a service that is not up is listed
+    in `pending`."""
     definition = test.definition
-    env = TestEnv(
-        secrets=tuple(
-            str(p.block[k]) for p in (provisioned or {}).values() for k in p.service.secrets if p.block.get(k)
-        )
-    )
+    env = TestEnv()
 
     # Two axis-tier entries (an id or an explicit value) naming one thing is a scan-time error, not
     # an overwrite; a rule or the test's params row may still lose to an axis value, silently.
@@ -263,8 +234,6 @@ def resolve(test, provisioned=None, made=None):
 
     for name, value in definition.settings.items():
         env.init_sql.append(_set_entry(name, value, definition.source_of("settings", name)))
-    for service_id in definition.services:
-        env.services[service_id] = _service_entry(service_id, provisioned, definition.source_of("services", service_id))
 
     for axis, v in test.axis_values.items():
         where = f"AXES {axis}={v.id}"
@@ -291,12 +260,10 @@ def resolve(test, provisioned=None, made=None):
         for name in v.env_unset:
             env.env_unset[name] = Entry(name, where, kind="unset")
             env.env_state[name] = "unset"
-        for service_id in v.services:
-            env.services.setdefault(service_id, _service_entry(service_id, provisioned, where))
         if v.init_sql:
             env.init_sql.append(Entry(v.init_sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
-    made = made or Made()
-    instances = [_deliver(env, d, mode, provisioned is None, _axis_value, made) for d, mode in test.inputs]
+    scanning, made = made is None, made or Made()
+    instances = [_deliver(env, d, mode, scanning, _axis_value, made) for d, mode in test.inputs]
     if definition.body_file:
         for credential, storages in pairs(i for i in instances if i is not None):
             rendered = render("unittest", "secret", storages, credential)
@@ -313,12 +280,13 @@ def _deliver(env, definition, mode, scanning, value, made):
     they are not known yet. Nothing is allocated here and nothing is held: that is for the walk of
     the resource graph. At scan a credential that does not resolve, or one a callable source makes,
     is listed in `pending`: its value is not needed before the run."""
-    where = f"{definition.kind} {definition.id}"
+    service = isinstance(definition, ServiceDef)
+    where = f"{'service' if service else definition.kind} {definition.id}"
     try:
         instance = made.make(definition, mode)
     except ServiceNotUp as exc:
         needs = ", ".join(s.id for s in services_in([definition]))
-        kind = "root" if definition.kind == "storage" else "env"
+        kind = "root" if definition.kind == "storage" else "value" if service else "env"
         env.pending.append(
             Entry("inputs", where, kind=kind, shown=f"<from service {needs}>" if scanning else f"<{exc}>")
         )
@@ -326,7 +294,8 @@ def _deliver(env, definition, mode, scanning, value, made):
     try:
         if scanning and any(callable(s) for s in getattr(definition, "sources", ())):
             raise UsageError("made by a callable source when the test runs")
-        instance.start()
+        if not service:  # the run's one instance, already up
+            instance.start()
         instance.release(instance.acquire(RO), RO)
         values, secrets = instance.delivery()
     except UsageError as exc:

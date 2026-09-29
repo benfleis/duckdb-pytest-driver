@@ -12,6 +12,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from .resources.made import services_in
 from .testenv import resolve
 
 SQLLOGIC, PAIRED, PYTHON = "sqllogic", "paired", "python"
@@ -34,7 +35,6 @@ class TestDef:
     body_file: str | None = None  # the .test file, for sqllogic and paired tests
     params: dict = field(default_factory=dict)
     tags: list = field(default_factory=list)
-    services: list = field(default_factory=list)
     engines: list = field(default_factory=list)
     variants: list = field(default_factory=list)
     mutex: list = field(default_factory=list)  # what each of its tests must have to itself while it runs
@@ -42,7 +42,7 @@ class TestDef:
     sessions: list = field(default_factory=list)  # ids of the project's SESSIONS it drives
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
-    bind: dict = field(default_factory=dict)  # role -> the id of a storage or credential
+    bind: dict = field(default_factory=dict)  # role -> the id of a storage, credential or service
     timeout: float | None = None
     retries: int = 0  # how often a FAILED or ERROR may run again
     why: list = field(default_factory=list)
@@ -91,7 +91,8 @@ class Test:
 
     @property
     def services(self):
-        return self._with_variants(self.definition.services, "services")
+        """The ids of the services behind its inputs."""
+        return [s.id for s in services_in(d for d, _ in self.inputs)]
 
     @property
     def engines(self):
@@ -131,7 +132,7 @@ class Test:
             },
             "runtime": {
                 "params": _plain(self.params),
-                # Before provisioning, so what a variant makes out of a service's block is not in it.
+                # Before provisioning, so what an input gets from a service is not in it.
                 "environment": resolve(self).record(),
                 "timeout": self.definition.timeout,
                 "retries": self.definition.retries,

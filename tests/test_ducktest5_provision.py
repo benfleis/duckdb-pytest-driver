@@ -1,139 +1,144 @@
-"""ducktest5's service modes: managed, existing, keep -- and what each does with start and stop."""
+"""ducktest5's service modes -- managed, existing, kept -- on the Service handler contract, and what
+`03` records of each."""
+
+import dataclasses
 
 import pytest
+from test_ducktest5_service import FakeDef
 
 from ducktest5.binary import UsageError
-from ducktest5.declare import ServiceDef
-from ducktest5.provision import EXISTING, KEPT, MANAGED, attach_argument, existing_overrides, provision, release
+from ducktest5.provision import (
+    EXISTING,
+    KEPT,
+    MANAGED,
+    adopt,
+    attach_argument,
+    bring_up,
+    existing_address,
+    record,
+)
+from ducktest5.resources.made import Made
 
 
-class Fake:
-    """A service that records what was done to it. `up` is whether an instance answers."""
+@pytest.fixture(autouse=True)
+def world():
+    from test_ducktest5_service import WORLD
 
-    def __init__(self, *, up=False, comes_up=True):
-        self.up, self.comes_up, self.calls = up, comes_up, []
-
-    def service(self, **kwargs):
-        def start(block):
-            self.calls.append("start")
-            self.up = self.comes_up
-
-        def stop(block):
-            self.calls.append("stop")
-            self.up = False
-
-        return ServiceDef(
-            "store",
-            block=lambda **o: {"endpoint": o.get("endpoint", "http://default"), "secret_key": "s3cr3t"},
-            alive=lambda block: self.up,
-            start=start,
-            stop=stop,
-            setup=lambda block: self.calls.append("setup"),
-            secrets=("secret_key",),
-            **kwargs,
-        )
+    WORLD.clear()
+    yield WORLD
+    WORLD.clear()
 
 
-def test_managed_starts_sets_up_and_stops():
-    fake = Fake()
-    p = provision(fake.service())
-    assert (p.mode, fake.calls) == (MANAGED, ["start", "setup"])
-    release(p)
-    assert fake.calls == ["start", "setup", "stop"]
+def up(world, address):
+    world[address] = True
+    return address
 
 
-def test_existing_is_found_set_up_and_never_stopped():
-    fake = Fake(up=True)
-    p = provision(fake.service(), existing={"endpoint": "http://elsewhere"})
-    assert (p.mode, p.block["endpoint"], fake.calls) == (EXISTING, "http://elsewhere", ["setup"])
-    release(p)
-    assert "stop" not in fake.calls
+def test_managed_is_created_and_ended_with_the_run(world):
+    made = Made("r1")
+    assert bring_up(made, [FakeDef("fake")]) == {}
+    assert made.modes == {"fake": MANAGED} and world == {"http://fake/r1/fake": True}
+    made.end(failed=False)
+    assert world == {}
 
 
-def test_existing_that_does_not_answer_fails_loud_and_is_never_started():
-    fake = Fake(up=False)
-    with pytest.raises(RuntimeError, match="does not answer at http://elsewhere"):
-        provision(fake.service(), existing={"endpoint": "http://elsewhere"})
-    assert fake.calls == []
+def test_existing_is_adopted_at_its_address_and_never_ended(world):
+    made = Made("r1")
+    address = up(world, "http://fake/elsewhere")
+    assert bring_up(made, [FakeDef("fake")], existing_services=[f"fake={address}"]) == {}
+    assert made.modes == {"fake": EXISTING} and made.services["fake"].address == address
+    made.end(failed=False)
+    assert world == {address: True}
 
 
-def test_keep_finds_a_running_instance_or_starts_one_and_leaves_both_running():
-    found = Fake(up=True)
-    p = provision(found.service(), keep=True)
-    release(p)
-    assert (p.mode, found.calls) == (KEPT, ["setup"])
-
-    started = Fake(up=False)
-    p = provision(started.service(), keep=True)
-    release(p)
-    assert (p.mode, started.calls) == (KEPT, ["start", "setup"])
-    assert attach_argument(p) == """--existing-service 'store={"endpoint": "http://default"}'"""
+def test_a_service_declared_existing_is_adopted_without_being_named(world):
+    made = Made("r1")
+    address = up(world, "http://fake/declared")
+    assert bring_up(made, [FakeDef("fake").as_existing(address)]) == {}
+    assert made.modes == {"fake": EXISTING}
 
 
-def test_a_service_with_no_start_is_always_existing():
-    fake = Fake(up=True)
-    external = ServiceDef("cloud", block=lambda **o: {"endpoint": "https://cloud"}, alive=lambda block: fake.up)
-    assert provision(external).mode == EXISTING
+def test_existing_that_does_not_answer_is_not_up_and_is_never_started(world):
+    events = []
+    errors = bring_up(
+        Made("r1"),
+        [FakeDef("fake")],
+        existing_services=["fake=http://fake/nowhere"],
+        on=lambda i, **f: events.append(f["state"]),
+    )
+    assert "does not answer at http://fake/nowhere" in errors["fake"]
+    assert events == ["starting", "failed"] and world == {}
 
 
-def test_an_instance_that_never_comes_up_is_stopped_again():
-    fake = Fake(comes_up=False)
-    with pytest.raises(RuntimeError, match="did not come up"):
-        provision(fake.service(), ready_timeout_s=0.2)
-    assert fake.calls == ["start", "stop"]
+def test_kept_is_retained_left_running_and_says_how_to_adopt_it(world):
+    made = Made("r1")
+    bring_up(made, [FakeDef("fake")], keep=True)
+    service = made.services["fake"]
+    assert made.modes == {"fake": KEPT} and service.definition.retain == "always"
+    made.end(failed=False)
+    assert world == {"http://fake/r1/fake": True}
+    assert attach_argument(service) == "--existing-service fake=http://fake/r1/fake"
 
 
-def test_secrets_do_not_reach_a_report():
-    p = provision(Fake().service())
-    assert p.redacted() == {"endpoint": "http://default", "secret_key": "***"}
+def test_a_separate_provision_refuses_a_service_that_lives_in_the_process():
+    with pytest.raises(UsageError, match="lives in the process that starts it.*--existing-service fake=URL"):
+        bring_up(Made("r1"), [FakeDef("fake")], separate=True)
+
+
+def test_a_separate_provision_makes_a_detached_service():
+    detached = dataclasses.make_dataclass("DetachedDef", [], bases=(FakeDef,), eq=False, namespace={"detached": True})
+    made = Made("r1")
+    assert bring_up(made, [detached("fake")], separate=True) == {}
+    assert made.modes == {"fake": MANAGED}
 
 
 @pytest.mark.parametrize(
     "entries, env, expected",
     [
         ([], None, None),
-        (["store"], None, {}),
-        (["store=http://h:9000"], None, {"endpoint": "http://h:9000"}),
-        (['store={"endpoint": "http://h", "bucket": "b"}'], None, {"endpoint": "http://h", "bucket": "b"}),
+        (["store=http://h:9000"], None, "http://h:9000"),
         (["other=http://x"], None, None),
-        ([], "http://from-env", {"endpoint": "http://from-env"}),
-        (["store=http://cli"], "http://from-env", {"endpoint": "http://cli"}),
+        ([], "http://from-env", "http://from-env"),
+        (["store=http://cli"], "http://from-env", "http://cli"),
     ],
 )
 def test_how_an_existing_service_is_named(monkeypatch, entries, env, expected):
     monkeypatch.delenv("DUCKTEST_EXISTING_SERVICE_STORE", raising=False)
     if env:
         monkeypatch.setenv("DUCKTEST_EXISTING_SERVICE_STORE", env)
-    assert existing_overrides("store", entries) == expected
+    assert existing_address("store", entries) == expected
 
 
-def test_a_masked_secret_is_not_taken_for_a_value():
-    with pytest.raises(UsageError, match=r"\['secret_key'\] = '\*\*\*': put the value in"):
-        existing_overrides("store", ['store={"endpoint": "http://h", "secret_key": "***"}'])
+@pytest.mark.parametrize("entry", ["store", "store="])
+def test_an_existing_service_named_without_an_address_is_refused(entry):
+    with pytest.raises(UsageError, match="name the address of the running instance"):
+        existing_address("store", [entry])
 
 
-def test_managed_refuses_to_replace_an_instance_that_already_answers():
-    fake = Fake(up=True)
-    with pytest.raises(RuntimeError, match="already answers.*--existing-service store.*--keep-services"):
-        provision(fake.service())
-    assert fake.calls == []
+def test_the_record_holds_the_address_and_the_attributes_with_every_secret_masked():
+    made = Made("r1")
+    bring_up(made, [FakeDef("fake")])
+    service = made.services["fake"]
+    assert record(service, MANAGED, owned=True) == {
+        "kind": "fake",
+        "identity": service.identity,
+        "mode": MANAGED,
+        "detached": False,
+        "owned": True,
+        "address": "http://fake/r1/fake",
+        "attributes": {"url": "http://fake/r1/fake", "key": "***"},
+    }
 
 
-def test_a_setup_that_fails_does_not_leave_a_started_instance_behind():
-    fake = Fake()
-
-    def setup(block):
-        fake.calls.append("setup")
-        raise RuntimeError("no boto3")
-
-    service = ServiceDef(
-        "store",
-        block=lambda **o: {},
-        alive=lambda b: fake.up,
-        start=lambda b: (fake.calls.append("start"), setattr(fake, "up", True)),
-        stop=lambda b: fake.calls.append("stop"),
-        setup=setup,
+def test_exec_adopts_what_03_recorded_and_makes_here_what_lives_in_its_process(world):
+    detached = dataclasses.make_dataclass("DetachedDef", [], bases=(FakeDef,), eq=False, namespace={"detached": True})
+    address = up(world, "http://fake/provisioned")
+    made = Made("r1")
+    errors = adopt(
+        made,
+        [detached("store"), FakeDef("thread"), detached("absent")],
+        {"store": {"address": address}},
     )
-    with pytest.raises(RuntimeError, match="no boto3"):
-        provision(service)
-    assert fake.calls == ["start", "setup", "stop"]
+    assert made.modes == {"store": EXISTING, "thread": MANAGED}
+    assert made.services["store"].address == address
+    assert "no instance of 'absent' was provisioned" in errors["absent"]

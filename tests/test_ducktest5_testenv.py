@@ -1,32 +1,22 @@
 """The test environment: what one test is made of, where each part came from, and what is masked."""
 
 import pytest
+from test_ducktest5_run import StoreDef
 
 from ducktest5.binary import UsageError
-from ducktest5.declare import ServiceDef, Variant
+from ducktest5.declare import Variant
 from ducktest5.model import SQLLOGIC, Test, TestDef
-from ducktest5.provision import EXISTING, Provisioned
 from ducktest5.resources import RO, RW, CredentialDef, StorageDef
 from ducktest5.resources import from_env
+from ducktest5.resources.made import Made
 from ducktest5.sqllogic import init_file_text
 from ducktest5.testenv import resolve
 
-STORE = ServiceDef(
-    "store",
-    block=lambda **o: {"endpoint": "http://store", "secret_key": "s3cr3t"},
-    alive=lambda block: True,
-    secrets=("secret_key",),
-)
 
-
-def provisioned():
-    return {"store": Provisioned(STORE, STORE.block(), EXISTING)}
-
-
-def make_test(axis_values=None, *, params_key=None, sources=None, **fields):
+def make_test(axis_values=None, *, params_key=None, sources=None, inputs=(), **fields):
     definition = TestDef(path="t.test", name="t", type=SQLLOGIC, body_file="t.test", **fields)
     definition.sources = sources or {}
-    return Test(definition, params_key, axis_values or {})
+    return Test(definition, params_key, axis_values or {}, tuple((d, RW) for d in inputs))
 
 
 def test_the_axis_value_reaches_the_body_as_a_value_without_the_author_repeating_it():
@@ -99,9 +89,9 @@ def test_env_unset_removes_what_an_earlier_axis_env_set():
     assert earlier_wins.environ({"HOME": "/home"}) == {"HOME": "/home", "X": "1"}
 
 
-def test_a_secret_of_a_service_and_a_name_that_says_credential_are_masked():
-    variant = Variant("s3", services=("store",), env={"AWS_SECRET_ACCESS_KEY": "hunter2"})
-    env = resolve(make_test({"storage": variant}, values={"token": "s3cr3t"}), provisioned())
+def test_a_name_that_says_credential_is_masked():
+    variant = Variant("s3", env={"AWS_SECRET_ACCESS_KEY": "hunter2"})
+    env = resolve(make_test({"storage": variant}, values={"token": "s3cr3t"}))
     printed = "\n".join(env.lines())
     assert "values: token=***" in printed and "env: AWS_SECRET_ACCESS_KEY=***" in printed
     assert "s3cr3t" not in printed and "hunter2" not in printed
@@ -139,7 +129,7 @@ def test_two_tests_share_a_key_only_when_everything_the_process_gets_is_the_same
         make_test({"k": Variant("plain", roots={"data_dir": "/d"})}, values={"region": "eu"}),
         make_test({"k": Variant("plain", env={"AWS_PROFILE": "p"})}, values={"region": "eu"}),
         make_test({"k": Variant("plain", env_unset=("AWS_PROFILE",))}, values={"region": "eu"}),
-        make_test({"k": plain}, values={"region": "eu"}, services=["store"]),
+        make_test({"k": plain}, values={"region": "eu"}, inputs=[StoreDef()]),
     ):
         assert resolve(other).key() != same
 
@@ -148,6 +138,16 @@ def test_the_key_does_not_change_with_the_rule_that_gave_a_value():
     plain = make_test(values={"region": "eu"})
     named = make_test(values={"region": "eu"}, sources={("values", "region"): "ducktest_conf.py: default"})
     assert resolve(plain).key() == resolve(named).key()
+
+
+def test_a_service_input_gives_its_attributes_as_values_once_it_is_up_and_never_its_secrets():
+    test = make_test(inputs=[StoreDef()])
+    assert "values: <from service store>  <- service store" in resolve(test).lines()
+    made = Made("r1")
+    made.create(StoreDef())
+    env = resolve(test, made)
+    assert env.value_map == {"STORE_ENDPOINT": "http://store"}
+    assert "s3cr3t" not in "\n".join(env.lines()) and not env.env
 
 
 def test_a_python_body_adds_values_and_sql_for_the_test_file_beside_it():

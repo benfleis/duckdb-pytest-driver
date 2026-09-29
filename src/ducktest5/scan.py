@@ -23,12 +23,13 @@ _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 
 def _bound(definition, project):
     """The Defs a definition binds, by role."""
-    declared = {**project.storages, **project.credentials}
+    declared = project.inputs()
     out = []
     for role, ref in definition.bind.items():
         if ref not in declared:
             raise UsageError(
-                f"{definition.path}::{definition.name} binds {role!r} to {ref!r}, which is not in STORAGES or CREDENTIALS"
+                f"{definition.path}::{definition.name} binds {role!r} to {ref!r}, "
+                "which is not in STORAGES, CREDENTIALS or SERVICES"
             )
         out.append({declared[ref]: RW})
     return out
@@ -140,7 +141,6 @@ def scan(start, *, working_dir="."):
                     body_file=os.path.relpath(body_file, working_dir) if body_file else None,
                     params=dict(decl.params),
                     tags=list(decl.tags) + (_suffix_tags(body_file) if body_file else []),
-                    services=list(decl.services),
                     engines=list(decl.engines),
                     variants=list(decl.variants),
                     mutex=list(decl.mutex),
@@ -186,10 +186,9 @@ def scan(start, *, working_dir="."):
             "a rule that matches no test is a typo or a moved file:\n  " + "\n  ".join(project.unused_rules)
         )
     for test in tests:
-        for kind, known in (("services", project.services), ("engines", project.engines)):
-            unknown = [x for x in getattr(test, kind) if x not in known]
-            if unknown:
-                raise UsageError(f"{test.id} needs {kind} {unknown}, not declared in the root {CONF_FILE}")
+        unknown = [x for x in test.engines if x not in project.engines]
+        if unknown:
+            raise UsageError(f"{test.id} needs engines {unknown}, not declared in the root {CONF_FILE}")
     return tests, project
 
 
@@ -210,12 +209,11 @@ def _settle(definition, project, working_dir):
     settled = project.settle(os.path.abspath(os.path.join(working_dir, definition.path)))
     own = {
         "tags": definition.tags,
-        "services": definition.services,
         "engines": definition.engines,
         "variants": definition.variants,
         "mutex": definition.mutex,
     }
-    for name in ("tags", "services", "engines", "variants", "mutex"):
+    for name in ("tags", "engines", "variants", "mutex"):
         merged = getattr(settled, name) + [x for x in own[name] if x not in getattr(settled, name)]
         setattr(definition, name, merged)
     if definition.bind:

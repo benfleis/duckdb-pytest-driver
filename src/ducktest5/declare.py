@@ -29,41 +29,6 @@ class EngineDef:
 
 
 @dataclass(frozen=True)
-class ServiceDef:
-    """Infrastructure a test needs and the run provides: an object store, a catalog server.
-
-    `block(**overrides)` gives the facts of one instance (endpoint, bucket, credentials) as a plain
-    dict, the same shape whether the run started the instance or found it. The rest work on a block:
-    `alive(block)` is a cheap probe; `start(block)` / `stop(block)` boot and remove a managed
-    instance (`start=None`: the service is never ours to start, e.g. a cloud workspace);
-    `setup(block)` makes the structure tests rely on (a bucket, a user) and must be idempotent, as
-    it runs in every mode; `clean(block, prefix)` removes what a test wrote under `prefix`.
-    `secrets` names block fields that must not reach a report.
-
-    `detached` says that an instance keeps running when the process that started it ends: a
-    container, a server started with a command. Only such a service can be provisioned in its own
-    `ducktest5 provision` invocation and used by a later `exec`; one that lives in this process (a
-    thread, an embedded server) is provisioned by the process that runs the tests.
-
-    How an instance comes to be is the run's choice, not the test's -- see `provision`.
-
-    `resources.ServiceDef` is the same idea on the resource base, as an input of a storage; this one
-    serves SERVICES and `provision` until they move over to it.
-    """
-
-    id: str
-    block: Callable
-    alive: Callable
-    start: Callable | None = None
-    stop: Callable | None = None
-    setup: Callable | None = None
-    clean: Callable | None = None
-    location: Callable | None = None  # (block, *parts) -> a writable URI under the run's prefix
-    secrets: tuple = ()
-    detached: bool = False
-
-
-@dataclass(frozen=True)
 class Variant:
     """One alternative on a variant axis, with everything it brings. The list of what it may hold is
     closed on purpose; what a value gives goes into the test environment, and both kinds of body are
@@ -86,12 +51,11 @@ class Variant:
                  A name set to None in `env` is unset too. A test that unsets every name a
                  credential delivers does not get that credential, even where its scope matches.
 
-    `services` and `engines` are what the test then needs, and `tags` name it for a selection.
-    `inputs` names STORAGES and CREDENTIALS: a bare id is read-write, `{"id": "ro"}` read-only; a
-    bound storage is where `ctx.location()` puts what the body creates."""
+    `engines` are what the test then needs, and `tags` name it for a selection. `inputs` names
+    STORAGES, CREDENTIALS and SERVICES: a bare id is read-write, `{"id": "ro"}` read-only; a bound
+    storage is where `ctx.location()` puts what the body creates."""
 
     id: str
-    services: tuple = ()
     engines: tuple = ()
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
@@ -113,7 +77,6 @@ class TestMark:
 
     body: Callable
     engines: tuple = ()
-    services: tuple = ()
     params: dict = field(default_factory=dict)
     tags: tuple = ()
     variants: tuple = ()
@@ -131,7 +94,6 @@ def as_mutex(value):
 def test(
     *,
     engines=(),
-    services=(),
     params=None,
     tags=(),
     variants=(),
@@ -155,10 +117,12 @@ def test(
     `sessions` names the project's SESSIONS the body drives, as `ctx.session(name)`. A test that
     names no DuckDB one gets a default DuckDB Session.
 
-    `bind` maps a role to one of the project's STORAGES or CREDENTIALS, by id; it replaces what a
-    rule binds to the same role."""
+    `bind` maps a role to one of the project's STORAGES, CREDENTIALS or SERVICES, by id; it
+    replaces what a rule binds to the same role."""
     if "cases" in unknown:
         raise UsageError("@test(cases=...) is now @test(params=...); the body reads its row as ctx.params")
+    if "services" in unknown:
+        raise UsageError("@test(services=...) is now @test(bind={role: service id}), or a storage on the service")
     if unknown:
         raise TypeError(f"test() got unexpected keyword arguments {sorted(unknown)}")
 
@@ -166,7 +130,6 @@ def test(
         body.__ducktest__ = TestMark(
             body,
             tuple(engines),
-            tuple(services),
             dict(params or {}),
             tuple(tags),
             tuple(variants),

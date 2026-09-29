@@ -519,7 +519,7 @@ def test_a_variant_naming_an_undeclared_input_is_a_usage_error(tree, capsys):
     conf = tree / "test" / "ducktest_conf.py"
     conf.write_text(conf.read_text().replace('inputs=["local"]', 'inputs=["nope"]'))
     assert main(["scan", "test/a/x.test", "--env"]) == 2
-    assert "names input 'nope', which is not in STORAGES or CREDENTIALS" in capsys.readouterr().err
+    assert "names input 'nope', which is not in STORAGES, CREDENTIALS or SERVICES" in capsys.readouterr().err
 
 
 def test_a_credential_that_does_not_resolve_waits_at_scan(tree, monkeypatch, capsys):

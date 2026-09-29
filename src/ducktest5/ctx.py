@@ -46,7 +46,7 @@ class Ctx:
         self._duckdb_home = duckdb_home
         self._session_factory = session_factory
         self._engines = list(test.engines)
-        self._services = {s: services[s] for s in test.services} if services else {}
+        self._services = dict(services or {})  # id -> the run's instance of each service behind its inputs
         self._remote_parts = remote_parts
         self.failed_checks = []
         self.teardowns = []
@@ -140,10 +140,11 @@ class Ctx:
         return {name: round(seconds, 2) for name, seconds in totals.items()}
 
     def service(self, name):
-        """The facts of a service this test declared: endpoint, bucket, credentials."""
+        """The run's instance of a service behind this test's inputs; `.attributes` are what it
+        gives, never its secrets."""
         if name not in self._services:
-            raise KeyError(f"service {name!r} is not declared by this test (services={sorted(self._services)})")
-        return self._services[name].block
+            raise KeyError(f"service {name!r} is not behind this test's inputs (services={sorted(self._services)})")
+        return self._services[name]
 
     def location(self, name):
         """A place for a table the body creates; nothing is created here. A path under this test's

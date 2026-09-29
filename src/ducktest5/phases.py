@@ -2,7 +2,7 @@
 
     01-tests.yaml      scan       the tests a selection gives, and what each one needs
     02-plan.yaml       plan       the batches, the runner of each, and the knobs used
-    03-provision.yaml  provision  the services that are up, secrets redacted
+    03-provision.yaml  provision  the services, where each one answers, secrets masked
     04-events.jsonl    exec       one line for each test attempt (`events.py`)
     05-report.*        report     what a reader gets (`reports/`)
 
@@ -15,12 +15,12 @@ What crosses an invocation boundary:
 - `01` and `02` need no infrastructure and hold no secret. Every path in them is relative to the
   project root, so they can be made on one machine and carried to another; the binaries, which are
   of a machine, are named by `exec` and are not in them.
-- `03` holds redacted blocks only. A secret is never written down: `exec` in a new process resolves
-  each service again, an `existing` one from the same source (`--existing-service`, the environment)
-  and a kept one from the `attach` line `03` records.
+- `03` holds each service's address and its attributes, secrets masked. A secret is never written
+  down: `exec` in a new process adopts each service again at its address, and reads its secrets
+  from the instance.
 - A service that `provision` may leave running is one that says `detached=True`: it is not in the
-  process that starts it (a container, a cloud workspace). One that does not can only be provisioned
-  by the process that uses it, which is `exec --provision` and `run`.
+  process that starts it (a container, a cloud workspace). One that does not is made by the process
+  that uses it, which is `exec` and `run`.
 - Engines (Spark, the DuckDB shell) always belong to the exec process.
 
 A phase that finds a file of a schema it does not know stops and says so. A phase that finds its own
@@ -39,7 +39,7 @@ from . import events, sqllogic, testenv
 from .binary import UsageError
 from .model import SQLLOGIC
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED
-from .provision import MASK, attach_overrides, existing_overrides, provision, release
+from .provision import EXISTING, MANAGED, record
 from .resources.made import services_in
 
 TESTS_FILE, PLAN_FILE, PROVISION_FILE = "01-tests.yaml", "02-plan.yaml", "03-provision.yaml"
@@ -245,26 +245,16 @@ def narrow(doc, *, batch_ids=(), test_ids=None):
 # -- 03: the services ---------------------------------------------------------
 
 
-def _record_of(p, *, owned):
-    """What `03` says about one service: how it was reached, whether this run owns the instance, its
-    block with every secret masked, and the argument that finds it again."""
-    return {
-        "mode": p.mode,
-        "detached": bool(p.service.detached),
-        "owned": owned,
-        "block": p.redacted(),
-        "attach": attach_overrides(p),
-    }
-
-
-def write_provision(run_dir, provisioned, errors, *, keep_services=False, force=False):
-    doc = {
-        "schema": PROVISION_SCHEMA,
-        "made_at": events.now(),
-        "services": {
-            sid: _record_of(p, owned=bool(p.started and not keep_services)) for sid, p in sorted(provisioned.items())
-        },
-    }
+def write_provision(run_dir, made, errors, *, owned=False, recorded=None, force=False):
+    """`03`: each service of `made`, and why each one that is not up is not. `owned` says cleanup
+    ends what this process made (the `provision` subcommand); `recorded` are the records of an
+    earlier `03`, kept as they are for a service this process adopted from them."""
+    services = dict(recorded or {})
+    for service_id, service in made.services.items():
+        if service_id not in services or made.modes[service_id] != EXISTING:
+            mode = made.modes[service_id]
+            services[service_id] = record(service, mode, owned=owned and mode == MANAGED)
+    doc = {"schema": PROVISION_SCHEMA, "made_at": events.now(), "services": dict(sorted(services.items()))}
     if errors:
         doc["errors"] = dict(sorted(errors.items()))
     return write(run_dir, PROVISION_FILE, doc, force=force)
@@ -277,81 +267,9 @@ def read_provision(run_dir):
     return read(run_dir, PROVISION_FILE, PROVISION_SCHEMA, made_by="provision")
 
 
-def provision_services(service_ids, project, *, existing_services=(), keep_services=False, separate=False, on=None):
-    """Bring up each service, in id order; `on(id, **fields)` is told what happened to each one.
-    Returns (provisioned, {service id: why it is not there}).
-
-    `separate` is the `provision` subcommand, which is not the process that runs the tests: it
-    refuses a service that cannot outlive it, and never stops what it started."""
-    provisioned, errors = {}, {}
-    for service_id in sorted(set(service_ids)):
-        service = project.services[service_id]
-        existing = existing_overrides(service_id, existing_services)
-        if separate and existing is None and service.start is not None and not service.detached:
-            raise UsageError(
-                f"service {service_id!r} lives in the process that starts it, so a separate `provision` would stop "
-                f"it again at once. Run `ducktest5 exec --run-dir DIR --provision`, which provisions and runs in "
-                f"one process, or name a running instance with --existing-service {service_id}."
-            )
-        if on:
-            on(service_id, state="starting")
-        try:
-            provisioned[service_id] = provision(service, existing=existing, keep=keep_services or separate)
-            if on:
-                on(
-                    service_id,
-                    state="up",
-                    mode=provisioned[service_id].mode,
-                    block=provisioned[service_id].redacted(),
-                )
-        except Exception as exc:
-            errors[service_id] = f"{type(exc).__name__}: {exc}"
-            if on:
-                on(service_id, state="failed", error=errors[service_id])
-    return provisioned, errors
-
-
-def attach_from_record(record):
-    """The overrides that find a service `03` recorded, as `--existing-service` would give them. A
-    field that was masked is refused: a secret is never written down, so it comes from the
-    environment or the command line."""
-    overrides = dict(record.get("attach") or {})
-    if masked := sorted(k for k, v in overrides.items() if v == MASK):
-        raise UsageError(
-            f"{PROVISION_FILE} holds {masked} masked, as it must. Name the instance again with "
-            f"--existing-service, or put the value in the environment."
-        )
-    return overrides
-
-
-def services_for_exec(service_ids, project, *, doc, existing_services=(), on=None):
-    """The services of a plan, for an exec that is not the process that provisioned them: every one
-    is attached to, never started. A service the command line names wins over what `03` recorded."""
-    provisioned, errors = {}, {}
-    recorded = doc.get("services") or {}
-    for service_id in sorted(set(service_ids)):
-        if on:
-            on(service_id, state="starting")
-        try:
-            if service_id in recorded:
-                existing = existing_overrides(service_id, existing_services)
-                if existing is None:
-                    existing = attach_from_record(recorded[service_id])
-            elif (existing := existing_overrides(service_id, existing_services)) is None:
-                raise RuntimeError(
-                    f"no instance of {service_id!r} was provisioned for this run. Run "
-                    f"`ducktest5 provision --run-dir DIR` first, or `exec --provision` to provision here."
-                )
-            p = provision(project.services[service_id], existing=existing)
-            p.started = False
-            provisioned[service_id] = p
-            if on:
-                on(service_id, state="up", mode=p.mode, block=p.redacted())
-        except Exception as exc:
-            errors[service_id] = f"{type(exc).__name__}: {exc}"
-            if on:
-                on(service_id, state="failed", error=errors[service_id])
-    return provisioned, errors
+def services_of(tests):
+    """The services behind the inputs of `tests`, inputs first, each once."""
+    return services_in(d for test in tests for d, _ in test.inputs)
 
 
 # -- cleanup ------------------------------------------------------------------
@@ -395,7 +313,7 @@ def _paths_by_outcome(event_lines, run_dir):
     return passed, kept
 
 
-def cleanup(run_dir, *, project=None, keep=False, event_lines=None, existing_services=()):
+def cleanup(run_dir, *, project=None, keep=False, event_lines=None):
     """What a run leaves behind, by what `04` says about each test: the files of a test that passed
     are removed, the files of a test that failed stay, and a service this run started is stopped.
     A run that never ended (it was killed) did not end the services behind its storages: what
@@ -420,18 +338,18 @@ def cleanup(run_dir, *, project=None, keep=False, event_lines=None, existing_ser
     summary["kept"] += [
         uri for event in event_lines if event.get("event") == events.TEST_END for uri in (event.get("kept") or [])
     ]
-    summary.update(stop_services(run_dir, project, existing_services=existing_services))
+    failed = any(e.get("outcome") in (FAILED, ERROR) for e in event_lines if e.get("event") == events.TEST_END)
+    summary.update(end_services(run_dir, project, failed=failed))
     if project is not None and not keep and not any(e.get("event") == events.RUN_END for e in event_lines):
         summary["swept"] = sweep_services(run_id_of(run_dir), project)
     return summary
 
 
 def sweep_services(run_token, project):
-    """Delete what the services behind the project's storages and credentials made under
-    `run_token`; returns what it found. A service that takes inputs is not swept: it cannot be made
-    without them."""
+    """Delete what the project's services made under `run_token`; returns what it found. A service
+    that takes inputs is not swept: it cannot be made without them."""
     swept = []
-    for d in services_in([*project.storages.values(), *project.credentials.values()]):
+    for d in project.services.values():
         if d.address is not None or d.inputs:
             continue
         service = d.make(run_token=run_token)
@@ -442,33 +360,22 @@ def sweep_services(run_token, project):
     return swept
 
 
-def stop_services(run_dir, project, *, existing_services=()):
-    """Stop what `03` says this run started. A service it did not start is left alone."""
+def end_services(run_dir, project, *, failed):
+    """End what `03` says cleanup owns: a service `provision` made, found again by the run's token.
+    What its `retain` keeps after a failed run stays. One that is not there any more is left alone."""
     doc = read_provision(run_dir)
     stopped, problems = [], []
-    for service_id, record in (doc.get("services") or {}).items():
-        if not record.get("owned") or project is None or service_id not in project.services:
+    for service_id, entry in (doc.get("services") or {}).items():
+        if not entry.get("owned") or project is None or service_id not in project.services:
             continue
-        service = project.services[service_id]
-        if service.stop is None:
+        definition = project.services[service_id]
+        if definition.inputs:
             continue
         try:
-            block = service.block(
-                **{**attach_from_record(record), **(existing_overrides(service_id, existing_services) or {})}
-            )
-            if service.alive(block):
-                service.stop(block)
+            service = definition.make(run_token=run_id_of(run_dir))
+            if service.read() is not None:
+                service.end(failed)
                 stopped.append(service_id)
         except Exception as exc:
             problems.append(f"service {service_id!r} could not be stopped: {type(exc).__name__}: {exc}")
     return {"stopped": stopped, "problems": problems}
-
-
-def release_all(provisioned, *, on_error=None):
-    """Stop what this process started, at the end of an exec that provisioned."""
-    for p in provisioned.values():
-        try:
-            release(p)
-        except Exception as exc:
-            if on_error:
-                on_error(p, exc)

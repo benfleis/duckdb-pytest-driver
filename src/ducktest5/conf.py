@@ -7,13 +7,16 @@ pattern may name one file.
 
 How rules combine, in one order: the root file first, then each file on the way down to the test definition;
 in a file, the rules as listed; then the definition's own `@test(...)`. Along that order, list fields (tags,
-services, engines, variants, mutex, suites) add up, dict fields (values, settings, bind) update by key, and
+engines, variants, mutex, suites) add up, dict fields (values, settings, bind) update by key, and
 single values (timeout, retries) are replaced. `why` records which rule gave what. All of them are on
 the definition and apply to every test made from it.
 
-`bind={"storage": "scratch"}` binds a role to one of STORAGES or CREDENTIALS by id. The role is the
-key the merge updates by: a later binding of the same role replaces the earlier one, so a test's own
-`@test(bind=...)` wins over its rules.
+`bind={"storage": "scratch"}` binds a role to one of STORAGES, CREDENTIALS or SERVICES by id. The role
+is the key the merge updates by: a later binding of the same role replaces the earlier one, so a
+test's own `@test(bind=...)` wins over its rules.
+
+SERVICES holds `ServiceDef`s of `resources`. A service that is an input of a storage, a credential or
+a session is one of the project's services too, whether SERVICES names it or not.
 
 `mutex="name"`, or several names, says what a test must have to itself: no two tests that name one of
 them run at the same time, however many workers the run has.
@@ -41,10 +44,11 @@ import sys
 from dataclasses import dataclass, field, replace
 
 from .binary import UsageError
-from .declare import CONF_FILE, EngineDef, ServiceDef, Variant, as_mutex
-from .resources import CredentialDef, ResourceDef, SessionDef, StorageDef
+from .declare import CONF_FILE, EngineDef, Variant, as_mutex
+from .resources import CredentialDef, ResourceDef, ServiceDef, SessionDef, StorageDef
+from .resources.made import services_in
 
-_LISTS = ("tags", "services", "engines", "variants", "mutex", "suites")
+_LISTS = ("tags", "engines", "variants", "mutex", "suites")
 _DICTS = ("values", "settings", "bind")
 _SINGLES = ("timeout", "retries")
 
@@ -133,7 +137,6 @@ class Settled:
     """What the rules gave one test definition, and where each part came from."""
 
     tags: list = field(default_factory=list)
-    services: list = field(default_factory=list)
     engines: list = field(default_factory=list)
     variants: list = field(default_factory=list)
     mutex: list = field(default_factory=list)
@@ -178,6 +181,10 @@ class Project:
     _rules_by_dir: dict = field(default_factory=dict)
     _used: set = field(default_factory=set)
     unused_rules: list = field(default_factory=list)
+
+    def inputs(self):
+        """What a test may bind or a variant may name as an input, by id."""
+        return {**self.services, **self.storages, **self.credentials}
 
     def excludes(self, rel_to_root):
         return any(
@@ -292,8 +299,6 @@ def _prune(project, root, dirpath, dirnames):
 def _check(path, project):
     if not all(isinstance(e, EngineDef) for e in project.engines.values()):
         raise UsageError(f"{path}: ENGINES must hold EngineDef")
-    if not all(isinstance(s, ServiceDef) for s in project.services.values()):
-        raise UsageError(f"{path}: SERVICES must hold ServiceDef")
     for name, kind, declared in (
         ("STORAGES", StorageDef, project.storages),
         ("CREDENTIALS", CredentialDef, project.credentials),
@@ -301,6 +306,11 @@ def _check(path, project):
     ):
         if not all(isinstance(d, kind) for d in declared.values()):
             raise UsageError(f"{path}: {name} must hold {kind.__name__}")
+    if not all(isinstance(s, ServiceDef) for s in project.services.values()):
+        raise UsageError(f"{path}: SERVICES must hold ServiceDef of ducktest5.resources")
+    for s in services_in([*project.storages.values(), *project.credentials.values(), *project.sessions.values()]):
+        if project.services.setdefault(s.id, s) is not s:
+            raise UsageError(f"{path}: two services are named {s.id!r}; a service is one declaration")
     for s in project.sessions.values():
         if s.engine != "duckdb" and s.engine not in project.engines:
             raise UsageError(f"{path}: session {s.id!r} runs on engine {s.engine!r}, which is not in ENGINES")
@@ -308,22 +318,21 @@ def _check(path, project):
         if not values or not all(isinstance(v, Variant) for v in values.values()):
             raise UsageError(f"{path}: AXES[{axis!r}] must be a non-empty list of Variant")
         for v in values.values():
-            for kind, known in (("services", project.services), ("engines", project.engines)):
-                unknown = [x for x in getattr(v, kind) if x not in known]
-                if unknown:
-                    raise UsageError(
-                        f"{path}: AXES[{axis!r}] value {v.id!r} names {kind} {unknown} that are not declared"
-                    )
+            unknown = [x for x in v.engines if x not in project.engines]
+            if unknown:
+                raise UsageError(f"{path}: AXES[{axis!r}] value {v.id!r} names engines {unknown} that are not declared")
             values[v.id] = replace(v, inputs=_bound(path, f"AXES[{axis!r}] value {v.id!r}", v.inputs, project))
 
 
 def _bound(path, where, inputs, project):
     """A variant's inputs with each id replaced by the Def it names, as `({Def: mode}, ...)`."""
-    declared = {**project.storages, **project.credentials}
+    declared = project.inputs()
     out = []
     for entry in inputs:
         for ref, mode in entry.items() if isinstance(entry, dict) else [(entry, "rw")]:
             if not isinstance(ref, ResourceDef) and ref not in declared:
-                raise UsageError(f"{path}: {where} names input {ref!r}, which is not in STORAGES or CREDENTIALS")
+                raise UsageError(
+                    f"{path}: {where} names input {ref!r}, which is not in STORAGES, CREDENTIALS or SERVICES"
+                )
             out.append({declared[ref] if isinstance(ref, str) else ref: mode})
     return tuple(out)

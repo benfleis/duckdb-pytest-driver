@@ -125,6 +125,10 @@ class Minio(Service):
     def handle(self):
         return self.block["container"]
 
+    @property
+    def address(self):
+        return self.block["endpoint"]
+
     def create(self):
         super().create()
         _setup(self.block)

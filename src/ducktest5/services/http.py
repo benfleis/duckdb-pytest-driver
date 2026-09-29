@@ -52,6 +52,10 @@ class HttpServer(Service):
         return served_dir(self.run_token, self.id)
 
     @property
+    def address(self):
+        return self.url
+
+    @property
     def url(self):
         if self.existing:
             return self.definition.address

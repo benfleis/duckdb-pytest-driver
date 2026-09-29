@@ -282,7 +282,7 @@ def test_the_end_of_the_run_ends_every_service_it_made(world):
 
 def _project(*services):
     storages = {f"s{n}": StorageDef(f"s{n}", f"{{{s.id}.url}}", inputs=[s]) for n, s in enumerate(services)}
-    return SimpleNamespace(storages=storages, credentials={}, services={})
+    return SimpleNamespace(storages=storages, credentials={}, services={s.id: s for s in services})
 
 
 def test_list_finds_what_a_run_made_by_its_run_token_and_cleanup_after_it_was_killed_removes_it(served, tmp_path):

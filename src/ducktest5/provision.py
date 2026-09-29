@@ -1,32 +1,29 @@
-"""How a run gets each service a selected test needs. The mode is the run's choice, per service:
+"""How a run gets each service its selected tests need. The mode is the run's choice, per service:
 
-    managed    start it, use it, stop it                 the default when the service has `start`
-    existing   find it running, never stop it            `--existing-service ID[=URL|={json}]`, or
-                                                         DUCKTEST_EXISTING_SERVICE_<ID>; and always
-                                                         when the service has no `start`
-    keep       find it, else start it; never stop it     `--keep-services`
+    managed    create it, use it, end it                 the default
+    existing   adopt the one running at an address;      `--existing-service ID=URL`, or
+               never start it, never end it              DUCKTEST_EXISTING_SERVICE_<ID>=URL
+    kept       create it, retain what it holds, and      `--keep-services`
+               leave it running; the run prints the
+               `--existing-service` that adopts it
 
-In every mode the instance must answer `alive`, then `setup` runs (idempotent), and what the tests
-wrote is cleaned by the run that wrote it. Only `managed` ends with `stop`. `keep` prints the
-argument that lets the next run find the instance.
+Every mode makes the service in the run's `Made`, so it is made once, whichever phase makes it,
+and every consumer gets that one instance.
 """
 
 from __future__ import annotations
 
-import contextlib
-import json
+import dataclasses
 import os
 import re
-from dataclasses import dataclass
 
 from .binary import UsageError
-from .host import wait_until
+from .resources import ALWAYS, ServiceNotUp
+from .resources.made import EXISTING, KEPT, MANAGED  # noqa: F401
 
-MANAGED, EXISTING, KEPT = "managed", "existing", "kept"
 MASK = "***"
 
-# A name that says the value is a credential. What a service declares in `secrets` is masked because
-# it said so; this catches the field a service forgot to declare, wherever a block is written down.
+# A name that says the value is a credential: masked wherever it is written down.
 SECRET_NAME = re.compile(r"SECRET|TOKEN|PASSW|CREDENTIAL|_KEY(_ID)?$", re.IGNORECASE)
 
 
@@ -34,124 +31,101 @@ def _key(service_id):
     return service_id.replace("-", "_").lower()
 
 
-def existing_overrides(service_id, cli_entries):
-    """The overrides for an existing instance of `service_id`, or None when none was named.
-    Entry grammar: `ID` (the service's defaults), `ID=URL` ({"endpoint": URL}), `ID={json}`.
-    The command line wins over DUCKTEST_EXISTING_SERVICE_<ID>."""
+def existing_address(service_id, cli_entries):
+    """The address of a running instance of `service_id` the run was told to adopt, or None.
+    `--existing-service ID=URL` wins over DUCKTEST_EXISTING_SERVICE_<ID>."""
     for entry in cli_entries or ():
         name, _, value = entry.partition("=")
         if _key(name) == _key(service_id):
-            return _parse(value)
-    value = os.environ.get(f"DUCKTEST_EXISTING_SERVICE_{_key(service_id).upper()}")
-    return None if value is None else _parse(value)
+            return _address(value, f"--existing-service {entry}")
+    name = f"DUCKTEST_EXISTING_SERVICE_{_key(service_id).upper()}"
+    value = os.environ.get(name)
+    return None if value is None else _address(value, name)
 
 
-def _parse(value):
+def _address(value, where):
     value = value.strip()
     if not value:
-        return {}
-    if value.startswith("{"):
-        overrides = json.loads(value)
-        if masked := sorted(k for k, v in overrides.items() if v == MASK):
+        raise UsageError(f"{where}: name the address of the running instance, as ID=URL")
+    return value
+
+
+def bring_up(made, definitions, *, existing_services=(), keep=False, separate=False, on=None):
+    """Make each service of `definitions` in `made`, in order: adopted where the run names a
+    running instance or the service was declared `as_existing`, else created. `on(id, **fields)` is told what happened to each one. Returns
+    {service id: why it is not up}.
+
+    `separate` is the `provision` subcommand, which is not the process that runs the tests: it
+    refuses a service that cannot outlive it."""
+    errors = {}
+    for d in definitions:
+        address = existing_address(d.id, existing_services) or d.address
+        if separate and address is None and not d.detached:
             raise UsageError(
-                f"an existing service with {masked} = {MASK!r}: put the value in, or set it in the environment"
+                f"service {d.id!r} lives in the process that starts it, so a separate `provision` would stop "
+                f"it again at once. Run `ducktest5 exec --run-dir DIR --provision`, which provisions and runs in "
+                f"one process, or name a running instance with --existing-service {d.id}=URL."
             )
-        return overrides
-    return {"endpoint": value}
-
-
-@dataclass
-class Provisioned:
-    service: object
-    block: dict
-    mode: str
-    started: bool = False  # this process started the instance; one it found is not ours to stop
-
-    def redacted(self):
-        return {k: (MASK if self.is_secret(k) else v) for k, v in self.block.items()}
-
-    def is_secret(self, field):
-        return field in self.service.secrets or bool(SECRET_NAME.search(field))
-
-
-def provision(service, *, existing=None, keep=False, ready_timeout_s=60):
-    """Returns a Provisioned, or raises with the reason the service is not there."""
-    started = False
-    if existing is not None or service.start is None:
-        block = service.block(**(existing or {}))
-        if not service.alive(block):
-            where = block.get("endpoint", "its default address")
-            raise RuntimeError(f"existing service {service.id!r} does not answer at {where}")
-        mode = EXISTING
-    else:
-        block = service.block()
-        if keep and service.alive(block):
-            mode = KEPT
-        elif service.alive(block):
-            # `start` begins by removing a leftover container of its name. An instance that answers
-            # is not a leftover: it may be one that another run, or the user, keeps.
-            raise RuntimeError(
-                f"service {service.id!r} already answers at {block.get('endpoint')}. Use it with "
-                f"--existing-service {service.id}, or keep it with --keep-services, or stop it first."
-            )
+        if address is not None:
+            _make(made, d.as_existing(address), EXISTING, errors, on)
+        elif keep:
+            _make(made, dataclasses.replace(d, retain=ALWAYS), KEPT, errors, on)
         else:
-            service.start(block)
-            started = True
-            mode = KEPT if keep else MANAGED
-            try:
-                wait_until(
-                    lambda: service.alive(block),
-                    ready_timeout_s,
-                    lambda: f"service {service.id!r} did not come up at {block.get('endpoint')} in {ready_timeout_s}s",
-                )
-            except Exception:
-                if service.stop:
-                    service.stop(block)  # do not leak a half-booted instance
-                raise
-    if service.setup:
-        try:
-            service.setup(block)
-        except BaseException:
-            if mode == MANAGED and service.stop:
-                service.stop(block)  # else the next run is refused: "already answers"
-            raise
-    return Provisioned(service, block, mode, started)
+            _make(made, d, MANAGED, errors, on)
+    return errors
 
 
-def release(provisioned):
-    """Stop what this run started, unless it was asked to keep it."""
-    if provisioned.mode == MANAGED and provisioned.service.stop:
-        provisioned.service.stop(provisioned.block)
+def adopt(made, definitions, recorded, *, existing_services=(), on=None):
+    """For an exec that is not the process that provisioned: each service is adopted at the address
+    the command line or `03` (`recorded`, its `services`) gives. One that lives in this process
+    cannot have been made anywhere else, so it is made here. Returns {service id: why it is not up}."""
+    errors = {}
+    for d in definitions:
+        address = existing_address(d.id, existing_services) or d.address or (recorded.get(d.id) or {}).get("address")
+        if address is not None:
+            _make(made, d.as_existing(address), EXISTING, errors, on)
+        elif not d.detached:
+            _make(made, d, MANAGED, errors, on)
+        else:
+            errors[d.id] = (
+                f"no instance of {d.id!r} was provisioned for this run. Run "
+                f"`ducktest5 provision --run-dir DIR` first, or `exec --provision` to provision here."
+            )
+            if on:
+                on(d.id, state="failed", error=errors[d.id])
+    return errors
 
 
-@contextlib.contextmanager
-def _no_ducktest_environment():
-    saved = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("DUCKTEST_")}
+def _make(made, definition, mode, errors, on):
+    if on:
+        on(definition.id, state="starting")
     try:
-        yield
-    finally:
-        os.environ.update(saved)
+        service = made.create(definition, mode)
+    except ServiceNotUp as exc:
+        errors[definition.id] = str(exc)
+        if on:
+            on(definition.id, state="failed", error=errors[definition.id])
+        return
+    if on:
+        on(definition.id, state="up", mode=mode, address=service.address)
 
 
-def attach_overrides(provisioned):
-    """What finds this instance again: the endpoint, and every other field that is not what the
-    service gives with no DUCKTEST_* variable set, so that a shell without those variables finds the
-    same instance, bucket and all. A secret is masked: it is never written down."""
-    service, block = provisioned.service, provisioned.block
-    with _no_ducktest_environment():
-        defaults = service.block()
-        overrides = {
-            k: v
-            for k, v in block.items()
-            # a field the service works out from others is not an override: it does not come back
-            if k == "endpoint" or (v != defaults.get(k) and service.block(**{k: v}).get(k) == v)
-        }
-    return {k: (MASK if provisioned.is_secret(k) else v) for k, v in overrides.items()}
+def record(service, mode, *, owned):
+    """What `03` says about one service: what it is, how it was reached, where it answers, its
+    attributes with every secret masked, and `owned`: whether cleanup is the one to end it."""
+    attributes = {name: MASK if SECRET_NAME.search(name) else value for name, value in service.attributes.items()}
+    attributes.update({name: MASK for name in service.secrets})
+    return {
+        "kind": service.definition.kind,
+        "identity": service.identity,
+        "mode": mode,
+        "detached": bool(service.definition.detached),
+        "owned": owned,
+        "address": service.address,
+        "attributes": attributes,
+    }
 
 
-def attach_argument(provisioned):
-    """The `--existing-service` argument for a kept instance, as a line to print."""
-    overrides = attach_overrides(provisioned)
-    masked = sorted(k for k, v in overrides.items() if v == MASK)
-    note = f"  ({MASK}: a secret, not printed; put the value in, or set it in the environment)" if masked else ""
-    return f"--existing-service '{provisioned.service.id}={json.dumps(overrides)}'{note}"
+def attach_argument(service):
+    """The `--existing-service` argument that adopts a kept instance in the next run."""
+    return f"--existing-service {service.id}={service.address}"
