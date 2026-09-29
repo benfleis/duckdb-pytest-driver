@@ -437,6 +437,8 @@ def _cleanup(args):
         print(f"kept: {path}")
     for service_id in summary["stopped"]:
         print(f"stopped: {service_id}")
+    for handle in summary["swept"]:
+        print(f"removed, left by a run that did not end: {handle}")
     for problem in summary["problems"]:
         print(problem, file=sys.stderr)
     return 1 if summary["problems"] else 0

@@ -5,9 +5,11 @@ import os
 import tempfile
 import urllib.request
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 
+from ducktest5 import phases
 from ducktest5.resources import (
     ON_FAILURE,
     RO,
@@ -114,7 +116,7 @@ def test_a_start_that_fails_is_service_not_up_and_leaves_nothing_running(world):
     service = FakeDef("fake", broken=True).make(run_token="r1")
     with pytest.raises(ServiceNotUp, match="^OSError: cannot start$"):
         service.create()
-    assert world == {"http://fake/r1/fake": False}
+    assert world == {}
 
 
 def test_retain_decides_whether_the_end_of_the_run_removes_what_it_holds(world):
@@ -271,3 +273,40 @@ def test_the_end_of_the_run_ends_every_service_it_made(world):
     made.create(FakeDef("fake"))
     made.end(failed=False)
     assert world == {} and made.services == {}
+
+
+# -----------------------------------------------------------------------------
+# Cleanup by run token
+#
+
+
+def _project(*services):
+    storages = {f"s{n}": StorageDef(f"s{n}", f"{{{s.id}.url}}", inputs=[s]) for n, s in enumerate(services)}
+    return SimpleNamespace(storages=storages, credentials={}, services={})
+
+
+def test_list_finds_what_a_run_made_by_its_run_token_and_cleanup_after_it_was_killed_removes_it(served, tmp_path):
+    http = HttpServerDef("http", source=served)
+    run_dir = tmp_path / "runs" / "2026-09-29T00-00-00Z--killed-run-1"
+    run_dir.mkdir(parents=True)
+    token = run_dir.name
+    made = Made(token)
+    service = made.create(http)
+    service.stop()  # the process was killed: nothing ended the service, and its directory stays
+    assert http.make(run_token=token).list(token) == [service.handle]
+
+    summary = phases.cleanup(str(run_dir), project=_project(http), event_lines=[{"event": "run_start"}])
+    assert summary["swept"] == [service.handle]
+    assert http.make(run_token=token).list(token) == []
+
+
+def test_cleanup_after_a_run_that_ended_leaves_what_retain_kept(served, tmp_path):
+    http = HttpServerDef("http", source=served)
+    run_dir = tmp_path / "runs" / "2026-09-29T00-00-00Z--failed-run-1"
+    run_dir.mkdir(parents=True)
+    made = Made(run_dir.name)
+    service = made.create(http)
+    made.end(failed=True)
+    ended = [{"event": "run_start"}, {"event": "run_end"}]
+    assert phases.cleanup(str(run_dir), project=_project(http), event_lines=ended)["swept"] == []
+    assert os.path.isdir(service.handle)

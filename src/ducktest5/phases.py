@@ -40,6 +40,7 @@ from .binary import UsageError
 from .model import SQLLOGIC
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED
 from .provision import MASK, attach_overrides, existing_overrides, provision, release
+from .resources.made import services_in
 
 TESTS_FILE, PLAN_FILE, PROVISION_FILE = "01-tests.yaml", "02-plan.yaml", "03-provision.yaml"
 TESTS_SCHEMA = PLAN_SCHEMA = PROVISION_SCHEMA = 1
@@ -397,13 +398,15 @@ def _paths_by_outcome(event_lines, run_dir):
 def cleanup(run_dir, *, project=None, keep=False, event_lines=None, existing_services=()):
     """What a run leaves behind, by what `04` says about each test: the files of a test that passed
     are removed, the files of a test that failed stay, and a service this run started is stopped.
+    A run that never ended (it was killed) did not end the services behind its storages: what
+    carries its run token is removed.
 
-    Returns {"removed": [...], "kept": [...], "stopped": [...], "problems": [...]}. It may run
+    Returns {"removed": [...], "kept": [...], "stopped": [...], "swept": [...], "problems": [...]}. It may run
     twice: what is not there any more is not a problem, and a service that does not answer is not
     started to be stopped."""
     event_lines = events.read(run_dir) if event_lines is None else event_lines
     passed, stays = _paths_by_outcome(event_lines, run_dir)
-    summary = {"removed": [], "kept": [], "stopped": [], "problems": []}
+    summary = {"removed": [], "kept": [], "stopped": [], "swept": [], "problems": []}
     for path in [] if keep else passed:
         if os.path.exists(path):
             shutil.rmtree(path, ignore_errors=True)
@@ -418,7 +421,25 @@ def cleanup(run_dir, *, project=None, keep=False, event_lines=None, existing_ser
         uri for event in event_lines if event.get("event") == events.TEST_END for uri in (event.get("kept") or [])
     ]
     summary.update(stop_services(run_dir, project, existing_services=existing_services))
+    if project is not None and not keep and not any(e.get("event") == events.RUN_END for e in event_lines):
+        summary["swept"] = sweep_services(run_id_of(run_dir), project)
     return summary
+
+
+def sweep_services(run_token, project):
+    """Delete what the services behind the project's storages and credentials made under
+    `run_token`; returns what it found. A service that takes inputs is not swept: it cannot be made
+    without them."""
+    swept = []
+    for d in services_in([*project.storages.values(), *project.credentials.values()]):
+        if d.address is not None or d.inputs:
+            continue
+        service = d.make(run_token=run_token)
+        found = service.list(run_token)
+        if found:
+            service.delete()
+            swept += found
+    return swept
 
 
 def stop_services(run_dir, project, *, existing_services=()):

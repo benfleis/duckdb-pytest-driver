@@ -679,7 +679,7 @@ def execute(
             except Exception:
                 pass
         pool.join()
-        failed = any(e.get("outcome") in (FAILED, ERROR, BLOCKED) for e in writer.events if e.get("event") == TEST_END)
+        failed = any(e.get("outcome") in (FAILED, ERROR) for e in writer.events if e.get("event") == TEST_END)
         made.end(failed)
         if provision_here:
             phases.release_all(
