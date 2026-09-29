@@ -1,16 +1,22 @@
-"""MinIO, an S3-compatible object store, as a `ServiceDef`. The block has the field names of the pytest
-driver's `ducktest.resources.minio`, so one `--existing-service minio={json}` serves both.
+"""MinIO, an S3-compatible object store: as a `ServiceDef` of SERVICES, and as `MinioDef`, a Service
+on the resource base. The block has the field names of the pytest driver's `ducktest.resources.minio`,
+so one `--existing-service minio={json}` serves both.
 
 The credentials are those of a local emulator, not secrets, but they are redacted in reports all the
 same, because an existing instance may be anyone's.
 """
 
+from __future__ import annotations
+
 import os
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 
 from ..declare import ServiceDef
 from ..host import docker
+from ..resources import ON_FAILURE, Service
+from ..resources import ServiceDef as ResourceServiceDef
 
 _IMAGE = os.environ.get("DUCKTEST_MINIO_IMAGE", "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1")
 
@@ -124,3 +130,75 @@ def minio_service(id="minio"):
         secrets=("access_key", "secret_key"),
         detached=True,  # a container: it stays up when the run that started it ends
     )
+
+
+@dataclass(eq=False)
+class MinioDef(ResourceServiceDef):
+    """MinIO in a docker container named for the run, with its bucket made. It outputs `endpoint`,
+    `bucket` and `region`; its keys come from the environment (DUCKTEST_MINIO_ACCESS_KEY,
+    DUCKTEST_MINIO_SECRET_KEY) and reach a test through `credential(id, scopes=[...])`."""
+
+    kind = "minio"
+    detached = True
+    attributes = ("endpoint", "bucket", "region")
+    secret_attributes = ("access_key", "secret_key")
+    delivers = {"AWS_ACCESS_KEY_ID": "access_key", "AWS_SECRET_ACCESS_KEY": "secret_key", "AWS_REGION": "region"}
+
+    id: str = "minio"
+    bucket: str = "ducktest"
+    port: int | None = None
+    address: str | None = None
+    inputs: list = field(default_factory=list)
+    retain: str = ON_FAILURE
+
+
+def _container(service_id, run_token):
+    return f"ducktest-{service_id}-{run_token}"
+
+
+class Minio(Service):
+    """A stopped container is kept when `retain` keeps it; dealloc removes it."""
+
+    def __init__(self, definition, identity, run_token, inputs=None):
+        super().__init__(definition, identity, run_token, inputs)
+        overrides = {"bucket": definition.bucket, "container": _container(definition.id, run_token)}
+        if definition.port is not None:
+            overrides["port"] = definition.port
+        if definition.address is not None:
+            overrides["endpoint"] = definition.address
+        self.block = minio_block(**overrides)
+
+    @property
+    def handle(self):
+        return self.block["container"]
+
+    def create(self):
+        super().create()
+        _setup(self.block)
+
+    def start(self):
+        if self.run_token is None:
+            raise ValueError(f"service {self.id}: its container is named for the run, so it needs the run_token")
+        _start(self.block)
+
+    def stop(self):
+        docker("stop", self.handle, check=False)
+
+    def dealloc(self):
+        _stop(self.block)
+
+    def read(self):
+        if not self.existing and docker("inspect", self.handle, check=False).returncode != 0:
+            return None
+        return {name: self.block[name] for name in (*self.definition.attributes, *self.definition.secret_attributes)}
+
+    def ready(self):
+        return minio_alive(self.block)
+
+    def list(self, run_token):
+        name = _container(self.id, run_token)
+        found = docker("ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.Names}}", check=False)
+        return [n for n in found.stdout.split() if n == name]
+
+
+MinioDef.instance = Minio
