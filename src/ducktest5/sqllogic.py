@@ -132,12 +132,15 @@ class Batch:
     timeout_s: float = DEFAULT_TIMEOUT_S  # for one test, counted from the binary's begin event for it
     timeouts: dict = field(default_factory=dict)  # key -> seconds, where a test has its own
     retries: dict = field(default_factory=dict)  # key -> how often a failure may run again
+    # The binary's RUN_ID, so its TEMP_DIR is `temp_dir_root/<batch_token>/<test id>`; the dir name by default.
+    batch_token: str | None = None
 
     def __post_init__(self):
         self.tests = [(t, t) if isinstance(t, str) else tuple(t) for t in self.tests]
         self._key = {name: key for key, name in self.tests}
         self.test_env = self.test_env if self.test_env is not None else TestEnv()
         self.init_sources = {}  # line of the init file -> source; filled by write()
+        self.batch_token = self.batch_token or os.path.basename(self.dir.rstrip("/"))
         if len(self._key) != len(self.tests):
             # The binary reports by name, so two tests of one file could not be told apart.
             raise ValueError(f"a test can be in a batch once: {self.names}")
@@ -159,6 +162,7 @@ class Batch:
         config = {
             "description": "a ducktest batch",
             "temp_dir_root": os.path.join(self.dir, "tmp"),
+            "run_id": self.batch_token,
             "test_env": [{"env_name": k, "env_value": str(v)} for k, v in sorted(self.test_env.names.items())],
             # By default the binary ends a file early, as not failed, when an error mentions 'HTTP' or
             # 'Unable to connect'. Here an error is a failure; a test that may fail for reasons that are
@@ -359,6 +363,7 @@ def _sub(batch, tag, names):
         batch.timeout_s,
         batch.timeouts,
         batch.retries,
+        f"{batch.batch_token}-{tag}",
     )
 
 
