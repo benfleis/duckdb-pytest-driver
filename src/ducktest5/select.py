@@ -32,7 +32,8 @@
    test id uses, so matching only ever sees one form; a path that normalises outside the project root is
    an error.
 7. SCOPE. Positional PATHs are a union, as in every other tool: a file, a directory, or a glob,
-   relative to the working directory. They set the scope; the select clauses then filter within it:
+   relative to the working directory, or absolute. Each is normalised to the root-relative form, as a
+   `path=` term is, so `.`, `./x.test` and `../sub` name what the plain form names. They set the scope; the select clauses then filter within it:
 
        selected = scope(PATHs, or everything if none)
                   AND (OR of the positive select clauses, or everything if none)
@@ -107,6 +108,8 @@ class Selection:
 
 def _path_matches(test_path, wanted):
     wanted = wanted.rstrip("/")
+    if wanted == ".":
+        return True
     return (
         test_path == wanted
         or test_path.startswith(wanted + "/")
@@ -384,11 +387,13 @@ def apply(tests, selection, project, working_dir=None):
     )
 
     if selection.is_bare():
-        paths = []
+        paths = {}
         positive_clauses = [[(False, "suite", ["default"])]]
         skip_clauses = []
     else:
-        paths = list(selection.paths)
+        # Positional PATHs are typed relative to the working directory; matched root-relative, so
+        # `.`, `./x.test`, `../` and an absolute path name what the plain relative form names.
+        paths = {p: _root_relative(p, None, ctx, "PATH", p) for p in selection.paths}
         # `--suite NAME` is exactly `--select suite=NAME`: one code path parses and matches it, whichever
         # spelling was used.
         select_exprs = list(selection.select) + [f"suite={name}" for name in selection.suites]
@@ -408,9 +413,9 @@ def apply(tests, selection, project, working_dir=None):
         unknown = [i for i in selection.ids if i not in known]
         if unknown:
             raise UsageError(f"--id: no such test: {unknown}")
-    for p in paths:
-        if not any(_path_matches(c.definition.path, p) for c in tests):
-            raise UsageError(f"path {p!r} holds no test")
+    for given, p in paths.items():
+        if not any(_path_matches(c.definition.root_path, p) for c in tests):
+            raise UsageError(f"path {given!r} holds no test")
 
     only_ids = bool(selection.ids) and not (paths or positive_clauses)
     selected, why_not = [], {}
@@ -419,7 +424,7 @@ def apply(tests, selection, project, working_dir=None):
             selected.append(test)
         elif only_ids:
             why_not[test.id] = "not named by --id"
-        elif paths and not any(_path_matches(test.definition.path, p) for p in paths):
+        elif paths and not any(_path_matches(test.definition.root_path, p) for p in paths.values()):
             why_not[test.id] = "outside the given paths"
         elif positive_clauses and not any(_clause_holds(test, terms, ctx) for terms in positive_clauses):
             why_not[test.id] = _not_in_positive_reason(test, positive_clauses, ctx)

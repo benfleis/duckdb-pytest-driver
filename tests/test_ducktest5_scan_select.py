@@ -185,9 +185,9 @@ def test_a_bare_run_is_the_built_in_default_and_says_why(project):
 
 
 def test_paths_are_a_union_and_a_clauses_terms_must_all_hold(project):
-    assert len(select(project, paths=["test/a/x.test", "test/b/one.test"])[0]) == 3
+    assert len(select(project, paths=["a/x.test", "b/one.test"])[0]) == 3
     # scope (PATHs) narrows first, the select clause filters within it
-    assert ids(select(project, paths=["test/a"], select=["backend=oss"])[0]) == ["a/x.test::x[backend=oss]"]
+    assert ids(select(project, paths=["a"], select=["backend=oss"])[0]) == ["a/x.test::x[backend=oss]"]
     # ';' inside one --select is and: type sqllogic and params cmt/plain both hold for nothing here
     assert ids(select(project, select=["type=paired;params=cmt"])[0]) == ["b/paired.py::body[cmt]"]
     assert ids(select(project, select=["params=cmt,plain"])[0]) == [
@@ -222,19 +222,19 @@ def test_an_id_is_taken_verbatim(project):
 
 def test_an_id_is_added_to_what_paths_and_selects_give(project):
     slow, plain = "a/y.test_slow::y", "b/paired.py::body[plain]"
-    selected, why_not = select(project, paths=["test/b/one.test"], ids=[plain])
+    selected, why_not = select(project, paths=["b/one.test"], ids=[plain])
     assert ids(selected) == ["b/one.test::one", plain]
     assert why_not["b/solo.py::solo"] == "outside the given paths"
     # no select, path or tag takes out a test that is named by id
     assert ids(select(project, select=["type=python"], ids=[slow])[0]) == [slow, "b/solo.py::solo"]
     assert ids(select(project, suites=["cmt"], ids=[slow])[0]) == [slow, "b/paired.py::body[cmt]"]
     # a --select clause still narrows within the given paths for the tests that are not named
-    assert ids(select(project, paths=["test/a"], select=["backend=oss"], ids=[plain])[0]) == [
+    assert ids(select(project, paths=["a"], select=["backend=oss"], ids=[plain])[0]) == [
         "a/x.test::x[backend=oss]",
         plain,
     ]
     # a directory PATH brings in the slow test under it -- no --select given here to narrow it out
-    assert slow in ids(select(project, paths=["test/a"], ids=[plain])[0])
+    assert slow in ids(select(project, paths=["a"], ids=[plain])[0])
 
 
 @pytest.mark.parametrize(
@@ -316,8 +316,8 @@ def test_a_negated_select_and_the_equivalent_skip_choose_the_same_tests(project,
 
 @pytest.mark.parametrize("expr", ["tag=a", "backend=oss", "params=cmt"])
 def test_a_negated_select_and_skip_agree_on_top_of_a_positive_selection(project, expr):
-    with_negation = select(project, paths=["test/a", "test/b"], select=[f"!{expr}"])[0]
-    with_skip = select(project, paths=["test/a", "test/b"], skip=[expr])[0]
+    with_negation = select(project, paths=["a", "b"], select=[f"!{expr}"])[0]
+    with_skip = select(project, paths=["a", "b"], skip=[expr])[0]
     assert ids(with_negation) == ids(with_skip)
 
 
@@ -793,7 +793,7 @@ def test_declaring_a_test_out_of_suite_all_is_an_error(tmp_path, files, message)
 
 
 def test_a_directory_path_brings_in_a_slow_test(project):
-    assert "a/y.test_slow::y" in ids(select(project, paths=["test/a"])[0])
+    assert "a/y.test_slow::y" in ids(select(project, paths=["a"])[0])
 
 
 def test_path_selects_a_directory_and_its_glob_form_agree(project):
@@ -840,6 +840,28 @@ def test_a_command_line_path_term_is_relative_to_the_working_directory(tmp_path)
     from_root = apply(tests_from_root, Selection(select=["a"]), proj_from_root, working_dir=root)[0]
     from_sub = apply(tests_from_sub, Selection(select=["."]), proj_from_sub, working_dir=sub)[0]
     assert ids(from_root) == ids(from_sub) == ["a/x.test::x"]
+
+
+@pytest.mark.parametrize(
+    "cwd, path, plain",
+    [
+        ("test", ".", ["a", "b"]),
+        ("test/a", ".", ["a"]),
+        ("test/a", "./x.test", ["a/x.test"]),
+        ("test", "./a", ["a"]),
+        ("test/b", "..", ["a", "b"]),
+        ("test/b", "../a/", ["a"]),
+    ],
+)
+def test_a_positional_path_names_what_its_plain_relative_form_names(tmp_path, cwd, path, plain):
+    tree(tmp_path, {"test/a/x.test": "", "test/a/y.test": "", "test/b/z.test": ""})
+    root, working_dir = str(tmp_path / "test"), str(tmp_path / cwd)
+    tests, proj = scan(root, working_dir=working_dir)
+    given = ids(apply(tests, Selection(paths=[path]), proj, working_dir=working_dir)[0])
+    absolute = ids(apply(tests, Selection(paths=[str(tmp_path / cwd / path)]), proj, working_dir=working_dir)[0])
+    from_root, root_proj = scan(root, working_dir=root)
+    expected = ids(apply(from_root, Selection(paths=plain), root_proj, working_dir=root)[0])
+    assert given == absolute == expected and given
 
 
 def test_a_path_term_outside_the_project_root_is_an_error(tmp_path):
@@ -938,11 +960,11 @@ def test_two_tests_of_one_file_name_get_their_own_directory(tmp_path):
 
 
 def test_a_path_names_its_paired_file_and_nothing_wider(project):
-    assert ids(select(project, paths=["test/b/paired.test"])[0]) == [
+    assert ids(select(project, paths=["b/paired.test"])[0]) == [
         "b/paired.py::body[cmt]",
         "b/paired.py::body[plain]",
     ]
-    assert ids(select(project, paths=["test/a/y.test_slow"])[0]) == ["a/y.test_slow::y"]  # named exactly: asked for
+    assert ids(select(project, paths=["a/y.test_slow"])[0]) == ["a/y.test_slow::y"]  # named exactly: asked for
     with pytest.raises(UsageError, match="no test definition has a params row"):
         select(project, select=["params=cmtt"])
     with pytest.raises(UsageError, match="the key is params now; write params=cmt"):
