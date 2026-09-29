@@ -47,11 +47,3 @@ def _process_env(test_env) -> dict:
         for name, action in test_env.env_state.items()
         if name not in test_env.passthrough
     }
-
-
-def made_inputs(definition) -> dict:
-    return {
-        ref: sub.make({r: s.make() for r, _, s in sub.edges() if s}, mode=mode)
-        for ref, mode, sub in definition.edges()
-        if sub is not None
-    }

@@ -92,7 +92,7 @@ class Service(Resource):
                 wait_until(self._up, self.definition.ready_timeout_s, lambda: f"service {self.id!r} is not ready")
             except Exception as exc:
                 self.stop()
-                raise ServiceNotUp(f"service {self.id!r} did not come up: {exc}") from exc
+                raise ServiceNotUp(f"{type(exc).__name__}: {exc}") from exc
         found, source = self.read(), f"service {self.id}"
         self.env = {name: Output(found.get(name), source) for name in self.definition.attributes}
         self.secrets = {name: Output(found.get(name), source) for name in self.definition.secret_attributes}

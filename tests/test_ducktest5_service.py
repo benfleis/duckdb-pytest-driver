@@ -8,7 +8,17 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from ducktest5.resources import ON_FAILURE, RO, SHARED_RW, Service, ServiceDef, ServiceNotUp, check_contract
+from ducktest5.resources import (
+    ON_FAILURE,
+    RO,
+    SHARED_RW,
+    Service,
+    ServiceDef,
+    ServiceNotUp,
+    StorageDef,
+    check_contract,
+)
+from ducktest5.resources.made import Made, services_in
 from ducktest5.services.http import HttpServerDef
 
 # What the fake kind's instances hold, by address: stands in for the world outside the process.
@@ -20,7 +30,7 @@ class Fake(Service):
 
     @property
     def address(self):
-        return self.definition.address or f"fake://{self.run_token}/{self.id}"
+        return self.definition.address or f"http://fake/{self.run_token}/{self.id}"
 
     def alloc(self):
         WORLD.setdefault(self.address, False)
@@ -46,7 +56,7 @@ class Fake(Service):
         return WORLD.get(self.address, False)
 
     def list(self, run_token):
-        return [a for a in WORLD if a.startswith(f"fake://{run_token}/")]
+        return [a for a in WORLD if a.startswith(f"http://fake/{run_token}/")]
 
     @property
     def handle(self):
@@ -92,49 +102,52 @@ def test_a_service_is_shared_by_its_consumers():
 def test_its_attributes_are_outputs_under_its_id_and_its_secrets_are_not_env():
     service = FakeDef("fake").make(run_token="r1")
     service.create()
-    assert {k: o.get() for k, o in service.outputs().items()} == {"fake.url": "fake://r1/fake", "fake.key": "k-fake"}
+    assert {k: o.get() for k, o in service.outputs().items()} == {
+        "fake.url": "http://fake/r1/fake",
+        "fake.key": "k-fake",
+    }
     assert list(service.env) == ["url"] and list(service.secrets) == ["key"]
     assert service.outputs()["fake.url"].source == "service fake"
 
 
 def test_a_start_that_fails_is_service_not_up_and_leaves_nothing_running(world):
     service = FakeDef("fake", broken=True).make(run_token="r1")
-    with pytest.raises(ServiceNotUp, match="did not come up: cannot start"):
+    with pytest.raises(ServiceNotUp, match="^OSError: cannot start$"):
         service.create()
-    assert world == {"fake://r1/fake": False}
+    assert world == {"http://fake/r1/fake": False}
 
 
 def test_retain_decides_whether_the_end_of_the_run_removes_what_it_holds(world):
     service = FakeDef("fake").make(run_token="r1")
     service.create()
     service.end(failed=True)
-    assert world == {"fake://r1/fake": False}, "on_failure: stopped, kept"
+    assert world == {"http://fake/r1/fake": False}, "on_failure: stopped, kept"
     service.create()
     service.end(failed=False)
     assert world == {}
 
 
 def test_an_existing_service_is_adopted_when_it_answers_and_never_removed(world):
-    world["fake://there"] = True
+    world["http://fake/there"] = True
     managed = FakeDef("fake")
-    existing = managed.as_existing(address="fake://there")
+    existing = managed.as_existing(address="http://fake/there")
     assert existing.identity() != managed.identity()
     service = existing.make(run_token="r1")
     assert not service.owned
     service.create()
-    assert service.env["url"].get() == "fake://there"
+    assert service.env["url"].get() == "http://fake/there"
     service.delete()
     service.end(failed=False)
-    assert world == {"fake://there": True}
+    assert world == {"http://fake/there": True}
     check_contract(lambda run_token: existing.make(run_token=run_token))
 
 
 def test_an_existing_service_that_does_not_answer_is_service_not_up(world):
-    world["fake://there"] = False
-    service = FakeDef("fake").as_existing(address="fake://there").make(run_token="r1")
-    with pytest.raises(ServiceNotUp, match="existing service 'fake' does not answer at fake://there"):
+    world["http://fake/there"] = False
+    service = FakeDef("fake").as_existing(address="http://fake/there").make(run_token="r1")
+    with pytest.raises(ServiceNotUp, match="existing service 'fake' does not answer at http://fake/there"):
         service.create()
-    assert world == {"fake://there": False}, "an existing service is never started"
+    assert world == {"http://fake/there": False}, "an existing service is never started"
 
 
 def test_a_produced_credential_carries_the_services_secrets_under_the_names_it_delivers():
@@ -146,7 +159,10 @@ def test_a_produced_credential_carries_the_services_secrets_under_the_names_it_d
     credential = credential_def.make({"fake": service})
     credential.create()
     credential.acquire(RO)
-    assert {k: o.get() for k, o in credential.secrets.items()} == {"FAKE_KEY": "k-fake", "FAKE_URL": "fake://r1/fake"}
+    assert {k: o.get() for k, o in credential.secrets.items()} == {
+        "FAKE_KEY": "k-fake",
+        "FAKE_URL": "http://fake/r1/fake",
+    }
     assert credential.secrets["FAKE_KEY"].source == "service fake"
     assert service.delivery() == ({"FAKE_URL": service.env["url"]}, {}), "a service delivers no secret itself"
 
@@ -201,7 +217,7 @@ def test_list_finds_the_http_servers_directory_by_the_run_token_in_its_name(serv
 
 def test_an_http_server_that_cannot_bind_is_service_not_up(served):
     service = HttpServerDef("http", source=served, host="192.0.2.1").make(run_token="r1")
-    with pytest.raises(ServiceNotUp, match="service 'http' did not come up"):
+    with pytest.raises(ServiceNotUp, match="^OSError: .*Cannot assign requested address"):
         service.create()
     service.delete()
 
@@ -218,3 +234,40 @@ def test_an_existing_http_server_is_adopted_at_its_address(served):
         assert get(f"{url}/data.csv") == "a\n1\n2\n", "an existing server is never stopped"
     finally:
         running.delete()
+
+
+# -----------------------------------------------------------------------------
+# What a run made
+#
+
+
+def test_services_in_finds_the_services_behind_the_inputs_once_inputs_first():
+    inner, outer = FakeDef("inner"), FakeDef("outer")
+    outer.inputs = [inner]
+    storages = [StorageDef("a", "{outer.url}", inputs=[outer]), StorageDef("b", "{inner.url}", inputs=[inner])]
+    assert services_in(storages) == [inner, outer]
+
+
+def test_every_consumer_of_a_service_gets_the_runs_one_instance_and_everything_carries_the_run_token():
+    service = FakeDef("fake")
+    storage = StorageDef("served", "{fake.url}", inputs=[service])
+    made = Made("r1")
+    made.create(service)
+    first, second = made.make(storage), made.make(storage)
+    assert first.inputs["fake"] is second.inputs["fake"] is made.services["fake"]
+    assert first.root == "http://fake/r1/fake" and first.run_token == "r1"
+
+
+def test_a_consumer_of_a_service_that_did_not_come_up_is_service_not_up_with_the_reason():
+    made = Made("r1")
+    with pytest.raises(ServiceNotUp):
+        made.create(FakeDef("fake", broken=True))
+    with pytest.raises(ServiceNotUp, match="^OSError: cannot start$"):
+        made.make(StorageDef("served", "{fake.url}", inputs=[FakeDef("fake", broken=True)]))
+
+
+def test_the_end_of_the_run_ends_every_service_it_made(world):
+    made = Made("r1")
+    made.create(FakeDef("fake"))
+    made.end(failed=False)
+    assert world == {} and made.services == {}

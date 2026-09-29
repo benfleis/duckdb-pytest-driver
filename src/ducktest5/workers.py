@@ -38,8 +38,8 @@ import threading
 import time
 
 from .resources import RW
+from .resources.made import Made
 from .resources.session import WORKER
-from .sessions import made_inputs
 
 JOIN_GRACE_S = 2.0  # how long join() waits for a thread a timeout already gave up on
 
@@ -47,9 +47,10 @@ JOIN_GRACE_S = 2.0  # how long join() waits for a thread a timeout already gave 
 class Pool:
     """The `--workers` slots, the Sessions of each worker, and the mutexes."""
 
-    def __init__(self, workers, *, opener):
+    def __init__(self, workers, *, opener, made=None):
         self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="ducktest")
         self._opener = opener  # SessionDef -> Opener
+        self._made = made or Made()
         self._mine = threading.local()
         self._sessions = []  # every Session made, so that the run can close them all
         self._mutexes = {}
@@ -70,7 +71,7 @@ class Pool:
         taken = {}
         try:
             for d in definitions:
-                session = d.make(made_inputs(d), opener=self._opener(d))
+                session = d.make(self._made.inputs_of(d), run_token=self._made.run_token, opener=self._opener(d))
                 if d.scope == WORKER:
                     session = mine.setdefault(session.identity, session)
                 with self._guard:

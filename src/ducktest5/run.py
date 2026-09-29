@@ -42,8 +42,9 @@ from .mnemonic import run_id as make_run_id
 from .model import SQLLOGIC
 from .outcomes import ALL as OUTCOMES
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
-from .provision import KEPT, attach_argument
-from .resources import Opener
+from .provision import EXISTING, KEPT, MANAGED, attach_argument
+from .resources import Opener, ServiceNotUp
+from .resources.made import Made, services_in
 from .resources.session import process_env
 from .reports import Report, render, write_files
 from .reports.live import Live
@@ -356,12 +357,13 @@ def execute(
         writer.emit(TEST_END, **line)
 
     provisioned, boot_errors, handles, debugged = {}, {}, {}, False
+    made = Made(run_id)
     resolved = {}
 
     def test_env(test):
         """The test's environment, computed once: after provisioning, before anything runs."""
         if id(test) not in resolved:
-            resolved[id(test)] = testenv.resolve(test, provisioned)
+            resolved[id(test)] = testenv.resolve(test, provisioned, made)
         return resolved[id(test)]
 
     # A Python test's timeout, counted from its own begin event (`test_started`), is watched by the
@@ -391,9 +393,10 @@ def execute(
             lambda d: handle.for_worker() if hasattr(handle, "for_worker") else handle,
         )
 
-    pool = Pool(workers, opener=opener)
+    pool = Pool(workers, opener=opener, made=made)
     stopped = _stop_on_signal()
-    blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
+    services_of = lambda c: [s.id for s in services_in(d for d, _ in c.inputs)]  # noqa: E731
+    blocked = lambda c: [x for x in (*c.services, *services_of(c), *c.engines) if x in boot_errors]  # noqa: E731
     code = 1
     try:
         # provision: each service some selected test needs, then each engine. One that does not come
@@ -416,6 +419,16 @@ def execute(
                 existing_services=existing_services,
                 on=service_event,
             )
+
+        # A service a test's inputs need is made here in either case: nothing records it for another process.
+        for service in services_in(d for c in tests for d, _ in c.inputs):
+            service_event(service.id, state="starting")
+            try:
+                made.create(service)
+                service_event(service.id, state="up", mode=EXISTING if service.address else MANAGED)
+            except ServiceNotUp as exc:
+                boot_errors[service.id] = str(exc)
+                service_event(service.id, state="failed", error=boot_errors[service.id])
 
         # An engine boots only when a test that can still run needs it.
         for engine_id in sorted({e for c in tests if not blocked(c) for e in c.engines}):
@@ -666,6 +679,8 @@ def execute(
             except Exception:
                 pass
         pool.join()
+        failed = any(e.get("outcome") in (FAILED, ERROR, BLOCKED) for e in writer.events if e.get("event") == TEST_END)
+        made.end(failed)
         if provision_here:
             phases.release_all(
                 provisioned,

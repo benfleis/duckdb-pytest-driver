@@ -34,8 +34,9 @@ from dataclasses import dataclass, field, replace
 from .binary import UsageError
 from .provision import MASK
 from .provision import SECRET_NAME as _SECRET_NAME
-from .resources import RO
+from .resources import RO, ServiceNotUp
 from .resources.dialect import pairs, render
+from .resources.made import Made, services_in
 
 ROOTS = ("data_dir", "local_data_dir", "temp_dir_root", "local_temp_dir_root")
 _ROOT_OF = {
@@ -233,10 +234,11 @@ def _from_services(variant):
     return "<from service " + ", ".join(variant.services) + ">" if variant.services else "<from a service>"
 
 
-def resolve(test, provisioned=None):
+def resolve(test, provisioned=None, made=None):
     """The test environment of `test`. `provisioned` maps a service id to its `Provisioned`; with
     None (before provisioning, as `scan` sees it) a part a variant computes from the blocks is
-    listed in `pending` instead of being called."""
+    listed in `pending` instead of being called. `made` is what the run made, its services among
+    them; an input that needs a service that is not up is listed in `pending` too."""
     blocks = {sid: p.block for sid, p in provisioned.items()} if provisioned is not None else None
     definition = test.definition
     env = TestEnv(
@@ -306,9 +308,10 @@ def resolve(test, provisioned=None):
                 env.init_sql.append(Entry("", where, kind="sql", shown=""))  # a function of blocks we do not have
         elif v.init_sql:
             env.init_sql.append(Entry(v.init_sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
-    made = [_deliver(env, resource, mode, provisioned is None, _axis_value) for resource, mode in test.inputs]
+    made = made or Made()
+    instances = [_deliver(env, d, mode, provisioned is None, _axis_value, made) for d, mode in test.inputs]
     if definition.body_file:
-        for credential, storages in pairs(m for m in made if m is not None):
+        for credential, storages in pairs(i for i in instances if i is not None):
             rendered = render("unittest", "secret", storages, credential)
             where = f"credential {credential.id}, storage {', '.join(s.id for s in storages)}"
             for extension in rendered.requires:
@@ -318,13 +321,21 @@ def resolve(test, provisioned=None):
     return env
 
 
-def _deliver(env, definition, mode, scanning, value):
+def _deliver(env, definition, mode, scanning, value, made):
     """One input's outputs into the test environment, and the instance that gave them, or None when
     they are not known yet. Nothing is allocated here and nothing is held: that is for the walk of
     the resource graph. At scan a credential that does not resolve, or one a callable source makes,
     is listed in `pending`: its value is not needed before the run."""
     where = f"{definition.kind} {definition.id}"
-    instance = definition.make({ref: sub.make() for ref, _, sub in definition.edges() if sub}, mode=mode)
+    try:
+        instance = made.make(definition, mode)
+    except ServiceNotUp as exc:
+        needs = ", ".join(s.id for s in services_in([definition]))
+        kind = "root" if definition.kind == "storage" else "env"
+        env.pending.append(
+            Entry("inputs", where, kind=kind, shown=f"<from service {needs}>" if scanning else f"<{exc}>")
+        )
+        return None
     try:
         if scanning and any(callable(s) for s in getattr(definition, "sources", ())):
             raise UsageError("made by a callable source when the test runs")
