@@ -653,6 +653,15 @@ def test_a_run_removes_its_prefix_under_a_storage_but_a_failed_test_s_place(tmp_
     assert [p.name for p in (tmp_path / "scratch" / "temp").iterdir()] == [prefix.name]
 
 
+def test_a_failed_test_s_place_in_an_object_store_is_kept(tmp_path):
+    def fails(ctx):
+        assert False
+
+    failed = py_test(fails, inputs=[StorageDef("remote", "s3://bucket/lake")], path="test/failed.py")
+    _, run_dir, report, _ = go(tmp_path, [failed])
+    assert f"s3://bucket/lake/temp/{run_dir.name}/{failed.dir_name}" in result_of(report, "fails")["kept"]
+
+
 def test_a_batch_dir_with_a_failure_stays(tmp_path):
     _, run_dir, report, _ = go(tmp_path, [sql_test("a.test"), sql_test("b_fail.test")])
     assert (run_dir / "batches" / "b001" / "output.txt").exists()

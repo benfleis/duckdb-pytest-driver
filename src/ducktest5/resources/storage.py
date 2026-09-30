@@ -125,35 +125,56 @@ class Storage(Resource):
             self.definition, digest([self.identity, key]), self.run_token, self.inputs, parent=self, root=root
         )
 
+    def remote(self):
+        """The operations on the store of an s3 root, from the service it is on; None when it is on
+        none, and so the run cannot remove what it wrote there."""
+        if self.scheme != "s3":
+            return None
+        return next((i.remote() for i in self.inputs.values() if callable(getattr(i, "remote", None))), None)
+
+    def _names_under(self, uri):
+        if self.scheme == "file":
+            path = local_path(uri)
+            return sorted(os.listdir(path)) if os.path.isdir(path) else []
+        remote = self.remote()
+        return sorted(remote.list(uri)) if remote else []
+
+    def _remove(self, uri):
+        if self.scheme == "file":
+            shutil.rmtree(local_path(uri), ignore_errors=True)
+        elif (remote := self.remote()) is not None:
+            remote.delete(uri)
+
     def alloc(self):
         if self.scheme == "file":
             os.makedirs(self.path if self.owned else local_path(self.attributes["temp_root"].value), exist_ok=True)
 
     def dealloc(self):
-        if not self.owned:
-            return  # the root was declared, not made: it is never removed
-        if self.scheme == "file":
-            shutil.rmtree(self.path, ignore_errors=True)
-        # TODO: remove an s3 child, as services/minio.py `_clean` does, once the storage has its credential.
+        if self.owned:  # the root was declared, not made: it is never removed
+            self._remove(self.root)
 
     def sweep(self, run_token):
         """Remove what the run `run_token` left under this storage; returns what `list` found."""
         found = self.list(run_token)
-        if found and self.scheme == "file":
-            shutil.rmtree(local_path(self.run_root(run_token)), ignore_errors=True)
-        # TODO: remove the run's prefix of a remote store, once `list` finds it.
+        if found:
+            self._remove(self.run_root(run_token))
         return found
 
     def clear(self, run_token, keep=()):
         """At the end of a run: remove what the run `run_token` left under this storage but the
         places in `keep` and what holds them, then the run's own directory and the temp prefix, where
-        they are empty. Returns what it removed."""
+        they are empty; an object store has no directories to remove. Returns what it removed."""
         if self.scheme != "file":
-            return []  # TODO: remove the run's prefix of a remote store, once `list` finds it.
+            under = self.run_root(run_token)
+            doomed = [f"{under}/{n}" for n in self._names_under(under)]
+            doomed = [uri for uri in doomed if not any(k == uri or k.startswith(uri + "/") for k in keep)]
+            for uri in doomed:
+                self._remove(uri)
+            return doomed
         under = local_path(self.run_root(run_token))
         keep = [os.path.abspath(k) for k in keep]
         removed = []
-        for name in sorted(os.listdir(under)) if os.path.isdir(under) else []:
+        for name in self._names_under(under):
             path = os.path.join(under, name)
             if not any(k == path or k.startswith(path + os.sep) for k in keep):
                 shutil.rmtree(path, ignore_errors=True)
@@ -175,11 +196,8 @@ class Storage(Resource):
         return self.scheme != "file" or os.path.isdir(self.path)
 
     def list(self, run_token):
-        if self.scheme != "file":
-            return []  # TODO: list the prefixes under `<root>/<temp prefix>/<run_token>` of a remote store
-        under = local_path(self.run_root(run_token))
-        names = sorted(os.listdir(under)) if os.path.isdir(under) else []
-        return [f"{self.run_root(run_token)}/{n}" for n in names]
+        under = self.run_root(run_token)
+        return [f"{under}/{n}" for n in self._names_under(under)]
 
     def delivery(self):
         facts = {name: a.value for name, a in self.attributes.items()}

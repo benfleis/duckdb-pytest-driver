@@ -564,7 +564,8 @@ def execute(
                 kept = []
                 if outcome != PASSED or keep:
                     places = [place_of(test, os.path.basename(d)) for d, _ in tried]
-                    kept = [p for p in dict.fromkeys([d for d, _ in tried] + places) if p and os.path.isdir(p)]
+                    found = dict.fromkeys([d for d, _ in tried] + places)
+                    kept = [p for p in found if p and ("://" in p or os.path.isdir(p))]
                 if sqllogic.stopped():  # stopped while this body ran: a resume takes the test up again
                     return
                 if not report_once(test.id):  # its timeout already wrote an ERROR for it

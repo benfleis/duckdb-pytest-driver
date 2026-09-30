@@ -40,8 +40,8 @@ from .binary import UsageError
 from .model import SQLLOGIC
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED
 from .provision import EXISTING, MANAGED, record
-from .resources import ALWAYS, ON_FAILURE, DefaultStorageDef
-from .resources.made import services_in
+from .resources import ALWAYS, ON_FAILURE, DefaultStorageDef, ServiceNotUp
+from .resources.made import Made, services_in
 
 _log = logging.getLogger(__name__)
 
@@ -358,8 +358,10 @@ def cleanup(run_dir, *, project=None, keep=False, event_lines=None):
     failed = any(e.get("outcome") in (FAILED, ERROR) for e in event_lines if e.get("event") == events.TEST_END)
     summary.update(end_services(run_dir, project, failed=failed))
     ended = any(e.get("event") == events.RUN_END for e in event_lines)
+    storages = [] if project is None or keep else _storages(run_id_of(run_dir), project, read_provision(run_dir))
     if project is not None and not keep and not ended:
-        summary["swept"] = sweep_storages(run_id_of(run_dir), project) + sweep_services(run_id_of(run_dir), project)
+        swept = sweep_storages(run_id_of(run_dir), storages, summary["problems"])
+        summary["swept"] = swept + sweep_services(run_id_of(run_dir), project)
     elif project is not None and not keep:
         failed_kept = [
             k
@@ -367,7 +369,7 @@ def cleanup(run_dir, *, project=None, keep=False, event_lines=None):
             if e.get("event") == events.TEST_END and e.get("outcome") != PASSED
             for k in e.get("kept") or ()
         ]
-        summary["removed"] += clear_storages(run_id_of(run_dir), project, failed_kept)
+        summary["removed"] += clear_storages(run_id_of(run_dir), storages, failed_kept, summary["problems"])
     _log.debug(
         "cleanup %s: removed %d, kept %d, stopped %s, swept %d",
         run_id_of(run_dir),
@@ -379,32 +381,65 @@ def cleanup(run_dir, *, project=None, keep=False, event_lines=None):
     return summary
 
 
-def clear_storages(run_token, project, failed_kept):
-    """What a run that ended wrote under the project's storages goes, but what a failed test kept
-    where its storage's `retain` keeps it. A storage that takes inputs is left: its root is not known
-    without them."""
-    removed = []
+def _storages(run_token, project, provisioned):
+    """The instance of each storage of `project` the run `run_token` may have written under. One on a
+    service is reached through that service at the address `provisioned` (`03`) gives it, where it
+    still answers; nothing is started for it, and one that does not answer is left out."""
+    made, recorded = Made(run_token), provisioned.get("services") or {}
+    out = []
     for d in project.storages.values():
-        if d.inputs or d.retain == ALWAYS or isinstance(d, DefaultStorageDef):
+        if isinstance(d, DefaultStorageDef):
             continue
-        keep = failed_kept if d.retain == ON_FAILURE else ()
-        found = d.make(run_token=run_token).clear(run_token, keep)
+        for s in services_in([d]):
+            address = s.address or (recorded.get(s.id) or {}).get("address")
+            if s.id not in made.services and s.id not in made.errors and address is not None:
+                try:
+                    made.create(s.as_existing(address), EXISTING)
+                except ServiceNotUp as exc:
+                    _log.debug("storage %s: not cleaned, its service %s is not up: %s", d.id, s.id, exc)
+        try:
+            out.append(made.make(d))
+        except (ServiceNotUp, UsageError):
+            continue
+    return out
+
+
+def clear_storages(run_token, storages, failed_kept, problems):
+    """What a run that ended wrote under `storages` goes, but what a failed test kept where its
+    storage's `retain` keeps it. What cannot be removed is told in `problems`."""
+    removed = []
+    for storage in storages:
+        if storage.definition.retain == ALWAYS:
+            continue
+        keep = failed_kept if storage.definition.retain == ON_FAILURE else ()
+        try:
+            found = storage.clear(run_token, keep)
+        except Exception as exc:
+            problems.append(
+                f"storage {storage.id!r}: the run's prefix could not be removed: {type(exc).__name__}: {exc}"
+            )
+            continue
         if found:
-            _log.debug("storage %s: removed the run's prefix, %d path(s)", d.id, len(found))
+            _log.debug("storage %s: removed the run's prefix, %d path(s)", storage.id, len(found))
         removed += found
     return removed
 
 
-def sweep_storages(run_token, project):
-    """Remove what the run `run_token` wrote under the project's storages; returns what it found. A
-    storage that takes inputs is not swept: its root is not known without them."""
+def sweep_storages(run_token, storages, problems):
+    """Remove what the run `run_token` wrote under `storages`; returns what it found. What cannot be
+    removed is told in `problems`."""
     swept = []
-    for d in project.storages.values():
-        if not d.inputs and not isinstance(d, DefaultStorageDef):
-            found = d.make(run_token=run_token).sweep(run_token)
-            if found:
-                _log.debug("storage %s: swept what a run that never ended left, %d path(s)", d.id, len(found))
-            swept += found
+    for storage in storages:
+        try:
+            found = storage.sweep(run_token)
+        except Exception as exc:
+            problems.append(
+                f"storage {storage.id!r}: what the run left could not be removed: {type(exc).__name__}: {exc}"
+            )
+            continue
+        if found:
+            _log.debug("storage %s: swept what a run that never ended left, %d path(s)", storage.id, len(found))
+        swept += found
     return swept
 
 
