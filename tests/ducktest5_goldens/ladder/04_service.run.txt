@@ -23,4 +23,4 @@ run dir: <run>
 02-plan.yaml batches:
   b001  unittest  key1  blocked.test
   b002  unittest  key2  served.test
-  b003  python    key2  served_body.py
+  b003  python    key3  served_body.py

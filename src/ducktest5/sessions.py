@@ -25,6 +25,7 @@ from .model import SQLLOGIC
 from .provision import MASK, SECRET_NAME
 from .resources.base import digest
 from .resources.client import Client, Names
+from .resources.made import planned_identity
 from .testenv import Entry, set_entry
 
 DEFAULT = duckdb_engine("duckdb")
@@ -93,6 +94,16 @@ def batch_session(test_env) -> Session:
     """The Session of a `.test` body, from its test environment under its DuckDB engine
     (`environment()`): one Client, on the `unittest` engine of the batch that is given it."""
     return Session(test_env, [UnittestEngineDef("unittest", environment=test_env.key()).make()])
+
+
+def planned(test, test_env, project) -> str:
+    """The identity of the test's Session, before anything runs: for a `.test` body its batch's, for
+    a Python body that of the engines it will lease over `test_env`. It is what a plan labels a batch
+    by; a Python body's Session at run time also holds its own temp root."""
+    if test.definition.type == SQLLOGIC:
+        return batch_session(environment(test, test_env, project)).identity
+    engines = sorted(planned_identity(d) for d in bind(test, test_env, project))
+    return digest({"engines": engines, "environment": test_env.key()})
 
 
 def lines(test, project) -> list[str]:

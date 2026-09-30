@@ -12,4 +12,4 @@ run dir: <run>
   b001  unittest  key1  default.test, rule_matched.test
   b002  python    key2  own_inputs.py
   b003  python    key2  paired_own_inputs.py
-  b004  python    key1  rule_matched_body.py
+  b004  python    key3  rule_matched_body.py

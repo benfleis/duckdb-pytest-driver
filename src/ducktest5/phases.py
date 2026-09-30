@@ -29,7 +29,6 @@ output already there refuses, unless `--force` (`exec`: `--resume`, `--only-fail
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 
@@ -141,11 +140,14 @@ def _chunks(group, batch_size):
     return chunks + alone
 
 
-def _key_record(test_env):
-    """What makes two batches different, for a reader: a short digest of the batch key and the test
-    environment that key is made of, secrets masked."""
-    key = test_env.key()
-    return {"digest": hashlib.sha1(key.encode()).hexdigest()[:12], "environment": test_env.record()}
+def _key_record(test, project):
+    """What makes two batches different, for a reader: a short digest of the identity of the test's
+    Session, and the test environment it holds, secrets masked."""
+    test_env = testenv.resolve(test)
+    return {
+        "digest": sessions.planned(test, test_env, project)[:12],
+        "environment": sessions.environment(test, test_env, project).record(),
+    }
 
 
 def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_args="", keep=False):
@@ -156,7 +158,7 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST
 
     A batch: `id`, `runner`, `order`, `tests` (the test ids), `files` (the `.test` files, relative to
     the project root), `timeout` and `timeouts`/`retries` where a test has its own, `mutex` where a
-    test names one, and `key` (the digest and the test environment the batch is made of). `knobs`
+    test names one, and `key` (a digest of its Session's identity, and the test environment). `knobs`
     records what the planner was given; the batch key is worked out again before a batch runs, so a
     plan can be read by another engine without being believed."""
     if runner not in RUNNERS:
@@ -181,7 +183,7 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST
                     "timeouts": {c.id: c.definition.timeout for c in chunk if c.definition.timeout},
                     "retries": {c.id: c.definition.retries for c in chunk if c.definition.retries},
                     **({"mutex": sorted({m for c in chunk for m in c.mutex})} if any(c.mutex for c in chunk) else {}),
-                    "key": _key_record(environment(chunk[0])),
+                    "key": _key_record(chunk[0], project),
                 }
             )
     for test in (c for c in tests if c.definition.type != SQLLOGIC):
@@ -195,7 +197,7 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST
                 "timeout": test.definition.timeout or sqllogic.DEFAULT_TIMEOUT_S,
                 "retries": {test.id: test.definition.retries} if test.definition.retries else {},
                 **({"mutex": sorted(test.mutex)} if test.mutex else {}),
-                "key": _key_record(environment(test)),
+                "key": _key_record(test, project),
             }
         )
     for batch in batches:

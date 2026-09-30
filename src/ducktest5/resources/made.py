@@ -28,6 +28,17 @@ def services_in(definitions: Iterable[ResourceDef]) -> list[ServiceDef]:
     return list(found.values())
 
 
+def planned_identity(definition: ResourceDef, mode: str = RW) -> str:
+    """The identity the run's instance of `definition` will have, worked out from the declarations
+    alone, as `Made.make` makes it: a service by its own content, anything else by its edge's mode."""
+    inputs = {
+        ref: planned_identity(sub, RW if isinstance(sub, ServiceDef) else m)
+        for ref, m, sub in definition.edges()
+        if sub is not None
+    }
+    return definition.identity(inputs, mode)
+
+
 class Made:
     """The run's instances. `run_token` is None where nothing is made for a run (scan, plan): a
     service is then never up, and what needs one waits for the run."""

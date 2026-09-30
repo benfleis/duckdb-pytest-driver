@@ -447,6 +447,16 @@ def test_a_test_file_has_one_client_on_the_unittest_engine_of_its_batch(bound):
     assert of["json.test"].identity == of["also_json.test"].identity != of["delta.test"].identity
 
 
+def test_a_plan_labels_each_batch_by_the_identity_of_its_session(bound):
+    tests, project = scan(str(bound), working_dir=str(bound))
+    by_file = {f: b["key"]["digest"] for b in phases.build_plan(tests, project)["batches"] for f in b["files"]}
+    (json_test,) = [t for t in tests if t.definition.path == "json.test"]
+    batch = sessions.batch_session(sessions.environment(json_test, resolve(json_test), project))
+    assert by_file["json.test"] == batch.identity[:12]
+    # a Python body leases a DuckDB engine, not a batch's unittest one: never the label of a .test batch
+    assert by_file["body.py"] not in {by_file["json.test"], by_file["delta.test"]}
+
+
 def test_scan_env_shows_the_clients_of_each_test_and_what_their_engines_render(bound, capsys):
     assert main(["scan", "--env"]) == 0
     printed = capsys.readouterr().out
