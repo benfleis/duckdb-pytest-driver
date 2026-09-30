@@ -18,7 +18,8 @@ from ducktest5.binary import UsageError
 from ducktest5.client import SqlError
 from ducktest5.conf import Project
 from ducktest5.ctx import Ctx
-from ducktest5.declare import EngineDef, Variant
+from ducktest5.declare import Variant
+from ducktest5.resources import EngineDef
 from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
 from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef

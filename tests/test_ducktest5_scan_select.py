@@ -1034,3 +1034,11 @@ def test_an_axis_value_that_unsets_a_credentials_names_hides_it(tmp_path, monkey
     assert [d.id for d, _ in by_auth["key"].inputs] == ["bucket", "key"]
     assert [d.id for d, _ in by_auth["none"].inputs] == ["bucket"]
     assert "env unset: AWS_ACCESS_KEY_ID  <- AXES auth=none" in resolve(by_auth["none"]).lines()
+
+
+def test_an_engine_is_declared_among_the_services_and_engines_is_refused(tmp_path):
+    engine = "from ducktest5 import EngineDef\nE = EngineDef('fake', 'fake:1', lambda log: None)\n"
+    _, project = tree(tmp_path, {"test/ducktest_conf.py": engine + "SERVICES = [E]", "test/a.test": ""})
+    assert (list(project.engines), list(project.services)) == (["fake"], [])
+    with pytest.raises(UsageError, match="declare it among SERVICES, not in ENGINES"):
+        tree(tmp_path / "2", {"test/ducktest_conf.py": engine + "ENGINES = [E]", "test/a.test": ""})

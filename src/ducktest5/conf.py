@@ -1,6 +1,6 @@
 """`ducktest_conf.py`: configuration for a directory and everything below it.
 
-The file at the root of the scanned tree is the project file; it may also declare ENGINES, SERVICES,
+The file at the root of the scanned tree is the project file; it may also declare SERVICES,
 STORAGES, CREDENTIALS, SESSIONS, AXES, SUITES and EXCLUDE. Any directory may have its own file with RULES. A rule
 speaks about the whole subtree (`default`) or about a pattern relative to its file (`match`); a
 pattern may name one file.
@@ -15,8 +15,9 @@ the definition and apply to every test made from it.
 is the key the merge updates by: a later binding of the same role replaces the earlier one, so a
 test's own `@test(bind=...)` wins over its rules.
 
-SERVICES holds `ServiceDef`s of `resources`. A service that is an input of a storage, a credential or
-a session is one of the project's services too, whether SERVICES names it or not.
+SERVICES holds `ServiceDef`s of `resources`, engines (`EngineDef`) among them. A service that is an
+input of a storage, a credential or a session is one of the project's services too, whether SERVICES
+names it or not.
 
 `mutex="name"`, or several names, says what a test must have to itself: no two tests that name one of
 them run at the same time, however many workers the run has.
@@ -44,8 +45,8 @@ import sys
 from dataclasses import dataclass, field, replace
 
 from .binary import UsageError
-from .declare import CONF_FILE, EngineDef, Variant, as_mutex
-from .resources import CredentialDef, ResourceDef, ServiceDef, SessionDef, StorageDef
+from .declare import CONF_FILE, Variant, as_mutex
+from .resources import CredentialDef, EngineDef, ResourceDef, ServiceDef, SessionDef, StorageDef
 from .resources.made import services_in
 
 _LISTS = ("tags", "engines", "variants", "mutex", "suites", "sessions")
@@ -269,8 +270,11 @@ def load_project(start):
             raise UsageError(f"{path}: RULES must hold default(...) and match(...) rules")
         project._rules_by_dir[dirpath] = rules
         if dirpath == root:
-            project.engines = {e.id: e for e in getattr(module, "ENGINES", ())}
-            project.services = {s.id: s for s in getattr(module, "SERVICES", ())}
+            if hasattr(module, "ENGINES"):
+                raise UsageError(f"{path}: an engine is a service; declare it among SERVICES, not in ENGINES")
+            declared = list(getattr(module, "SERVICES", ()))
+            project.engines = {e.id: e for e in declared if isinstance(e, EngineDef)}
+            project.services = {s.id: s for s in declared if not isinstance(s, EngineDef)}
             project.storages = {s.id: s for s in getattr(module, "STORAGES", ())}
             project.credentials = {c.id: c for c in getattr(module, "CREDENTIALS", ())}
             project.sessions = {s.id: s for s in getattr(module, "SESSIONS", ())}
@@ -281,7 +285,7 @@ def load_project(start):
             project.exclude = tuple(getattr(module, "EXCLUDE", ()))
             _check(path, project)
         else:
-            for name in ("ENGINES", "SERVICES", "STORAGES", "CREDENTIALS", "SESSIONS", "AXES", "SUITES", "EXCLUDE"):
+            for name in ("SERVICES", "STORAGES", "CREDENTIALS", "SESSIONS", "AXES", "SUITES", "EXCLUDE"):
                 if hasattr(module, name):
                     raise UsageError(f"{path}: {name} belongs in the root {CONF_FILE} only; this file may hold RULES")
         _prune(project, root, dirpath, dirnames)
@@ -298,8 +302,6 @@ def _prune(project, root, dirpath, dirnames):
 
 
 def _check(path, project):
-    if not all(isinstance(e, EngineDef) for e in project.engines.values()):
-        raise UsageError(f"{path}: ENGINES must hold EngineDef")
     for name, kind, declared in (
         ("STORAGES", StorageDef, project.storages),
         ("CREDENTIALS", CredentialDef, project.credentials),
@@ -314,7 +316,7 @@ def _check(path, project):
             raise UsageError(f"{path}: two services are named {s.id!r}; a service is one declaration")
     for s in project.sessions.values():
         if s.engine != "duckdb" and s.engine not in project.engines:
-            raise UsageError(f"{path}: session {s.id!r} runs on engine {s.engine!r}, which is not in ENGINES")
+            raise UsageError(f"{path}: session {s.id!r} runs on engine {s.engine!r}, which is not among SERVICES")
     for axis, values in project.axes.items():
         if not values or not all(isinstance(v, Variant) for v in values.values()):
             raise UsageError(f"{path}: AXES[{axis!r}] must be a non-empty list of Variant")

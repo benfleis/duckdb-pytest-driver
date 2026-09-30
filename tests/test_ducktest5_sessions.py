@@ -9,7 +9,8 @@ from ducktest5 import phases, sessions
 from ducktest5.binary import UsageError
 from ducktest5.cli import main
 from ducktest5.conf import Project
-from ducktest5.declare import EngineDef, Variant
+from ducktest5.declare import Variant
+from ducktest5.resources import EngineDef
 from ducktest5.engines.duckdb import DuckDBSession
 from ducktest5.model import SQLLOGIC, Test
 from ducktest5.resources import (
@@ -294,7 +295,7 @@ def test_a_session_on_an_engine_the_project_lacks_is_a_usage_error(tmp_path):
     (tmp_path / "ducktest_conf.py").write_text(
         "from ducktest5.resources import spark_session\nSESSIONS = [spark_session('spark')]\n"
     )
-    with pytest.raises(UsageError, match="engine 'spark', which is not in ENGINES"):
+    with pytest.raises(UsageError, match="engine 'spark', which is not among SERVICES"):
         scan(str(tmp_path), working_dir=str(tmp_path))
 
 

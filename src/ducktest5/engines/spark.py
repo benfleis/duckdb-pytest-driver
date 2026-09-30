@@ -4,7 +4,7 @@ import contextlib
 import os
 
 from ..client import SqlError
-from ..declare import EngineDef
+from ..resources import EngineDef
 
 
 class SparkHandle:

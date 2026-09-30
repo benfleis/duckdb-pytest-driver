@@ -12,14 +12,15 @@ MANAGED, EXISTING, KEPT = "managed", "existing", "kept"
 
 
 def services_in(definitions: Iterable[ResourceDef]) -> list[ServiceDef]:
-    """The services among `definitions` and their inputs, inputs first, each once."""
+    """The services among `definitions` and their inputs, inputs first, each once; an engine is
+    not one of them, the services behind its inputs are."""
     found = {}
 
     def walk(d):
         for _, _, sub in d.edges():
             if sub is not None:
                 walk(sub)
-        if isinstance(d, ServiceDef):
+        if isinstance(d, ServiceDef) and d.provisioned:
             found.setdefault(d.id, d)
 
     for d in definitions:

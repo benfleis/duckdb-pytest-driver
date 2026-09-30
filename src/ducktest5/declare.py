@@ -1,4 +1,4 @@
-"""What a test author writes: `@test` on a body, and `EngineDef` in the project file."""
+"""What a test author writes: `@test` on a body, and a `Variant` of an axis in the project file."""
 
 from __future__ import annotations
 
@@ -8,24 +8,6 @@ from typing import Callable
 from .binary import UsageError
 
 CONF_FILE = "ducktest_conf.py"  # not `ducktest.py`: that name would shadow the package on a sys.path entry
-
-
-@dataclass(frozen=True)
-class EngineDef:
-    """A non-DuckDB SQL engine a body can drive, booted once per run and shared by every test.
-
-    `boot(log_path)` returns a handle with `run(statements)` (as `Client` describes it) and `stop()`.
-    `version` names what was booted (e.g. "spark:4.2:delta-4.4") for the scan record and the report.
-
-    `dialect` names how a Session on it is given its preamble (`resources/dialect.py`), the
-    storages and credentials a test binds among it; an engine without one takes no inputs through
-    its Session.
-    """
-
-    id: str
-    version: str
-    boot: Callable
-    dialect: str | None = None
 
 
 @dataclass(frozen=True)

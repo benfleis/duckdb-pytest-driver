@@ -37,6 +37,9 @@ class ServiceDef(ResourceDef):
     secret_attributes: ClassVar[tuple] = ()
     delivers: ClassVar[Mapping[str, str]] = {}  # delivered name -> attribute or secret attribute
     ready_timeout_s: ClassVar[float] = 60
+    provisioned: ClassVar[bool] = (
+        True  # False: not made by the run's provisioning (an engine, made where a test leases it)
+    )
 
     address: str | None
 
