@@ -322,6 +322,17 @@ def test_a_client_template_sees_the_names_a_test_file_sees_and_no_secret(tmp_pat
     assert "LOCAL_TEMP_DIR" not in names and "AWS_SECRET_ACCESS_KEY" not in names
 
 
+def test_a_python_body_s_own_place_under_a_local_storage_exists_when_it_begins(tmp_path):
+    seen = {}
+
+    def body(ctx):
+        seen["exists"] = os.path.isdir(ctx.session.values["TEMP_DIR"])
+
+    storage = StorageDef("scratch", str(tmp_path / "scratch"))
+    assert go(tmp_path, [py_test(body, inputs=[storage])])[0] == 0
+    assert seen == {"exists": True}
+
+
 def test_names_are_case_insensitive_and_two_spellings_of_one_are_an_error(tmp_path):
     fake = FakeEngine()
     ctx = ctx_for(py_test(passes, engines=["fake"], values={"Catalog": "c"}), tmp_path, engine=fake)

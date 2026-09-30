@@ -314,6 +314,7 @@ def _deliver(env, definition, mode, scanning, value, made, key=None):
             instance.start()
         if key is not None and definition.kind == "storage":
             given = instance.acquire(RW, key)
+            given.create()  # the binary makes a .test body's place; a Python body's is made here
         else:
             given = instance
             instance.release(instance.acquire(RO), RO)
