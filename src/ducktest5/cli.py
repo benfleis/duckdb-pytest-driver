@@ -31,7 +31,7 @@ import yaml
 
 from . import events, phases, sessions, sqllogic, testenv
 from .binary import UsageError, find_duckdb
-from .conf import load_project
+from .conf import load_project, repo_root
 from .provision import bring_up
 from .resources.made import Made
 from .resources.storage import DEFAULT_TEMP_ROOT
@@ -58,7 +58,10 @@ def _binary_options(parser):
     """Which build runs the tests. The binaries are of a machine, so they are named here and are
     never written into a plan."""
     parser.add_argument(
-        "--build", default="debug", help="build/<BUILD>/ holds duckdb and test/unittest (default: debug)"
+        "--build",
+        default="debug",
+        help="build/<BUILD>/ holds duckdb and test/unittest, looked for at the top of the git repository, then "
+        "in the working directory; $BUILD_DIR names the directory instead (default: debug)",
     )
     parser.add_argument("--duckdb-bin")
     parser.add_argument("--unittest-bin")
@@ -356,10 +359,11 @@ def _tests_by_id(args, ids, working_dir):
 
 def _binaries(args, selected, tests, project, working_dir):
     """The duckdb shell and, when a `.test` file is selected, the unittest binary of this machine."""
-    duckdb_bin = find_duckdb(explicit=args.duckdb_bin, build=args.build, working_dir=working_dir)
+    places = (repo_root(project.root), working_dir)
+    duckdb_bin = find_duckdb(explicit=args.duckdb_bin, build=args.build, places=places)
     unittest_bin = None
     if any(c.definition.body_file for c in selected):
-        unittest_bin = sqllogic.find_unittest(explicit=args.unittest_bin, build=args.build, working_dir=working_dir)
+        unittest_bin = sqllogic.find_unittest(explicit=args.unittest_bin, build=args.build, places=places)
         if not args.no_binary_check:
             scratch = os.path.join(getattr(args, "run_dir", None) or project.default_storage.temp_root, ".list")
             problems = sqllogic.check_against_binary(

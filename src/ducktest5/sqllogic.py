@@ -26,7 +26,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .binary import UsageError
+from .binary import UsageError, find_built
 from .outcomes import ERROR, FAILED, PASSED, SKIPPED
 from .resources.dialect import render
 from .testenv import TestEnv
@@ -73,20 +73,10 @@ def watched(proc):
         _running.discard(proc)
 
 
-def find_unittest(*, explicit=None, build="debug", working_dir="."):
-    if explicit:
-        path = explicit
-    elif os.environ.get("BUILD_DIR"):
-        path = os.path.join(os.environ["BUILD_DIR"], "test", "unittest")
-    else:
-        path = os.path.join(working_dir, "build", build, "test", "unittest")
-    path = os.path.abspath(path)
-    if not os.path.isfile(path):
-        raise UsageError(
-            f"unittest binary not found at {path}. Build build/<variant>/test/unittest (selected by --build / "
-            "$BUILD_DIR), or pass --unittest-bin PATH."
-        )
-    return path
+def find_unittest(*, explicit=None, build="debug", places=(".",)):
+    return find_built(
+        "test/unittest", "unittest binary", flag="--unittest-bin", explicit=explicit, build=build, places=places
+    )
 
 
 @dataclass

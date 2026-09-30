@@ -2,12 +2,16 @@
 
 import json
 import os
+import re
+import shutil
 import sys
 import textwrap
 
 import pytest
 
+from ducktest5.binary import UsageError, find_duckdb
 from ducktest5.cli import main
+from ducktest5.sqllogic import find_unittest
 
 FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
 DEBUGGER = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_debugger.py")
@@ -250,3 +254,42 @@ def test_a_storage_bound_in_the_conf_wins_over_the_default_and_the_command_line(
     out = capsys.readouterr().out
     assert data_dir_line(out) == "root: data_dir=/srv/scratch  <- storage scratch"
     assert "default storage" not in out
+
+
+# -----------------------------------------------------------------------------
+# Where the build is found
+#
+
+
+def build_in(where, build="debug"):
+    for name in ("duckdb", "test/unittest"):
+        path = where / "build" / build / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(FAKE, path)
+    return where / "build" / build
+
+
+def test_a_build_is_looked_for_at_the_top_of_the_repository_then_in_the_working_directory(tmp_path, monkeypatch):
+    monkeypatch.delenv("BUILD_DIR", raising=False)
+    repo, cwd = tmp_path / "repo", tmp_path / "repo" / "test" / "sql"
+    cwd.mkdir(parents=True)
+    places = (str(repo), str(cwd))
+    with pytest.raises(UsageError, match=re.escape(f"{repo}/build/debug/duckdb or {cwd}/build/debug/duckdb")):
+        find_duckdb(places=places)
+    in_cwd = build_in(cwd)
+    assert find_unittest(places=places) == str(in_cwd / "test" / "unittest")
+    in_repo = build_in(repo)
+    assert find_duckdb(places=places) == str(in_repo / "duckdb")
+    assert find_unittest(places=places) == str(in_repo / "test" / "unittest")
+    monkeypatch.setenv("BUILD_DIR", str(in_cwd))
+    assert find_duckdb(places=places) == str(in_cwd / "duckdb")
+    assert find_duckdb(explicit=FAKE, places=places) == FAKE
+
+
+def test_run_finds_the_build_of_the_repository_from_a_directory_below_it(tree, monkeypatch, capsys):
+    monkeypatch.delenv("BUILD_DIR", raising=False)
+    (tree / ".git").mkdir()
+    build_in(tree)
+    monkeypatch.chdir(tree / "test" / "a")
+    assert main(["run", "x.test", "--no-binary-check", "--temp-dir-root", str(tree / "runs"), "--format", "json"]) == 0
+    assert f"{tree}/build/debug/test/unittest" in capsys.readouterr().out
