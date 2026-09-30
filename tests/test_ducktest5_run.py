@@ -965,17 +965,19 @@ def test_a_python_body_reads_the_roots_and_puts_what_it_makes_under_the_temp_roo
     seen = {}
 
     def body(ctx):
-        seen["roots"] = ctx.roots
+        seen["env"] = {n: ctx.env[n] for n in ("temp_dir", "temp_dir_root", "local_temp_dir", "data_dir", "storage")}
         seen["location"] = ctx.location("tbl")
 
     variant = Variant("http", roots={"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"})
     test = py_test(body, {"storage": variant})
     assert go(tmp_path, [test])[0] == 0
     run_token = seen["location"].split("/")[4]
-    assert seen["roots"] == {
-        "temp_dir_root": f"http://origin/temp/{run_token}/{test.dir_name}",
-        "local_temp_dir_root": f"/www/temp/{run_token}/{test.dir_name}",
+    assert seen["env"] == {
+        "temp_dir": f"http://origin/temp/{run_token}/{test.dir_name}",
+        "temp_dir_root": f"http://origin/temp/{run_token}",
+        "local_temp_dir": f"/www/temp/{run_token}/{test.dir_name}",
         "data_dir": f"{tmp_path}/data",  # the default storage gives what the variant does not
+        "storage": "http",
     }
     assert seen["location"] == f"http://origin/temp/{run_token}/{test.dir_name}/tbl"
 
@@ -1192,15 +1194,13 @@ def test_a_python_body_that_binds_no_storage_is_given_the_roots_a_test_file_is(t
     seen = {}
 
     def body(ctx):
-        seen["roots"] = dict(ctx.roots)
-        seen["names"] = {name: ctx.env[name] for name in ("DATA_DIR", "TEMP_DIR")}
+        seen["names"] = {name: ctx.env[name] for name in ("DATA_DIR", "TEMP_DIR", "TEMP_DIR_ROOT")}
 
     test = py_test(body)
     code, run_dir, _, _ = go(tmp_path, [test, sql_test("x.test")], keep=True)
     assert code == 0
     data, own = f"{tmp_path}/data", f"{run_dir}/tests/{test.dir_name}"
-    assert seen["roots"] == {"temp_dir_root": own, "data_dir": data}
-    assert seen["names"] == {"DATA_DIR": data, "TEMP_DIR": own}
+    assert seen["names"] == {"DATA_DIR": data, "TEMP_DIR": own, "TEMP_DIR_ROOT": str(run_dir)}
     (config,) = run_dir.glob("batches/*/config.json")
     given = json.loads(config.read_text())
     assert (given["data_dir"], given["temp_dir_root"]) == (data, str(run_dir))
@@ -1211,9 +1211,11 @@ def test_a_storage_the_test_binds_gives_the_temp_roots_and_the_data_dir_only_whe
     seen = {}
 
     def body(ctx):
-        seen.update(ctx.roots)
+        seen.update({n: ctx.env[n] for n in ("data_dir", "temp_dir", "temp_dir_root")})
 
     storage = StorageDef("scratch", str(tmp_path / "store"), data=data and str(tmp_path / data))
-    assert go(tmp_path, [py_test(body, inputs=[storage])])[0] == 0
+    test = py_test(body, inputs=[storage])
+    assert go(tmp_path, [test])[0] == 0
     assert seen["data_dir"] == str(tmp_path / (data or "data"))
     assert seen["temp_dir_root"].startswith(f"{tmp_path}/store/temp/")
+    assert seen["temp_dir"] == f"{seen['temp_dir_root']}/{test.dir_name}"

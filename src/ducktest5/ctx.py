@@ -21,9 +21,13 @@ def _no_reconnect():
 
 class Context:
     """What a test body receives: the Test's own binder. A Client on each engine the test holds
-    (`client(name)`), its `env` (the `{NAME}` values its templates see), its `params` row, and what
-    it gathers as it runs -- the checks that failed, the teardowns, the log of its statements. Its
-    identity is the Test's: the engine instances it holds and its test environment."""
+    (`client(name)`), its `env`, its `params` row, and what it gathers as it runs -- the checks that
+    failed, the teardowns, the log of its statements. Its identity is the Test's: the engine
+    instances it holds and its test environment.
+
+    `env` holds the `{NAME}` values its templates see, by the names a `.test` sees them: `temp_dir`
+    (the test's own place), `temp_dir_root` (the run level above it), `data_dir`, `local_temp_dir`,
+    `local_data_dir`, each axis name (the id of the test's value on it), and the test's values."""
 
     def __init__(
         self,
@@ -40,10 +44,8 @@ class Context:
     ):
         self.id = test.id
         self.params = test.params
-        self.variant = {axis: v for axis, v in test.axis_values.items()}
         self._test_env = test_env
         self.env = Env(template_names(test_env, temp_dir))
-        self.roots = test_env.root_paths
         self.temp_dir = temp_dir
         self.failed_checks, self.teardowns, self.statements = [], [], []  # statements: {client, sql, seconds}
         self.clients = {}  # engine id -> the Client on the instance this test holds
@@ -157,10 +159,7 @@ class Context:
         return self._services[name]
 
     def location(self, name):
-        """A place for a table the body creates; nothing is created here. A path under this test's
-        temp dir, or, where a bound storage or a variant gives a `temp_dir_root`, under this test's
-        own place there, which is under the run's."""
-        root = self.roots.get("temp_dir_root")
-        return os.path.join(root or self.temp_dir, name)
+        """`{TEMP_DIR}/name`: a place for a table the body creates; nothing is created here."""
+        return os.path.join(self.env.temp_dir, name)
 
     step = staticmethod(step)

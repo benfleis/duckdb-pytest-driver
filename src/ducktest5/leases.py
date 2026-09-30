@@ -189,10 +189,14 @@ def _process_env(test_env) -> dict:
 def template_names(test_env, temp_dir=None) -> Names:
     """The names a Client's templates see: those a `.test` body sees. The test's values, and its
     roots as `{TEMP_DIR}` (the test's own place, under a storage's temp root when it has one, else
-    `temp_dir`), `{DATA_DIR}`, and `{LOCAL_TEMP_DIR}` / `{LOCAL_DATA_DIR}` where the root is local or
-    has a local twin. Never a secret: a credential reaches an engine as its preamble."""
+    `temp_dir`), `{TEMP_DIR_ROOT}` (the run level above it), `{DATA_DIR}`, and `{LOCAL_TEMP_DIR}` /
+    `{LOCAL_DATA_DIR}` where the root is local or has a local twin. Never a secret: a credential
+    reaches an engine as its preamble."""
     names = Names(test_env.value_map)
     roots = test_env.root_paths
+    run_level = test_env.run_temp_root or roots.get("temp_dir_root") or temp_dir
+    if run_level is not None:
+        names["TEMP_DIR_ROOT"] = run_level
     for name, root, local in (
         ("TEMP_DIR", roots.get("temp_dir_root") or temp_dir, roots.get("local_temp_dir_root")),
         ("DATA_DIR", roots.get("data_dir"), roots.get("local_data_dir")),

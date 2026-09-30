@@ -10,7 +10,8 @@ the chosen value of every variant axis; both deliveries read it, under the test'
     requires    extensions to load first: `require` in the init file, `LOAD` in the preamble
     init_sql    the statements after them, in order: the settings as `SET`, then the variants' SQL
     values      the names a body writes as `{NAME}`, and each axis name -> the id of its value
-    roots       the binary's four roots, where a variant gives them; `ctx.roots` for a Python body
+    roots       the binary's four roots, where a variant or a storage gives them; a Python body
+                reads them as `ctx.env.temp_dir`, `ctx.env.data_dir` and their `local_` twins
     process_env the process environment of the engine: a value sets a variable, None unsets it
 
 A storage input gives roots and values; a credential gives secrets, which reach the engine only as
@@ -90,6 +91,7 @@ class TestEnv:
     process_state: dict = field(default_factory=dict)  # name -> "set"/"unset", whichever last touched it
     pending: list = field(default_factory=list)  # Entry(value=field name) a service must fill in
     passthrough: list = field(default_factory=list)  # names of the credentials' secrets in `env`
+    run_temp_root: str | None = None  # a Python body's TEMP_DIR_ROOT: the run level above its own place
 
     # -- what the deliveries read ---------------------------------------------
     @property
@@ -283,6 +285,8 @@ def resolve(test, made=None, key=None, default=None):
             e = env.roots.get(name)
             if e is not None and e is from_axes.get(name):
                 env.roots[name] = replace(e, value=f"{e.value}/{made.run_token}/{key}")
+                if name == "temp_dir_root":
+                    env.run_temp_root = f"{e.value}/{made.run_token}"
     if default is not None:
         _default_roots(env, default, made.run_token, key, test.inputs)
     if key is not None:
@@ -337,6 +341,8 @@ def _default_roots(env, default, run_token, key, inputs):
     ):
         if not bound and name not in env.roots and local not in env.roots:
             env.roots[name] = Entry(value, "default storage", kind="root", name=name)
+            if name == "temp_dir_root" and key is not None:
+                env.run_temp_root = default.run_root(run_token)
 
 
 def _deliver(env, definition, mode, scanning, value, made, key=None):
@@ -366,6 +372,7 @@ def _deliver(env, definition, mode, scanning, value, made, key=None):
         if key is not None and definition.kind == "storage":
             given = instance.acquire(RW, key)
             given.create()  # the binary makes a .test body's place; a Python body's is made here
+            env.run_temp_root = instance.delivery()[0]["TEMP_DIR"].get()
         else:
             given = instance
             instance.release(instance.acquire(RO), RO)
