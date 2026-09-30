@@ -64,7 +64,6 @@ class TestMark:
     variants: tuple = ()
     mutex: tuple = ()
     suites: tuple = ()
-    clients: tuple = ()
     bind: dict = field(default_factory=dict)
 
 
@@ -81,7 +80,6 @@ def test(
     variants=(),
     mutex=(),
     suites=(),
-    clients=(),
     bind=None,
     **unknown,
 ):
@@ -96,15 +94,17 @@ def test(
     `suites` says which suites its tests are in: `"smoke"` declares them in whatever the suite's own
     definition selects, `"!smoke"` declares them out and nothing but `--id` puts one back.
 
-    `clients` names the engines among the project's SERVICES the body drives, as
-    `ctx.client(name)`. A test that names no DuckDB one gets a Client on the default DuckDB engine.
+    `engines` names the engines among the project's SERVICES the body drives. Each gets a Client
+    of its own, `ctx.client(name)`; a test that names no DuckDB engine gets a Client on the default
+    one.
 
     `bind` maps a role to one of the project's STORAGES, CREDENTIALS or SERVICES, by id; it
     replaces what a rule binds to the same role."""
     if "cases" in unknown:
         raise UsageError("@test(cases=...) is now @test(params=...); the body reads its row as ctx.params")
-    if "sessions" in unknown:
-        raise UsageError("@test(sessions=...) is now @test(clients=...), naming engines among SERVICES")
+    for gone in ("sessions", "clients"):
+        if gone in unknown:
+            raise UsageError(f"@test({gone}=...) is now @test(engines=...); each engine gets a Client")
     if "services" in unknown:
         raise UsageError("@test(services=...) is now @test(bind={role: service id}), or a storage on the service")
     if unknown:
@@ -119,7 +119,6 @@ def test(
             tuple(variants),
             as_mutex(mutex),
             tuple(suites),
-            tuple(clients),
             dict(bind or {}),
         )
         return body

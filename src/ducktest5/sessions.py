@@ -1,7 +1,7 @@
 """The Session of one test: a Client on each engine it names, and what the test gathers as it runs.
 
-A test names engines on `@test(clients=...)` or by a rule; one that names no DuckDB engine gets the
-default one, and each engine it uses gets a Client too. Each engine is bound to what the test gets:
+A test names engines on `@test(engines=...)`, by a rule or by a variant; each gets a Client, and one
+that names no DuckDB engine gets a Client on the default one. Each engine is bound to what the test gets:
 its storage and credential inputs, and, for a DuckDB engine, the test environment's requires, init
 SQL and process variables. What it is bound to is part of the engine's identity, so a test with
 other inputs leases another instance.
@@ -31,8 +31,8 @@ DEFAULT = duckdb_engine("duckdb")
 
 
 def named(test, project) -> list:
-    """The project's engines the test names, on `@test` or by a rule."""
-    return [project.engines[name] for name in test.definition.clients] if project else []
+    """The project's engines the test names, on `@test`, by a rule or by a variant."""
+    return [project.engines[name] for name in test.engines] if project else []
 
 
 def duckdb_of(test, project):
@@ -48,9 +48,9 @@ def check(definition, engines):
     where = f"{definition.path}::{definition.name}"
     other = [d.id for d in engines if d.kind != DEFAULT.kind]
     if other:
-        raise UsageError(f"{where} names clients {other}; a .test body runs on a DuckDB engine only")
+        raise UsageError(f"{where} names engines {other}; a .test body runs on a DuckDB engine only")
     if len(engines) > 1:
-        raise UsageError(f"{where} names clients {[d.id for d in engines]}; a .test body runs on one engine")
+        raise UsageError(f"{where} names engines {[d.id for d in engines]}; a .test body runs on one engine")
     if engines and engines[0].inputs:
         raise UsageError(
             f"{where} names engine {engines[0].id!r}, which has inputs of its own; bind them on the test instead"
@@ -122,7 +122,6 @@ def bind(test, test_env, project) -> list:
     engines = named(test, project)
     if not any(d.kind == DEFAULT.kind for d in engines):
         engines.insert(0, DEFAULT)
-    engines += [project.engines[e] for e in test.engines if e not in {d.id for d in engines}]
     inputs = [{d: mode} for d, mode in test.inputs]
     out = []
     for d in engines:

@@ -19,7 +19,7 @@ its Session holds one Client, on the default DuckDB engine, and it runs one quer
 
 `ducktest_conf.py` declares two local storages and, among its services, a DuckDB engine, `duck`, that
 loads `parquet`. `default()` binds the role `storage` to `scratch_a` for every test and names `duck`
-in `clients=`: every test drives that engine. Each `match()` rule names one file. `own_inputs.py` and
+in `engines=`: every test drives that engine, through a Client made for it. Each `match()` rule names one file. `own_inputs.py` and
 `paired_own_inputs.py` bind `storage` to `scratch_b` on `@test(...)`, and that wins over the rule;
 `select --explain` shows both bindings. `default.test` is named by no `match()` and runs with what
 `default()` gives. The rule of `excluded.test` declares it out of the default suite, so a bare run

@@ -16,7 +16,7 @@ STORAGES = [
 SERVICES = [duckdb_engine("duck", requires=["parquet"])]
 
 RULES = [
-    default(bind={"storage": "scratch_a"}, clients=["duck"]),
+    default(bind={"storage": "scratch_a"}, engines=["duck"]),
     match("rule_matched.test", tags=["matched"]),
     match("rule_matched_body.py", tags=["matched"]),
     match("own_inputs.py", tags=["matched"]),

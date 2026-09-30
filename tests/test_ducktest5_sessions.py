@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from test_ducktest5_run import FakeEngine, FakeSession, ctx_for, go, passes, py_test, sql_test
 
-from ducktest5 import phases, sessions
+from ducktest5 import declare, phases, sessions
 from ducktest5.binary import UsageError
 from ducktest5.cli import main
 from ducktest5.conf import Project
@@ -209,7 +209,7 @@ def test_a_spark_client_is_one_per_test_and_its_engine_gets_the_buckets_settings
         seen["first"] = ctx.client("spark").exec("SELECT 1").rows
         seen["same"] = ctx.client("spark") is ctx.session.client("spark")
 
-    test = with_minio(py_test(body, clients=["spark"], engines=["spark"]), minio_inputs)
+    test = with_minio(py_test(body, engines=["spark"]), minio_inputs)
     code, _, _, _ = go(tmp_path, [test], engines=[spark.engine()])
     assert code == 0
     assert seen == {"first": [(1,)], "same": True}
@@ -248,7 +248,7 @@ def test_a_batch_scoped_engine_is_closed_when_its_python_test_ends(tmp_path):
     def body(ctx):
         ctx.client("own").oks("SELECT 1")
 
-    tests = [py_test(body, path=f"test/{n}.py", clients=["own"]) for n in "ab"]
+    tests = [py_test(body, path=f"test/{n}.py", engines=["own"]) for n in "ab"]
     code, _, _, _ = go(
         tmp_path, tests, session_factory=factory, workers=1, engines=[duckdb_engine("own", scope="batch")]
     )
@@ -262,7 +262,7 @@ def test_an_engine_that_cannot_open_is_a_setup_error_of_the_test(tmp_path):
 
     engines = [duckdb_engine("bad", requires=["nope"])]
     factory = lambda b, **kw: FakeSession(preamble_fails=True)  # noqa: E731
-    _, _, report, _ = go(tmp_path, [py_test(body, clients=["bad"])], session_factory=factory, engines=engines)
+    _, _, report, _ = go(tmp_path, [py_test(body, engines=["bad"])], session_factory=factory, engines=engines)
     assert report["tests"][0]["outcome"] == "error"
     assert "could not be set up: SqlError: Catalog Error" in report["tests"][0]["problems"][0]
 
@@ -362,10 +362,10 @@ def test_engines_are_declared_among_the_services_and_named_by_a_test(tmp_path):
         "from ducktest5.engines.duckdb import duckdb_engine\nSERVICES = [duckdb_engine('duck', requires=['delta'])]\n"
     )
     (tmp_path / "t.py").write_text(
-        "from ducktest5 import test\n\n@test(clients=['duck'])\ndef a(ctx):\n    pass\n\n"
-        "@test(clients=['nope'])\ndef b(ctx):\n    pass\n"
+        "from ducktest5 import test\n\n@test(engines=['duck'])\ndef a(ctx):\n    pass\n\n"
+        "@test(engines=['nope'])\ndef b(ctx):\n    pass\n"
     )
-    with pytest.raises(UsageError, match="names client 'nope'; the project's engines are \\['duck'\\]"):
+    with pytest.raises(UsageError, match="names engine 'nope'; the project's engines are \\['duck'\\]"):
         scan(str(tmp_path), working_dir=str(tmp_path))
 
 
@@ -373,13 +373,19 @@ def test_engines_are_declared_among_the_services_and_named_by_a_test(tmp_path):
     "conf, text",
     [
         ("SESSIONS = []", "declare it among SERVICES, not in SESSIONS"),
-        ("from ducktest5 import default\nRULES = [default(sessions=['duck'])]", "sessions= is now clients="),
+        ("from ducktest5 import default\nRULES = [default(sessions=['duck'])]", "sessions= is now engines="),
+        ("from ducktest5 import default\nRULES = [default(clients=['duck'])]", "clients= is now engines="),
     ],
 )
-def test_sessions_are_not_declared(tmp_path, conf, text):
+def test_sessions_and_clients_are_not_declared(tmp_path, conf, text):
     (tmp_path / "ducktest_conf.py").write_text(conf)
     with pytest.raises(UsageError, match=text):
         scan(str(tmp_path), working_dir=str(tmp_path))
+
+
+def test_a_body_names_engines_not_clients():
+    with pytest.raises(UsageError, match=r"@test\(clients=...\) is now @test\(engines=...\)"):
+        declare.test(clients=["duck"])
 
 
 # -----------------------------------------------------------------------------
@@ -396,10 +402,10 @@ SERVICES = [
     duckdb_engine("also_json", requires=["json"]),
 ]
 RULES = [
-    match("delta.test", clients=["delta"]),
-    match("json.test", clients=["json"]),
-    match("also_json.test", clients=["also_json"]),
-    match("inline_require.test", clients=["json"]),
+    match("delta.test", engines=["delta"]),
+    match("json.test", engines=["json"]),
+    match("also_json.test", engines=["also_json"]),
+    match("inline_require.test", engines=["json"]),
 ]
 """
 
@@ -412,7 +418,7 @@ def bound(tmp_path, monkeypatch):
         (tmp_path / f"{name}.test").write_text("query I\nSELECT 1\n----\n1\n")
     (tmp_path / "inline_require.test").write_text("require json\n\nquery I\nSELECT 1\n----\n1\n")
     (tmp_path / "body.py").write_text(
-        "from ducktest5 import test\n\n@test(clients=['json'])\ndef body(ctx):\n    pass\n"
+        "from ducktest5 import test\n\n@test(engines=['json'])\ndef body(ctx):\n    pass\n"
     )
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -457,7 +463,7 @@ def test_the_engine_comes_first_in_the_init_file_and_nothing_is_given_twice():
     duck = duckdb_engine("duck", requires=["httpfs", "json"], settings={"threads": 2, "memory_limit": "1GB"})
     project = Project("/p", {"duck": duck}, {}, {}, {}, ())
     test = sql_test(
-        "a.test", {"storage": Variant("s3", requires=["httpfs"])}, clients=["duck"], settings={"threads": 4}
+        "a.test", {"storage": Variant("s3", requires=["httpfs"])}, engines=["duck"], settings={"threads": 4}
     )
     env = sessions.environment(test, resolve(test), project)
     text, _ = init_file_text(env)
@@ -470,7 +476,7 @@ def test_the_engine_comes_first_in_the_init_file_and_nothing_is_given_twice():
 
 def test_the_batch_of_a_test_file_is_given_its_engine(tmp_path):
     (tmp_path / "a.test").write_text("query I\nSELECT 1\n----\n1\n")
-    test = sql_test("a.test", clients=["duck"])
+    test = sql_test("a.test", engines=["duck"])
     _, run_dir, _, _ = go(tmp_path, [test], engines=[duckdb_engine("duck", requires=["delta"])], keep=True)
     (init,) = run_dir.glob("batches/*/init.sqllogic")
     assert init.read_text() == "require delta\n"
@@ -479,8 +485,8 @@ def test_the_batch_of_a_test_file_is_given_its_engine(tmp_path):
 def test_a_test_file_runs_on_one_engine(tmp_path):
     (tmp_path / "ducktest_conf.py").write_text(
         "from ducktest5 import default\nfrom ducktest5.engines.duckdb import duckdb_engine\n"
-        "SERVICES = [duckdb_engine('a'), duckdb_engine('b')]\nRULES = [default(clients=['a', 'b'])]\n"
+        "SERVICES = [duckdb_engine('a'), duckdb_engine('b')]\nRULES = [default(engines=['a', 'b'])]\n"
     )
     (tmp_path / "x.test").write_text("query I\nSELECT 1\n----\n1\n")
-    with pytest.raises(UsageError, match=r"names clients \['a', 'b'\]; a .test body runs on one engine"):
+    with pytest.raises(UsageError, match=r"names engines \['a', 'b'\]; a .test body runs on one engine"):
         scan(str(tmp_path), working_dir=str(tmp_path))

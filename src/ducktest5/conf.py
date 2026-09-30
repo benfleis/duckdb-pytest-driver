@@ -7,7 +7,7 @@ pattern may name one file.
 
 How rules combine, in one order: the root file first, then each file on the way down to the test definition;
 in a file, the rules as listed; then the definition's own `@test(...)`. Along that order, list fields (tags,
-engines, variants, mutex, suites, clients) add up, dict fields (values, settings, bind) update by key, and
+engines, variants, mutex, suites) add up, dict fields (values, settings, bind) update by key, and
 single values (timeout, retries) are replaced. `why` records which rule gave what. All of them are on
 the definition and apply to every test made from it.
 
@@ -15,7 +15,7 @@ the definition and apply to every test made from it.
 is the key the merge updates by: a later binding of the same role replaces the earlier one, so a
 test's own `@test(bind=...)` wins over its rules.
 
-SERVICES holds `ServiceDef`s of `resources`, engines (`EngineDef`) among them; `clients=["duck"]`
+SERVICES holds `ServiceDef`s of `resources`, engines (`EngineDef`) among them; `engines=["duck"]`
 names the engines a test drives, each through a Client of its own. A service that is an input of a
 storage, a credential or an engine is one of the project's services too, whether SERVICES names it
 or not.
@@ -51,7 +51,7 @@ from .resources import CredentialDef, EngineDef, ResourceDef, ServiceDef, Storag
 from .resources.client import check_names
 from .resources.made import services_in
 
-_LISTS = ("tags", "engines", "variants", "mutex", "suites", "clients")
+_LISTS = ("tags", "engines", "variants", "mutex", "suites")
 _DICTS = ("values", "settings", "bind")
 _SINGLES = ("timeout", "retries")
 
@@ -111,8 +111,9 @@ def _glob(pattern):
 
 
 def _rule(pattern, fields):
-    if "sessions" in fields:
-        raise UsageError(f"rule {pattern!r}: sessions= is now clients=, naming engines among SERVICES")
+    for gone in ("sessions", "clients"):
+        if gone in fields:
+            raise UsageError(f"rule {pattern!r}: {gone}= is now engines=; each engine gets a Client")
     unknown = sorted(set(fields) - set(_LISTS + _DICTS + _SINGLES))
     if unknown:
         raise UsageError(f"rule {pattern!r}: unknown field(s) {unknown}; known: {_LISTS + _DICTS + _SINGLES}")
@@ -146,7 +147,6 @@ class Settled:
     variants: list = field(default_factory=list)
     mutex: list = field(default_factory=list)
     suites: list = field(default_factory=list)
-    clients: list = field(default_factory=list)
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     bind: dict = field(default_factory=dict)
