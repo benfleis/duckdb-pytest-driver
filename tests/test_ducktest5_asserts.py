@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from ducktest5 import asserts
+from ducktest5.binary import UsageError
 from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
 from ducktest5.run import run
@@ -192,3 +193,31 @@ def test_the_failure_text_reaches_the_terminal_the_report_and_the_events(tmp_pat
     (event,) = end_events(run_dir)
     assert event["problems"] == [problem]
     assert event["failure"]["where"] == "body.py:7"
+
+
+# -----------------------------------------------------------------------------
+# SQL written as an f-string
+#
+
+
+def test_an_f_string_as_the_sql_of_a_verb_is_refused_at_import(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "t.py").write_text(
+        "from ducktest5 import test\n\n\n@test()\ndef t(ctx):\n    n = 1\n"
+        '    ctx.client("duckdb").oks(f"SELECT {n}")\n'
+    )
+    with pytest.raises(UsageError) as e:
+        scan(str(tmp_path), working_dir=str(tmp_path))
+    assert str(e.value) == (
+        "t.py:7: SQL given to oks() is an f-string; write the name as {n} and set it with ctx.env.set(n=...), "
+        "a rule's values=, or oks(..., n=...). Templates are filled per engine."
+    )
+
+
+def test_sql_built_on_its_own_line_and_passed_by_name_is_not_refused(tmp_path):
+    (tmp_path / "t.py").write_text(
+        "from ducktest5 import test\n\n\n@test()\ndef t(ctx):\n    n = 1\n"
+        '    sql = f"SELECT {n}"\n    ctx.client("duckdb").oks(sql)\n'
+    )
+    tests, _ = scan(str(tmp_path), working_dir=str(tmp_path))
+    assert [t.id for t in tests] == ["t.py::t"]

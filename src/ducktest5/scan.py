@@ -85,6 +85,8 @@ def _load(path, name):
     sys.path.insert(0, os.path.dirname(path))
     try:
         spec.loader.exec_module(module)
+    except UsageError:
+        raise
     except Exception as exc:
         raise UsageError(f"{path} could not be imported: {type(exc).__name__}: {exc}") from exc
     finally:

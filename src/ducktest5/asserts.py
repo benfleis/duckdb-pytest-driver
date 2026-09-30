@@ -8,6 +8,10 @@ same treatment, so a `check()` beside the tests reads like one written in the fi
 
 The rewrite swaps one statement for a few at the same line, so a traceback still points at the
 `assert` the author wrote.
+
+The same pass refuses an f-string written as the SQL of a verb (`oks(f"... {x}")`): a template is
+filled per engine, from the test's env, and an f-string fills it once, in Python, before any engine
+sees it.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import os
 import pprint
 import sys
 
+from .binary import UsageError
 from .sqltext import L, format_rows, render_rows
 
 # None of these is a legal identifier, so nothing a test file writes can collide with them.
@@ -159,8 +164,35 @@ class _Rewriter(ast.NodeTransformer):
         return statements
 
 
-def rewrite(tree, source):
-    """Rewrite every `assert` of one parsed module, in place."""
+_SQL_VERBS = ("setup", "oks", "errs", "expects", "expects_contains", "exec", "teardown")
+
+
+def refuse_fstring_sql(tree, path):
+    """A UsageError at the first call of a verb whose SQL is written as an f-string. A string built
+    on a line of its own and passed by name is the author's choice, and is not refused."""
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _SQL_VERBS):
+            continue
+        sql = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "sql"), None)
+        if not isinstance(sql, ast.JoinedStr):
+            continue
+        named = [v.value for v in sql.values if isinstance(v, ast.FormattedValue)]
+        name = next(
+            (n.id if isinstance(n, ast.Name) else n.attr for n in named if isinstance(n, (ast.Name, ast.Attribute))),
+            "n",
+        )
+        verb = node.func.attr
+        raise UsageError(
+            f"{os.path.relpath(path)}:{node.lineno}: SQL given to {verb}() is an f-string; write the name as "
+            f"{{{name}}} and set it with ctx.env.set({name}=...), a rule's values=, or {verb}(..., {name}=...). "
+            "Templates are filled per engine."
+        )
+
+
+def rewrite(tree, source, path=None):
+    """Rewrite every `assert` of one parsed module, in place; with `path`, refuse f-string SQL first."""
+    if path is not None:
+        refuse_fstring_sql(tree, path)
     _Rewriter(source).visit(tree)
     at = 0
     for i, node in enumerate(tree.body):
@@ -181,7 +213,7 @@ class _Loader(importlib.machinery.SourceFileLoader):
 
     def source_to_code(self, data, path, *, _optimize=-1):
         source = importlib.util.decode_source(data)
-        return compile(rewrite(ast.parse(source, filename=path), source), path, "exec", dont_inherit=True)
+        return compile(rewrite(ast.parse(source, filename=path), source, path), path, "exec", dont_inherit=True)
 
 
 def loader(name, path):

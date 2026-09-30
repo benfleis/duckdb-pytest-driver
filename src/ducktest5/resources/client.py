@@ -18,7 +18,10 @@ other `{name}` placeholders come from the test's env (`ctx.env`, what a `.test` 
 unknown one is an error, and `{{word}}` is a literal brace pair. A value that is a list of rows goes
 in as a SQL VALUES list, so the values a test inserts and the rows it expects back are one definition
 (`L("...")` puts hand-written SQL in a value; rows can then not be derived and must be given). Braces
-around anything but a name are left alone (struct literals), so write plain strings, not f-strings.
+around anything but a name are left alone (struct literals). Write plain strings: an f-string as
+the SQL of a verb is refused when its file is imported, since it fills the template once, in Python,
+where the client fills it per engine; give the name a value (`ctx.env.set`, a rule's `values=`, or
+a keyword of the call) instead.
 A value that holds `{name}`s is filled first, from the other values, each once
 (``t="delta.`{TEMP_DIR}/t`"`` works; values that refer to each other in a cycle are an error), and
 the SQL is then filled in one pass, so what a value brings in is never read again.
