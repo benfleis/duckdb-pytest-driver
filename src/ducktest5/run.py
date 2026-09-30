@@ -701,10 +701,10 @@ def execute(
 
 
 def _batch_of(run_dir, entry, chunk, test_env):
-    """One plan batch as the two files the binary takes. The batch key is worked out again here,
-    with the services of this process: a plan that puts two environments in one batch is refused,
-    not run."""
-    keys = {test_env(c).key() for c in chunk}
+    """One plan batch as the two files the binary takes. The batch key, the identity of the tests'
+    Sessions, is worked out again here, with the services of this process: a plan that puts two
+    environments in one batch is refused, not run."""
+    keys = {sessions.batch_session(test_env(c)).identity for c in chunk}
     if len(keys) > 1:
         raise UsageError(
             f"batch {entry['id']} of the plan holds {len(keys)} test environments; a batch is one environment. "

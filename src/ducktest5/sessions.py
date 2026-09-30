@@ -7,9 +7,11 @@ SQL and process variables. What it is bound to is part of the engine's identity,
 other inputs leases another instance.
 
 A `.test` body runs in one DuckDB engine, rendered in the `unittest` dialect: the process of its
-batch. `environment()` puts that engine over the test environment, and the batch key is made of the
-result, so two `.test` bodies share a batch exactly when their engines have one identity. What the
-body itself says, an inline `require` among it, is not part of that.
+batch. `environment()` puts that engine over the test environment, and `batch_session()` is the
+Session of the result: one Client, on the `unittest` engine of a batch given that environment. Its
+identity is the batch key, so two `.test` bodies share a batch exactly when their DuckDB engines and
+test environments are equal. What the body itself says, an inline `require` among it, is not part of
+that.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from dataclasses import replace
 
 from .binary import UsageError
 from .engines.duckdb import duckdb_engine
+from .engines.unittest import UnittestEngineDef
 from .model import SQLLOGIC
 from .provision import MASK, SECRET_NAME
 from .resources.base import digest
@@ -84,6 +87,12 @@ def environment(test, test_env, project):
         env_unset={**env_unset, **test_env.env_unset},
         env_state={**env_state, **test_env.env_state},
     )
+
+
+def batch_session(test_env) -> Session:
+    """The Session of a `.test` body, from its test environment under its DuckDB engine
+    (`environment()`): one Client, on the `unittest` engine of the batch that is given it."""
+    return Session(test_env, [UnittestEngineDef("unittest", environment=test_env.key()).make()])
 
 
 def lines(test, project) -> list[str]:

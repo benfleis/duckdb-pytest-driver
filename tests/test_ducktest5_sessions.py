@@ -385,6 +385,18 @@ def test_test_files_share_a_batch_exactly_when_their_engines_have_one_identity(b
     assert batch["json.test"] == batch["also_json.test"] == batch["inline_require.test"]
 
 
+def test_a_test_file_has_one_client_on_the_unittest_engine_of_its_batch(bound):
+    tests, project = scan(str(bound), working_dir=str(bound))
+    of = {
+        t.definition.path: sessions.batch_session(sessions.environment(t, resolve(t), project))
+        for t in tests
+        if t.definition.type == SQLLOGIC
+    }
+    ((name, client),) = of["json.test"].clients.items()
+    assert (name, client.dialect, client.engine.definition.scope) == ("unittest", "unittest", "batch")
+    assert of["json.test"].identity == of["also_json.test"].identity != of["delta.test"].identity
+
+
 def test_scan_env_shows_the_clients_of_each_test_and_what_their_engines_render(bound, capsys):
     assert main(["scan", "--env"]) == 0
     printed = capsys.readouterr().out
