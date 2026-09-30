@@ -1,5 +1,5 @@
-[1/2] PASSED   solo_sqllogic.test::solo_sqllogic  (<s>)
-[2/2] PASSED   solo_body.py::solo_body  (<s>)
+[1/2] PASSED   solo_body.py::solo_body  (<s>)
+[2/2] PASSED   solo_sqllogic.test::solo_sqllogic  (<s>)
 
 
 2 passed in <s>

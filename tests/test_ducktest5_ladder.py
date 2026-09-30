@@ -50,8 +50,26 @@ def golden(name, produced):
         assert produced == f.read(), f"{name} differs; UPDATE_GOLDENS=1 to re-make it"
 
 
+def results_in_id_order(text):
+    """The `[i/N]` result lines sorted by test id and numbered again: a batch is reported by the
+    main thread once it sees it ended, a Python body by its worker, so even one worker does not fix
+    the order of the two."""
+    lines, out, block = text.split("\n"), [], []
+    for line in [*lines, None]:
+        if line is not None and re.match(r"^\[\d+/\d+\] ", line):
+            block.append(line)
+            continue
+        if block:
+            rest = sorted((line.split("] ", 1)[1] for line in block), key=lambda r: r.split()[1])
+            out += [f"[{n}/{len(rest)}] {r}" for n, r in enumerate(rest, 1)]
+            block = []
+        if line is not None:
+            out.append(line)
+    return "\n".join(out)
+
+
 def normalized(text, tmp_path):
-    text = text.replace(str(tmp_path), "<tmp>")
+    text = results_in_id_order(text).replace(str(tmp_path), "<tmp>")
     text = re.sub(r"<tmp>/runs/[^/\s]+", "<run>", text)
     text = re.sub(r"\(\d+(?:\.\d+)?s(?:: [^)]*)?\)", "(<s>)", text)
     text = re.sub(r" in \d+(?:\.\d+)?s$", " in <s>", text, flags=re.M)
@@ -123,7 +141,7 @@ def test_run(rung, binaries, rung_copy, tmp_path, capsys):
     rung_copy(rung)
     runs = tmp_path / "runs"
     args = ["--duckdb-bin", shell, "--unittest-bin", unittest, "--no-binary-check", "--temp-dir-root", str(runs)]
-    # One worker runs the plan in order; --keep leaves every file of the run for the search below.
+    # --keep leaves every file of the run for the search below.
     code = main(["run", *args, "--workers", "1", "--keep"])
     out = capsys.readouterr().out
     assert code == EXIT_CODES.get(rung, 0), out

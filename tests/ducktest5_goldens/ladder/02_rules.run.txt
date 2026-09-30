@@ -1,7 +1,7 @@
 [1/5] PASSED   default.test::default  (<s>)
-[2/5] PASSED   rule_matched.test::rule_matched  (<s>)
-[3/5] PASSED   own_inputs.py::own_inputs  (<s>)
-[4/5] PASSED   paired_own_inputs.py::paired_own_inputs  (<s>)
+[2/5] PASSED   own_inputs.py::own_inputs  (<s>)
+[3/5] PASSED   paired_own_inputs.py::paired_own_inputs  (<s>)
+[4/5] PASSED   rule_matched.test::rule_matched  (<s>)
 [5/5] PASSED   rule_matched_body.py::rule_matched_body  (<s>)
 
 
