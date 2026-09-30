@@ -24,7 +24,8 @@ _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 def _bindings(definition, combo, project):
     """(role, Def, mode, source) for each input a test binds: what the rules and `@test` bind, then
     each axis value's inputs, which bind the role their kind names. An axis value replaces what a
-    `default()` binds; where a `match()` or `@test` binds that role too, no source wins."""
+    `default()` binds; where a `match()`, `@test` or another axis value binds that role too, no
+    source wins."""
     declared = project.inputs()
     ruled = {}
     for role, ref in definition.bind.items():
@@ -34,11 +35,16 @@ def _bindings(definition, combo, project):
                 "which is not in STORAGES, CREDENTIALS or SERVICES"
             )
         ruled[role] = (declared[ref], definition.source_of("bind", role))
-    from_axes = []
+    from_axes, by_axis = [], {}
     for axis, variant in combo:
         where = f"AXES {axis}={variant.id}"
         for entry in variant.inputs:
             for d, mode in entry.items():
+                if by_axis.setdefault(d.kind, where) != where:
+                    raise UsageError(
+                        f"{definition.path}::{definition.name}: the role {d.kind!r} is bound by "
+                        f"{by_axis[d.kind]} and by {where}; bind it in one place"
+                    )
                 if d.kind in ruled:
                     ref, source = ruled.pop(d.kind)
                     if not is_default(source):

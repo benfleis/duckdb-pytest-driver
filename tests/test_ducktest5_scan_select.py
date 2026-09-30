@@ -1045,6 +1045,25 @@ def test_a_role_an_axis_value_and_a_match_or_test_both_bind_is_an_error(tmp_path
         tree(tmp_path, {"test/ducktest_conf.py": AXIS_BIND_CONF.replace("RULES_HERE", rules), "test/t.py": body})
 
 
+def test_a_role_two_axis_values_of_one_test_both_bind_is_an_error(tmp_path):
+    conf = """
+        from ducktest5 import Variant, default
+        from ducktest5.resources import StorageDef
+
+        STORAGES = [StorageDef("s3", "s3://b"), StorageDef("proxied", "/tmp/p")]
+        AXES = {
+            "storage": [Variant("s3", inputs=["s3"])],
+            "via": [Variant("direct"), Variant("reverse-proxy", inputs=["proxied"])],
+        }
+        RULES = [default(variants=["storage", "via"])]
+    """
+    message = (
+        "t.test::t: the role 'storage' is bound by AXES storage=s3 and by AXES via=reverse-proxy; bind it in one place"
+    )
+    with pytest.raises(UsageError, match=re.escape(message)):
+        tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
+
+
 def test_a_binding_names_a_declared_storage_credential_or_service(tmp_path):
     with pytest.raises(UsageError, match="binds 'storage' to 'c', which is not in STORAGES, CREDENTIALS or SERVICES"):
         tree(
