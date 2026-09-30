@@ -24,7 +24,7 @@ from .engines.unittest import UnittestEngineDef
 from .model import SQLLOGIC
 from .provision import MASK, SECRET_NAME
 from .resources.base import digest
-from .resources.client import Client
+from .resources.client import Client, Names
 from .testenv import Entry, set_entry
 
 DEFAULT = duckdb_engine("duckdb")
@@ -148,13 +148,12 @@ def _process_env(test_env) -> dict:
     }
 
 
-def template_names(test_env, temp_dir=None) -> dict:
-    """The names a Client's templates see: those a `.test` body sees. The test's values, by the name
-    they were given and upper-cased as a `.test` writes them, and its roots as `{TEMP_DIR}` (the
-    test's own place, under a storage's temp root when it has one, else `temp_dir`), `{DATA_DIR}`,
-    and `{LOCAL_TEMP_DIR}` / `{LOCAL_DATA_DIR}` where the root is local or has a local twin. Never a
-    secret: a credential reaches an engine as its preamble."""
-    names = {**test_env.value_map, **test_env.names}
+def template_names(test_env, temp_dir=None) -> Names:
+    """The names a Client's templates see: those a `.test` body sees. The test's values, and its
+    roots as `{TEMP_DIR}` (the test's own place, under a storage's temp root when it has one, else
+    `temp_dir`), `{DATA_DIR}`, and `{LOCAL_TEMP_DIR}` / `{LOCAL_DATA_DIR}` where the root is local or
+    has a local twin. Never a secret: a credential reaches an engine as its preamble."""
+    names = Names(test_env.value_map)
     roots = test_env.root_paths
     for name, root, local in (
         ("TEMP_DIR", roots.get("temp_dir_root") or temp_dir, roots.get("local_temp_dir_root")),

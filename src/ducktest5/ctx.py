@@ -3,7 +3,7 @@
 import os
 
 from .engines.duckdb import DEFAULT_TIMEOUT_S, DuckDBPerCall, DuckDBSession
-from .resources.client import SetupFailed, SqlError
+from .resources.client import Names, SetupFailed, SqlError
 from .resources.engine import process_env
 from .steps import step
 
@@ -38,7 +38,7 @@ class Ctx:
         self.variant = {axis: v for axis, v in test.axis_values.items()}
         self.session = session
         self.environment = session.environment
-        self.values = self.environment.value_map
+        self.values = Names(self.environment.value_map)
         self.roots = self.environment.root_paths
         self._run_test = run_test
         self.temp_dir = temp_dir

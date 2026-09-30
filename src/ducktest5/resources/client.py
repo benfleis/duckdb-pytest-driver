@@ -20,6 +20,11 @@ pair. A value that is a list of rows goes in as a SQL VALUES list, so the values
 Braces that are not a known placeholder are left alone (struct literals), so write plain strings,
 not f-strings.
 
+Names are case-insensitive. Python writes them lower case and a `.test` file upper case, so `{path}`
+and `{PATH}` are one name with one value. Two names given together that differ only in case are an
+error; a later layer (the Client's own values over the Session's, then the call's) replaces a name in
+any case.
+
 Rows compare as TEXT, the way a .test file does: one line per row, TAB between values, `NULL`,
 `(empty)`, `true`/`false`. `rows` is written in that form; a list of tuples is a second spelling of
 the same thing, rendered by the same rules before the comparison, so `[(1, None, "")]` means exactly
@@ -97,6 +102,44 @@ def _as_text(rows):
     return render_rows(rows)
 
 
+def check_names(given, where="values"):
+    """`given`, when no two of its names differ only in case; `where` names what gave them."""
+    spelled = {}
+    for name in given:
+        if name.lower() in spelled:
+            raise UsageError(
+                f"{where}: {spelled[name.lower()]!r} and {name!r} are one name; names are case-insensitive"
+            )
+        spelled[name.lower()] = name
+    return given
+
+
+class Names(dict):
+    """Template names, kept lower case: `{path}` and `{PATH}` look up one entry."""
+
+    def __init__(self, given=(), where="values"):
+        super().__init__()
+        for name, value in check_names(dict(given), where).items():
+            super().__setitem__(name.lower(), value)
+
+    def __getitem__(self, name):
+        return super().__getitem__(name.lower())
+
+    def __setitem__(self, name, value):
+        super().__setitem__(name.lower(), value)
+
+    def __contains__(self, name):
+        return isinstance(name, str) and super().__contains__(name.lower())
+
+    def get(self, name, default=None):
+        return super().get(name.lower(), default)
+
+    def update(self, given=(), **more):
+        for layer in (given, more):
+            for key, value in Names(layer).items():
+                super().__setitem__(key, value)
+
+
 class Client:
     """One engine's lease for one test: the verbs, run on the engine instance the test holds.
     `engine` is that instance, or None for a client of a body's own (a shell nobody else uses)."""
@@ -112,8 +155,8 @@ class Client:
         self.name = name
         self.engine = engine
         self._run = run
-        self._shared = values if values is not None else {}
-        self._own = {"t": table} if table else {}
+        self._shared = values if values is not None else Names()
+        self._own = Names({"t": table} if table else {})
         self._record = record
         self._defer = defer
         self._log = log
@@ -143,7 +186,9 @@ class Client:
     def _statements(self, sql, params, more):
         """`params` is a dict of placeholder values (a params row goes here, so its keys cannot collide
         with a verb's own options); `more` are the same as keywords, for the odd single value."""
-        known = {**self._shared, **self._own, **(params or {}), **more}
+        known = Names(self._shared)
+        for layer in (self._own, params or {}, more):
+            known.update(layer)
 
         def value(match):
             if match.group(1):  # {{word}}: a literal brace pair around a word

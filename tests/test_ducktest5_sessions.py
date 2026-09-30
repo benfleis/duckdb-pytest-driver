@@ -13,7 +13,7 @@ from ducktest5.cli import main
 from ducktest5.conf import Project
 from ducktest5.declare import Variant
 from ducktest5.engines.duckdb import DuckDBSession, duckdb_engine
-from ducktest5.model import SQLLOGIC, Test
+from ducktest5.model import PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.resources import RO, RW, BootedEngineDef, CredentialDef, StorageDef, check_contract, from_env
 from ducktest5.resources.engine import Runtime
 from ducktest5.scan import scan
@@ -302,25 +302,46 @@ def test_a_client_template_sees_the_names_a_test_file_sees_and_no_secret(tmp_pat
     seen = {}
 
     def body(ctx):
-        seen.update(ctx.session.values)
+        seen.update(names=ctx.session.values, location=ctx.location("t"))
         ctx.client("duckdb").oks("SELECT '{TEMP_DIR}', '{CATALOG}', '{catalog}'")
-        seen["location"] = ctx.location("t")
 
     local = py_test(body, {"k": Variant("local", roots={"data_dir": "/data"})}, values={"catalog": "c"})
     assert go(tmp_path / "local", [local])[0] == 0
-    assert {n: seen[n] for n in ("DATA_DIR", "LOCAL_DATA_DIR", "CATALOG", "catalog")} == {
+    names = seen["names"]
+    assert {n: names[n] for n in ("DATA_DIR", "LOCAL_DATA_DIR", "CATALOG", "catalog")} == {
         "DATA_DIR": "/data",
         "LOCAL_DATA_DIR": "/data",
         "CATALOG": "c",
         "catalog": "c",
     }
-    assert seen["LOCAL_TEMP_DIR"] == seen["TEMP_DIR"] == os.path.dirname(seen["location"])
+    assert names["LOCAL_TEMP_DIR"] == names["TEMP_DIR"] == os.path.dirname(seen["location"])
 
     seen.clear()
     remote = with_minio(py_test(body, values={"catalog": "c"}), minio_inputs)
     assert go(tmp_path / "remote", [remote])[0] == 0
-    assert seen["TEMP_DIR"].startswith("s3://ducktest/delta/temp/")
-    assert "LOCAL_TEMP_DIR" not in seen and "AWS_SECRET_ACCESS_KEY" not in seen
+    names = seen["names"]
+    assert names["TEMP_DIR"].startswith("s3://ducktest/delta/temp/")
+    assert "LOCAL_TEMP_DIR" not in names and "AWS_SECRET_ACCESS_KEY" not in names
+
+
+def test_names_are_case_insensitive_and_two_spellings_of_one_are_an_error(tmp_path):
+    fake = FakeEngine()
+    ctx = ctx_for(py_test(passes, engines=["fake"], values={"Catalog": "c"}), tmp_path, engine=fake)
+    ctx.session.bind(path="/p")
+    ctx.client("fake").oks("SELECT '{PATH}', '{path}', '{catalog}', '{CATALOG}'")
+    ctx.client("fake").oks("SELECT '{PATH}'", PATH="/own")
+    assert fake.statements == ["SELECT '/p', '/p', 'c', 'c'", "SELECT '/own'"]
+    assert ctx.values["catalog"] == ctx.values["CATALOG"] == "c"
+    with pytest.raises(UsageError, match="'path' and 'PATH' are one name"):
+        ctx.client("fake").oks("SELECT 1", {"path": "a", "PATH": "b"})
+    with pytest.raises(UsageError, match="are one name"):
+        ctx.session.bind(path="a", PATH="b")
+
+
+def test_a_later_tier_replaces_a_name_in_any_case():
+    definition = TestDef(path="t.py", name="t", type=PYTHON, values={"path": "rule"}, params={"row": {"PATH": "row"}})
+    env = resolve(Test(definition, "row", {}))
+    assert (env.value_map, env.names) == ({"PATH": "row"}, {"PATH": "row"})
 
 
 def test_a_session_holds_one_client_per_engine_and_its_identity_is_theirs_and_the_environment(tmp_path):

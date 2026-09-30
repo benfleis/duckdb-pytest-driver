@@ -48,6 +48,7 @@ from dataclasses import dataclass, field, replace
 from .binary import UsageError
 from .declare import CONF_FILE, Variant, as_mutex
 from .resources import CredentialDef, EngineDef, ResourceDef, ServiceDef, StorageDef
+from .resources.client import check_names
 from .resources.made import services_in
 
 _LISTS = ("tags", "engines", "variants", "mutex", "suites", "clients")
@@ -164,6 +165,14 @@ class Settled:
                     if v not in target:
                         target.append(v)
                         self.sources[(name, v)] = source
+            elif name == "values":
+                # Names are case-insensitive: a later rule's `PATH` replaces an earlier one's `path`.
+                given = {k.lower() for k in check_names(value, source or "@test")}
+                for k in [k for k in self.values if k.lower() in given]:
+                    del self.values[k]
+                    self.sources.pop((name, k), None)
+                self.values.update(value)
+                self.sources.update({(name, k): source for k in value})
             elif name in _DICTS:
                 getattr(self, name).update(value)
                 self.sources.update({(name, k): source for k in value})

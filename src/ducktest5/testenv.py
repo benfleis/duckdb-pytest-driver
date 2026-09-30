@@ -33,6 +33,7 @@ from .binary import UsageError
 from .provision import MASK
 from .provision import SECRET_NAME as _SECRET_NAME
 from .resources import RO, RW, ServiceDef, ServiceNotUp
+from .resources.client import check_names
 from .resources.dialect import pairs, render
 from .resources.made import Made, services_in
 
@@ -132,8 +133,8 @@ class TestEnv:
     def plus(self, *, values=None, init_sql="", source="ctx.run_test()"):
         """A copy with what a Python body adds for the `.test` file beside it."""
         out = replace(self, values=dict(self.values), init_sql=list(self.init_sql))
-        for name, value in (values or {}).items():
-            out.values[name] = _value_entry(name, value, source)
+        for name, value in check_names(values or {}, source).items():
+            _put_value(out.values, name, _value_entry(name, value, source))
         if init_sql:
             out.init_sql.append(Entry(init_sql.strip().rstrip(";") + ";", source, kind="sql", shown=""))
         return out
@@ -190,6 +191,13 @@ class TestEnv:
         return [{"what": _LABELS[e.kind], "is": self._shown(e), "from": e.source} for e in self.entries()]
 
 
+def _put_value(values, name, entry):
+    """Names are case-insensitive: a later tier's `PATH` replaces an earlier tier's `path`."""
+    for given in [n for n in values if n.lower() == name.lower()]:
+        del values[given]
+    values[name] = entry
+
+
 def _value_entry(name, value, source):
     return Entry(value, source, name=name, secret=bool(_SECRET_NAME.search(name)))
 
@@ -218,20 +226,20 @@ def resolve(test, made=None, key=None):
     axis_given = {}
 
     def _axis_value(name, value, source):
-        seen = axis_given.get(name)
+        seen = axis_given.get(name.lower())
         if seen is not None and seen != source:
             raise UsageError(f"{test.id}: {name!r} is given by both {seen} and {source}")
-        axis_given[name] = source
-        env.values[name] = _value_entry(name, value, source)
+        axis_given[name.lower()] = source
+        _put_value(env.values, name, _value_entry(name, value, source))
 
     # An axis value's id is a name the body can use without the author repeating it.
     for axis, v in test.axis_values.items():
         _axis_value(axis, v.id, f"AXES {axis}")
     for name, value in definition.values.items():
-        env.values[name] = _value_entry(name, value, definition.source_of("values", name))
+        _put_value(env.values, name, _value_entry(name, value, definition.source_of("values", name)))
     if test.params_key is not None:
-        for name, value in test.params.items():
-            env.values[name] = _value_entry(name, value, f"params {test.params_key!r}")
+        for name, value in check_names(test.params, f"{test.id}: params {test.params_key!r}").items():
+            _put_value(env.values, name, _value_entry(name, value, f"params {test.params_key!r}"))
 
     for name, value in definition.settings.items():
         env.init_sql.append(set_entry(name, value, definition.source_of("settings", name)))
@@ -243,7 +251,7 @@ def resolve(test, made=None, key=None):
                 env.requires.append(Entry(extension, where, kind="require"))
         for name, value in v.settings.items():
             env.init_sql.append(set_entry(name, value, where))
-        for name, value in v.values.items():
+        for name, value in check_names(v.values, where).items():
             _axis_value(name, value, where)
         for name, value in v.roots.items():
             if name not in ROOTS:
