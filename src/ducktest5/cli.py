@@ -29,7 +29,7 @@ import sys
 
 import yaml
 
-from . import events, phases, sessions, sqllogic, testenv
+from . import events, phases, leases, sqllogic, testenv
 from .binary import UsageError, find_duckdb
 from .conf import load_project, repo_root
 from .provision import bring_up
@@ -281,7 +281,7 @@ def main(argv=None):
                     print(c.id)
                     # No service is started here, so what a variant makes out of one is named, not called.
                     for line in (
-                        sessions.lines(c, project)
+                        leases.lines(c, project)
                         + c.bind_lines()
                         + testenv.resolve(c, default=project.default_storage).lines()
                     ):

@@ -32,10 +32,10 @@ import threading
 import time
 import traceback
 
-from . import events, phases, runners, sessions, sqllogic, testenv
+from . import events, phases, runners, leases, sqllogic, testenv
 from .binary import UsageError
 from .resources.client import SetupFailed
-from .ctx import Ctx
+from .ctx import Context
 from .engines.duckdb import DuckDBShell
 from .events import RUN_END, RUN_START, SERVICE, TEST_END, TEST_START
 from .mnemonic import run_id as make_run_id
@@ -376,7 +376,7 @@ def execute(
         if (id(test), key) not in resolved:
             env = testenv.resolve(test, made, key=key, default=default)
             resolved[(id(test), key)] = (
-                sessions.environment(test, env, project) if test.definition.type == SQLLOGIC else env
+                leases.environment(test, env, project) if test.definition.type == SQLLOGIC else env
             )
         return resolved[(id(test), key)]
 
@@ -491,20 +491,21 @@ def execute(
             try:
                 os.makedirs(temp_dir)
                 env = test_env(test, dir_name)
-                held = pool.take(test.id, sessions.bind(test, env, project))
+                held = pool.take(test.id, leases.bind(test, env, project))
                 for engine in held.values():
                     if hasattr(engine.live, "scope_jobs"):  # so a timeout can cancel just this test's jobs
                         engine.live.scope_jobs(test.id)
-                ctx = Ctx(
+                ctx = Context(
                     test,
+                    env,
+                    held.values(),
                     temp_dir=temp_dir,
                     duckdb_bin=duckdb_bin,
-                    session=sessions.Session(env, held.values(), temp_dir=temp_dir),
                     duckdb_home=duckdb_home,
                     services={s: made.services[s] for s in test.services},
                     run_test=lambda **kw: _run_paired(
                         test,
-                        sessions.environment(test, env, project),
+                        leases.environment(test, env, project),
                         unittest_bin,
                         working_dir,
                         temp_dir,
@@ -703,10 +704,10 @@ def execute(
 
 
 def _batch_of(run_dir, entry, chunk, test_env):
-    """One plan batch as the two files the binary takes. The batch key, the identity of the tests'
-    Sessions, is worked out again here, with the services of this process: a plan that puts two
+    """One plan batch as the two files the binary takes. The batch key, the identity of its tests, is
+    worked out again here, with the services of this process: a plan that puts two
     environments in one batch is refused, not run."""
-    keys = {sessions.batch_session(test_env(c)).identity for c in chunk}
+    keys = {leases.batch_identity(test_env(c)) for c in chunk}
     if len(keys) > 1:
         raise UsageError(
             f"batch {entry['id']} of the plan holds {len(keys)} test environments; a batch is one environment. "

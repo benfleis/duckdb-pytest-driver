@@ -6,7 +6,7 @@ import decimal
 import pytest
 
 from ducktest5.binary import UsageError
-from ducktest5.resources.client import Client, ExpectationFailed, SetupFailed, SqlError
+from ducktest5.resources.client import Client, Env, ExpectationFailed, SetupFailed, SqlError
 from ducktest5.sqltext import L, parse_rows, render_rows, split_statements, sql_values
 
 
@@ -92,7 +92,7 @@ def test_a_struct_literal_is_left_alone_and_a_params_row_cannot_shadow_a_verb_op
 
 
 def test_a_placeholder_with_no_value_is_an_error_that_names_what_is_known():
-    client = Client("fake", lambda statements: ([], []), table="cat.t", values={"catalog": "duck"})
+    client = Client("fake", lambda statements: ([], []), table="cat.t", env=Env({"catalog": "duck"}))
     with pytest.raises(UsageError, match=r"no value for \{seed_vlaues\}; known: \['catalog', 'seed_values', 't'\]"):
         client.oks("INSERT INTO {t} VALUES {seed_vlaues}", {"seed_values": [(1,)]})
 

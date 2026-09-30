@@ -1,4 +1,4 @@
-"""The Session of one test: a Client on each engine it names, and what the test gathers as it runs.
+"""The engines a test leases, and its identity.
 
 A test names engines on `@test(engines=...)`, by a rule or by a variant; each gets a Client, and one
 that names no DuckDB engine gets a Client on the default one: the project's DuckDB engine when it
@@ -8,12 +8,13 @@ its storage and credential inputs, and, for a DuckDB engine, the test environmen
 SQL and process variables. What it is bound to is part of the engine's identity, so a test with
 other inputs leases another instance.
 
-A `.test` body runs in one DuckDB engine, rendered in the `unittest` dialect: the process of its
-batch. `environment()` puts that engine over the test environment, and `batch_session()` is the
-Session of the result: one Client, on the `unittest` engine of a batch given that environment. Its
-identity is the batch key, so two `.test` bodies share a batch exactly when their DuckDB engines and
-test environments are equal. What the body itself says, an inline `require` among it, is not part of
-that.
+A test's identity is that of the engine instances it leases and its test environment; tests of one
+identity may share those instances, and `.test` bodies of one identity share a batch. A `.test` body
+runs in one DuckDB engine, rendered in the `unittest` dialect: the process of its batch.
+`environment()` puts that engine over the test environment, and `batch_identity()` is the identity
+of a test that leases the `unittest` engine of a batch given the result. So two `.test` bodies share
+a batch exactly when their DuckDB engines and test environments are equal. What the body itself
+says, an inline `require` among it, is not part of that.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from .engines.unittest import UnittestEngineDef
 from .model import SQLLOGIC
 from .provision import MASK, SECRET_NAME
 from .resources.base import digest
-from .resources.client import Client, Names
+from .resources.client import Names
 from .resources.made import planned_identity
 from .testenv import Entry, set_entry
 
@@ -103,20 +104,24 @@ def environment(test, test_env, project):
     )
 
 
-def batch_session(test_env) -> Session:
-    """The Session of a `.test` body, from its test environment under its DuckDB engine
-    (`environment()`): one Client, on the `unittest` engine of the batch that is given it."""
-    return Session(test_env, [UnittestEngineDef("unittest", environment=test_env.key()).make()])
+def identity(engine_identities, test_env) -> str:
+    """A test's identity: the engine instances it leases, and its test environment."""
+    return digest({"engines": sorted(engine_identities), "environment": test_env.key()})
+
+
+def batch_identity(test_env) -> str:
+    """The identity of a `.test` body, from its test environment under its DuckDB engine
+    (`environment()`): it leases one engine, the `unittest` process of the batch that is given it."""
+    return identity([UnittestEngineDef("unittest", environment=test_env.key()).make().identity], test_env)
 
 
 def planned(test, test_env, project) -> str:
-    """The identity of the test's Session, before anything runs: for a `.test` body its batch's, for
-    a Python body that of the engines it will lease over `test_env`. It is what a plan labels a batch
-    by; a Python body's Session at run time also holds its own temp root."""
+    """The test's identity before anything runs: for a `.test` body its batch's, for a Python body
+    that of the engines it will lease over `test_env`. It is what a plan labels a batch by; a Python
+    body's identity at run time also holds its own temp root."""
     if test.definition.type == SQLLOGIC:
-        return batch_session(environment(test, test_env, project)).identity
-    engines = sorted(planned_identity(d) for d in bind(test, test_env, project))
-    return digest({"engines": engines, "environment": test_env.key()})
+        return batch_identity(environment(test, test_env, project))
+    return identity([planned_identity(d) for d in bind(test, test_env, project)], test_env)
 
 
 def lines(test, project) -> list[str]:
@@ -192,62 +197,3 @@ def template_names(test_env, temp_dir=None) -> Names:
         if local or "://" not in root:
             names[f"LOCAL_{name}"] = local or root
     return names
-
-
-class Session:
-    """The one Session of a test: a Client on each engine it leases, the values their templates
-    see, and what the test gathers as it runs -- the checks that failed, the teardowns, the log of
-    its statements. A value bound here (`bind`) reaches every Client; one bound on a Client
-    reaches that engine only."""
-
-    def __init__(self, test_env, engines=(), *, temp_dir=None):
-        self.environment = test_env
-        self.values = template_names(test_env, temp_dir)
-        self.failed_checks, self.teardowns, self.statements = [], [], []
-        self.clients = {}  # engine id -> the Client on the instance this test leases
-        self._own = []  # clients on no lease: a shell a body starts for itself
-        for engine in engines:
-            self.clients[engine.id] = engine.client(**self._wiring())
-
-    def _wiring(self):
-        return {
-            "values": self.values,
-            "record": self.failed_checks.append,
-            "defer": self.teardowns.append,
-            "log": self.statements.append,
-        }
-
-    def bind(self, **values):
-        """Values every Client's templates see from now on."""
-        self.values.update(values)
-        return self
-
-    def client(self, name, *, table=None, **values):
-        """The Client on the engine `name`; `table` is its `{t}`, `values` are for it alone."""
-        if name not in self.clients:
-            raise KeyError(f"engine {name!r} is not one this test leases; it leases {sorted(self.clients)}")
-        return self.clients[name].bind(table=table, **values)
-
-    def own_client(self, name, run, *, table=None, engine=None):
-        """A Client beside the leases: on a shell the body started for itself, or on a leased
-        `engine` with a run of its own; logged with the rest."""
-        client = Client(name, run, table=table, engine=engine, **self._wiring())
-        self._own.append(client)
-        return client
-
-    @property
-    def duckdb(self):
-        """The Client on the test's DuckDB engine."""
-        return next(c for c in self.clients.values() if c.engine.definition.kind == DEFAULT.kind)
-
-    @property
-    def identity(self) -> str:
-        """The identities of the engine instances it leases, and the test environment."""
-        engines = sorted(c.engine.identity for c in self.clients.values())
-        return digest({"engines": engines, "environment": self.environment.key()})
-
-    def seconds_by_client(self):
-        totals = {}
-        for client in [*self.clients.values(), *self._own]:
-            totals[client.name] = totals.get(client.name, 0.0) + client.seconds
-        return {name: round(seconds, 2) for name, seconds in totals.items()}

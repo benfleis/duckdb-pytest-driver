@@ -5,7 +5,7 @@ A test is a definition with one set of parameters. What a parameter contributes 
 two separate paths, which could and did disagree. `resolve()` builds this record once, after
 provisioning and before exec, out of the rules, the definition's own declaration, the test's params and
 the chosen value of every variant axis; both deliveries read it, under the test's DuckDB engine
-(`sessions.py`), and nothing else, and the batch key of a test of a `.test` file is made of that.
+(`leases.py`), and nothing else, and the batch key of a test of a `.test` file is made of that.
 
     requires    extensions to load first: `require` in the init file, `LOAD` in the preamble
     init_sql    the statements after them, in order: the settings as `SET`, then the variants' SQL

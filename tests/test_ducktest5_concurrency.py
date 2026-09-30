@@ -6,12 +6,11 @@ import shutil
 
 import pytest
 
-from ducktest5.ctx import Ctx
+from ducktest5.ctx import Context
 from ducktest5.engines.duckdb import DuckDBShell
 from ducktest5.model import PYTHON, Test, TestDef
 from ducktest5.run import run
 from ducktest5.scan import scan
-from ducktest5.sessions import Session
 from ducktest5.testenv import resolve
 from test_ducktest5_run import held
 
@@ -29,11 +28,12 @@ def ctx(tmp_path):
     home = str(tmp_path / "home")
     shared = DuckDBShell(_shell(), home=home)
     shared.begin_test()
-    context = Ctx(
+    context = Context(
         test,
+        resolve(test),
+        [held(shared)],
         temp_dir=str(tmp_path),
         duckdb_bin=_shell(),
-        session=Session(resolve(test), [held(shared)]),
         duckdb_home=home,
     )
     yield context

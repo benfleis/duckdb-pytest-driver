@@ -16,7 +16,7 @@ true
 # -----------------------------------------------------------------------------
 # An inline require is part of the body
 #
-# It does not change the Session, so this file shares a batch with default.test.
+# It does not change the test's identity, so this file shares a batch with default.test.
 
 statement ok
 COPY (SELECT 42 AS answer) TO '{TEMP_DIR}/answer.json'

@@ -5,7 +5,7 @@ each rung, against the goldens in ducktest5_goldens/ladder/. Re-make them with
 `run` goes through the fake binaries always, and through a built duckdb and test/unittest when
 $DUCKDB_SHELL names one; both must print the same golden. The golden of a run ends with the batches
 of its plan, the key digests numbered in the order they appear, so a reader sees which tests share
-one Session identity. Each rung runs on a copy, so nothing is written into examples/.
+one identity. Each rung runs on a copy, so nothing is written into examples/.
 """
 
 import os

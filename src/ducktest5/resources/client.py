@@ -13,17 +13,17 @@ records the failure and lets the body go on, for independent checks a reader wan
 `sql` is one statement, a block of them split on `;`, or a list of statements taken as they are (for
 a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
 and `rows` / `text` belong to the last one. `{t}` is this client's spelling of the table under test;
-other `{name}` placeholders come from the test's values, from a dict given after the SQL (a params row
-goes there), or from keyword arguments; an unknown one is an error, and `{{word}}` is a literal brace
-pair. A value that is a list of rows goes in as a SQL VALUES list, so the values a test inserts and the rows it expects back are one definition
-(`L("...")` puts hand-written SQL in a value; rows can then not be derived and must be given).
-Braces that are not a known placeholder are left alone (struct literals), so write plain strings,
-not f-strings.
+other `{name}` placeholders come from the test's env (`ctx.env`, what a `.test` file reads as
+`{NAME}`), from a dict given after the SQL (a params row goes there), or from keyword arguments; an
+unknown one is an error, and `{{word}}` is a literal brace pair. A value that is a list of rows goes
+in as a SQL VALUES list, so the values a test inserts and the rows it expects back are one definition
+(`L("...")` puts hand-written SQL in a value; rows can then not be derived and must be given). Braces
+around anything but a name are left alone (struct literals), so write plain strings, not f-strings.
 
 Names are case-insensitive. Python writes them lower case and a `.test` file upper case, so `{path}`
 and `{PATH}` are one name with one value. Two names given together that differ only in case are an
-error; a later layer (the Client's own values over the Session's, then the call's) replaces a name in
-any case.
+error; a later layer (the client's own `env` over the test's, then the call's) replaces a name in any
+case.
 
 Rows compare as TEXT, the way a .test file does: one line per row, TAB between values, `NULL`,
 `(empty)`, `true`/`false`. `rows` is written in that form; a list of tuples is a second spelling of
@@ -39,6 +39,7 @@ import re
 import time
 import traceback
 from collections import Counter
+from collections.abc import Mapping
 
 from ..binary import UsageError
 from ..sqltext import format_rows, parse_rows, render_rows, split_statements, sql_values
@@ -140,23 +141,71 @@ class Names(dict):
                 super().__setitem__(key, value)
 
 
+class Env(Mapping):
+    """The `{NAME}` values a template sees, by any case of the name: `env.path`, `env["PATH"]`.
+    `set(name=value)` adds or replaces values from now on. An Env made over a `parent` sees what
+    the parent has, what is set there later too, and keeps what is set on it to itself.
+
+    A name that is also a method here (`get`, `items`, `set`, ...) is read as `env["name"]`."""
+
+    def __init__(self, given=(), parent=None):
+        self._own = Names(given)
+        self._parent = parent
+
+    def set(self, **values):
+        self._own.update(values)
+        return self
+
+    def names(self) -> Names:
+        """Every name it sees, with its value, the parent's first."""
+        out = self._parent.names() if self._parent is not None else Names()
+        out.update(self._own)
+        return out
+
+    def __getitem__(self, name):
+        if name in self._own:
+            return self._own[name]
+        if self._parent is not None:
+            return self._parent[name]
+        raise KeyError(name)
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"env has no {name!r}; it has {sorted(self)}") from None
+
+    def __iter__(self):
+        return iter(self.names())
+
+    def __len__(self):
+        return len(self.names())
+
+    def __contains__(self, name):
+        return name in self._own or (self._parent is not None and name in self._parent)
+
+    def __repr__(self):
+        return f"Env({dict(self.names())!r})"
+
+
 class Client:
     """One engine's lease for one test: the verbs, run on the engine instance the test holds.
     `engine` is that instance, or None for a client of a body's own (a shell nobody else uses)."""
 
-    def __init__(self, name, run, *, table=None, values=None, record=None, defer=None, log=None, engine=None):
+    def __init__(self, name, run, *, table=None, env=None, record=None, defer=None, log=None, engine=None):
         """`run(statements)` runs them in order and returns `(column_names, rows)` of the last,
         rows as tuples; it raises SqlError, with the failed statement's index, on the first error.
-        `values` are the names a template sees, as the test's Session holds them: what is bound
-        there later is seen too. `record(failure)` takes a failure under `on_fail="continue"`;
+        `env` is the test's: this client's own `env` is over it, so what the test sets later is
+        seen too, and what is set on this client stays with it. `record(failure)` takes a failure under `on_fail="continue"`;
         `defer(callable)` takes a teardown. Without them such a failure raises and a teardown runs
         at once. `log(entry)` takes one `{client, sql, seconds}` for every call, which a verbose
         report prints."""
         self.name = name
         self.engine = engine
         self._run = run
-        self._shared = values if values is not None else Names()
-        self._own = Names({"t": table} if table else {})
+        self.env = Env({"t": table} if table else {}, parent=env)
         self._record = record
         self._defer = defer
         self._log = log
@@ -165,13 +214,6 @@ class Client:
     @property
     def dialect(self):
         return self.engine.dialect if self.engine is not None else None
-
-    def bind(self, *, table=None, **values):
-        """Values for this client's templates only; `table` is `{t}`."""
-        self._own.update(values)
-        if table:
-            self._own["t"] = table
-        return self
 
     def _check(self, on_fail, assertion, *args, **params):
         if on_fail not in ON_FAIL:
@@ -186,8 +228,8 @@ class Client:
     def _statements(self, sql, params, more):
         """`params` is a dict of placeholder values (a params row goes here, so its keys cannot collide
         with a verb's own options); `more` are the same as keywords, for the odd single value."""
-        known = Names(self._shared)
-        for layer in (self._own, params or {}, more):
+        known = self.env.names()
+        for layer in (params or {}, more):
             known.update(layer)
 
         def value(match):

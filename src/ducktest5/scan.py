@@ -11,7 +11,7 @@ import itertools
 import os
 import sys
 
-from . import asserts, sessions
+from . import asserts, leases
 from .binary import UsageError
 from .conf import check_suites, is_default, load_project, merge_suites
 from .declare import CONF_FILE
@@ -210,7 +210,7 @@ def scan(start, *, working_dir="."):
         if unknown:
             raise UsageError(f"{test.id} needs engines {unknown}, not declared in the root {CONF_FILE}")
         # A test's DuckDB engine may come from the project, not the test: settle it before the run.
-        sessions.check(test.definition, [sessions.duckdb_of(test, project)])
+        leases.check(test.definition, [leases.duckdb_of(test, project)])
     return tests, project
 
 
@@ -221,7 +221,7 @@ def _engines(definition, project):
             raise UsageError(
                 f"{definition.path}::{definition.name} names engine {name!r}; the project's engines are {sorted(project.engines)}"
             )
-    sessions.check(definition, [project.engines[name] for name in definition.engines])
+    leases.check(definition, [project.engines[name] for name in definition.engines])
 
 
 def _settle(definition, project, working_dir):

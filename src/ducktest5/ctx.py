@@ -4,7 +4,8 @@ import os
 
 from .binary import UsageError
 from .engines.duckdb import DEFAULT_TIMEOUT_S, DuckDBPerCall, DuckDBShell
-from .resources.client import Names, SetupFailed, SqlError
+from .leases import DEFAULT, identity, template_names
+from .resources.client import Client, Env, SetupFailed, SqlError
 from .resources.engine import process_env
 from .steps import step
 
@@ -18,17 +19,20 @@ def _no_reconnect():
     )
 
 
-class Ctx:
-    """`session` is the test's Session: a Client on each engine it leases (`client(name)`), and
-    what the test gathers as it runs."""
+class Context:
+    """What a test body receives: the Test's own binder. A Client on each engine the test holds
+    (`client(name)`), its `env` (the `{NAME}` values its templates see), its `params` row, and what
+    it gathers as it runs -- the checks that failed, the teardowns, the log of its statements. Its
+    identity is the Test's: the engine instances it holds and its test environment."""
 
     def __init__(
         self,
         test,
+        test_env,
+        engines=(),
         *,
-        temp_dir,
-        duckdb_bin,
-        session,
+        temp_dir=None,
+        duckdb_bin=None,
         duckdb_home=None,
         services=None,
         run_test=None,
@@ -37,37 +41,54 @@ class Ctx:
         self.id = test.id
         self.params = test.params
         self.variant = {axis: v for axis, v in test.axis_values.items()}
-        self.session = session
-        self.environment = session.environment
-        self.values = Names(self.environment.value_map)
-        self.roots = self.environment.root_paths
-        self._run_test = run_test
+        self._test_env = test_env
+        self.env = Env(template_names(test_env, temp_dir))
+        self.roots = test_env.root_paths
         self.temp_dir = temp_dir
+        self.failed_checks, self.teardowns, self.statements = [], [], []  # statements: {client, sql, seconds}
+        self.clients = {}  # engine id -> the Client on the instance this test holds
+        self._own = []  # clients on no lease: a shell a body starts for itself
+        for engine in engines:
+            self.clients[engine.id] = engine.client(**self._wiring())
+        self._run_test = run_test
         self._duckdb_bin = duckdb_bin
         self._duckdb_home = duckdb_home
         self._shell_factory = shell_factory
         self._services = dict(services or {})  # id -> the run's instance of each service behind its inputs
 
-    @property
-    def failed_checks(self):
-        return self.session.failed_checks
+    def _wiring(self):
+        return {
+            "env": self.env,
+            "record": self.failed_checks.append,
+            "defer": self.teardowns.append,
+            "log": self.statements.append,
+        }
 
     @property
-    def teardowns(self):
-        return self.session.teardowns
+    def identity(self) -> str:
+        return identity([c.engine.identity for c in self.clients.values()], self._test_env)
 
-    @property
-    def statements(self):
-        """{client, sql, seconds} per call, for a verbose report."""
-        return self.session.statements
-
-    def client(self, name, *, table=None, **values):
+    def client(self, name):
         """The Client on the engine `name`: the SQL vocabulary of `Client`, on the instance this test
-        leases, reset and given its preamble before the body began. `table` is its `{t}`; `values`
-        reach its templates alone -- `ctx.session.bind(...)` gives a value to every Client."""
-        return self.session.client(name, table=table, **values)
+        holds, reset and given its preamble before the body began. It sees `ctx.env`; what is set
+        on its own `env` reaches its templates alone."""
+        if name not in self.clients:
+            raise KeyError(f"engine {name!r} is not one this test leases; it leases {sorted(self.clients)}")
+        return self.clients[name]
 
-    def duckdb(self, preamble="", *, table=None, shell="per_run", timeout=DEFAULT_TIMEOUT_S, **gone):
+    def _own_client(self, name, run, *, engine=None):
+        """A Client beside the leases: on a shell the body started for itself, or on a leased
+        `engine` with a run of its own; logged with the rest."""
+        client = Client(name, run, engine=engine, **self._wiring())
+        self._own.append(client)
+        return client
+
+    @property
+    def _duckdb(self):
+        """The Client on the test's DuckDB engine."""
+        return next(c for c in self.clients.values() if c.engine.definition.kind == DEFAULT.kind)
+
+    def duckdb(self, preamble="", *, shell="per_run", timeout=DEFAULT_TIMEOUT_S, **gone):
         """DuckDB as a client, on the shell `shell` names. `per_run` (the rule): the shell of the test's
         DuckDB engine, the one
         `client()` also runs on, on the instance this test started fresh; `preamble` runs once, now.
@@ -92,14 +113,14 @@ class Ctx:
             raise TypeError(f"duckdb() got unexpected keyword arguments {sorted(gone)}")
         if shell not in SHELLS:
             raise ValueError(f"shell={shell!r}; it is one of {SHELLS}")
-        engine = self.session.duckdb.engine
+        engine = self._duckdb.engine
         live = engine.live
         if shell != "per_run":
             preamble = "\n".join(x for x in (*engine.preamble().sql, preamble) if x)
             environ = process_env(engine.definition.env)
         if shell == "per_call":
             per_call = DuckDBPerCall(self._duckdb_bin, preamble, timeout=timeout, home=self._duckdb_home, env=environ)
-            return self.session.own_client("duckdb", per_call.run, table=table)
+            return self._own_client("duckdb", per_call.run)
         if shell == "per_client":
             live = self._shell_factory(self._duckdb_bin, home=self._duckdb_home, env=environ)
             live.begin_test()
@@ -108,9 +129,7 @@ class Ctx:
             live.add_preamble(preamble)
         except SqlError as exc:
             raise SetupFailed(f"[duckdb] the preamble failed: {exc}") from None
-        client = self.session.own_client(
-            "duckdb", lambda statements: live.run(statements, timeout=timeout), table=table, engine=engine
-        )
+        client = self._own_client("duckdb", lambda statements: live.run(statements, timeout=timeout), engine=engine)
         client.restart, client.respawn, client.reconnect = live.restart, live.respawn, _no_reconnect
         return client
 
@@ -122,7 +141,10 @@ class Ctx:
         self._run_test(env=env, init_sql=init_sql)
 
     def seconds_by_client(self):
-        return self.session.seconds_by_client()
+        totals = {}
+        for client in [*self.clients.values(), *self._own]:
+            totals[client.name] = totals.get(client.name, 0.0) + client.seconds
+        return {name: round(seconds, 2) for name, seconds in totals.items()}
 
     def service(self, name):
         """The run's instance of a service behind this test's inputs; `.attributes` are what it

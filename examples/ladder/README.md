@@ -13,7 +13,7 @@ before. Run these from inside a rung, e.g. `cd examples/ladder/02_rules`:
 ## 01_solo
 
 One Python body, and no `ducktest_conf.py` in this directory or above it. The body names nothing, so
-its Session holds one Client, on the default DuckDB engine, and it runs one query.
+its context holds one Client, on the default DuckDB engine, and it runs one query.
 
 ## 02_rules
 
@@ -28,7 +28,7 @@ fills in the test's own place under `scratch_a`. The rule of `excluded.test` dec
 default suite, so a bare run leaves it out and `select --explain` names that rule; `--suite all` runs
 it.
 
-The batches in `02-plan.yaml`, in the run directory, are labelled by the identity of their Session.
+The batches in `02-plan.yaml`, in the run directory, are labelled by the identity of their tests.
 The two `.test` files run in one `unittest` process, although `rule_matched.test` has an inline
 `require json`: that is part of its body. A Python body leases the `duck` engine, not a `unittest`
 process, so its label is never that of a `.test` batch. `own_inputs.py` and `paired_own_inputs.py`

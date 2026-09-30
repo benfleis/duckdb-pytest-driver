@@ -1,5 +1,5 @@
-"""Engines and the Session of a test: an engine instance takes a test's inputs, has an identity and
-a lifecycle, and mints the Clients a test's Session holds."""
+"""Engines and the Context of a test: an engine instance takes a test's inputs, has an identity and
+a lifecycle, and mints the Clients a test's Context holds."""
 
 import os
 import re
@@ -8,12 +8,13 @@ from types import SimpleNamespace
 import pytest
 from test_ducktest5_run import FakeEngine, FakeShell, ctx_for, go, passes, py_test, sql_test
 
-from ducktest5 import declare, phases, sessions
+from ducktest5 import declare, leases, phases
 from ducktest5.binary import UsageError
 from ducktest5.cli import main
 from ducktest5.conf import Project
 from ducktest5.declare import Variant
 from ducktest5.engines.duckdb import DuckDBShell, duckdb_engine
+from ducktest5.engines.unittest import UnittestEngineDef
 from ducktest5.model import PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.resources import RO, RW, BootedEngineDef, CredentialDef, StorageDef, check_contract, from_env
 from ducktest5.resources.engine import Runtime
@@ -84,34 +85,34 @@ def test_an_unknown_scope_is_a_usage_error():
 
 
 def test_acquire_opens_then_every_test_gets_a_fresh_instance_and_the_preamble_again():
-    session, made = opened(duckdb_engine("duck", requires=["delta"]))
+    engine, made = opened(duckdb_engine("duck", requires=["delta"]))
     for _ in range(2):
-        session.release(session.acquire(RW), RW)
+        engine.release(engine.acquire(RW), RW)
     assert len(made) == 1
     assert made[0].calls == ["begin_test", "LOAD delta;"] * 2
 
 
-def test_after_a_failed_test_the_session_is_closed_and_opened_again():
-    session, made = opened(duckdb_engine("duck"))
-    session.release(session.acquire(RW), RW, failed=True)
-    session.release(session.acquire(RW), RW)
+def test_after_a_failed_test_the_engine_is_closed_and_opened_again():
+    engine, made = opened(duckdb_engine("duck"))
+    engine.release(engine.acquire(RW), RW, failed=True)
+    engine.release(engine.acquire(RW), RW)
     assert [live.calls for live in made] == [["begin_test", "close"], ["begin_test"]]
 
 
-def test_a_preamble_that_fails_leaves_the_session_free_for_the_next_test():
-    session, made = opened(duckdb_engine("duck", requires=["nope"]))
+def test_a_preamble_that_fails_leaves_the_engine_free_for_the_next_test():
+    engine, made = opened(duckdb_engine("duck", requires=["nope"]))
     fail = [True]
 
     def add_preamble(sql):
         if fail.pop():
             raise RuntimeError("no such extension")
 
-    session.start()
+    engine.start()
     made[0].add_preamble = add_preamble
     with pytest.raises(RuntimeError):
-        session.acquire(RW)
+        engine.acquire(RW)
     fail.append(False)
-    assert session.acquire(RW) is session
+    assert engine.acquire(RW) is engine
 
 
 def test_engine_contract():
@@ -135,8 +136,8 @@ def minio_inputs(monkeypatch):
 
 def test_a_duckdb_engine_sends_its_scoped_secret_as_sql(minio_inputs):
     defs, inputs = minio_inputs
-    session, made = opened(duckdb_engine("duck", requires=["httpfs"], inputs=defs), inputs)
-    session.acquire(RW)
+    engine, made = opened(duckdb_engine("duck", requires=["httpfs"], inputs=defs), inputs)
+    engine.acquire(RW)
     assert made[0].calls == [
         "begin_test",
         "LOAD httpfs;\n"
@@ -147,8 +148,8 @@ def test_a_duckdb_engine_sends_its_scoped_secret_as_sql(minio_inputs):
 
 def test_a_spark_engine_sets_the_buckets_settings_at_runtime(minio_inputs):
     defs, inputs = minio_inputs
-    session, made = opened(BootedEngineDef("spark", dialect="spark", inputs=defs), inputs)
-    session.acquire(RW)
+    engine, made = opened(BootedEngineDef("spark", dialect="spark", inputs=defs), inputs)
+    engine.acquire(RW)
     assert made[0].calls == ["begin_test"]
     assert made[0].conf["fs.s3a.bucket.ducktest.secret.key"] == "password"
     assert made[0].conf["fs.s3a.bucket.ducktest.endpoint"] == "http://172.18.0.1:9999"
@@ -208,7 +209,7 @@ def test_a_spark_client_is_one_per_test_and_its_engine_gets_the_buckets_settings
 
     def body(ctx):
         seen["first"] = ctx.client("spark").exec("SELECT 1").rows
-        seen["same"] = ctx.client("spark") is ctx.session.client("spark")
+        seen["same"] = ctx.client("spark") is ctx.clients["spark"]
 
     test = with_minio(py_test(body, engines=["spark"]), minio_inputs)
     code, _, _, _ = go(tmp_path, [test], engines=[spark.engine()])
@@ -281,27 +282,29 @@ def test_an_engine_of_scope_run_is_one_instance_for_the_run(tmp_path):
 
 
 # -----------------------------------------------------------------------------
-# The Session of a test
+# The Context of a test
 #
 
 
-def test_a_value_bound_on_the_session_reaches_every_client_and_one_bound_on_a_client_only_that_one(tmp_path):
+def test_a_value_set_on_the_context_reaches_every_client_and_one_set_on_a_client_only_that_one(tmp_path):
     fake = FakeEngine()
     ctx = ctx_for(py_test(passes, engines=["fake"]), tmp_path, engine=fake)
-    ctx.session.bind(path="/p")
-    ctx.client("fake", only="x").oks("SELECT '{path}', '{only}'")
+    ctx.env.set(path="/p")
+    ctx.client("fake").env.set(only="x")
+    ctx.client("fake").oks("SELECT '{path}', '{only}'")
     ctx.client("duckdb").oks("SELECT '{path}'")
     with pytest.raises(UsageError, match="no value for {only}"):
         ctx.client("duckdb").oks("SELECT '{only}'")
     assert fake.statements == ["SELECT '/p', 'x'"]
-    assert ctx.session.duckdb.engine.live.statements == ["SELECT '/p'"]
+    assert ctx.client("duckdb").engine.live.statements == ["SELECT '/p'"]
+    assert (ctx.env.path, ctx.client("fake").env.path, "only" in ctx.env) == ("/p", "/p", False)
 
 
 def test_a_client_template_sees_the_names_a_test_file_sees_and_no_secret(tmp_path, minio_inputs):
     seen = {}
 
     def body(ctx):
-        seen.update(names=ctx.session.values, location=ctx.location("t"))
+        seen.update(names=ctx.env, location=ctx.location("t"))
         ctx.client("duckdb").oks("SELECT '{TEMP_DIR}', '{CATALOG}', '{catalog}'")
 
     local = py_test(body, {"k": Variant("local", roots={"data_dir": "/data"})}, values={"catalog": "c"})
@@ -327,7 +330,7 @@ def test_a_python_body_s_own_place_under_a_local_storage_exists_when_it_begins(t
     seen = {}
 
     def body(ctx):
-        seen["exists"] = os.path.isdir(ctx.session.values["TEMP_DIR"])
+        seen["exists"] = os.path.isdir(ctx.env.temp_dir)
 
     storage = StorageDef("scratch", str(tmp_path / "scratch"))
     assert go(tmp_path, [py_test(body, inputs=[storage])])[0] == 0
@@ -337,15 +340,15 @@ def test_a_python_body_s_own_place_under_a_local_storage_exists_when_it_begins(t
 def test_names_are_case_insensitive_and_two_spellings_of_one_are_an_error(tmp_path):
     fake = FakeEngine()
     ctx = ctx_for(py_test(passes, engines=["fake"], values={"Catalog": "c"}), tmp_path, engine=fake)
-    ctx.session.bind(path="/p")
+    ctx.env.set(path="/p")
     ctx.client("fake").oks("SELECT '{PATH}', '{path}', '{catalog}', '{CATALOG}'")
     ctx.client("fake").oks("SELECT '{PATH}'", PATH="/own")
     assert fake.statements == ["SELECT '/p', '/p', 'c', 'c'", "SELECT '/own'"]
-    assert ctx.values["catalog"] == ctx.values["CATALOG"] == "c"
+    assert ctx.env["catalog"] == ctx.env["CATALOG"] == ctx.env.Catalog == "c"
     with pytest.raises(UsageError, match="'path' and 'PATH' are one name"):
         ctx.client("fake").oks("SELECT 1", {"path": "a", "PATH": "b"})
     with pytest.raises(UsageError, match="are one name"):
-        ctx.session.bind(path="a", PATH="b")
+        ctx.env.set(path="a", PATH="b")
 
 
 def test_a_later_tier_replaces_a_name_in_any_case():
@@ -354,12 +357,12 @@ def test_a_later_tier_replaces_a_name_in_any_case():
     assert (env.value_map, env.names) == ({"PATH": "row"}, {"PATH": "row"})
 
 
-def test_a_session_holds_one_client_per_engine_and_its_identity_is_theirs_and_the_environment(tmp_path):
+def test_a_context_holds_one_client_per_engine_and_its_identity_is_theirs_and_the_environment(tmp_path):
     ctx = ctx_for(py_test(passes, engines=["fake"]), tmp_path)
-    assert ctx.client("fake") is ctx.client("fake", table="t") is ctx.session.client("fake")
+    assert ctx.client("fake") is ctx.client("fake") is ctx.clients["fake"]
     other = ctx_for(py_test(passes), tmp_path)
-    assert ctx.session.identity != other.session.identity
-    assert other.session.identity == ctx_for(py_test(passes), tmp_path).session.identity
+    assert ctx.identity != other.identity
+    assert other.identity == ctx_for(py_test(passes), tmp_path).identity
 
 
 # -----------------------------------------------------------------------------
@@ -399,7 +402,7 @@ def test_a_body_names_engines_not_clients():
 
 
 # -----------------------------------------------------------------------------
-# A .test batch is a Session
+# A .test batch is one identity
 #
 
 ENGINES_CONF = """
@@ -447,24 +450,22 @@ def test_test_files_share_a_batch_exactly_when_their_engines_have_one_identity(b
     assert batch["json.test"] == batch["also_json.test"] == batch["inline_require.test"]
 
 
-def test_a_test_file_has_one_client_on_the_unittest_engine_of_its_batch(bound):
+def test_a_test_file_s_identity_is_that_of_the_unittest_engine_of_its_batch(bound):
     tests, project = scan(str(bound), working_dir=str(bound))
-    of = {
-        t.definition.path: sessions.batch_session(sessions.environment(t, resolve(t), project))
-        for t in tests
-        if t.definition.type == SQLLOGIC
-    }
-    ((name, client),) = of["json.test"].clients.items()
-    assert (name, client.dialect, client.engine.definition.scope) == ("unittest", "unittest", "batch")
-    assert of["json.test"].identity == of["also_json.test"].identity != of["delta.test"].identity
+    of = {t.definition.path: leases.environment(t, resolve(t), project) for t in tests if t.definition.type == SQLLOGIC}
+    unittest = UnittestEngineDef("unittest", environment=of["json.test"].key()).make()
+    assert (unittest.dialect, unittest.definition.scope) == ("unittest", "batch")
+    assert leases.batch_identity(of["json.test"]) == leases.identity([unittest.identity], of["json.test"])
+    assert leases.batch_identity(of["json.test"]) == leases.batch_identity(of["also_json.test"])
+    assert leases.batch_identity(of["json.test"]) != leases.batch_identity(of["delta.test"])
 
 
-def test_a_plan_labels_each_batch_by_the_identity_of_its_session(bound):
+def test_a_plan_labels_each_batch_by_the_identity_of_its_tests(bound):
     tests, project = scan(str(bound), working_dir=str(bound))
     by_file = {f: b["key"]["digest"] for b in phases.build_plan(tests, project)["batches"] for f in b["files"]}
     (json_test,) = [t for t in tests if t.definition.path == "json.test"]
-    batch = sessions.batch_session(sessions.environment(json_test, resolve(json_test), project))
-    assert by_file["json.test"] == batch.identity[:12]
+    batch = leases.batch_identity(leases.environment(json_test, resolve(json_test), project))
+    assert by_file["json.test"] == batch[:12]
     # a Python body leases a DuckDB engine, not a batch's unittest one: never the label of a .test batch
     assert by_file["body.py"] not in {by_file["json.test"], by_file["delta.test"]}
 
@@ -485,7 +486,7 @@ def test_the_engine_comes_first_in_the_init_file_and_nothing_is_given_twice():
     test = sql_test(
         "a.test", {"storage": Variant("s3", requires=["httpfs"])}, engines=["duck"], settings={"threads": 4}
     )
-    env = sessions.environment(test, resolve(test), project)
+    env = leases.environment(test, resolve(test), project)
     text, _ = init_file_text(env)
     assert text == (
         "require json\n\nrequire httpfs\n\n"
@@ -538,8 +539,8 @@ def default_roots(root):
 
 def test_the_projects_only_duckdb_engine_is_the_default(tmp_path, monkeypatch, capsys):
     tests, project = engines_project(tmp_path / "p", "duckdb_engine('duck', requires=['json'])")
-    assert [d.id for d in sessions.bind(tests["body"], resolve(tests["body"]), project)] == ["duck"]
-    assert sessions.environment(tests["x"], resolve(tests["x"]), project).extensions == ["json"]
+    assert [d.id for d in leases.bind(tests["body"], resolve(tests["body"]), project)] == ["duck"]
+    assert leases.environment(tests["x"], resolve(tests["x"]), project).extensions == ["json"]
     monkeypatch.chdir(tmp_path / "p")
     assert main(["scan", "--env"]) == 0
     roots = default_roots(tmp_path / "p")
@@ -561,12 +562,12 @@ def test_with_several_duckdb_engines_a_test_names_one(tmp_path):
     tests, project = engines_project(
         tmp_path / "named", "duckdb_engine('a'), duckdb_engine('b')", "[default(engines=['b'])]"
     )
-    assert {name: sessions.duckdb_of(t, project).id for name, t in tests.items()} == {"body": "b", "x": "b"}
+    assert {name: leases.duckdb_of(t, project).id for name, t in tests.items()} == {"body": "b", "x": "b"}
 
 
 def test_with_no_duckdb_engine_a_test_runs_on_the_built_in_one(tmp_path, monkeypatch, capsys):
     tests, project = engines_project(tmp_path / "p", "")
-    assert [sessions.duckdb_of(t, project) for t in tests.values()] == [sessions.DEFAULT, sessions.DEFAULT]
+    assert [leases.duckdb_of(t, project) for t in tests.values()] == [leases.DEFAULT, leases.DEFAULT]
     monkeypatch.chdir(tmp_path / "p")
     assert main(["scan", "--env"]) == 0
     roots = default_roots(tmp_path / "p")

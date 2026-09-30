@@ -34,7 +34,7 @@ import shutil
 
 import yaml
 
-from . import events, sessions, sqllogic, testenv
+from . import events, leases, sqllogic, testenv
 from .binary import UsageError
 from .model import SQLLOGIC
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED
@@ -141,35 +141,34 @@ def _chunks(group, batch_size):
 
 
 def _key_record(test, project):
-    """What makes two batches different, for a reader: a short digest of the identity of the test's
-    Session, and the test environment it holds, secrets masked."""
+    """What makes two batches different, for a reader: a short digest of the test's identity, and
+    the test environment it holds, secrets masked."""
     test_env = testenv.resolve(test)
     return {
-        "digest": sessions.planned(test, test_env, project)[:12],
-        "environment": sessions.environment(test, test_env, project).record(),
+        "digest": leases.planned(test, test_env, project)[:12],
+        "environment": leases.environment(test, test_env, project).record(),
     }
 
 
 def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_args="", keep=False):
-    """`02-plan.yaml` as a document. Tests of `.test` files whose Sessions have one identity -- one
-    DuckDB engine over one test environment -- share a batch; a Python body is a batch of one,
-    whatever `--runner` says, because only this process can run it. Without `project` every test has
-    the default engine.
+    """`02-plan.yaml` as a document. Tests of `.test` files of one identity -- one DuckDB engine over
+    one test environment -- share a batch; a Python body is a batch of one, whatever `--runner` says,
+    because only this process can run it. Without `project` every test has the default engine.
 
     A batch: `id`, `runner`, `order`, `tests` (the test ids), `files` (the `.test` files, relative to
     the project root), `timeout` and `timeouts`/`retries` where a test has its own, `mutex` where a
-    test names one, and `key` (a digest of its Session's identity, and the test environment). `knobs`
+    test names one, and `key` (a digest of its tests' identity, and the test environment). `knobs`
     records what the planner was given; the batch key is worked out again before a batch runs, so a
     plan can be read by another engine without being believed."""
     if runner not in RUNNERS:
         raise UsageError(f"--runner {runner!r}; it is one of {RUNNERS}")
 
     def environment(test):
-        return sessions.environment(test, testenv.resolve(test), project)
+        return leases.environment(test, testenv.resolve(test), project)
 
     batches, groups = [], {}
     for test in (c for c in tests if c.definition.type == SQLLOGIC):
-        groups.setdefault(sessions.batch_session(environment(test)).identity, []).append(test)
+        groups.setdefault(leases.batch_identity(environment(test)), []).append(test)
     for group in groups.values():
         for chunk in _chunks(group, batch_size):
             batches.append(

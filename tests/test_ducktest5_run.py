@@ -17,7 +17,7 @@ from ducktest5 import phases
 from ducktest5.binary import UsageError
 from ducktest5.resources.client import SqlError
 from ducktest5.conf import Project
-from ducktest5.ctx import Ctx
+from ducktest5.ctx import Context
 from ducktest5.declare import Variant
 from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
@@ -28,7 +28,6 @@ from ducktest5.resources import ON_FAILURE, RW, BootedEngineDef, Service, Servic
 from ducktest5.resources.engine import Runtime
 from ducktest5.resources.made import Made
 from ducktest5.run import _binary_failure, _run_body, run
-from ducktest5.sessions import Session
 from ducktest5.testenv import resolve
 
 FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
@@ -698,16 +697,17 @@ def held(live, engine="duckdb"):
 
 
 def ctx_for(test, tmp_path, *, engine=None, shell=None, services=None, test_env=None, **kwargs):
-    """A Ctx with a Client on DuckDB, and on the fake engine where the test uses it."""
+    """A Context with a Client on DuckDB, and on the fake engine where the test uses it."""
     kwargs.setdefault("shell_factory", FakeShell)
     engines = [held(shell or FakeShell())]
     if "fake" in test.engines:
         engines.append(held(engine or FakeEngine(), "fake"))
-    return Ctx(
+    return Context(
         test,
+        test_env or resolve(test),
+        engines,
         temp_dir=str(tmp_path),
         duckdb_bin="no-duckdb",
-        session=Session(test_env or resolve(test), engines),
         services=services,
         **kwargs,
     )
@@ -905,7 +905,7 @@ def test_the_test_environment_comes_before_the_bodys_own_preamble_in_the_order_o
 
     def body(ctx):
         ctx.duckdb("SELECT 1;")
-        seen.extend(ctx.session.duckdb.engine.live.preambles)
+        seen.extend(ctx._duckdb.engine.live.preambles)
 
     variant = Variant(
         "s3",
@@ -1078,7 +1078,7 @@ def test_duckdb_gets_a_home_under_the_run_dir_for_both_kinds_of_shell(tmp_path):
     seen = {}
 
     def body(ctx):
-        seen["per_run"] = ctx.session.duckdb.engine.live.home
+        seen["per_run"] = ctx._duckdb.engine.live.home
         seen["per_call"] = ctx.duckdb(shell="per_call")._run.__self__._home.path
 
     _, run_dir, _, _ = go(tmp_path, [py_test(body)])
@@ -1091,7 +1091,7 @@ def test_the_timeout_of_a_duckdb_client_reaches_each_of_its_statements(tmp_path)
     def body(ctx):
         ctx.duckdb(timeout=7).oks("SELECT 1")
         ctx.duckdb().oks("SELECT 2")
-        seen.extend(ctx.session.duckdb.engine.live.timeouts)
+        seen.extend(ctx._duckdb.engine.live.timeouts)
         seen.append(ctx.duckdb(shell="per_call", timeout=9)._run.__self__._timeout)
 
     assert go(tmp_path, [py_test(body)])[0] == 0
@@ -1139,7 +1139,7 @@ def test_a_python_body_that_binds_no_storage_is_given_the_roots_a_test_file_is(t
 
     def body(ctx):
         seen["roots"] = dict(ctx.roots)
-        seen["names"] = {name: ctx.session.values[name] for name in ("DATA_DIR", "TEMP_DIR")}
+        seen["names"] = {name: ctx.env[name] for name in ("DATA_DIR", "TEMP_DIR")}
 
     test = py_test(body)
     code, run_dir, _, _ = go(tmp_path, [test, sql_test("x.test")], keep=True)
