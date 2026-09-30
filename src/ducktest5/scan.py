@@ -13,7 +13,7 @@ import sys
 
 from . import asserts, sessions
 from .binary import UsageError
-from .conf import check_suites, load_project, merge_suites
+from .conf import check_suites, is_default, load_project, merge_suites
 from .declare import CONF_FILE
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 from .resources import RO, RW, CredentialDef, StorageDef, pick_credentials
@@ -21,28 +21,41 @@ from .resources import RO, RW, CredentialDef, StorageDef, pick_credentials
 _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 
 
-def _bound(definition, project):
-    """The Defs a definition binds, by role."""
+def _bindings(definition, combo, project):
+    """(role, Def, mode, source) for each input a test binds: what the rules and `@test` bind, then
+    each axis value's inputs, which bind the role their kind names. An axis value replaces what a
+    `default()` binds; where a `match()` or `@test` binds that role too, no source wins."""
     declared = project.inputs()
-    out = []
+    ruled = {}
     for role, ref in definition.bind.items():
         if ref not in declared:
             raise UsageError(
                 f"{definition.path}::{definition.name} binds {role!r} to {ref!r}, "
                 "which is not in STORAGES, CREDENTIALS or SERVICES"
             )
-        out.append({declared[ref]: RW})
-    return out
+        ruled[role] = (declared[ref], definition.source_of("bind", role))
+    from_axes = []
+    for axis, variant in combo:
+        where = f"AXES {axis}={variant.id}"
+        for entry in variant.inputs:
+            for d, mode in entry.items():
+                if d.kind in ruled:
+                    ref, source = ruled.pop(d.kind)
+                    if not is_default(source):
+                        raise UsageError(
+                            f"{definition.path}::{definition.name}: the role {d.kind!r} is bound to {ref.id!r} "
+                            f"by {source} and to {d.id!r} by {where}; bind it in one place"
+                        )
+                from_axes.append((d.kind, d, mode, where))
+    return [(role, d, RW, source) for role, (d, source) in ruled.items()] + from_axes
 
 
-def _inputs(definition, combo, project):
-    """What a test binds and its axis values name as inputs, a writer's mode winning, and a
-    credential for each storage by scope unless one is named. A credential all of whose names the
-    axis values unset is left out."""
+def _inputs(bindings, combo, project):
+    """What a test binds, a writer's mode winning, and a credential for each storage by scope unless
+    one is named. A credential all of whose names the axis values unset is left out."""
     modes = {}
-    for entry in [*_bound(definition, project), *(e for _, variant in combo for e in variant.inputs)]:
-        for d, mode in entry.items():
-            modes[d] = RW if RW in (mode, modes.get(d)) else mode
+    for _, d, mode, _ in bindings:
+        modes[d] = RW if RW in (mode, modes.get(d)) else mode
     storages = {d.id: mode for d, mode in modes.items() if isinstance(d, StorageDef)}
     named = [d for d in modes if isinstance(d, CredentialDef)]
     unset = {name for _, v in combo for name, value in v.env.items() if value is None} | {
@@ -178,7 +191,9 @@ def scan(start, *, working_dir="."):
         ]
         for params_key in definition.params or [None]:
             for combo in itertools.product(*axes):
-                tests.append(Test(definition, params_key, dict(combo), _inputs(definition, combo, project)))
+                bindings = _bindings(definition, combo, project)
+                bind = tuple((role, d.id, source) for role, d, _, source in bindings)
+                tests.append(Test(definition, params_key, dict(combo), _inputs(bindings, combo, project), bind))
     project.note_unused_rules()
     if project.unused_rules:
         raise UsageError(

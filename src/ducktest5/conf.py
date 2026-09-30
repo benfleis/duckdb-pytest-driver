@@ -13,7 +13,9 @@ the definition and apply to every test made from it.
 
 `bind={"storage": "scratch"}` binds a role to one of STORAGES, CREDENTIALS or SERVICES by id. The role
 is the key the merge updates by: a later binding of the same role replaces the earlier one, so a
-test's own `@test(bind=...)` wins over its rules.
+test's own `@test(bind=...)` wins over its rules. An axis value's inputs bind too, each the role its
+kind names (`storage`, `credential`): one replaces what a `default()` binds, a fallback; a role that
+a `match()` or `@test` binds as well is an error, not a silent winner.
 
 SERVICES holds `ServiceDef`s of `resources`, engines (`EngineDef`) among them; `engines=["duck"]`
 names the engines a test drives, each through a Client of its own. A service that is an input of a
@@ -124,6 +126,11 @@ def _rule(pattern, fields):
         raise UsageError(f"rule {pattern!r}: retries={retries!r}; it is a whole number, 0 or more")
     check_suites(fields.get("suites", ()), f"rule {pattern!r}")
     return Rule(pattern, fields)
+
+
+def is_default(source):
+    """Whether a rule's source, as `Settled` records it, is a `default()`."""
+    return source.endswith(": default")
 
 
 def default(**fields):

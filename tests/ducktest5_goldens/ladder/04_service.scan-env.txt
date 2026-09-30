@@ -1,6 +1,9 @@
 blocked.test::blocked
+  bind: storage=unserved  <- ducktest_conf.py: match 'blocked.test'
   root: <from service nowhere>  <- storage unserved
 served.test::served
+  bind: storage=served  <- ducktest_conf.py: default
   root: <from service http>  <- storage served
 served_body.py::served_body
+  bind: storage=served  <- ducktest_conf.py: default
   root: <from service http>  <- storage served

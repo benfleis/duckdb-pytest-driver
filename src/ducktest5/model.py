@@ -63,6 +63,7 @@ class Test:
     params_key: str | None  # the row of `definition.params`, or None
     axis_values: dict  # axis name -> Variant
     inputs: tuple = ()  # (ResourceDef, mode): what it binds and its axis values' inputs, with a credential for each storage
+    bind: tuple = ()  # (role, id, source) for each input it binds, by a rule, `@test` or an axis value
 
     @property
     def id(self):
@@ -87,6 +88,18 @@ class Test:
         for v in self.axis_values.values():
             out += [x for x in getattr(v, kind) if x not in out]
         return out
+
+    @property
+    def why(self):
+        """Which rule gave what, then what an axis value binds."""
+        return self.definition.why + [
+            f"bind={ {role: ref}!r}  <- {source}"
+            for role, ref, source in self.bind
+            if source != self.definition.source_of("bind", role)
+        ]
+
+    def bind_lines(self):
+        return [f"bind: {role}={ref}  <- {source}" for role, ref, source in self.bind]
 
     @property
     def services(self):
@@ -136,7 +149,7 @@ class Test:
                 "timeout": self.definition.timeout,
                 "retries": self.definition.retries,
             },
-            "why": self.definition.why,
+            "why": self.why,
         }
 
 

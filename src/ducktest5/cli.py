@@ -256,7 +256,7 @@ def main(argv=None):
                 for c in selected:
                     print(c.id)
                     # No service is started here, so what a variant makes out of one is named, not called.
-                    for line in sessions.lines(c, project) + testenv.resolve(c).lines():
+                    for line in sessions.lines(c, project) + c.bind_lines() + testenv.resolve(c).lines():
                         print(f"  {line}")
                 return 0
             yaml.safe_dump([c.record(project) for c in selected], sys.stdout, sort_keys=False, width=100)
@@ -265,7 +265,7 @@ def main(argv=None):
             for c in selected:
                 print(f"run   {c.id}")
                 if args.explain:
-                    for line in c.definition.why:
+                    for line in c.why:
                         print(f"        {line}")
             for c in tests:
                 if c.id in why_not:

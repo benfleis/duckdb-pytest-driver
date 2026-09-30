@@ -480,6 +480,7 @@ def test_scan_env_shows_the_storage_roots_and_the_credential_masked(tree, capsys
     assert capsys.readouterr().out.replace(str(tree), "ROOT") == textwrap.dedent(
         """\
         a/x.test::x[storage=local]
+          bind: storage=local  <- AXES storage=local
           values: storage=local  <- AXES storage
           root: temp_dir_root=ROOT/store/temp/<run_token>  <- storage local
           root: data_dir=ROOT/store  <- storage local

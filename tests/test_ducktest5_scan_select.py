@@ -1,5 +1,6 @@
 """ducktest5's scan, configuration files and selection, on a small tree made for each test."""
 
+import re
 import textwrap
 
 import pytest
@@ -1005,6 +1006,43 @@ def test_a_tests_own_binding_of_a_role_replaces_the_rules(tmp_path):
         "bind={'storage': 'b'}  <- @test",
     ]
     assert resolve(by_name["own"]).roots["temp_dir_root"].value == "/tmp/b/temp/<run_token>"
+    assert by_name["own"].bind_lines() == ["bind: storage=b  <- @test"]
+
+
+AXIS_BIND_CONF = """
+    from ducktest5 import Variant, default, match
+    from ducktest5.resources import StorageDef
+
+    STORAGES = [StorageDef("a", "/tmp/a"), StorageDef("b", "/tmp/b")]
+    AXES = {"store": [Variant("b", inputs=["b"])]}
+    RULES = RULES_HERE
+"""
+
+
+def test_an_axis_value_replaces_what_a_default_binds_and_says_so(tmp_path):
+    conf = AXIS_BIND_CONF.replace("RULES_HERE", '[default(bind={"storage": "a"}, variants=["store"])]')
+    tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
+    assert [d.id for d, _ in tests[0].inputs] == ["b"]
+    assert tests[0].bind_lines() == ["bind: storage=b  <- AXES store=b"]
+    assert tests[0].why == [
+        "bind={'storage': 'a'}  <- ducktest_conf.py: default",
+        "variants=['store']  <- ducktest_conf.py: default",
+        "bind={'storage': 'b'}  <- AXES store=b",
+    ]
+
+
+@pytest.mark.parametrize(
+    "rules, own, source",
+    [
+        ('[default(variants=["store"]), match("t.py", bind={"storage": "a"})]', "", "ducktest_conf.py: match 't.py'"),
+        ('[default(bind={"storage": "a"}, variants=["store"])]', "bind={'storage': 'a'}", "@test"),
+    ],
+)
+def test_a_role_an_axis_value_and_a_match_or_test_both_bind_is_an_error(tmp_path, rules, own, source):
+    body = f"from ducktest5 import test\n@test({own})\ndef t(ctx): pass"
+    message = f"the role 'storage' is bound to 'a' by {source} and to 'b' by AXES store=b; bind it in one place"
+    with pytest.raises(UsageError, match=re.escape(message)):
+        tree(tmp_path, {"test/ducktest_conf.py": AXIS_BIND_CONF.replace("RULES_HERE", rules), "test/t.py": body})
 
 
 def test_a_binding_names_a_declared_storage_credential_or_service(tmp_path):

@@ -35,7 +35,9 @@ class Variant:
 
     `engines` are what the test then needs, and `tags` name it for a selection. `inputs` names
     STORAGES, CREDENTIALS and SERVICES: a bare id is read-write, `{"id": "ro"}` read-only; a bound
-    storage is where `ctx.location()` puts what the body creates."""
+    storage is where `ctx.location()` puts what the body creates. Each binds the role its kind names
+    (`storage`, `credential`), replacing what a `default()` binds to that role; a `match()` or
+    `@test` binding of the same role is an error."""
 
     id: str
     engines: tuple = ()
@@ -99,7 +101,8 @@ def test(
     one.
 
     `bind` maps a role to one of the project's STORAGES, CREDENTIALS or SERVICES, by id; it
-    replaces what a rule binds to the same role."""
+    replaces what a rule binds to the same role. An axis value that binds that role too is an
+    error."""
     if "cases" in unknown:
         raise UsageError("@test(cases=...) is now @test(params=...); the body reads its row as ctx.params")
     for gone in ("sessions", "clients"):

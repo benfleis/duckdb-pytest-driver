@@ -104,6 +104,7 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
     assert capsys.readouterr().out == textwrap.dedent(
         """\
         a/x.test::x[storage=s3]
+          bind: storage=served  <- AXES storage=s3
           require: httpfs  <- AXES storage=s3
           set: s3_region=eu  <- AXES storage=s3
           values: storage=s3  <- AXES storage
