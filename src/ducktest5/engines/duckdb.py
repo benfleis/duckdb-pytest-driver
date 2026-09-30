@@ -23,8 +23,10 @@ import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 
 from ..resources.client import SqlError
+from ..resources.engine import Engine, EngineDef, process_env
 from ..sqltext import split_statements
 
 _MARK = "<<ducktest:{}>>"
@@ -78,6 +80,30 @@ def _rows(text):
 
 
 DEFAULT_TIMEOUT_S = 120  # for one statement
+
+
+@dataclass(eq=False)
+class DuckDBEngineDef(EngineDef):
+    """DuckDB as an engine: a shell process of its own for each instance, with the process
+    variables of `env`."""
+
+    kind = "duckdb"
+    dialect = "duckdb"
+
+    def open(self, runtime):
+        return runtime.shell(process_env(self.env))
+
+
+class DuckDBEngine(Engine):
+    def run(self, statements, *, timeout=None):
+        return self.live.run(statements, timeout=timeout or self.definition.timeout or DEFAULT_TIMEOUT_S)
+
+
+DuckDBEngineDef.instance = DuckDBEngine
+
+
+def duckdb_engine(id="duckdb", **fields) -> DuckDBEngineDef:
+    return DuckDBEngineDef(id, **fields)
 
 
 class DuckDBSession:

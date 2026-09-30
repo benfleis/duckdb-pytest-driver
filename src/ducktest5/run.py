@@ -43,9 +43,9 @@ from .model import SQLLOGIC
 from .outcomes import ALL as OUTCOMES
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
 from .provision import KEPT, adopt, attach_argument, bring_up
-from .resources import Opener
+from .resources import BootedEngineDef
+from .resources.engine import Runtime
 from .resources.made import Made
-from .resources.session import process_env
 from .reports import Report, render, write_files
 from .reports.live import Live
 from .workers import Pool
@@ -365,8 +365,8 @@ def execute(
 
     def test_env(test, key=None):
         """The test's environment, computed once: after provisioning, before anything runs. A `.test`
-        body gets it under its Session, with the run's temp roots; a Python body's Sessions are bound
-        to it as it is, with the temp roots of the child its storage mints for `key`."""
+        body gets it under its DuckDB engine, with the run's temp roots; a Python body's engines are
+        bound to it as it is, with the temp roots of the child its storage mints for `key`."""
         if test.definition.type == SQLLOGIC:
             key = None
         elif key is None:
@@ -396,16 +396,8 @@ def execute(
 
     duckdb_home = os.path.join(run_dir, "home")
 
-    def opener(definition):
-        if definition.engine == "duckdb":
-            return Opener("duckdb", lambda d: session_factory(duckdb_bin, home=duckdb_home, env=process_env(d.env)))
-        handle = handles[definition.engine]
-        return Opener(
-            sessions.dialect_of(definition, engines),
-            lambda d: handle.for_worker() if hasattr(handle, "for_worker") else handle,
-        )
-
-    pool = Pool(workers, opener=opener, made=made)
+    runtime = Runtime(shell=lambda env: session_factory(duckdb_bin, home=duckdb_home, env=env), booted=handles)
+    pool = Pool(workers, runtime=runtime, made=made)
     stopped = _stop_on_signal()
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
     code = 1
@@ -423,8 +415,9 @@ def execute(
             boot_errors = adopt(made, needed, recorded, existing_services=existing_services, on=service_event)
             phases.write_provision(run_dir, made, boot_errors, recorded=recorded, force=True)
 
-        # An engine boots only when a test that can still run needs it.
-        for engine_id in sorted({e for c in tests if not blocked(c) for e in c.engines}):
+        # An engine booted for the run boots only when a test that can still run needs it.
+        needed_engines = {e for c in tests if not blocked(c) for e in c.engines}
+        for engine_id in sorted(e for e in needed_engines if isinstance(engines[e], BootedEngineDef)):
             log = os.path.join(run_dir, f"engine-{engine_id}.log")
             version = engines[engine_id].version
             service_event(engine_id, kind="engine", state="starting", version=version, log=log)
@@ -497,17 +490,16 @@ def execute(
                 os.makedirs(temp_dir)
                 env = test_env(test, dir_name)
                 held = pool.take(test.id, sessions.bind(test, env, project))
-                for session in held.values():
-                    if hasattr(session.live, "scope_jobs"):  # so a timeout can cancel just this test's jobs
-                        session.live.scope_jobs(test.id)
+                for engine in held.values():
+                    if hasattr(engine.live, "scope_jobs"):  # so a timeout can cancel just this test's jobs
+                        engine.live.scope_jobs(test.id)
                 ctx = Ctx(
                     test,
                     temp_dir=temp_dir,
                     duckdb_bin=duckdb_bin,
-                    sessions=held,
+                    session=sessions.Session(env, held.values()),
                     duckdb_home=duckdb_home,
                     services={s: made.services[s] for s in test.services},
-                    test_env=env,
                     run_test=lambda **kw: _run_paired(
                         test,
                         sessions.environment(test, env, project),
@@ -527,9 +519,9 @@ def execute(
             return outcome, problems, failure, temp_dir, ctx
 
         def python_test(test):
-            """One Python body, in the worker that took the slot: the worker's Sessions, and the
-            locks its mutexes name held for as long as it runs. Its Sessions are registered under
-            its id while it does, so the exec loop below can reach them once its timeout passes; `report_once` then keeps this from also reporting it, however late it
+            """One Python body, in the worker that took the slot: the worker's engine instances, and
+            the locks its mutexes name held for as long as it runs. Its engine instances are registered
+            under its id while it does, so the exec loop below can reach them once its timeout passes; `report_once` then keeps this from also reporting it, however late it
             is released."""
             if sqllogic.stopped():  # a test still waiting when the run was stopped never began
                 return

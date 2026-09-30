@@ -1,23 +1,23 @@
 run   default.test::default
         bind={'storage': 'scratch_a'}  <- ducktest_conf.py: default
-        sessions=['duck']  <- ducktest_conf.py: default
+        clients=['duck']  <- ducktest_conf.py: default
 run   own_inputs.py::own_inputs
         bind={'storage': 'scratch_a'}  <- ducktest_conf.py: default
-        sessions=['duck']  <- ducktest_conf.py: default
+        clients=['duck']  <- ducktest_conf.py: default
         tags=['matched']  <- ducktest_conf.py: match 'own_inputs.py'
         bind={'storage': 'scratch_b'}  <- @test
 run   paired_own_inputs.py::paired_own_inputs
         bind={'storage': 'scratch_a'}  <- ducktest_conf.py: default
-        sessions=['duck']  <- ducktest_conf.py: default
+        clients=['duck']  <- ducktest_conf.py: default
         tags=['matched']  <- ducktest_conf.py: match 'paired_own_inputs.py'
         bind={'storage': 'scratch_b'}  <- @test
 run   rule_matched.test::rule_matched
         bind={'storage': 'scratch_a'}  <- ducktest_conf.py: default
-        sessions=['duck']  <- ducktest_conf.py: default
+        clients=['duck']  <- ducktest_conf.py: default
         tags=['matched']  <- ducktest_conf.py: match 'rule_matched.test'
 run   rule_matched_body.py::rule_matched_body
         bind={'storage': 'scratch_a'}  <- ducktest_conf.py: default
-        sessions=['duck']  <- ducktest_conf.py: default
+        clients=['duck']  <- ducktest_conf.py: default
         tags=['matched']  <- ducktest_conf.py: match 'rule_matched_body.py'
 skip  excluded.test::excluded  -- not in suite 'default': declared out  <- ducktest_conf.py: match 'excluded.test'
 

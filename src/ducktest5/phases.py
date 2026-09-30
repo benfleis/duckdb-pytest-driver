@@ -149,9 +149,9 @@ def _key_record(test_env):
 
 
 def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_args="", keep=False):
-    """`02-plan.yaml` as a document. Tests of `.test` files whose DuckDB Sessions have one identity,
+    """`02-plan.yaml` as a document. Tests of `.test` files whose DuckDB engines have one identity,
     over one test environment, share a batch; a Python body is a batch of one, whatever `--runner`
-    says, because only this process can run it. Without `project` every test has the default Session.
+    says, because only this process can run it. Without `project` every test has the default engine.
 
     A batch: `id`, `runner`, `order`, `tests` (the test ids), `files` (the `.test` files, relative to
     the project root), `timeout` and `timeouts`/`retries` where a test has its own, `mutex` where a

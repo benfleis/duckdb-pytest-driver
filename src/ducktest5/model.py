@@ -39,7 +39,7 @@ class TestDef:
     variants: list = field(default_factory=list)
     mutex: list = field(default_factory=list)  # what each of its tests must have to itself while it runs
     suites: list = field(default_factory=list)  # a suite it declares itself in, or out of as `!NAME`
-    sessions: list = field(default_factory=list)  # ids of the project's SESSIONS it drives
+    clients: list = field(default_factory=list)  # ids of the engines it drives, among the project's SERVICES
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     bind: dict = field(default_factory=dict)  # role -> the id of a storage, credential or service

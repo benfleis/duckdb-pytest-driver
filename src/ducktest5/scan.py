@@ -16,7 +16,7 @@ from .binary import UsageError
 from .conf import check_suites, load_project, merge_suites
 from .declare import CONF_FILE
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef
-from .resources import RO, RW, CredentialDef, StorageDef, pick_credentials
+from .resources import RO, RW, BootedEngineDef, CredentialDef, StorageDef, pick_credentials
 
 _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 
@@ -145,7 +145,7 @@ def scan(start, *, working_dir="."):
                     variants=list(decl.variants),
                     mutex=list(decl.mutex),
                     suites=list(decl.suites),
-                    sessions=list(decl.sessions),
+                    clients=list(decl.clients),
                     bind=dict(decl.bind),
                 )
             )
@@ -167,7 +167,7 @@ def scan(start, *, working_dir="."):
     tests = []
     for definition in sorted(definitions, key=lambda d: (d.root_path, d.name)):
         _settle(definition, project, working_dir)
-        _sessions(definition, project)
+        _clients(definition, project)
         for axis in definition.variants:
             if axis not in project.axes:
                 raise UsageError(
@@ -192,17 +192,16 @@ def scan(start, *, working_dir="."):
     return tests, project
 
 
-def _sessions(definition, project):
-    """The sessions a definition names exist, and the engines they run on are ones it uses."""
-    for name in definition.sessions:
-        if name not in project.sessions:
+def _clients(definition, project):
+    """The engines a definition names exist, and one booted for the run is one it uses."""
+    for name in definition.clients:
+        if name not in project.engines:
             raise UsageError(
-                f"{definition.path}::{definition.name} names session {name!r}; the project has {sorted(project.sessions)}"
+                f"{definition.path}::{definition.name} names client {name!r}; the project's engines are {sorted(project.engines)}"
             )
-        engine = project.sessions[name].engine
-        if engine != "duckdb" and engine not in definition.engines:
-            definition.engines.append(engine)
-    sessions.check(definition, [project.sessions[name] for name in definition.sessions])
+        if isinstance(project.engines[name], BootedEngineDef) and name not in definition.engines:
+            definition.engines.append(name)
+    sessions.check(definition, [project.engines[name] for name in definition.clients])
 
 
 def _settle(definition, project, working_dir):
@@ -213,7 +212,7 @@ def _settle(definition, project, working_dir):
         "engines": definition.engines,
         "variants": definition.variants,
         "mutex": definition.mutex,
-        "sessions": definition.sessions,
+        "clients": definition.clients,
     }
     for name in own:
         merged = getattr(settled, name) + [x for x in own[name] if x not in getattr(settled, name)]

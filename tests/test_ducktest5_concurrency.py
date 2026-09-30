@@ -11,6 +11,7 @@ from ducktest5.engines.duckdb import DuckDBSession
 from ducktest5.model import PYTHON, Test, TestDef
 from ducktest5.run import run
 from ducktest5.scan import scan
+from ducktest5.sessions import Session
 from ducktest5.testenv import resolve
 from test_ducktest5_run import held
 
@@ -32,9 +33,8 @@ def ctx(tmp_path):
         test,
         temp_dir=str(tmp_path),
         duckdb_bin=_shell(),
-        sessions={"duckdb": held(shared)},
+        session=Session(resolve(test), [held(shared)]),
         duckdb_home=home,
-        test_env=resolve(test),
     )
     yield context
     for teardown in reversed(context.teardowns):

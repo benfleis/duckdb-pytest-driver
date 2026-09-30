@@ -98,19 +98,37 @@ def _as_text(rows):
 
 
 class Client:
-    def __init__(self, name, run, *, table=None, values=None, record=None, defer=None, log=None):
+    """One engine's lease for one test: the verbs, run on the engine instance the test holds.
+    `engine` is that instance, or None for a client of a body's own (a shell nobody else uses)."""
+
+    def __init__(self, name, run, *, table=None, values=None, record=None, defer=None, log=None, engine=None):
         """`run(statements)` runs them in order and returns `(column_names, rows)` of the last,
         rows as tuples; it raises SqlError, with the failed statement's index, on the first error.
-        `record(failure)` takes a failure under `on_fail="continue"`; `defer(callable)` takes a
-        teardown. Without them such a failure raises and a teardown runs at once. `log(entry)` takes
-        one `{client, sql, seconds}` for every call, which a verbose report prints."""
+        `values` are the names a template sees, as the test's Session holds them: what is bound
+        there later is seen too. `record(failure)` takes a failure under `on_fail="continue"`;
+        `defer(callable)` takes a teardown. Without them such a failure raises and a teardown runs
+        at once. `log(entry)` takes one `{client, sql, seconds}` for every call, which a verbose
+        report prints."""
         self.name = name
+        self.engine = engine
         self._run = run
-        self._params = {**(values or {}), **({"t": table} if table else {})}
+        self._shared = values if values is not None else {}
+        self._own = {"t": table} if table else {}
         self._record = record
         self._defer = defer
         self._log = log
         self.seconds = 0.0  # spent inside `run`, so a report can say which client the time went to
+
+    @property
+    def dialect(self):
+        return self.engine.dialect if self.engine is not None else None
+
+    def bind(self, *, table=None, **values):
+        """Values for this client's templates only; `table` is `{t}`."""
+        self._own.update(values)
+        if table:
+            self._own["t"] = table
+        return self
 
     def _check(self, on_fail, assertion, *args, **params):
         if on_fail not in ON_FAIL:
@@ -125,7 +143,7 @@ class Client:
     def _statements(self, sql, params, more):
         """`params` is a dict of placeholder values (a params row goes here, so its keys cannot collide
         with a verb's own options); `more` are the same as keywords, for the odd single value."""
-        known = {**self._params, **(params or {}), **more}
+        known = {**self._shared, **self._own, **(params or {}), **more}
 
         def value(match):
             if match.group(1):  # {{word}}: a literal brace pair around a word

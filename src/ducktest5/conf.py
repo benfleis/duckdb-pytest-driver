@@ -1,13 +1,13 @@
 """`ducktest_conf.py`: configuration for a directory and everything below it.
 
 The file at the root of the scanned tree is the project file; it may also declare SERVICES,
-STORAGES, CREDENTIALS, SESSIONS, AXES, SUITES and EXCLUDE. Any directory may have its own file with RULES. A rule
+STORAGES, CREDENTIALS, AXES, SUITES and EXCLUDE. Any directory may have its own file with RULES. A rule
 speaks about the whole subtree (`default`) or about a pattern relative to its file (`match`); a
 pattern may name one file.
 
 How rules combine, in one order: the root file first, then each file on the way down to the test definition;
 in a file, the rules as listed; then the definition's own `@test(...)`. Along that order, list fields (tags,
-engines, variants, mutex, suites, sessions) add up, dict fields (values, settings, bind) update by key, and
+engines, variants, mutex, suites, clients) add up, dict fields (values, settings, bind) update by key, and
 single values (timeout, retries) are replaced. `why` records which rule gave what. All of them are on
 the definition and apply to every test made from it.
 
@@ -15,9 +15,10 @@ the definition and apply to every test made from it.
 is the key the merge updates by: a later binding of the same role replaces the earlier one, so a
 test's own `@test(bind=...)` wins over its rules.
 
-SERVICES holds `ServiceDef`s of `resources`, engines (`EngineDef`) among them. A service that is an
-input of a storage, a credential or a session is one of the project's services too, whether SERVICES
-names it or not.
+SERVICES holds `ServiceDef`s of `resources`, engines (`EngineDef`) among them; `clients=["duck"]`
+names the engines a test drives, each through a Client of its own. A service that is an input of a
+storage, a credential or an engine is one of the project's services too, whether SERVICES names it
+or not.
 
 `mutex="name"`, or several names, says what a test must have to itself: no two tests that name one of
 them run at the same time, however many workers the run has.
@@ -46,10 +47,10 @@ from dataclasses import dataclass, field, replace
 
 from .binary import UsageError
 from .declare import CONF_FILE, Variant, as_mutex
-from .resources import CredentialDef, EngineDef, ResourceDef, ServiceDef, SessionDef, StorageDef
+from .resources import CredentialDef, EngineDef, ResourceDef, ServiceDef, StorageDef
 from .resources.made import services_in
 
-_LISTS = ("tags", "engines", "variants", "mutex", "suites", "sessions")
+_LISTS = ("tags", "engines", "variants", "mutex", "suites", "clients")
 _DICTS = ("values", "settings", "bind")
 _SINGLES = ("timeout", "retries")
 
@@ -109,6 +110,8 @@ def _glob(pattern):
 
 
 def _rule(pattern, fields):
+    if "sessions" in fields:
+        raise UsageError(f"rule {pattern!r}: sessions= is now clients=, naming engines among SERVICES")
     unknown = sorted(set(fields) - set(_LISTS + _DICTS + _SINGLES))
     if unknown:
         raise UsageError(f"rule {pattern!r}: unknown field(s) {unknown}; known: {_LISTS + _DICTS + _SINGLES}")
@@ -142,7 +145,7 @@ class Settled:
     variants: list = field(default_factory=list)
     mutex: list = field(default_factory=list)
     suites: list = field(default_factory=list)
-    sessions: list = field(default_factory=list)
+    clients: list = field(default_factory=list)
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     bind: dict = field(default_factory=dict)
@@ -179,7 +182,6 @@ class Project:
     exclude: tuple
     storages: dict = field(default_factory=dict)
     credentials: dict = field(default_factory=dict)
-    sessions: dict = field(default_factory=dict)
     _rules_by_dir: dict = field(default_factory=dict)
     _used: set = field(default_factory=set)
     unused_rules: list = field(default_factory=list)
@@ -270,14 +272,14 @@ def load_project(start):
             raise UsageError(f"{path}: RULES must hold default(...) and match(...) rules")
         project._rules_by_dir[dirpath] = rules
         if dirpath == root:
-            if hasattr(module, "ENGINES"):
-                raise UsageError(f"{path}: an engine is a service; declare it among SERVICES, not in ENGINES")
+            for gone in ("ENGINES", "SESSIONS"):
+                if hasattr(module, gone):
+                    raise UsageError(f"{path}: an engine is a service; declare it among SERVICES, not in {gone}")
             declared = list(getattr(module, "SERVICES", ()))
             project.engines = {e.id: e for e in declared if isinstance(e, EngineDef)}
             project.services = {s.id: s for s in declared if not isinstance(s, EngineDef)}
             project.storages = {s.id: s for s in getattr(module, "STORAGES", ())}
             project.credentials = {c.id: c for c in getattr(module, "CREDENTIALS", ())}
-            project.sessions = {s.id: s for s in getattr(module, "SESSIONS", ())}
             project.axes = {axis: {v.id: v for v in values} for axis, values in getattr(module, "AXES", {}).items()}
             project.suites = dict(getattr(module, "SUITES", {}))
             if "all" in project.suites:
@@ -285,7 +287,7 @@ def load_project(start):
             project.exclude = tuple(getattr(module, "EXCLUDE", ()))
             _check(path, project)
         else:
-            for name in ("SERVICES", "STORAGES", "CREDENTIALS", "SESSIONS", "AXES", "SUITES", "EXCLUDE"):
+            for name in ("SERVICES", "STORAGES", "CREDENTIALS", "AXES", "SUITES", "EXCLUDE"):
                 if hasattr(module, name):
                     raise UsageError(f"{path}: {name} belongs in the root {CONF_FILE} only; this file may hold RULES")
         _prune(project, root, dirpath, dirnames)
@@ -305,18 +307,14 @@ def _check(path, project):
     for name, kind, declared in (
         ("STORAGES", StorageDef, project.storages),
         ("CREDENTIALS", CredentialDef, project.credentials),
-        ("SESSIONS", SessionDef, project.sessions),
     ):
         if not all(isinstance(d, kind) for d in declared.values()):
             raise UsageError(f"{path}: {name} must hold {kind.__name__}")
     if not all(isinstance(s, ServiceDef) for s in project.services.values()):
         raise UsageError(f"{path}: SERVICES must hold ServiceDef of ducktest5.resources")
-    for s in services_in([*project.storages.values(), *project.credentials.values(), *project.sessions.values()]):
+    for s in services_in([*project.storages.values(), *project.credentials.values(), *project.engines.values()]):
         if project.services.setdefault(s.id, s) is not s:
             raise UsageError(f"{path}: two services are named {s.id!r}; a service is one declaration")
-    for s in project.sessions.values():
-        if s.engine != "duckdb" and s.engine not in project.engines:
-            raise UsageError(f"{path}: session {s.id!r} runs on engine {s.engine!r}, which is not among SERVICES")
     for axis, values in project.axes.items():
         if not values or not all(isinstance(v, Variant) for v in values.values()):
             raise UsageError(f"{path}: AXES[{axis!r}] must be a non-empty list of Variant")

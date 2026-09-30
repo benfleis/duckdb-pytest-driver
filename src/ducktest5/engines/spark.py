@@ -1,10 +1,10 @@
-"""An embedded PySpark session with Delta Lake, as an `EngineDef`. pyspark is imported at boot, not here."""
+"""An embedded PySpark session with Delta Lake, as an engine booted once per run. pyspark is imported at boot, not here."""
 
 import contextlib
 import os
 
 from ..resources.client import SqlError
-from ..resources import EngineDef
+from ..resources.engine import BootedEngineDef
 
 
 class SparkHandle:
@@ -128,10 +128,10 @@ def _hadoop_version():
     return os.path.basename(jars[0])[len("hadoop-client-api-") : -len(".jar")] if jars else None
 
 
-def delta_spark(id="spark", *, s3a=False):
+def delta_spark(id="spark", *, s3a=False, **fields):
     """Local Spark with the delta-spark that matches the installed pyspark. `s3a=True` puts the
-    hadoop-aws that matches Spark's Hadoop on the classpath, so a Session on it can take an s3
-    storage as input."""
+    hadoop-aws that matches Spark's Hadoop on the classpath, so it can take an s3 storage as input.
+    `fields` are those of every engine (`settings`, `scope`, ...)."""
     from importlib.metadata import PackageNotFoundError, version
 
     def v(dist):
@@ -142,4 +142,6 @@ def delta_spark(id="spark", *, s3a=False):
 
     packages = (f"org.apache.hadoop:hadoop-aws:{_hadoop_version()}",) if s3a else ()
     booted = f"spark:{v('pyspark')}:delta-{v('delta-spark')}:local" + (":s3a" if s3a else "")
-    return EngineDef(id, booted, lambda log: _boot_delta(log, packages)[0], dialect="spark")
+    return BootedEngineDef(
+        id, version=booted, boot=lambda log: _boot_delta(log, packages)[0], dialect="spark", **fields
+    )

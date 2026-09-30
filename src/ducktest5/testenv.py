@@ -4,7 +4,7 @@ A test is a definition with one set of parameters. What a parameter contributes 
 `.test` body (the batch's config and init file) and a Python body (the `ctx.duckdb()` preamble) by
 two separate paths, which could and did disagree. `resolve()` builds this record once, after
 provisioning and before exec, out of the rules, the definition's own declaration, the test's params and
-the chosen value of every variant axis; both deliveries read it, under the test's Session
+the chosen value of every variant axis; both deliveries read it, under the test's DuckDB engine
 (`sessions.py`), and nothing else, and the batch key of a test of a `.test` file is made of that.
 
     requires    extensions to load first: `require` in the init file, `LOAD` in the preamble

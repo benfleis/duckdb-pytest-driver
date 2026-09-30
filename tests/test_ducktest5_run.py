@@ -19,14 +19,16 @@ from ducktest5.resources.client import SqlError
 from ducktest5.conf import Project
 from ducktest5.ctx import Ctx
 from ducktest5.declare import Variant
-from ducktest5.resources import EngineDef
 from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
 from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.provision import EXISTING
-from ducktest5.resources import ON_FAILURE, RW, Opener, Service, ServiceDef, SessionDef, StorageDef
+from ducktest5.engines.duckdb import duckdb_engine
+from ducktest5.resources import ON_FAILURE, RW, BootedEngineDef, Service, ServiceDef, StorageDef
+from ducktest5.resources.engine import Runtime
 from ducktest5.resources.made import Made
 from ducktest5.run import _binary_failure, _run_body, run
+from ducktest5.sessions import Session
 from ducktest5.testenv import resolve
 
 FAKE = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_unittest.py")
@@ -40,7 +42,7 @@ class FakeEngine:
         self.boots, self.calls, self.statements = boots, [], []
 
     def engine(self, id="fake"):
-        return EngineDef(id, "fake:1", self._boot)
+        return BootedEngineDef(id, version="fake:1", boot=self._boot)
 
     def _boot(self, log_path):
         self.calls.append("boot")
@@ -121,10 +123,9 @@ def py_test(body, axis_values=None, *, path="test/body.py", body_file=None, inpu
     return Test(definition, None, axis_values or {}, tuple((d, RW) for d in inputs))
 
 
-def go(tmp_path, tests, *, engines=(), sessions=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
+def go(tmp_path, tests, *, engines=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
     """Returns (exit code, run dir, report, printed text)."""
     project = Project(str(tmp_path), {e.id: e for e in engines}, {}, {}, {}, ())
-    project.sessions = {s.id: s for s in sessions}
     out = io.StringIO()
     kwargs.setdefault("session_factory", FakeSession)
     code = run(
@@ -686,20 +687,25 @@ def test_each_test_has_one_event_line(tmp_path):
 
 
 def held(live, engine="duckdb"):
-    """An open Session on `live`, as the run hands one to a test."""
-    session = SessionDef(engine, engine=engine).make(opener=Opener(None, lambda d: live))
-    session.start()
-    return session
+    """An open engine instance on `live`, as the run leases one to a test."""
+    d = duckdb_engine(engine) if engine == "duckdb" else BootedEngineDef(engine)
+    instance = d.make()
+    instance.runtime = Runtime(shell=lambda env: live, booted={engine: live})
+    instance.start()
+    return instance
 
 
-def ctx_for(test, tmp_path, *, engine=None, session=None, services=None, **kwargs):
+def ctx_for(test, tmp_path, *, engine=None, session=None, services=None, test_env=None, **kwargs):
+    """A Ctx with a Client on DuckDB, and on the fake engine where the test uses it."""
     kwargs.setdefault("session_factory", FakeSession)
-    kwargs.setdefault("test_env", resolve(test))
+    engines = [held(session or FakeSession())]
+    if "fake" in test.engines:
+        engines.append(held(engine or FakeEngine(), "fake"))
     return Ctx(
         test,
         temp_dir=str(tmp_path),
         duckdb_bin="no-duckdb",
-        sessions={"duckdb": held(session or FakeSession()), "fake": held(engine or FakeEngine(), "fake")},
+        session=Session(test_env or resolve(test), engines),
         services=services,
         **kwargs,
     )
@@ -707,7 +713,7 @@ def ctx_for(test, tmp_path, *, engine=None, session=None, services=None, **kwarg
 
 def test_failed_checks_are_reported_before_the_abort_and_the_outcome_is_failed(tmp_path):
     def body(ctx):
-        c = ctx.engine("fake")
+        c = ctx.client("fake")
         c.expects("SELECT 1", [2], on_fail="continue")
         c.expects("SELECT 1", [3], on_fail="continue")
         raise ValueError("then the body broke")
@@ -727,7 +733,7 @@ def test_the_binary_names_a_failed_file_as_the_test_id_does():
 
 def test_failed_checks_alone_fail_the_test(tmp_path):
     def body(ctx):
-        ctx.engine("fake").expects("SELECT 1", [2], on_fail="continue")
+        ctx.client("fake").expects("SELECT 1", [2], on_fail="continue")
 
     test = py_test(body, engines=["fake"])
     assert _run_body(test, ctx_for(test, tmp_path))[0] == "failed"
@@ -735,7 +741,7 @@ def test_failed_checks_alone_fail_the_test(tmp_path):
 
 def test_a_failed_check_stays_a_failure_when_a_setup_fails_after_it(tmp_path):
     def body(ctx):
-        c = ctx.engine("fake")
+        c = ctx.client("fake")
         c.expects("SELECT 1", [2], on_fail="continue")
         c.setup("SELECT boom")
 
@@ -747,7 +753,7 @@ def test_a_failed_check_stays_a_failure_when_a_setup_fails_after_it(tmp_path):
 
 def test_a_failed_setup_is_an_error_not_a_failure(tmp_path):
     def body(ctx):
-        ctx.engine("fake").setup("SELECT boom")
+        ctx.client("fake").setup("SELECT boom")
 
     test = py_test(body, engines=["fake"])
     outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path))
@@ -758,7 +764,7 @@ def test_a_body_can_branch_on_a_statement_that_failed_and_the_test_still_passes(
     seen = []
 
     def body(ctx):
-        c = ctx.engine("fake")
+        c = ctx.client("fake")
         seen.append(c.exec("SELECT 1"))
         seen.append(c.exec("SELECT boom"))
 
@@ -774,7 +780,7 @@ def test_teardowns_run_in_reverse_order_also_after_an_abort(tmp_path, aborts):
     engine = FakeEngine()
 
     def body(ctx):
-        c = ctx.engine("fake")
+        c = ctx.client("fake")
         c.teardown("DROP first")
         c.teardown("DROP second")
         c.oks("SELECT boom" if aborts else "SELECT 1")
@@ -789,7 +795,7 @@ def test_a_teardown_that_fails_is_an_error_and_the_others_still_run(tmp_path):
     engine = FakeEngine()
 
     def body(ctx):
-        c = ctx.engine("fake")
+        c = ctx.client("fake")
         c.teardown("DROP last")
         c.teardown("DROP boom")
 
@@ -801,8 +807,8 @@ def test_a_teardown_that_fails_is_an_error_and_the_others_still_run(tmp_path):
 
 def test_an_engine_the_test_did_not_declare_is_refused(tmp_path):
     ctx = ctx_for(py_test(passes), tmp_path)
-    with pytest.raises(KeyError, match="not declared by this test"):
-        ctx.engine("fake")
+    with pytest.raises(KeyError, match="not one this test leases"):
+        ctx.client("fake")
 
 
 # -----------------------------------------------------------------------------
@@ -897,7 +903,7 @@ def test_the_test_environment_comes_before_the_bodys_own_preamble_in_the_order_o
 
     def body(ctx):
         ctx.duckdb("SELECT 1;")
-        seen.extend(ctx._duck.live.preambles)
+        seen.extend(ctx.session.duckdb.engine.live.preambles)
 
     variant = Variant(
         "s3",
@@ -1067,7 +1073,7 @@ def test_duckdb_gets_a_home_under_the_run_dir_for_both_kinds_of_session(tmp_path
     seen = {}
 
     def body(ctx):
-        seen["session"] = ctx._duck.live.home
+        seen["session"] = ctx.session.duckdb.engine.live.home
         seen["per_call"] = ctx.duckdb(session="per_call")._run.__self__._home.path
 
     _, run_dir, _, _ = go(tmp_path, [py_test(body)])
@@ -1080,7 +1086,7 @@ def test_the_timeout_of_a_duckdb_client_reaches_each_of_its_statements(tmp_path)
     def body(ctx):
         ctx.duckdb(timeout=7).oks("SELECT 1")
         ctx.duckdb().oks("SELECT 2")
-        seen.extend(ctx._duck.live.timeouts)
+        seen.extend(ctx.session.duckdb.engine.live.timeouts)
         seen.append(ctx.duckdb(session="per_call", timeout=9)._run.__self__._timeout)
 
     assert go(tmp_path, [py_test(body)])[0] == 0

@@ -2,7 +2,8 @@ import os
 import tempfile
 
 from ducktest5 import default, match
-from ducktest5.resources import SessionDef, StorageDef
+from ducktest5.engines.duckdb import duckdb_engine
+from ducktest5.resources import StorageDef
 
 # Under the system temp directory, so a run writes nothing into the repo.
 SCRATCH = os.path.join(tempfile.gettempdir(), "ducktest-ladder")
@@ -12,10 +13,10 @@ STORAGES = [
     StorageDef("scratch_b", f"{SCRATCH}/scratch_b"),
 ]
 
-SESSIONS = [SessionDef("duck", requires=["parquet"])]
+SERVICES = [duckdb_engine("duck", requires=["parquet"])]
 
 RULES = [
-    default(bind={"storage": "scratch_a"}, sessions=["duck"]),
+    default(bind={"storage": "scratch_a"}, clients=["duck"]),
     match("rule_matched.test", tags=["matched"]),
     match("rule_matched_body.py", tags=["matched"]),
     match("own_inputs.py", tags=["matched"]),

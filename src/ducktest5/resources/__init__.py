@@ -16,6 +16,5 @@ from .base import (  # noqa: F401
 from .contract import check_contract  # noqa: F401
 from .credential import CredentialDef, from_env, pick_credentials  # noqa: F401
 from .service import Service, ServiceDef, ServiceNotUp  # noqa: F401
-from .engine import EngineDef  # noqa: F401
+from .engine import BootedEngineDef, Engine, EngineDef  # noqa: F401
 from .storage import StorageDef, local_path, scheme_of  # noqa: F401
-from .session import SessionDef, Session, Opener, duckdb_session, spark_session  # noqa: F401
