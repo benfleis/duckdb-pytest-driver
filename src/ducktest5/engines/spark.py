@@ -130,6 +130,8 @@ def _boot_delta(log_path, packages=()):
         # few commits, on every statement. Test tables are tiny.
         .config("spark.databricks.delta.snapshotPartitions", "1")
         .config("spark.default.parallelism", "2")
+        # Its default is spark-warehouse/ in the working directory, which Spark makes at boot.
+        .config("spark.sql.warehouse.dir", os.path.join(os.path.dirname(os.path.abspath(log_path)), "spark-warehouse"))
     )
     with _stdio_to(log_path):
         session = configure_spark_with_delta_pip(builder, extra_packages=list(packages)).getOrCreate()
