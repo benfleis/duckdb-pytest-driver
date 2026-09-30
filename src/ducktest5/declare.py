@@ -27,11 +27,11 @@ class Variant:
                  `local_temp_dir_root`. A remote root and its local mirror are one storage seen two
                  ways. A Python body reads them as `ctx.roots`,
                  and `ctx.location()` puts what it makes under `temp_dir_root`.
-    `env`        the process environment of the engine that runs the test, and `env_unset` what to
-                 take out of it: for what DuckDB or a library inside it reads with getenv (AWS_*,
-                 AZURE_*, HTTP_PROXY). The absence of a variable is a fact a literal cannot express.
-                 A name set to None in `env` is unset too. A test that unsets every name a
-                 credential delivers does not get that credential, even where its scope matches.
+    `process_env`  the process environment of the engine that runs the test: a value sets a
+                 variable, None unsets it. For what DuckDB or a library inside it reads with getenv
+                 (AWS_*, AZURE_*, HTTP_PROXY); the absence of a variable is a fact a literal cannot
+                 express. A test that unsets every name a credential delivers does not get that
+                 credential, even where its scope matches.
 
     `engines` are what the test then needs, and `tags` name it for a selection. `inputs` names
     STORAGES, CREDENTIALS and SERVICES: a bare id is read-write, `{"id": "ro"}` read-only; a bound
@@ -47,8 +47,7 @@ class Variant:
     tags: tuple = ()
     requires: tuple = ()
     roots: dict = field(default_factory=dict)
-    env: dict = field(default_factory=dict)
-    env_unset: tuple = ()
+    process_env: dict = field(default_factory=dict)
     inputs: tuple = ()
 
 

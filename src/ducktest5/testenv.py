@@ -11,7 +11,7 @@ the chosen value of every variant axis; both deliveries read it, under the test'
     init_sql    the statements after them, in order: the settings as `SET`, then the variants' SQL
     values      the names a body writes as `{NAME}`, and each axis name -> the id of its value
     roots       the binary's four roots, where a variant gives them; `ctx.roots` for a Python body
-    env         the process environment of the engine, and `env_unset` what to take out of it
+    process_env the process environment of the engine: a value sets a variable, None unsets it
 
 A storage input gives roots and values; a credential gives secrets, which reach the engine only as
 process environment (named to the binary in `env_passthrough`), read when the process starts. For a
@@ -52,8 +52,8 @@ _LABELS = {
     "sql": "init sql",
     "value": "values",
     "root": "root",
-    "env": "env",
-    "unset": "env unset",
+    "env": "process env",
+    "unset": "process env unset",
 }
 
 
@@ -82,9 +82,9 @@ class TestEnv:
     secret_requires: list = field(default_factory=list)  # Entry(value=extension) that secret_sql needs
     values: dict = field(default_factory=dict)  # name -> Entry
     roots: dict = field(default_factory=dict)  # one of ROOTS -> Entry
-    env: dict = field(default_factory=dict)  # name -> Entry
-    env_unset: dict = field(default_factory=dict)  # name -> Entry(value=name)
-    env_state: dict = field(default_factory=dict)  # name -> "set"/"unset", whichever last touched it
+    process_env: dict = field(default_factory=dict)  # name -> Entry
+    process_unset: dict = field(default_factory=dict)  # name -> Entry(value=name)
+    process_state: dict = field(default_factory=dict)  # name -> "set"/"unset", whichever last touched it
     pending: list = field(default_factory=list)  # Entry(value=field name) a service must fill in
     passthrough: list = field(default_factory=list)  # names of the credentials' secrets in `env`
 
@@ -112,7 +112,7 @@ class TestEnv:
 
     @property
     def changes_environment(self):
-        return bool(self.env or self.env_unset)
+        return bool(self.process_env or self.process_unset)
 
     def environ(self, base=None):
         """The process environment for the engine of this test, or None when it is this process's."""
@@ -120,9 +120,9 @@ class TestEnv:
             return None
         base = os.environ if base is None else base
         out = dict(base)
-        # Replay in axis order so an env_unset after an env from an earlier axis wins, and vice versa.
-        for name, action in self.env_state.items():
-            value = self.env[name].value if action == "set" else None
+        # Replay in axis order so an unset after a set from an earlier axis wins, and vice versa.
+        for name, action in self.process_state.items():
+            value = self.process_env[name].value if action == "set" else None
             value = value() if callable(value) else value
             if value is None:
                 out.pop(name, None)
@@ -151,8 +151,10 @@ class TestEnv:
                 "values": {k: str(e.value) for k, e in sorted(self.values.items())},
                 "roots": {k: str(e.value) for k, e in sorted(self.roots.items())},
                 # A secret read at delivery counts by where it is read from, never by its value.
-                "env": {k: e.source if callable(e.value) else str(e.value) for k, e in sorted(self.env.items())},
-                "env_unset": sorted(self.env_unset),
+                "process_env": {
+                    k: e.source if callable(e.value) else str(e.value) for k, e in sorted(self.process_env.items())
+                },
+                "process_unset": sorted(self.process_unset),
                 "pending": sorted(e.source for e in self.pending),
             },
             sort_keys=True,
@@ -169,8 +171,8 @@ class TestEnv:
             *self.init_sql,
             *self.values.values(),
             *self.roots.values(),
-            *self.env.values(),
-            *self.env_unset.values(),
+            *self.process_env.values(),
+            *self.process_unset.values(),
             *self.pending,
         ]
 
@@ -259,18 +261,14 @@ def resolve(test, made=None, key=None, default=None):
             if name not in ROOTS:
                 raise UsageError(f"AXES {axis}={v.id}: root {name!r} is not one of {ROOTS}")
             env.roots[name] = Entry(value, where, kind="root", name=name)
-        # One ordered pass in axis order: within an axis, its env entries set before its env_unset
-        # entries remove; the last of the two to touch a name, across axes, wins (see environ()).
-        for name, value in v.env.items():
+        # In axis order: the last axis to set or unset a name wins (see environ()).
+        for name, value in v.process_env.items():
             if value is None:
-                env.env_unset[name] = Entry(name, where, kind="unset")
-                env.env_state[name] = "unset"
+                env.process_unset[name] = Entry(name, where, kind="unset")
+                env.process_state[name] = "unset"
                 continue
-            env.env[name] = Entry(value, where, kind="env", name=name, secret=bool(_SECRET_NAME.search(name)))
-            env.env_state[name] = "set"
-        for name in v.env_unset:
-            env.env_unset[name] = Entry(name, where, kind="unset")
-            env.env_state[name] = "unset"
+            env.process_env[name] = Entry(value, where, kind="env", name=name, secret=bool(_SECRET_NAME.search(name)))
+            env.process_state[name] = "set"
         if v.init_sql:
             env.init_sql.append(Entry(v.init_sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
     scanning, made = made is None, made or Made()
@@ -349,9 +347,9 @@ def _deliver(env, definition, mode, scanning, value, made, key=None):
         else:
             value(name, out.get(), where)
     for name, out in secrets.items():
-        if name in env.env:
-            raise UsageError(f"{name!r} is given by both {env.env[name].source} and {where}")
-        env.env[name] = Entry(out.value, f"{where}: {out.source}", kind="env", name=name, secret=True)
-        env.env_state[name] = "unset" if out.unset else "set"
+        if name in env.process_env:
+            raise UsageError(f"{name!r} is given by both {env.process_env[name].source} and {where}")
+        env.process_env[name] = Entry(out.value, f"{where}: {out.source}", kind="env", name=name, secret=True)
+        env.process_state[name] = "unset" if out.unset else "set"
         env.passthrough.append(name)
     return instance

@@ -145,7 +145,7 @@ def test_a_test_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_p
         ctx.duckdb().oks("SELECT 1")
 
     tests = [
-        py_test(body, {"auth": Variant("profile", env={"AWS_PROFILE": "ducktest"})}, path="test/env.py"),
+        py_test(body, {"auth": Variant("profile", process_env={"AWS_PROFILE": "ducktest"})}, path="test/env.py"),
         py_test(body, path="test/plain.py"),
     ]
     assert go(tmp_path, tests, workers=2, shell_factory=Counted)[0] == 0

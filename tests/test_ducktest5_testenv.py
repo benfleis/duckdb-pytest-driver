@@ -71,16 +71,16 @@ def test_a_root_the_binary_does_not_have_is_refused():
 
 
 def test_the_environment_of_the_engine_process_is_this_process_with_the_variant_on_top():
-    variant = Variant("no-key", env={"AWS_PROFILE": "ducktest"}, env_unset=("PATH",))
+    variant = Variant("no-key", process_env={"AWS_PROFILE": "ducktest", "PATH": None})
     env = resolve(make_test({"auth": variant}))
     assert env.changes_environment
     assert env.environ({"PATH": "/bin", "HOME": "/home/me"}) == {"HOME": "/home/me", "AWS_PROFILE": "ducktest"}
     assert resolve(make_test()).environ() is None  # nothing to change: the engine keeps ours
 
 
-def test_env_unset_removes_what_an_earlier_axis_env_set():
-    sets_x = Variant("sets", env={"X": "1"})
-    unsets_x = Variant("unsets", env_unset=("X",))
+def test_an_unset_removes_what_an_earlier_axis_set():
+    sets_x = Variant("sets", process_env={"X": "1"})
+    unsets_x = Variant("unsets", process_env={"X": None})
 
     later_wins = resolve(make_test({"a": sets_x, "b": unsets_x}))
     assert "X" not in later_wins.environ({"HOME": "/home"})
@@ -90,17 +90,17 @@ def test_env_unset_removes_what_an_earlier_axis_env_set():
 
 
 def test_a_name_that_says_credential_is_masked():
-    variant = Variant("s3", env={"AWS_SECRET_ACCESS_KEY": "hunter2"})
+    variant = Variant("s3", process_env={"AWS_SECRET_ACCESS_KEY": "hunter2"})
     env = resolve(make_test({"storage": variant}, values={"token": "s3cr3t"}))
     printed = "\n".join(env.lines())
-    assert "values: token=***" in printed and "env: AWS_SECRET_ACCESS_KEY=***" in printed
+    assert "values: token=***" in printed and "process env: AWS_SECRET_ACCESS_KEY=***" in printed
     assert "s3cr3t" not in printed and "hunter2" not in printed
-    assert env.env["AWS_SECRET_ACCESS_KEY"].value == "hunter2"  # masked for a reader, delivered whole
+    assert env.process_env["AWS_SECRET_ACCESS_KEY"].value == "hunter2"  # masked for a reader, delivered whole
 
 
 def test_a_secret_named_value_is_masked_however_it_was_given():
     via_values = resolve(make_test({"a": Variant("v", values={"AWS_SECRET_ACCESS_KEY": "s3cr3t-1"})}))
-    via_env = resolve(make_test({"a": Variant("v", env={"AWS_SECRET_ACCESS_KEY": "s3cr3t-2"})}))
+    via_env = resolve(make_test({"a": Variant("v", process_env={"AWS_SECRET_ACCESS_KEY": "s3cr3t-2"})}))
     via_settings = resolve(make_test({"a": Variant("v", settings={"AWS_SECRET_ACCESS_KEY": "s3cr3t-3"})}))
     for env, secret in ((via_values, "s3cr3t-1"), (via_env, "s3cr3t-2"), (via_settings, "s3cr3t-3")):
         printed = "\n".join(env.lines())
@@ -109,9 +109,9 @@ def test_a_secret_named_value_is_masked_however_it_was_given():
         assert secret not in "\n".join(r["is"] for r in env.record())
 
 
-def test_env_unset_is_never_masked():
-    env = resolve(make_test({"a": Variant("v", env_unset=("AWS_SECRET_ACCESS_KEY",))}))
-    assert "env unset: AWS_SECRET_ACCESS_KEY  <- AXES a=v" in env.lines()
+def test_an_unset_is_never_masked():
+    env = resolve(make_test({"a": Variant("v", process_env={"AWS_SECRET_ACCESS_KEY": None})}))
+    assert "process env unset: AWS_SECRET_ACCESS_KEY  <- AXES a=v" in env.lines()
 
 
 def test_init_sql_is_named_by_its_source_and_never_printed():
@@ -127,8 +127,8 @@ def test_two_tests_share_a_key_only_when_everything_the_process_gets_is_the_same
         make_test({"k": plain}, values={"region": "us"}),
         make_test({"k": Variant("plain", requires=("httpfs",))}, values={"region": "eu"}),
         make_test({"k": Variant("plain", roots={"data_dir": "/d"})}, values={"region": "eu"}),
-        make_test({"k": Variant("plain", env={"AWS_PROFILE": "p"})}, values={"region": "eu"}),
-        make_test({"k": Variant("plain", env_unset=("AWS_PROFILE",))}, values={"region": "eu"}),
+        make_test({"k": Variant("plain", process_env={"AWS_PROFILE": "p"})}, values={"region": "eu"}),
+        make_test({"k": Variant("plain", process_env={"AWS_PROFILE": None})}, values={"region": "eu"}),
         make_test({"k": plain}, values={"region": "eu"}, inputs=[StoreDef()]),
     ):
         assert resolve(other).key() != same
@@ -147,7 +147,7 @@ def test_a_service_input_gives_its_attributes_as_values_once_it_is_up_and_never_
     made.create(StoreDef())
     env = resolve(test, made)
     assert env.value_map == {"STORE_ENDPOINT": "http://store"}
-    assert "s3cr3t" not in "\n".join(env.lines()) and not env.env
+    assert "s3cr3t" not in "\n".join(env.lines()) and not env.process_env
 
 
 def test_a_python_body_adds_values_and_sql_for_the_test_file_beside_it():

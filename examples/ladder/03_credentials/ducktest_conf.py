@@ -16,7 +16,9 @@ AXES = {
     "auth": [
         Variant("key", inputs=["fake_key"], values={"scoped_rows": 1}),
         # Its scope matches, so the credential is hidden by unsetting the names it delivers.
-        Variant("none", env={"AWS_ACCESS_KEY_ID": None, "AWS_SECRET_ACCESS_KEY": None}, values={"scoped_rows": 0}),
+        Variant(
+            "none", process_env={"AWS_ACCESS_KEY_ID": None, "AWS_SECRET_ACCESS_KEY": None}, values={"scoped_rows": 0}
+        ),
     ]
 }
 

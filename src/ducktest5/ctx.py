@@ -6,7 +6,7 @@ from .binary import UsageError
 from .engines.duckdb import DEFAULT_TIMEOUT_S, DuckDBPerCall, DuckDBShell
 from .leases import DEFAULT, identity, template_names
 from .resources.client import Client, Env, SetupFailed, SqlError
-from .resources.engine import process_env
+from .resources.engine import environ
 from .steps import step
 
 SHELLS = ("per_run", "per_client", "per_call")
@@ -117,12 +117,12 @@ class Context:
         live = engine.live
         if shell != "per_run":
             preamble = "\n".join(x for x in (*engine.preamble().sql, preamble) if x)
-            environ = process_env(engine.definition.env)
+            process = environ(engine.definition.process_env)
         if shell == "per_call":
-            per_call = DuckDBPerCall(self._duckdb_bin, preamble, timeout=timeout, home=self._duckdb_home, env=environ)
+            per_call = DuckDBPerCall(self._duckdb_bin, preamble, timeout=timeout, home=self._duckdb_home, env=process)
             return self._own_client("duckdb", per_call.run)
         if shell == "per_client":
-            live = self._shell_factory(self._duckdb_bin, home=self._duckdb_home, env=environ)
+            live = self._shell_factory(self._duckdb_bin, home=self._duckdb_home, env=process)
             live.begin_test()
             self.teardowns.append(live.close)
         try:

@@ -97,8 +97,7 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
                 requires=["httpfs"],
                 settings={"s3_region": "eu"},
                 roots={"data_dir": "s3://bucket/data"},
-                env={"AWS_PROFILE": "ducktest"},
-                env_unset=["AWS_ACCESS_KEY_ID"],
+                process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None},
             )]}
             EXCLUDE = ["generated"]
             RULES = [default(tags=["all"], values={"region": "eu"}), match("a/**", variants=["storage"])]
@@ -114,8 +113,8 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
           values: storage=s3  <- AXES storage
           values: region=eu  <- ducktest_conf.py: default
           root: data_dir=s3://bucket/data  <- AXES storage=s3
-          env: AWS_PROFILE=ducktest  <- AXES storage=s3
-          env unset: AWS_ACCESS_KEY_ID  <- AXES storage=s3
+          process env: AWS_PROFILE=ducktest  <- AXES storage=s3
+          process env unset: AWS_ACCESS_KEY_ID  <- AXES storage=s3
           root: <from service store>  <- storage served
         """
     )

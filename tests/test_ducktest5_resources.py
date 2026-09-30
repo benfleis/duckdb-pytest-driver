@@ -491,7 +491,7 @@ def test_scan_env_shows_the_storage_roots_and_the_credential_masked(tree, capsys
           values: storage=local  <- AXES storage
           root: temp_dir_root=ROOT/store/temp/<run_token>  <- storage local
           root: data_dir=ROOT/test/data  <- default storage
-          env: AWS_SECRET_ACCESS_KEY=***  <- credential local-key: env DT_SECRET
+          process env: AWS_SECRET_ACCESS_KEY=***  <- credential local-key: env DT_SECRET
         """
     )
 
@@ -535,7 +535,7 @@ def test_a_variant_naming_an_undeclared_input_is_a_usage_error(tree, capsys):
 def test_a_credential_that_does_not_resolve_waits_at_scan(tree, monkeypatch, capsys):
     monkeypatch.delenv("DT_SECRET")
     assert main(["scan", "test/a/x.test", "--env"]) == 0
-    assert "env: <credential 'local-key': none of its sources resolved" in capsys.readouterr().out
+    assert "process env: <credential 'local-key': none of its sources resolved" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

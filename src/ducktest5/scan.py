@@ -64,9 +64,7 @@ def _inputs(bindings, combo, project):
         modes[d] = RW if RW in (mode, modes.get(d)) else mode
     storages = {d.id: mode for d, mode in modes.items() if isinstance(d, StorageDef)}
     named = [d for d in modes if isinstance(d, CredentialDef)]
-    unset = {name for _, v in combo for name, value in v.env.items() if value is None} | {
-        name for _, v in combo for name in v.env_unset
-    }
+    unset = {name for _, v in combo for name, value in v.process_env.items() if value is None}
     # A test that unsets every name a credential delivers must not see it, whatever its scope.
     credentials = [
         c

@@ -71,7 +71,7 @@ def test_identity_follows_the_inputs_and_the_env_it_is_bound_to(tmp_path):
     storage = StorageDef("local", str(tmp_path))
     bound = duckdb_engine("duck", inputs=[storage])
     assert bound.identity({"local": "a"}) != bound.identity({"local": "b"})
-    assert duckdb_engine("duck").identity() != duckdb_engine("duck").with_(env={"AWS_PROFILE": None}).identity()
+    assert duckdb_engine("duck").identity() != duckdb_engine("duck").with_(process_env={"AWS_PROFILE": None}).identity()
 
 
 def test_an_unknown_scope_is_a_usage_error():

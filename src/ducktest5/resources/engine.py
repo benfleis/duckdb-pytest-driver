@@ -39,8 +39,8 @@ class Runtime:
 @dataclass(eq=False)
 class EngineDef(ServiceDef):
     """An engine. `requires` and `settings` are loaded and set before every test; `init` are
-    statements that follow them, and `env` sets (a value) or unsets (None) process variables of the
-    engine. They are part of its identity; `scope` and `timeout` (for one statement, in seconds) are
+    statements that follow them, and `process_env` sets (a value) or unsets (None) process variables
+    of the engine. They are part of its identity; `scope` and `timeout` (for one statement, in seconds) are
     not.
 
     A kind is a dataclass with these fields, then its own; it has a `dialect`, the way its preamble
@@ -57,7 +57,7 @@ class EngineDef(ServiceDef):
     requires: list = field(default_factory=list)
     settings: dict = field(default_factory=dict)
     init: list = field(default_factory=list)
-    env: dict = field(default_factory=dict)
+    process_env: dict = field(default_factory=dict)
     scope: str = WORKER
     timeout: float | None = None
     address: str | None = None
@@ -185,12 +185,12 @@ class BootedEngineDef(EngineDef):
         return handle.for_worker() if hasattr(handle, "for_worker") else handle
 
 
-def process_env(env: dict) -> dict | None:
-    """The process environment an engine with `env` gets; None when it is this process's."""
-    if not env:
+def environ(process_env: dict) -> dict | None:
+    """The process environment an engine with `process_env` gets; None when it is this process's."""
+    if not process_env:
         return None
     out = dict(os.environ)
-    for name, value in env.items():
+    for name, value in process_env.items():
         value = value() if callable(value) else value
         if value is None:
             out.pop(name, None)

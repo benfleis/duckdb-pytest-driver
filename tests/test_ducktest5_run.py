@@ -295,7 +295,7 @@ def test_a_root_the_binary_does_not_have_is_a_usage_error(tmp_path):
 
 def test_a_variant_sets_and_unsets_variables_in_the_environment_of_the_unittest_process(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "LEAKED-FROM-THE-CALLER")
-    variant = Variant("env", env={"AWS_PROFILE": "ducktest"}, env_unset=("AWS_ACCESS_KEY_ID",))
+    variant = Variant("env", process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None})
     _, run_dir, report, _ = go(tmp_path, [sql_test("a_showenv.test", {"auth": variant})], keep=True)
     output = (run_dir / report["tests"][0]["batch"] / "output.txt").read_text()
     printed = json.loads(output.split("PROCESS_ENV ")[1].splitlines()[0])
@@ -307,7 +307,7 @@ def test_tests_with_other_environments_never_share_a_unittest_process(tmp_path):
         "plain": Variant("plain"),
         "loaded": Variant("loaded", requires=("httpfs",)),
         "rooted": Variant("rooted", roots={"data_dir": "/d"}),
-        "noisy": Variant("noisy", env={"AWS_PROFILE": "p"}),
+        "noisy": Variant("noisy", process_env={"AWS_PROFILE": "p"}),
     }
     tests = [sql_test(f"t{n}.test", {"k": v}) for n, v in enumerate(axis.values())]
     _, _, report, _ = go(tmp_path, tests + [sql_test("t9.test", {"k": axis["plain"]})], keep=True)
@@ -474,17 +474,16 @@ def test_a_failure_says_what_the_environment_of_the_process_was(tmp_path):
         "env",
         requires=("httpfs",),
         roots={"data_dir": "s3://bucket/data"},
-        env={"AWS_PROFILE": "ducktest", "AWS_SECRET_ACCESS_KEY": "hunter2"},
-        env_unset=("AZURE_CLIENT_SECRET",),
+        process_env={"AWS_PROFILE": "ducktest", "AWS_SECRET_ACCESS_KEY": "hunter2", "AZURE_CLIENT_SECRET": None},
     )
     test = sql_test("b_fail.test", {"auth": variant})
     _, _, _, text = go(tmp_path, [test])
     block = text.split("--- " + test.id)[1]
     assert "\n  require: httpfs  <- AXES auth=env\n" in block
     assert "\n  root: data_dir=s3://bucket/data  <- AXES auth=env\n" in block
-    assert "\n  env: AWS_PROFILE=ducktest  <- AXES auth=env\n" in block
-    assert "\n  env: AWS_SECRET_ACCESS_KEY=***  <- AXES auth=env\n" in block  # the name says it is one
-    assert "\n  env unset: AZURE_CLIENT_SECRET  <- AXES auth=env\n" in block
+    assert "\n  process env: AWS_PROFILE=ducktest  <- AXES auth=env\n" in block
+    assert "\n  process env: AWS_SECRET_ACCESS_KEY=***  <- AXES auth=env\n" in block  # the name says it is one
+    assert "\n  process env unset: AZURE_CLIENT_SECRET  <- AXES auth=env\n" in block
     assert "hunter2" not in text
 
 
@@ -974,7 +973,7 @@ def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(
     def body(ctx):
         ctx.duckdb().oks("SELECT 1")
 
-    variant = Variant("no-key", env={"AWS_PROFILE": "ducktest"}, env_unset=("AWS_ACCESS_KEY_ID",))
+    variant = Variant("no-key", process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None})
     tests = [py_test(body, path="test/plain.py"), py_test(body, {"auth": variant}, path="test/env.py")]
     assert go(tmp_path, tests, shell_factory=factory, workers=1)[0] == 0
     plain, own = sorted(made, key=lambda s: s.env is not None)

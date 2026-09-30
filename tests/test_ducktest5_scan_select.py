@@ -1083,14 +1083,14 @@ def test_an_axis_value_that_unsets_a_credentials_names_hides_it(tmp_path, monkey
 
         STORAGES = [StorageDef("bucket", "s3://bucket")]
         CREDENTIALS = [CredentialDef("key", sources=[from_env({"DT_KEY": "AWS_ACCESS_KEY_ID"})], scopes=["bucket"])]
-        AXES = {"auth": [Variant("key"), Variant("none", env={"AWS_ACCESS_KEY_ID": None})]}
+        AXES = {"auth": [Variant("key"), Variant("none", process_env={"AWS_ACCESS_KEY_ID": None})]}
         RULES = [default(bind={"storage": "bucket"}, variants=["auth"])]
     """
     tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
     by_auth = {c.axis_values["auth"].id: c for c in tests}
     assert [d.id for d, _ in by_auth["key"].inputs] == ["bucket", "key"]
     assert [d.id for d, _ in by_auth["none"].inputs] == ["bucket"]
-    assert "env unset: AWS_ACCESS_KEY_ID  <- AXES auth=none" in resolve(by_auth["none"]).lines()
+    assert "process env unset: AWS_ACCESS_KEY_ID  <- AXES auth=none" in resolve(by_auth["none"]).lines()
 
 
 def test_an_engine_is_declared_among_the_engines_not_the_services(tmp_path):
