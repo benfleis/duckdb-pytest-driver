@@ -98,7 +98,7 @@ def test(
 
     `engines` names the engines among the project's SERVICES the body drives. Each gets a Client
     of its own, `ctx.client(name)`; a test that names no DuckDB engine gets a Client on the default
-    one.
+    one: the project's DuckDB engine when it declares exactly one, else the built-in one.
 
     `bind` maps a role to one of the project's STORAGES, CREDENTIALS or SERVICES, by id; it
     replaces what a rule binds to the same role. An axis value that binds that role too is an

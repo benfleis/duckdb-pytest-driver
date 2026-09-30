@@ -1,7 +1,9 @@
 """The Session of one test: a Client on each engine it names, and what the test gathers as it runs.
 
 A test names engines on `@test(engines=...)`, by a rule or by a variant; each gets a Client, and one
-that names no DuckDB engine gets a Client on the default one. Each engine is bound to what the test gets:
+that names no DuckDB engine gets a Client on the default one: the project's DuckDB engine when it
+declares exactly one, the built-in bare one when it declares none. With several, a test that names
+none is a scan error. Each engine is bound to what the test gets:
 its storage and credential inputs, and, for a DuckDB engine, the test environment's requires, init
 SQL and process variables. What it is bound to is part of the engine's identity, so a test with
 other inputs leases another instance.
@@ -36,10 +38,21 @@ def named(test, project) -> list:
     return [project.engines[name] for name in test.engines] if project else []
 
 
+def default_of(test, project):
+    """The DuckDB engine of a test that names none."""
+    declared = [d for d in project.engines.values() if d.kind == DEFAULT.kind] if project else []
+    if len(declared) > 1:
+        raise UsageError(
+            f"{test.id} names no DuckDB engine, and the project declares {sorted(d.id for d in declared)}; "
+            "name one with engines=, for every test with default(engines=[...])"
+        )
+    return declared[0] if declared else DEFAULT
+
+
 def duckdb_of(test, project):
     """The DuckDB engine of a test: the one it names, else the default."""
     duckdb = [d for d in named(test, project) if d.kind == DEFAULT.kind]
-    return duckdb[0] if duckdb else DEFAULT
+    return duckdb[0] if duckdb else default_of(test, project)
 
 
 def check(definition, engines):
@@ -109,11 +122,15 @@ def planned(test, test_env, project) -> str:
 def lines(test, project) -> list[str]:
     """What `scan --env` says of each engine the test names: the dialect of its Client, and what the
     engine gives."""
+    shown = [(d, f"SERVICES {d.id}") for d in named(test, project)]
+    duckdb = duckdb_of(test, project)
+    if duckdb is not DEFAULT and all(d is not duckdb for d, _ in shown):
+        shown.insert(0, (duckdb, f"SERVICES {duckdb.id} (the only DuckDB engine)"))
     out = []
-    for d in named(test, project):
+    for d, source in shown:
         dialect = "unittest" if test.definition.type == SQLLOGIC else d.dialect
         where = f"engine {d.id}"
-        out.append(f"client: {d.id} ({dialect})  <- SERVICES {d.id}")
+        out.append(f"client: {d.id} ({dialect})  <- {source}")
         if d.requires:
             out.append(f"  require: {', '.join(d.requires)}  <- {where}")
         for name, value in d.settings.items():
@@ -132,7 +149,7 @@ def bind(test, test_env, project) -> list:
     """The engines the test leases, each bound to what the test gets."""
     engines = named(test, project)
     if not any(d.kind == DEFAULT.kind for d in engines):
-        engines.insert(0, DEFAULT)
+        engines.insert(0, default_of(test, project))
     inputs = [{d: mode} for d, mode in test.inputs]
     out = []
     for d in engines:
@@ -208,7 +225,7 @@ class Session:
     def client(self, name, *, table=None, **values):
         """The Client on the engine `name`; `table` is its `{t}`, `values` are for it alone."""
         if name not in self.clients:
-            raise KeyError(f"engine {name!r} is not one this test leases (clients={sorted(self.clients)})")
+            raise KeyError(f"engine {name!r} is not one this test leases; it leases {sorted(self.clients)}")
         return self.clients[name].bind(table=table, **values)
 
     def own_client(self, name, run, *, table=None, engine=None):

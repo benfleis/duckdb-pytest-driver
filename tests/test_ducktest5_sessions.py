@@ -2,6 +2,7 @@
 a lifecycle, and mints the Clients a test's Session holds."""
 
 import os
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -509,3 +510,53 @@ def test_a_test_file_runs_on_one_engine(tmp_path):
     (tmp_path / "x.test").write_text("query I\nSELECT 1\n----\n1\n")
     with pytest.raises(UsageError, match=r"names engines \['a', 'b'\]; a .test body runs on one engine"):
         scan(str(tmp_path), working_dir=str(tmp_path))
+
+
+# -----------------------------------------------------------------------------
+# The DuckDB engine of a test that names none
+#
+
+
+def engines_project(root, services, rules="[]"):
+    root.mkdir()
+    (root / "ducktest_conf.py").write_text(
+        "from ducktest5 import default\nfrom ducktest5.engines.duckdb import duckdb_engine\n"
+        f"SERVICES = [{services}]\nRULES = {rules}\n"
+    )
+    (root / "x.test").write_text("query I\nSELECT 1\n----\n1\n")
+    (root / "body.py").write_text("from ducktest5 import test\n\n@test()\ndef body(ctx):\n    pass\n")
+    tests, project = scan(str(root), working_dir=str(root))
+    return {t.definition.name: t for t in tests}, project
+
+
+def test_the_projects_only_duckdb_engine_is_the_default(tmp_path, monkeypatch, capsys):
+    tests, project = engines_project(tmp_path / "p", "duckdb_engine('duck', requires=['json'])")
+    assert [d.id for d in sessions.bind(tests["body"], resolve(tests["body"]), project)] == ["duck"]
+    assert sessions.environment(tests["x"], resolve(tests["x"]), project).extensions == ["json"]
+    monkeypatch.chdir(tmp_path / "p")
+    assert main(["scan", "--env"]) == 0
+    assert capsys.readouterr().out == (
+        "body.py::body\n"
+        "  client: duck (duckdb)  <- SERVICES duck (the only DuckDB engine)\n"
+        "    require: json  <- engine duck\n"
+        "x.test::x\n"
+        "  client: duck (unittest)  <- SERVICES duck (the only DuckDB engine)\n"
+        "    require: json  <- engine duck\n"
+    )
+
+
+def test_with_several_duckdb_engines_a_test_names_one(tmp_path):
+    with pytest.raises(UsageError, match=re.escape("names no DuckDB engine, and the project declares ['a', 'b']")):
+        engines_project(tmp_path / "unnamed", "duckdb_engine('a'), duckdb_engine('b')")
+    tests, project = engines_project(
+        tmp_path / "named", "duckdb_engine('a'), duckdb_engine('b')", "[default(engines=['b'])]"
+    )
+    assert {name: sessions.duckdb_of(t, project).id for name, t in tests.items()} == {"body": "b", "x": "b"}
+
+
+def test_with_no_duckdb_engine_a_test_runs_on_the_built_in_one(tmp_path, monkeypatch, capsys):
+    tests, project = engines_project(tmp_path / "p", "")
+    assert [sessions.duckdb_of(t, project) for t in tests.values()] == [sessions.DEFAULT, sessions.DEFAULT]
+    monkeypatch.chdir(tmp_path / "p")
+    assert main(["scan", "--env"]) == 0
+    assert capsys.readouterr().out == "body.py::body\nx.test::x\n"

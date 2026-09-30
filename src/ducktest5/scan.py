@@ -203,6 +203,8 @@ def scan(start, *, working_dir="."):
         unknown = [x for x in test.engines if x not in project.engines]
         if unknown:
             raise UsageError(f"{test.id} needs engines {unknown}, not declared in the root {CONF_FILE}")
+        # A test's DuckDB engine may come from the project, not the test: settle it before the run.
+        sessions.check(test.definition, [sessions.duckdb_of(test, project)])
     return tests, project
 
 
