@@ -50,8 +50,8 @@ run's own records hold the names of the secrets, never their values.
 
 The storage is now served over HTTP by a service the run starts: `HttpServerDef` serves a copy of
 `data/` from a thread, on a free port, and the storage `served` takes it as an input, with its root
-`{http.url}`. So `{DATA_DIR}` in `served.test`, and `ctx.roots["data_dir"]` in `served_body.py`, is
-that server's address, and both read `cities.csv` from it. Before a run the address is not known:
+`{http.url}`. So `{DATA_DIR}`, in `served.test` and in the SQL of `served_body.py`, is that server's
+address, and both read `cities.csv` from it. Before a run the address is not known:
 `scan --env` shows the root as `<from service http>`. The run starts the server before any test and
 stops it after the last one.
 
