@@ -28,18 +28,39 @@ def test_the_axis_value_reaches_the_body_as_a_value_without_the_author_repeating
     assert env.values["storage"].source == "AXES storage"
 
 
-def test_values_merge_rules_then_the_definition_then_the_params_then_the_variant():
+def test_values_merge_rules_then_the_definition_then_the_params_and_the_variant_adds_its_own():
     c = make_test(
-        {"storage": Variant("s3", values={"who": "variant"})},
+        {"storage": Variant("s3", values={"where": "variant"})},
         params_key="wide",
         params={"wide": {"who": "row", "width": 9}},
         values={"who": "rule", "region": "eu"},
         sources={("values", "region"): "ducktest_conf.py: default"},
     )
     env = resolve(c)
-    assert env.value_map == {"storage": "s3", "who": "variant", "region": "eu", "width": 9}
+    assert env.value_map == {"storage": "s3", "who": "row", "region": "eu", "width": 9, "where": "variant"}
     assert env.values["region"].source == "ducktest_conf.py: default"
     assert env.values["width"].source == "params 'wide'"
+
+
+@pytest.mark.parametrize(
+    "fields, other",
+    [
+        ({"params_key": "wide", "params": {"wide": {"storage": "x"}}}, "the params row 'wide'"),
+        (
+            {"values": {"STORAGE": "x"}, "sources": {("values", "STORAGE"): "ducktest_conf.py: default"}},
+            "ducktest_conf.py: default",
+        ),
+        ({"values": {"storage": "x"}}, "@test"),
+    ],
+)
+def test_a_value_given_by_an_axis_value_and_by_a_rule_or_the_params_row_is_an_error_naming_both(fields, other):
+    for axis_values in ({"storage": Variant("s3")}, {"auth": Variant("s3", values={"storage": "y"})}):
+        where = "AXES storage=s3" if "storage" in axis_values else "AXES auth=s3"
+        with pytest.raises(UsageError) as caught:
+            resolve(make_test(axis_values, **fields))
+        assert str(caught.value).endswith(
+            f": the value 'storage' is given by {where} and by {other}; give it in one place"
+        )
 
 
 def test_two_axis_values_giving_one_name_is_a_scan_error():

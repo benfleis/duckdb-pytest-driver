@@ -11,7 +11,7 @@ import itertools
 import os
 import sys
 
-from . import asserts, leases
+from . import asserts, leases, testenv
 from .binary import UsageError
 from .conf import check_suites, is_default, load_project, merge_suites
 from .declare import CONF_FILE
@@ -212,6 +212,7 @@ def scan(start, *, working_dir="."):
             raise UsageError(f"{test.id} needs engines {unknown}, not declared in the root {CONF_FILE}")
         # A test's DuckDB engine may come from the project, not the test: settle it before the run.
         leases.check(test.definition, [leases.duckdb_of(test, project)])
+        testenv.check_values(test)
     return tests, project
 
 

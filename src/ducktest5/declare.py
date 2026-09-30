@@ -22,7 +22,8 @@ class Variant:
                  `settings`, which it applies before any extension is there.
     `init_sql`   statements after those.
     `values`     what a body writes as `{name}`. The axis name itself is always a value, so a body
-                 can write `{storage}` for the id of this value.
+                 can write `{storage}` for the id of this value. A name given here, or the axis
+                 name, that a rule's `values=`, `@test` or the params row gives too is an error.
     `roots`      the binary's roots, any of `data_dir`, `local_data_dir`, `temp_dir_root`,
                  `local_temp_dir_root`. A remote root and its local mirror are one storage seen two
                  ways. A Python body reads them as `ctx.roots`,

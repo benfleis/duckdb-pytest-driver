@@ -228,20 +228,20 @@ def resolve(test, made=None, key=None, default=None):
     definition = test.definition
     env = TestEnv()
 
-    # Two axis-tier entries (an id or an explicit value) naming one thing is a scan-time error, not
-    # an overwrite; a rule or the test's params row may still lose to an axis value, silently.
+    ruled = _ruled_values(test)
     axis_given = {}
 
-    def _axis_value(name, value, source):
+    def _axis_value(name, value, source, shown=None):
         seen = axis_given.get(name.lower())
         if seen is not None and seen != source:
             raise UsageError(f"{test.id}: {name!r} is given by both {seen} and {source}")
+        _check_not_ruled(test, name, shown or source, ruled)
         axis_given[name.lower()] = source
         _put_value(env.values, name, _value_entry(name, value, source))
 
     # An axis value's id is a name the body can use without the author repeating it.
     for axis, v in test.axis_values.items():
-        _axis_value(axis, v.id, f"AXES {axis}")
+        _axis_value(axis, v.id, f"AXES {axis}", shown=f"AXES {axis}={v.id}")
     for name, value in definition.values.items():
         _put_value(env.values, name, _value_entry(name, value, definition.source_of("values", name)))
     if test.params_key is not None:
@@ -300,6 +300,30 @@ def resolve(test, made=None, key=None, default=None):
                     env.secret_requires.append(Entry(extension, where, kind="require"))
             env.secret_sql += [Entry(sql, where, kind="secret") for sql in rendered.sql]
     return env
+
+
+def _ruled_values(test):
+    """Lower-cased name -> where a rule, `@test` or the params row gives it."""
+    ruled = {name.lower(): test.definition.source_of("values", name) for name in test.definition.values}
+    if test.params_key is not None:
+        ruled.update({name.lower(): f"the params row {test.params_key!r}" for name in test.params})
+    return ruled
+
+
+def _check_not_ruled(test, name, axis_source, ruled):
+    if name.lower() in ruled:
+        raise UsageError(
+            f"{test.id}: the value {name!r} is given by {axis_source} and by {ruled[name.lower()]}; give it in one place"
+        )
+
+
+def check_values(test):
+    """At scan: a name given by an axis value is given nowhere else. What an input gives is known
+    only once it is made; `resolve()` checks that."""
+    ruled = _ruled_values(test)
+    for axis, v in test.axis_values.items():
+        for name in (axis, *v.values):
+            _check_not_ruled(test, name, f"AXES {axis}={v.id}", ruled)
 
 
 def _default_roots(env, default, run_token, key, inputs):

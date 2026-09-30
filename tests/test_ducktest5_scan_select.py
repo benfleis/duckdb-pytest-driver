@@ -1064,6 +1064,22 @@ def test_a_role_two_axis_values_of_one_test_both_bind_is_an_error(tmp_path):
         tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
 
 
+def test_a_value_an_axis_value_and_a_params_row_both_give_is_a_scan_error(tmp_path):
+    conf = """
+        from ducktest5 import Variant, default
+
+        AXES = {"storage": [Variant("s3")]}
+        RULES = [default(variants=["storage"])]
+    """
+    body = "from ducktest5 import test\n@test(params={'wide': {'storage': 'x'}})\ndef t(ctx): pass"
+    message = (
+        "t.py::t[wide,storage=s3]: the value 'storage' is given by AXES storage=s3 and by the params row 'wide'; "
+        "give it in one place"
+    )
+    with pytest.raises(UsageError, match=re.escape(message)):
+        tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.py": body})
+
+
 def test_a_binding_names_a_declared_storage_credential_or_service(tmp_path):
     with pytest.raises(UsageError, match="binds 'storage' to 'c', which is not in STORAGES, CREDENTIALS or SERVICES"):
         tree(
