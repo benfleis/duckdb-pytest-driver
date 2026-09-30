@@ -367,9 +367,9 @@ def test_a_session_holds_one_client_per_engine_and_its_identity_is_theirs_and_th
 #
 
 
-def test_engines_are_declared_among_the_services_and_named_by_a_test(tmp_path):
+def test_engines_are_declared_among_the_engines_and_named_by_a_test(tmp_path):
     (tmp_path / "ducktest_conf.py").write_text(
-        "from ducktest5.engines.duckdb import duckdb_engine\nSERVICES = [duckdb_engine('duck', requires=['delta'])]\n"
+        "from ducktest5.engines.duckdb import duckdb_engine\nENGINES = [duckdb_engine('duck', requires=['delta'])]\n"
     )
     (tmp_path / "t.py").write_text(
         "from ducktest5 import test\n\n@test(engines=['duck'])\ndef a(ctx):\n    pass\n\n"
@@ -382,7 +382,7 @@ def test_engines_are_declared_among_the_services_and_named_by_a_test(tmp_path):
 @pytest.mark.parametrize(
     "conf, text",
     [
-        ("SESSIONS = []", "declare it among SERVICES, not in SESSIONS"),
+        ("SESSIONS = []", "declare engines in ENGINES, not in SESSIONS"),
         ("from ducktest5 import default\nRULES = [default(sessions=['duck'])]", "sessions= is now engines="),
         ("from ducktest5 import default\nRULES = [default(clients=['duck'])]", "clients= is now engines="),
     ],
@@ -406,7 +406,7 @@ ENGINES_CONF = """
 from ducktest5 import match
 from ducktest5.engines.duckdb import duckdb_engine
 
-SERVICES = [
+ENGINES = [
     duckdb_engine("delta", requires=["delta"]),
     duckdb_engine("json", requires=["json"]),
     duckdb_engine("also_json", requires=["json"]),
@@ -473,10 +473,10 @@ def test_scan_env_shows_the_clients_of_each_test_and_what_their_engines_render(b
     assert main(["scan", "--env"]) == 0
     printed = capsys.readouterr().out
     assert (
-        "delta.test::delta\n  client: delta (unittest)  <- SERVICES delta\n    require: delta  <- engine delta\n"
+        "delta.test::delta\n  client: delta (unittest)  <- ENGINES delta\n    require: delta  <- engine delta\n"
         in printed
     )
-    assert "body.py::body\n  client: json (duckdb)  <- SERVICES json\n    require: json  <- engine json\n" in printed
+    assert "body.py::body\n  client: json (duckdb)  <- ENGINES json\n    require: json  <- engine json\n" in printed
 
 
 def test_the_engine_comes_first_in_the_init_file_and_nothing_is_given_twice():
@@ -505,7 +505,7 @@ def test_the_batch_of_a_test_file_is_given_its_engine(tmp_path):
 def test_a_test_file_runs_on_one_engine(tmp_path):
     (tmp_path / "ducktest_conf.py").write_text(
         "from ducktest5 import default\nfrom ducktest5.engines.duckdb import duckdb_engine\n"
-        "SERVICES = [duckdb_engine('a'), duckdb_engine('b')]\nRULES = [default(engines=['a', 'b'])]\n"
+        "ENGINES = [duckdb_engine('a'), duckdb_engine('b')]\nRULES = [default(engines=['a', 'b'])]\n"
     )
     (tmp_path / "x.test").write_text("query I\nSELECT 1\n----\n1\n")
     with pytest.raises(UsageError, match=r"names engines \['a', 'b'\]; a .test body runs on one engine"):
@@ -517,11 +517,11 @@ def test_a_test_file_runs_on_one_engine(tmp_path):
 #
 
 
-def engines_project(root, services, rules="[]"):
+def engines_project(root, engines, rules="[]"):
     root.mkdir()
     (root / "ducktest_conf.py").write_text(
         "from ducktest5 import default\nfrom ducktest5.engines.duckdb import duckdb_engine\n"
-        f"SERVICES = [{services}]\nRULES = {rules}\n"
+        f"ENGINES = [{engines}]\nRULES = {rules}\n"
     )
     (root / "x.test").write_text("query I\nSELECT 1\n----\n1\n")
     (root / "body.py").write_text("from ducktest5 import test\n\n@test()\ndef body(ctx):\n    pass\n")
@@ -545,11 +545,11 @@ def test_the_projects_only_duckdb_engine_is_the_default(tmp_path, monkeypatch, c
     roots = default_roots(tmp_path / "p")
     assert capsys.readouterr().out == (
         "body.py::body\n"
-        "  client: duck (duckdb)  <- SERVICES duck (the only DuckDB engine)\n"
+        "  client: duck (duckdb)  <- ENGINES duck (the only DuckDB engine)\n"
         "    require: json  <- engine duck\n"
         f"{roots}"
         "x.test::x\n"
-        "  client: duck (unittest)  <- SERVICES duck (the only DuckDB engine)\n"
+        "  client: duck (unittest)  <- ENGINES duck (the only DuckDB engine)\n"
         "    require: json  <- engine duck\n"
         f"{roots}"
     )

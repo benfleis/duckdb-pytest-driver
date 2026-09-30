@@ -13,7 +13,7 @@ STORAGES = [
     StorageDef("scratch_b", f"{SCRATCH}/scratch_b"),
 ]
 
-SERVICES = [duckdb_engine("duck", requires=["parquet"])]
+ENGINES = [duckdb_engine("duck", requires=["parquet"])]
 
 RULES = [
     # `duck` is the only DuckDB engine, so it is the default already; `engines=` shows how to name one.

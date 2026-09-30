@@ -1,6 +1,6 @@
 """`ducktest_conf.py`: configuration for a directory and everything below it.
 
-The file at the root of the scanned tree is the project file; it may also declare SERVICES,
+The file at the root of the scanned tree is the project file; it may also declare ENGINES, SERVICES,
 STORAGES, CREDENTIALS, AXES, SUITES and EXCLUDE. Any directory may have its own file with RULES. A rule
 speaks about the whole subtree (`default`) or about a pattern relative to its file (`match`); a
 pattern may name one file.
@@ -17,10 +17,11 @@ test's own `@test(bind=...)` wins over its rules. An axis value's inputs bind to
 kind names (`storage`, `credential`): one replaces what a `default()` binds, a fallback; a role that
 a `match()` or `@test` binds as well is an error, not a silent winner.
 
-SERVICES holds `ServiceDef`s of `resources`, engines (`EngineDef`) among them; `engines=["duck"]`
-names the engines a test drives, each through a Client of its own. A service that is an input of a
-storage, a credential or an engine is one of the project's services too, whether SERVICES names it
-or not.
+ENGINES holds `EngineDef`s (`duckdb_engine(...)`, `delta_spark(...)`, ...); `engines=["duck"]` names
+the engines a test drives, each through a Client of its own. SERVICES holds the project's other
+`ServiceDef`s of `resources`. An engine stays a kind of service internally -- one lifecycle, one
+provisioning path -- so a service that is an input of a storage, a credential or an engine is one
+of the project's services too, whether SERVICES names it or not.
 
 `mutex="name"`, or several names, says what a test must have to itself: no two tests that name one of
 them run at the same time, however many workers the run has.
@@ -307,12 +308,10 @@ def load_project(start):
             raise UsageError(f"{path}: RULES must hold default(...) and match(...) rules")
         project._rules_by_dir[dirpath] = rules
         if dirpath == root:
-            for gone in ("ENGINES", "SESSIONS"):
-                if hasattr(module, gone):
-                    raise UsageError(f"{path}: an engine is a service; declare it among SERVICES, not in {gone}")
-            declared = list(getattr(module, "SERVICES", ()))
-            project.engines = {e.id: e for e in declared if isinstance(e, EngineDef)}
-            project.services = {s.id: s for s in declared if not isinstance(s, EngineDef)}
+            if hasattr(module, "SESSIONS"):
+                raise UsageError(f"{path}: declare engines in ENGINES, not in SESSIONS")
+            project.engines = {e.id: e for e in getattr(module, "ENGINES", ())}
+            project.services = {s.id: s for s in getattr(module, "SERVICES", ())}
             project.storages = {s.id: s for s in getattr(module, "STORAGES", ())}
             project.credentials = {c.id: c for c in getattr(module, "CREDENTIALS", ())}
             project.axes = {axis: {v.id: v for v in values} for axis, values in getattr(module, "AXES", {}).items()}
@@ -322,7 +321,7 @@ def load_project(start):
             project.exclude = tuple(getattr(module, "EXCLUDE", ()))
             _check(path, project)
         else:
-            for name in ("SERVICES", "STORAGES", "CREDENTIALS", "AXES", "SUITES", "EXCLUDE"):
+            for name in ("ENGINES", "SERVICES", "STORAGES", "CREDENTIALS", "AXES", "SUITES", "EXCLUDE"):
                 if hasattr(module, name):
                     raise UsageError(f"{path}: {name} belongs in the root {CONF_FILE} only; this file may hold RULES")
         _prune(project, root, dirpath, dirnames)
@@ -345,6 +344,12 @@ def _check(path, project):
     ):
         if not all(isinstance(d, kind) for d in declared.values()):
             raise UsageError(f"{path}: {name} must hold {kind.__name__}")
+    bad_engine = next((e for e in project.engines.values() if not isinstance(e, EngineDef)), None)
+    if bad_engine is not None:
+        raise UsageError(f"{path}: {bad_engine!r} is not an engine; declare services in SERVICES")
+    bad_service = next((s for s in project.services.values() if isinstance(s, EngineDef)), None)
+    if bad_service is not None:
+        raise UsageError(f"{path}: {bad_service!r} is an engine; declare engines in ENGINES")
     if not all(isinstance(s, ServiceDef) for s in project.services.values()):
         raise UsageError(f"{path}: SERVICES must hold ServiceDef of ducktest5.resources")
     for s in services_in([*project.storages.values(), *project.credentials.values(), *project.engines.values()]):

@@ -1,29 +1,29 @@
 default.test::default
-  client: duck (unittest)  <- SERVICES duck
+  client: duck (unittest)  <- ENGINES duck
     require: parquet  <- engine duck
   bind: storage=scratch_a  <- ducktest_conf.py: default
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 own_inputs.py::own_inputs
-  client: duck (duckdb)  <- SERVICES duck
+  client: duck (duckdb)  <- ENGINES duck
     require: parquet  <- engine duck
   bind: storage=scratch_b  <- @test
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp/<run_token>  <- storage scratch_b
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 paired_own_inputs.py::paired_own_inputs
-  client: duck (duckdb)  <- SERVICES duck
+  client: duck (duckdb)  <- ENGINES duck
     require: parquet  <- engine duck
   bind: storage=scratch_b  <- @test
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp/<run_token>  <- storage scratch_b
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 rule_matched.test::rule_matched
-  client: duck (unittest)  <- SERVICES duck
+  client: duck (unittest)  <- ENGINES duck
     require: parquet  <- engine duck
   bind: storage=scratch_a  <- ducktest_conf.py: default
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 rule_matched_body.py::rule_matched_body
-  client: duck (duckdb)  <- SERVICES duck
+  client: duck (duckdb)  <- ENGINES duck
     require: parquet  <- engine duck
   bind: storage=scratch_a  <- ducktest_conf.py: default
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a

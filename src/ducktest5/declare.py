@@ -96,7 +96,7 @@ def test(
     `suites` says which suites its tests are in: `"smoke"` declares them in whatever the suite's own
     definition selects, `"!smoke"` declares them out and nothing but `--id` puts one back.
 
-    `engines` names the engines among the project's SERVICES the body drives. Each gets a Client
+    `engines` names the engines among the project's ENGINES the body drives. Each gets a Client
     of its own, `ctx.client(name)`; a test that names no DuckDB engine gets a Client on the default
     one: the project's DuckDB engine when it declares exactly one, else the built-in one.
 

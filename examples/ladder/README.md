@@ -17,7 +17,7 @@ its Session holds one Client, on the default DuckDB engine, and it runs one quer
 
 ## 02_rules
 
-`ducktest_conf.py` declares two local storages and, among its services, a DuckDB engine, `duck`, that
+`ducktest_conf.py` declares two local storages and, among its engines, a DuckDB engine, `duck`, that
 loads `parquet`. `default()` binds the role `storage` to `scratch_a` for every test and names `duck`
 in `engines=`: every test drives that engine, through a Client made for it. Each `match()` rule names
 one file. `own_inputs.py` and `paired_own_inputs.py` bind `storage` to `scratch_b` on `@test(...)`,

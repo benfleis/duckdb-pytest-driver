@@ -122,10 +122,10 @@ def planned(test, test_env, project) -> str:
 def lines(test, project) -> list[str]:
     """What `scan --env` says of each engine the test names: the dialect of its Client, and what the
     engine gives."""
-    shown = [(d, f"SERVICES {d.id}") for d in named(test, project)]
+    shown = [(d, f"ENGINES {d.id}") for d in named(test, project)]
     duckdb = duckdb_of(test, project)
     if duckdb is not DEFAULT and all(d is not duckdb for d, _ in shown):
-        shown.insert(0, (duckdb, f"SERVICES {duckdb.id} (the only DuckDB engine)"))
+        shown.insert(0, (duckdb, f"ENGINES {duckdb.id} (the only DuckDB engine)"))
     out = []
     for d, source in shown:
         dialect = "unittest" if test.definition.type == SQLLOGIC else d.dialect

@@ -35,7 +35,7 @@ class TestDef:
     body_file: str | None = None  # the .test file, for sqllogic and paired tests
     params: dict = field(default_factory=dict)
     tags: list = field(default_factory=list)
-    engines: list = field(default_factory=list)  # ids of the engines it drives, among the project's SERVICES
+    engines: list = field(default_factory=list)  # ids of the engines it drives, among the project's ENGINES
     variants: list = field(default_factory=list)
     mutex: list = field(default_factory=list)  # what each of its tests must have to itself while it runs
     suites: list = field(default_factory=list)  # a suite it declares itself in, or out of as `!NAME`

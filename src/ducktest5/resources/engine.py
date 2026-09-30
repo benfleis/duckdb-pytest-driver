@@ -1,4 +1,4 @@
-"""Engines: a service a test drives with SQL, declared among SERVICES. The run does not provision
+"""Engines: a service a test drives with SQL, declared in ENGINES. The run does not provision
 one as it does the other services: a test that names it leases an instance, and gets a Client on it.
 
 An instance holds a live SQL handle -- a DuckDB shell, a Spark session -- and serves one test at a
