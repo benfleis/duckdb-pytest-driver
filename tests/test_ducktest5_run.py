@@ -503,6 +503,17 @@ def test_a_failed_python_test_names_its_test_directory(tmp_path):
     assert f"\n  dir: {facts['files']['dir']}\n" in text
 
 
+def test_a_failed_python_test_s_root_is_its_own_place_not_the_run_s(tmp_path):
+    """The run level (`scan --env`) keeps `temp_dir_root`; a Python test's own place is TEMP_DIR."""
+    test = py_test(fails)
+    _, run_dir, report, text = go(tmp_path, [test])
+    facts = report["tests"][0]["made_of"]
+    own = str(run_dir / "tests" / test.dir_name)
+    assert {"what": "root", "is": f"TEMP_DIR={own}", "from": "default storage"} in facts["environment"]
+    assert "temp_dir_root=" not in text
+    assert f"\n  root: TEMP_DIR={own}  <- default storage\n" in text
+
+
 def test_a_secret_of_a_service_never_reaches_what_the_test_was_made_of(tmp_path):
     test = sql_test("b_fail.test", values={"token": "s3cr3t"}, inputs=[StoreDef()])
     _, _, report, text = go(tmp_path, [test])

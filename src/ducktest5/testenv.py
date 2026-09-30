@@ -285,6 +285,12 @@ def resolve(test, made=None, key=None, default=None):
                 env.roots[name] = replace(e, value=f"{e.value}/{made.run_token}/{key}")
     if default is not None:
         _default_roots(env, default, made.run_token, key, test.inputs)
+    if key is not None:
+        # This is the test's own place, not the run's: printed as TEMP_DIR so a reader does not
+        # mistake it for the run level, which `scan --env` shows (there, key is always None).
+        for internal, display in (("temp_dir_root", "TEMP_DIR"), ("local_temp_dir_root", "LOCAL_TEMP_DIR")):
+            if internal in env.roots:
+                env.roots[internal] = replace(env.roots[internal], name=display)
     if definition.body_file:
         for credential, storages in pairs(i for i in instances if i is not None):
             rendered = render("unittest", "secret", storages, credential)
