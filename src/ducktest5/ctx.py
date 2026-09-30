@@ -73,7 +73,10 @@ class Context:
         holds, reset and given its preamble before the body began. It sees `ctx.env`; what is set
         on its own `env` reaches its templates alone."""
         if name not in self.clients:
-            raise KeyError(f"engine {name!r} is not one this test leases; it leases {sorted(self.clients)}")
+            raise UsageError(
+                f"ctx.client({name!r}): this test holds engines {sorted(self.clients)}; "
+                f"add {name!r} to @test(engines=[...])"
+            )
         return self.clients[name]
 
     def _own_client(self, name, run, *, engine=None):

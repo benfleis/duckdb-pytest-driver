@@ -806,10 +806,17 @@ def test_a_teardown_that_fails_is_an_error_and_the_others_still_run(tmp_path):
     assert engine.statements[-1] == "DROP last"
 
 
-def test_an_engine_the_test_did_not_declare_is_refused(tmp_path):
-    ctx = ctx_for(py_test(passes), tmp_path)
-    with pytest.raises(KeyError, match="not one this test leases"):
-        ctx.client("fake")
+def test_an_engine_the_test_did_not_name_is_a_usage_error_that_says_where_to_name_it(tmp_path):
+    def body(ctx):
+        ctx.client("spark")
+
+    _, _, report, _ = go(tmp_path, [py_test(body)])
+    (test,) = report["tests"]
+    assert test["outcome"] == "error"
+    assert (
+        "ctx.client('spark'): this test holds engines ['duckdb']; add 'spark' to @test(engines=[...])"
+        in test["problems"][0]
+    )
 
 
 # -----------------------------------------------------------------------------
