@@ -10,6 +10,7 @@ from ..resources.engine import BootedEngineDef
 class SparkHandle:
     def __init__(self, session):
         self.session = session
+        self._conf = None  # the session's configuration when this worker's clone opened
 
     def run(self, statements):
         result, rows = None, []
@@ -28,14 +29,31 @@ class SparkHandle:
         the context and the cache stay the run's, and so does stopping them."""
         from pyspark.sql import SparkSession
 
-        return SparkHandle(SparkSession(self.session.sparkContext, self.session._jsparkSession.cloneSession()))
+        clone = SparkHandle(SparkSession(self.session.sparkContext, self.session._jsparkSession.cloneSession()))
+        clone._conf = clone._current_conf()
+        return clone
+
+    def _current_conf(self):
+        return {key: value for key, value in self.session.sql("SET").collect()}
 
     def begin_test(self):
-        """One session serves every test of a worker, so drop what a test can leave behind in it."""
+        """One session serves every test of a worker, so drop what a test can leave behind in it:
+        its temp views, the cache, and every configuration it set (`SET`), which goes back to what
+        the clone had when it opened."""
         for view in self.session.catalog.listTables():
             if view.isTemporary:
                 self.session.catalog.dropTempView(view.name)
         self.session.catalog.clearCache()
+        if self._conf is None:
+            return
+        now = self._current_conf()
+        for key in now.keys() | self._conf.keys():
+            if now.get(key) == self._conf.get(key):
+                continue
+            if key in self._conf:
+                self.session.conf.set(key, self._conf[key])
+            else:
+                self.session.conf.unset(key)
 
     def scope_jobs(self, test_id):
         """Scopes this session's jobs to `test_id`, so a test's timeout can cancel just its own work

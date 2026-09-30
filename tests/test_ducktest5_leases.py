@@ -14,6 +14,7 @@ from ducktest5.cli import main
 from ducktest5.conf import Project
 from ducktest5.declare import Variant
 from ducktest5.engines.duckdb import DuckDBShell, duckdb_engine
+from ducktest5.engines.spark import SparkHandle
 from ducktest5.engines.unittest import UnittestEngineDef
 from ducktest5.model import PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.resources import RO, RW, BootedEngineDef, CredentialDef, StorageDef, check_contract, from_env
@@ -117,6 +118,28 @@ def test_a_preamble_that_fails_leaves_the_engine_free_for_the_next_test():
 
 def test_engine_contract():
     check_contract(lambda run_token: opened(duckdb_engine("duck"))[0])
+
+
+class FakeSparkSession:
+    """What a Spark handle asks of its session: `SET` lists the configuration, `conf` changes it."""
+
+    def __init__(self, conf):
+        self.settings = dict(conf)
+        self.conf = SimpleNamespace(set=self.settings.__setitem__, unset=lambda key: self.settings.pop(key))
+        self.catalog = SimpleNamespace(listTables=lambda: [], clearCache=lambda: None)
+
+    def sql(self, statement):
+        assert statement == "SET"
+        return SimpleNamespace(collect=lambda: list(self.settings.items()))
+
+
+def test_a_spark_worker_s_configuration_goes_back_to_what_it_opened_with_before_each_test():
+    session = FakeSparkSession({"spark.sql.shuffle.partitions": "2"})
+    handle = SparkHandle(session)
+    handle._conf = handle._current_conf()  # as for_worker() does on the clone
+    session.settings.update({"spark.sql.shuffle.partitions": "8", "spark.fixups.leak": "yes"})
+    handle.begin_test()
+    assert session.settings == {"spark.sql.shuffle.partitions": "2"}
 
 
 # -----------------------------------------------------------------------------
