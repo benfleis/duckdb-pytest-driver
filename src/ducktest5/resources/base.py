@@ -18,8 +18,8 @@ NEVER, ON_FAILURE, ALWAYS = "never", "on_failure", "always"
 
 
 @dataclass(frozen=True)
-class Output:
-    """One named output and what gave it. `value` is a value, a getter called at delivery, or None:
+class Attribute:
+    """One named attribute a resource made, and what gave it. `value` is a value, a getter called at delivery, or None:
     the name is unset."""
 
     value: Any
@@ -108,9 +108,10 @@ class ResourceDef:
 
 
 class Resource:
-    """What the run made from a `ResourceDef`: lifecycle hooks, ownership, and the outputs.
+    """What the run made from a `ResourceDef`: lifecycle hooks, ownership, and its attributes: what
+    it made, known once it exists and never part of its identity.
 
-    Outputs are two maps, `env` and `secrets`, name -> `Output`, named as the kind names them;
+    Two maps, `attributes` and `secrets`, name -> `Attribute`, named as the kind names them;
     `delivery()` gives them the names a body reads. A secret is never written to a file."""
 
     owned: ClassVar[bool] = False  # the run makes and removes it: it carries `run_token` and `list(run_token)` finds it
@@ -122,8 +123,8 @@ class Resource:
             run_token  # one value per ducktest invocation, on everything the run makes, so a stopped run can be swept
         )
         self.inputs = dict(inputs or {})
-        self.env: dict[str, Output] = {}
-        self.secrets: dict[str, Output] = {}
+        self.attributes: dict[str, Attribute] = {}
+        self.secrets: dict[str, Attribute] = {}
         self.children: dict[str, Resource] = {}  # key -> the child minted for it
         self._lock = threading.Condition()
         self._readers, self._writer = 0, False
@@ -147,7 +148,7 @@ class Resource:
         return True
 
     def expires_at(self) -> float | None:
-        """When the outputs stop being valid, as a time.time(); None for never."""
+        """When the attributes stop being valid, as a time.time(); None for never."""
         return None
 
     def renew(self): ...
@@ -215,14 +216,18 @@ class Resource:
                 self._readers -= 1
             self._lock.notify_all()
 
-    # -- outputs --------------------------------------------------------------
-    def outputs(self) -> dict[str, Output]:
-        """Every output under this instance's own prefix: `<id>.<name>`."""
-        return {f"{self.id}.{name}": out for name, out in {**self.env, **self.secrets}.items()}
+    # -- attributes -----------------------------------------------------------
+    def attribute_values(self) -> dict:
+        """Its attributes, by name, as values; never its secrets."""
+        return {name: a.get() for name, a in self.attributes.items()}
 
-    def delivery(self) -> tuple[dict[str, Output], dict[str, Output]]:
-        """(env, secrets) under the names a body reads."""
-        return dict(self.env), dict(self.secrets)
+    def by_ref(self) -> dict[str, Attribute]:
+        """Every attribute, secrets too, under this instance's own prefix: `<id>.<name>`."""
+        return {f"{self.id}.{name}": a for name, a in {**self.attributes, **self.secrets}.items()}
+
+    def delivery(self) -> tuple[dict[str, Attribute], dict[str, Attribute]]:
+        """(values, secrets) under the names a body reads."""
+        return dict(self.attributes), dict(self.secrets)
 
 
 ResourceDef.instance = Resource

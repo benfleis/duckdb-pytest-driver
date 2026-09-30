@@ -1,4 +1,4 @@
-"""How resource outputs become an engine's preamble: one renderer per (dialect, action).
+"""How resource attributes become an engine's preamble: one renderer per (dialect, action).
 
     duckdb     SQL sent to a DuckDB shell over its stdin: LOAD, SET, CREATE SECRET ... SCOPE
     unittest   the init file of a `.test` batch: `require`, SET, CREATE SECRET ... SCOPE; a secret
@@ -90,7 +90,7 @@ def _secret_name(storages):
 
 
 def _facts(storage):
-    return {name: out.get() for name, out in storage.env.items()}
+    return storage.attribute_values()
 
 
 def _values(credential):

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Mapping
 
 from ..binary import UsageError
-from .base import RO, RW, SHARED_RO, Output, Resource, ResourceDef, canonical
+from .base import RO, RW, SHARED_RO, Attribute, Resource, ResourceDef, canonical
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class EnvSource:
         """Getters, not values: the value is read at delivery. None when a variable is not set."""
         if not all(var in os.environ for _, var in self.names):
             return None
-        return {name: Output(lambda var=var: os.environ.get(var), f"env {var}") for name, var in self.names}
+        return {name: Attribute(lambda var=var: os.environ.get(var), f"env {var}") for name, var in self.names}
 
 
 def from_env(names: Mapping[str, str] | Iterable[str]) -> EnvSource:
@@ -88,7 +88,7 @@ class CredentialDef(ResourceDef):
     a string reference with a known scheme (`"1password:NAME"`; `"env:NAME"` is shorthand for
     `from_env([NAME])`), or a callable. A callable is called with the credential's resolved inputs (as
     `from_env(...)` sources are) and returns the secret mapping, or None to try the next source; it is
-    late-bound, called at acquire and never at plan. It outputs `secrets` only, never `env`, under
+    late-bound, called at acquire and never at plan. Its attributes are `secrets` only, under
     the names its source gives (`AWS_ACCESS_KEY_ID`). `scopes` lists the storages it is for -- each
     a storage id, or `(storage id, "ro" | "rw")` -- and it is that storage's credential when a test
     names none; a credential may be scoped to several storages, and an empty list binds only by
@@ -148,7 +148,7 @@ class Credential(Resource):
                 if found is None:
                     continue
                 label = str(source) if hasattr(source, "content") else f"callable {source.__qualname__}"
-                self.secrets = {name: Output(v, label) for name, v in found.items()}
+                self.secrets = {name: Attribute(v, label) for name, v in found.items()}
                 return
             found = source.resolve(self.id)
             if found is not None:

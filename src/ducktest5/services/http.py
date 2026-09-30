@@ -18,7 +18,7 @@ from ..resources import ON_FAILURE, Service, ServiceDef
 @dataclass(eq=False)
 class HttpServerDef(ServiceDef):
     """Serves a copy of the directory `source` (or an empty one) on a free port of `host`, under a
-    directory of the system temp dir named for the run. It outputs `url`."""
+    directory of the system temp dir named for the run. Its attribute is `url`."""
 
     kind = "http"
     attributes = ("url",)

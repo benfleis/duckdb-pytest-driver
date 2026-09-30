@@ -87,7 +87,7 @@ def _setup(settings):
 
 @dataclass(eq=False)
 class MinioDef(ServiceDef):
-    """MinIO in a docker container named for the run, with its bucket made. It outputs `endpoint`,
+    """MinIO in a docker container named for the run, with its bucket made. Its attributes are `endpoint`,
     `bucket` and `region`; its keys come from the environment (DUCKTEST_MINIO_ACCESS_KEY,
     DUCKTEST_MINIO_SECRET_KEY) and reach a test through `credential(id, scopes=[...])`."""
 

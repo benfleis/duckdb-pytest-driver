@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 from ..binary import UsageError
-from .base import SHARED_RW, Output, Resource, ResourceDef, digest
+from .base import SHARED_RW, Attribute, Resource, ResourceDef, digest
 
 SCHEMES = ("file", "s3", "az", "abfss", "http", "https")
 _REF = re.compile(r"\{([\w-]+)\.(\w+)\}")
@@ -37,13 +37,13 @@ def scheme_of(root: str) -> str:
 
 
 def fill(template: str, inputs: Mapping[str, Resource]) -> str:
-    """`template` with each `{input.name}` replaced by that input's output `name`."""
+    """`template` with each `{input.name}` replaced by that input's attribute `name`."""
 
     def one(m):
         ref, name = m.groups()
-        if ref not in inputs or name not in inputs[ref].env:
-            raise UsageError(f"{template!r}: {{{ref}.{name}}} is not an output of an input")
-        return str(inputs[ref].env[name].get())
+        if ref not in inputs or name not in inputs[ref].attributes:
+            raise UsageError(f"{template!r}: {{{ref}.{name}}} is not an attribute of an input")
+        return str(inputs[ref].attributes[name].get())
 
     return _REF.sub(one, template)
 
@@ -52,7 +52,7 @@ def fill(template: str, inputs: Mapping[str, Resource]) -> str:
 class StorageDef(ResourceDef):
     """A location: a local directory, a bucket, a container, with the scheme its `root` says. The
     storage itself is shared; a writer with a key gets a child of its own, a prefix under the root;
-    a writer with none has the whole root to itself, under a lock. It outputs its roots and
+    a writer with none has the whole root to itself, under a lock. Its attributes are its roots and
     endpoint, delivered as the binary's roots (`TEMP_DIR`, `DATA_DIR` and their `LOCAL_` twins)
     and `S3_ENDPOINT`, `S3_USE_SSL`, `AZ_ACCOUNT` where they apply.
 
@@ -66,7 +66,7 @@ class StorageDef(ResourceDef):
     mints_children = True
 
     id: str
-    root: str  # a URI or a path; `{minio.bucket}` takes an input's output
+    root: str  # a URI or a path; `{minio.bucket}` takes an input's attribute
     endpoint: str | None = None  # http(s)://host:port of an S3-compatible store; may reference an input
     account: str | None = None  # the Azure account, where the root does not name it
     temp_prefix: str = "temp"  # where children are minted, under the root
@@ -98,7 +98,7 @@ class Storage(Resource):
             "endpoint": endpoint,
             "account": account,
         }
-        self.env = {name: Output(value, source) for name, value in facts.items()}
+        self.attributes = {name: Attribute(value, source) for name, value in facts.items()}
 
     @property
     def owned(self):
@@ -127,7 +127,7 @@ class Storage(Resource):
 
     def alloc(self):
         if self.scheme == "file":
-            os.makedirs(self.path if self.owned else local_path(self.env["temp_root"].value), exist_ok=True)
+            os.makedirs(self.path if self.owned else local_path(self.attributes["temp_root"].value), exist_ok=True)
 
     def dealloc(self):
         if not self.owned:
@@ -160,7 +160,7 @@ class Storage(Resource):
         return [f"{self.run_root(run_token)}/{n}" for n in names]
 
     def delivery(self):
-        facts = {name: out.value for name, out in self.env.items()}
+        facts = {name: a.value for name, a in self.attributes.items()}
         out = {"TEMP_DIR": facts["temp_root"]}
         if self.scheme == "file":
             out["TEMP_DIR"] = out["LOCAL_TEMP_DIR"] = local_path(out["TEMP_DIR"])
@@ -174,7 +174,7 @@ class Storage(Resource):
         if self.scheme in ("az", "abfss") and facts["account"]:
             out["AZ_ACCOUNT"] = facts["account"]
         source = f"storage {self.id}"
-        return {name: Output(value, source) for name, value in out.items()}, {}
+        return {name: Attribute(value, source) for name, value in out.items()}, {}
 
 
 StorageDef.instance = Storage

@@ -886,7 +886,7 @@ def test_ctx_service_is_the_runs_instance_of_a_service_behind_the_inputs(tmp_pat
     seen = {}
 
     def body(ctx):
-        seen["attributes"] = ctx.service("store").attributes
+        seen["attributes"] = ctx.service("store").attribute_values()
         with pytest.raises(KeyError, match="not behind this test's inputs"):
             ctx.service("other")
 

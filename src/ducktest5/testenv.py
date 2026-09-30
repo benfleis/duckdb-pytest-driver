@@ -307,7 +307,7 @@ def _default_roots(env, default, run_token, key, inputs):
 
 
 def _deliver(env, definition, mode, scanning, value, made, key=None):
-    """One input's outputs into the test environment, and the instance that gave them, or None when
+    """One input's attributes into the test environment, and the instance that gave them, or None when
     they are not known yet. Nothing is allocated here and nothing is held: that is for the walk of
     the resource graph. At scan a credential that does not resolve, or one a callable source makes,
     is listed in `pending`: its value is not needed before the run."""

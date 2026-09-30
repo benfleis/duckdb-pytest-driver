@@ -1,4 +1,4 @@
-"""Resources: identity by content, ownership against sharing, outputs, and the handler contract."""
+"""Resources: identity by content, ownership against sharing, attributes, and the handler contract."""
 
 import json
 import os
@@ -19,7 +19,7 @@ from ducktest5.resources import (
     RW,
     SHARED_RO,
     SHARED_RW,
-    Output,
+    Attribute,
     Resource,
     StorageDef,
     CredentialDef,
@@ -169,17 +169,17 @@ def test_retain_says_when_the_run_leaves_it_in_place():
 #
 
 
-def test_outputs_are_named_under_the_producer_and_delivered_as_the_kind_names_them():
+def test_attributes_are_named_under_the_producer_and_delivered_as_the_kind_names_them():
     thing = ThingDef("a").make()
-    thing.env["ENDPOINT"] = Output("http://x", "thing a")
-    thing.secrets["KEY"] = Output(lambda: "k", "thing a")
-    assert set(thing.outputs()) == {"a.ENDPOINT", "a.KEY"}
+    thing.attributes["ENDPOINT"] = Attribute("http://x", "thing a")
+    thing.secrets["KEY"] = Attribute(lambda: "k", "thing a")
+    assert set(thing.by_ref()) == {"a.ENDPOINT", "a.KEY"}
     env, secrets = thing.delivery()
     assert env["ENDPOINT"].get() == "http://x" and secrets["KEY"].get() == "k"
 
 
 def test_an_output_of_none_unsets_the_name():
-    assert Output(None, "x").unset and not Output("", "x").unset
+    assert Attribute(None, "x").unset and not Attribute("", "x").unset
 
 
 # -----------------------------------------------------------------------------
@@ -211,7 +211,7 @@ def test_a_credential_takes_the_first_source_that_resolves(monkeypatch):
     monkeypatch.setenv("DT_KEY", "k1")
     cred = CredentialDef("key", sources=[from_env(["DT_MISSING"]), from_env({"DT_KEY": "AWS_ACCESS_KEY_ID"})]).make()
     cred.create()
-    assert cred.env == {}
+    assert cred.attributes == {}
     assert cred.secrets["AWS_ACCESS_KEY_ID"].source == "env DT_KEY"
     monkeypatch.setenv("DT_KEY", "k2")  # read when delivered, not when resolved
     assert cred.delivery()[1]["AWS_ACCESS_KEY_ID"].get() == "k2"
@@ -392,7 +392,10 @@ def test_a_storage_that_declares_no_data_gives_no_data_dir(tmp_path):
 
 def test_an_s3_storage_takes_its_bucket_and_endpoint_from_an_input():
     minio = ThingDef("minio").make()
-    minio.env = {"bucket": Output("ducktest", "minio"), "endpoint": Output("http://10.0.0.1:9000", "minio")}
+    minio.attributes = {
+        "bucket": Attribute("ducktest", "minio"),
+        "endpoint": Attribute("http://10.0.0.1:9000", "minio"),
+    }
     store = StorageDef(
         "s3", "s3://{minio.bucket}", endpoint="{minio.endpoint}", inputs=["minio"], data="s3://{minio.bucket}"
     )
@@ -412,7 +415,7 @@ def test_an_azure_storage_delivers_its_account():
 
 
 def test_a_reference_to_what_no_input_gives_is_a_usage_error():
-    with pytest.raises(UsageError, match=r"\{minio.bucket\} is not an output of an input"):
+    with pytest.raises(UsageError, match=r"\{minio.bucket\} is not an attribute of an input"):
         StorageDef("s3", "s3://{minio.bucket}").make()
 
 

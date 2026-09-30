@@ -82,7 +82,7 @@ def test_minio_runs_in_a_container_named_for_the_run_and_makes_its_bucket(fake_d
     assert fake_docker.containers == {"ducktest-minio-r1": True}
     assert s3.created == ["ducktest"]
     assert service.list("r1") == ["ducktest-minio-r1"] and service.list("r2") == []
-    assert {k: o.get() for k, o in service.outputs().items()} == {
+    assert {k: o.get() for k, o in service.by_ref().items()} == {
         "minio.endpoint": "http://127.0.0.1:9000",
         "minio.bucket": "ducktest",
         "minio.region": "us-east-1",
@@ -121,7 +121,7 @@ def test_an_existing_minio_is_adopted_its_bucket_made_and_never_stopped(fake_doc
     monkeypatch.setattr(minio, "minio_alive", lambda settings: settings["endpoint"] == "http://172.18.0.1:9999")
     service = MinioDef().as_existing(address="http://172.18.0.1:9999").make(run_token="r1")
     service.create()
-    assert service.env["endpoint"].get() == "http://172.18.0.1:9999" and s3.created == ["ducktest"]
+    assert service.attributes["endpoint"].get() == "http://172.18.0.1:9999" and s3.created == ["ducktest"]
     service.end(failed=False)
     assert fake_docker.containers == {}, "nothing was started, and nothing is removed"
 

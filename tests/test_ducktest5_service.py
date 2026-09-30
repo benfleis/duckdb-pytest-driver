@@ -101,15 +101,15 @@ def test_a_service_is_shared_by_its_consumers():
     assert service.acquire() is service and service.acquire() is service
 
 
-def test_its_attributes_are_outputs_under_its_id_and_its_secrets_are_not_env():
+def test_its_attributes_are_named_under_its_id_and_its_secrets_are_not_values():
     service = FakeDef("fake").make(run_token="r1")
     service.create()
-    assert {k: o.get() for k, o in service.outputs().items()} == {
+    assert {k: o.get() for k, o in service.by_ref().items()} == {
         "fake.url": "http://fake/r1/fake",
         "fake.key": "k-fake",
     }
-    assert list(service.env) == ["url"] and list(service.secrets) == ["key"]
-    assert service.outputs()["fake.url"].source == "service fake"
+    assert list(service.attributes) == ["url"] and list(service.secrets) == ["key"]
+    assert service.by_ref()["fake.url"].source == "service fake"
 
 
 def test_a_start_that_fails_is_service_not_up_and_leaves_nothing_running(world):
@@ -137,7 +137,7 @@ def test_an_existing_service_is_adopted_when_it_answers_and_never_removed(world)
     service = existing.make(run_token="r1")
     assert not service.owned
     service.create()
-    assert service.env["url"].get() == "http://fake/there"
+    assert service.attributes["url"].get() == "http://fake/there"
     service.delete()
     service.end(failed=False)
     assert world == {"http://fake/there": True}
@@ -166,7 +166,7 @@ def test_a_produced_credential_carries_the_services_secrets_under_the_names_it_d
         "FAKE_URL": "http://fake/r1/fake",
     }
     assert credential.secrets["FAKE_KEY"].source == "service fake"
-    assert service.delivery() == ({"FAKE_URL": service.env["url"]}, {}), "a service delivers no secret itself"
+    assert service.delivery() == ({"FAKE_URL": service.attributes["url"]}, {}), "a service delivers no secret itself"
 
 
 # -----------------------------------------------------------------------------
@@ -198,7 +198,7 @@ def test_the_http_server_serves_a_copy_of_its_source_at_its_url(served):
     service = HttpServerDef("http", source=served).make(run_token="r1")
     service.create()
     try:
-        url = service.outputs()["http.url"].get()
+        url = service.by_ref()["http.url"].get()
         assert url.startswith("http://127.0.0.1:")
         assert get(f"{url}/data.csv") == "a\n1\n2\n"
         assert service.handle == os.path.join(tempfile.gettempdir(), "ducktest-http", "r1__http")
@@ -228,10 +228,10 @@ def test_an_existing_http_server_is_adopted_at_its_address(served):
     running = HttpServerDef("http", source=served).make(run_token="r1")
     running.create()
     try:
-        url = running.env["url"].get()
+        url = running.attributes["url"].get()
         existing = HttpServerDef("http").as_existing(address=url).make(run_token="r2")
         existing.create()
-        assert existing.env["url"].get() == url
+        assert existing.attributes["url"].get() == url
         existing.delete()
         assert get(f"{url}/data.csv") == "a\n1\n2\n", "an existing server is never stopped"
     finally:

@@ -1,4 +1,4 @@
-"""The dialect registry: resource outputs as each engine's preamble."""
+"""The dialect registry: resource attributes as each engine's preamble."""
 
 from types import SimpleNamespace
 

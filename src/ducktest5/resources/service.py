@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Mapping
 
 from ..host import wait_until
-from .base import SHARED_RW, Output, Resource, ResourceDef
+from .base import SHARED_RW, Attribute, Resource, ResourceDef
 from .credential import CredentialDef
 
 
@@ -67,7 +67,7 @@ class FromService:
         return f"service {self.service}"
 
     def __call__(self, inputs):
-        found = {**inputs[self.service].env, **inputs[self.service].secrets}
+        found = {**inputs[self.service].attributes, **inputs[self.service].secrets}
         return {name: found[attribute].get() for name, attribute in self.names}
 
 
@@ -89,11 +89,6 @@ class Service(Resource):
         """Where it answers: what `as_existing` takes to find this instance again."""
         return self.definition.address
 
-    @property
-    def attributes(self) -> dict:
-        """Its attributes, by name, while it is up; never its secrets."""
-        return {name: out.get() for name, out in self.env.items()}
-
     def _up(self) -> bool:
         return self.read() is not None and self.ready()
 
@@ -109,8 +104,8 @@ class Service(Resource):
                 self.delete()
                 raise ServiceNotUp(f"{type(exc).__name__}: {exc}") from exc
         found, source = self.read(), f"service {self.id}"
-        self.env = {name: Output(found.get(name), source) for name in self.definition.attributes}
-        self.secrets = {name: Output(found.get(name), source) for name in self.definition.secret_attributes}
+        self.attributes = {name: Attribute(found.get(name), source) for name in self.definition.attributes}
+        self.secrets = {name: Attribute(found.get(name), source) for name in self.definition.secret_attributes}
 
     def delete(self):
         if not self.existing:
@@ -118,7 +113,7 @@ class Service(Resource):
 
     def delivery(self):
         """Its attributes as `<ID>_<NAME>` (`HTTP_URL`); its secrets only through a credential it produces."""
-        return {f"{self.id}_{name}".upper(): out for name, out in self.env.items()}, {}
+        return {f"{self.id}_{name}".upper(): a for name, a in self.attributes.items()}, {}
 
     def end(self, failed: bool):
         """The run is over: stop it, and remove what it holds unless `retain` keeps it."""

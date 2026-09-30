@@ -9,7 +9,7 @@ from .base import (  # noqa: F401
     RW,
     SHARED_RO,
     SHARED_RW,
-    Output,
+    Attribute,
     Resource,
     ResourceDef,
 )

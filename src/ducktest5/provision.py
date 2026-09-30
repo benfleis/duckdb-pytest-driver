@@ -113,7 +113,9 @@ def _make(made, definition, mode, errors, on):
 def record(service, mode, *, owned):
     """What `03` says about one service: what it is, how it was reached, where it answers, its
     attributes with every secret masked, and `owned`: whether cleanup is the one to end it."""
-    attributes = {name: MASK if SECRET_NAME.search(name) else value for name, value in service.attributes.items()}
+    attributes = {
+        name: MASK if SECRET_NAME.search(name) else value for name, value in service.attribute_values().items()
+    }
     attributes.update({name: MASK for name in service.secrets})
     return {
         "kind": service.definition.kind,
