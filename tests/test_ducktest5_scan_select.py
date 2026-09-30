@@ -128,6 +128,25 @@ def test_the_axis_parts_of_an_id_come_in_the_order_of_axes(tmp_path):
     assert ids(tests) == ["a.test::a[backend=oss,storage=s3]"]
 
 
+def test_a_test_directory_name_has_no_glob_or_hive_partition_characters(tmp_path):
+    tests, _ = tree(
+        tmp_path,
+        {
+            "test/ducktest_conf.py": """
+                from ducktest5 import Variant, default
+                AXES = {"storage": [Variant("s3")]}
+                RULES = [default(variants=["storage"])]
+            """,
+            "test/a.py": """
+                from ducktest5 import test
+                @test(params={"plain": {}})
+                def body(ctx): pass
+            """,
+        },
+    )
+    assert re.fullmatch(r"body_plain,storage_s3_a\.py-[0-9a-f]{6}", tests[0].dir_name)
+
+
 def test_rules_apply_from_the_root_down_and_the_test_itself_last(project):
     x = next(c for c in project[0] if c.id == "a/x.test::x[backend=oss]")
     assert x.definition.tags == ["all", "a"]

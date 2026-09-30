@@ -118,9 +118,10 @@ class Test:
     @property
     def dir_name(self):
         """A directory name that says which test it holds, and is its own: two tests of one file
-        name in two directories must not share it."""
+        name in two directories must not share it. DuckDB reads `[` in a path as a glob and a
+        `key=value` segment as a hive partition, so neither is in it."""
         readable = re.sub(
-            r"[^A-Za-z0-9._=,\[\]-]+", "_", self.id.split("::", 1)[-1] + "@" + os.path.basename(self.definition.path)
+            r"[^A-Za-z0-9._,-]+", "_", self.id.split("::", 1)[-1] + "@" + os.path.basename(self.definition.path)
         )
         return f"{readable}-{hashlib.sha1(self.id.encode()).hexdigest()[:6]}"
 
