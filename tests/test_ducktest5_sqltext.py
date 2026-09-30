@@ -253,3 +253,26 @@ def test_params_are_given_by_keyword_to_every_verb(verb, args):
     client = Client("fake", lambda statements: (["i"], [(1,)]))
     with pytest.raises(TypeError):
         getattr(client, verb)("SELECT {n}", *args, {"n": 1})
+
+
+def test_a_value_that_names_a_root_is_filled_before_the_sql():
+    seen = []
+    client = Client("spark", lambda statements: seen.extend(statements) or ([], []), env=Env({"TEMP_DIR": "/run/x"}))
+    client.oks("SELECT * FROM {t}", t="delta.`{TEMP_DIR}/t`")
+    assert seen == ["SELECT * FROM delta.`/run/x/t`"]
+
+
+def test_a_chain_of_values_is_filled_bottom_up_and_a_filled_value_is_not_read_again():
+    seen = []
+    env = Env({"root": "/r", "table_dir": "{root}/tables", "literal": "{{root}}"})
+    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), env=env)
+    client.oks("SELECT '{t}', '{literal}'", t="{table_dir}/t")
+    assert seen == ["SELECT '/r/tables/t', '{root}'"]
+
+
+def test_values_that_refer_to_each_other_in_a_cycle_are_an_error_that_names_the_cycle():
+    client = Client("fake", lambda statements: ([], []), env=Env({"a": "{b}/x", "b": "{A}/y"}))
+    with pytest.raises(UsageError, match=r"a cycle: \{a\} -> \{b\} -> \{a\}"):
+        client.oks("SELECT '{a}'")
+    with pytest.raises(UsageError, match=r"no value for \{nope\} \(in the value of \{t\}\)"):
+        client.oks("SELECT '{t}'", t="{nope}")

@@ -19,6 +19,9 @@ unknown one is an error, and `{{word}}` is a literal brace pair. A value that is
 in as a SQL VALUES list, so the values a test inserts and the rows it expects back are one definition
 (`L("...")` puts hand-written SQL in a value; rows can then not be derived and must be given). Braces
 around anything but a name are left alone (struct literals), so write plain strings, not f-strings.
+A value that holds `{name}`s is filled first, from the other values, each once
+(``t="delta.`{TEMP_DIR}/t`"`` works; values that refer to each other in a cycle are an error), and
+the SQL is then filled in one pass, so what a value brings in is never read again.
 
 Names are case-insensitive. Python writes them lower case and a `.test` file upper case, so `{path}`
 and `{PATH}` are one name with one value. Two names given together that differ only in case are an
@@ -46,6 +49,7 @@ from ..sqltext import format_rows, parse_rows, render_rows, split_statements, sq
 
 
 ON_FAIL = ("abort_test", "continue")
+_PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}|\{(\w+)\}")
 
 
 class SqlError(Exception):
@@ -232,21 +236,33 @@ class Client:
         for layer in (params or {}, more):
             known.update(layer)
 
-        def value(match):
-            if match.group(1):  # {{word}}: a literal brace pair around a word
-                return "{" + match.group(1) + "}"
-            name = match.group(2)
-            if name not in known:
-                raise UsageError(
-                    f"[{self.name}] no value for {{{name}}}; known: {sorted(known)}. "
-                    "A literal brace pair around a word is written {{word}}."
-                )
-            v = known[name]
-            return sql_values(v) if isinstance(v, (list, tuple)) else str(v)
+        filled = {}  # lower-case name -> its value with the names inside it filled
 
-        def fill(text):
-            # One pass, so that what a value brings in is never read as a placeholder or an escape.
-            return re.sub(r"\{\{(\w+)\}\}|\{(\w+)\}", value, text)
+        def resolved(name, chain):
+            key = name.lower()
+            if key not in filled:
+                if key in chain:
+                    cycle = " -> ".join(f"{{{n}}}" for n in [*chain[chain.index(key) :], key])
+                    raise UsageError(f"[{self.name}] the values refer to each other in a cycle: {cycle}")
+                v = known[name]
+                filled[key] = fill(v, [*chain, key]) if isinstance(v, str) else v
+            return filled[key]
+
+        def fill(text, chain=()):
+            def value(match):
+                if match.group(1):  # {{word}}: a literal brace pair around a word
+                    return "{" + match.group(1) + "}"
+                name = match.group(2)
+                if name not in known:
+                    inside = f" (in the value of {{{chain[-1]}}})" if chain else ""
+                    raise UsageError(
+                        f"[{self.name}] no value for {{{name}}}{inside}; known: {sorted(known)}. "
+                        "A literal brace pair around a word is written {{word}}."
+                    )
+                v = resolved(name, list(chain))
+                return sql_values(v) if isinstance(v, (list, tuple)) else str(v)
+
+            return _PLACEHOLDER.sub(value, text)
 
         return split_statements(fill(sql)) if isinstance(sql, str) else [fill(x).strip() for x in sql]
 
