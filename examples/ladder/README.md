@@ -87,3 +87,8 @@ where the self-tests name a server at an address nothing answers. To run them ag
 that runs already:
 
     ducktest5 run --no-binary-check --existing-service s3=http://HOST:PORT
+
+A server the run starts is published on `DUCKTEST_SERVICE_HOST:DUCKTEST_S3_PORT` (`127.0.0.1:9000`
+when unset). When the docker daemon is not on this machine's loopback, as from inside a container,
+set both to where the daemon's host is reached from here, e.g. `172.18.0.1` and `9999`, in the
+shell that runs `ducktest5 provision` or `run`.

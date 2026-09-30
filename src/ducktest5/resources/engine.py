@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from ..binary import UsageError
-from .base import EXCLUSIVE, NEVER, RW
+from .base import EXCLUSIVE, NEVER, RO, RW
 from .client import Client
 from .dialect import Preamble, preamble
 from .service import Service, ServiceDef
@@ -133,6 +133,10 @@ class Engine(Service):
         """What the engine applies before each test, in its dialect. Secrets are read now."""
         if self.dialect is None:
             return Preamble()
+        # An input made for this engine alone was never acquired; a credential with a callable
+        # source (a service's keys) has no secrets until it is.
+        for given in self.inputs.values():
+            given.release(given.acquire(RO), RO)
         return preamble(self.dialect, self.definition, self.inputs.values())
 
     def twin(self) -> Engine:
