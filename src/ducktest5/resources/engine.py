@@ -14,6 +14,7 @@ the other.
 
 from __future__ import annotations
 
+import copy
 import os
 from dataclasses import dataclass, field, replace
 from typing import Callable
@@ -133,6 +134,14 @@ class Engine(Service):
         if self.dialect is None:
             return Preamble()
         return preamble(self.dialect, self.definition, self.inputs.values())
+
+    def twin(self) -> Engine:
+        """Another instance of this engine, open on a handle of its own, for the test that holds this
+        one; not reset, and closed by whoever asked for it."""
+        other = copy.copy(self)
+        other.live = None
+        other.start()
+        return other
 
     def ready(self) -> bool:
         return self.live is not None

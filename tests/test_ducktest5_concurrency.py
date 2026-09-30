@@ -7,12 +7,12 @@ import shutil
 import pytest
 
 from ducktest5.ctx import Context
-from ducktest5.engines.duckdb import DuckDBShell
+from ducktest5.engines.duckdb import DuckDBShell, duckdb_engine
 from ducktest5.model import PYTHON, Test, TestDef
+from ducktest5.resources.engine import Runtime
 from ducktest5.run import run
 from ducktest5.scan import scan
 from ducktest5.testenv import resolve
-from test_ducktest5_run import held
 
 
 def _shell():
@@ -26,36 +26,32 @@ pytestmark = pytest.mark.skipif(_shell() is None, reason="no duckdb shell (set $
 def ctx(tmp_path):
     test = Test(TestDef(path="t.py", name="t", type=PYTHON, body=lambda ctx: None), None, {})
     home = str(tmp_path / "home")
-    shared = DuckDBShell(_shell(), home=home)
-    shared.begin_test()
-    context = Context(
-        test,
-        resolve(test),
-        [held(shared)],
-        temp_dir=str(tmp_path),
-        duckdb_bin=_shell(),
-        duckdb_home=home,
-    )
+    engine = duckdb_engine().make()
+    engine.runtime = Runtime(shell=lambda env: DuckDBShell(_shell(), home=home, env=env))
+    engine.start()
+    context = Context(test, resolve(test), [engine], temp_dir=str(tmp_path))
     yield context
     for teardown in reversed(context.teardowns):
         teardown()
-    shared.close()
+    engine.close()
 
 
-def test_own_clients_are_warm_and_do_not_see_each_others_instance(ctx):
-    first = ctx.duckdb("CREATE TABLE mine (i INT);", shell="per_client")
-    second = ctx.duckdb("CREATE TABLE mine (i INT);", shell="per_client")
+def test_new_clients_are_warm_and_do_not_see_each_others_instance(ctx):
+    first = ctx.client("duckdb", new=True)
+    second = ctx.client("duckdb", new=True)
+    for client in (first, second):
+        client.oks("CREATE TABLE mine (i INT)")
     first.oks("INSERT INTO mine VALUES (1)")
     first.expects("SELECT count(*) FROM mine", [1])  # the same shell answered twice: it stayed warm
     second.expects("SELECT count(*) FROM mine", [0])
-    ctx.duckdb().expects("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'mine'", [0])
+    ctx.client("duckdb").expects("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'mine'", [0])
 
 
-def test_what_an_own_client_persists_lands_under_the_runs_private_home(ctx, tmp_path, monkeypatch):
+def test_what_a_new_client_persists_lands_under_the_runs_private_home(ctx, tmp_path, monkeypatch):
     users_home = tmp_path / "users-home"
     users_home.mkdir()
     monkeypatch.setenv("HOME", str(users_home))
-    ctx.duckdb(shell="per_client").oks("CREATE PERSISTENT SECRET probe (TYPE s3, KEY_ID 'k', SECRET 'x')")
+    ctx.client("duckdb", new=True).oks("CREATE PERSISTENT SECRET probe (TYPE s3, KEY_ID 'k', SECRET 'x')")
     assert (tmp_path / "home" / ".duckdb" / "stored_secrets" / "probe.duckdb_secret").exists()
     assert list(users_home.iterdir()) == []
 

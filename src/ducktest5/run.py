@@ -511,8 +511,6 @@ def execute(
                     env,
                     held.values(),
                     temp_dir=temp_dir,
-                    duckdb_bin=duckdb_bin,
-                    duckdb_home=duckdb_home,
                     services={s: made.services[s] for s in test.services},
                     run_test=lambda **kw: _run_paired(
                         test,
@@ -522,7 +520,6 @@ def execute(
                         temp_dir,
                         **kw,
                     ),
-                    shell_factory=shell_factory,
                 )
             except Exception as exc:
                 pool.give_back(test.id, held, failed=True)

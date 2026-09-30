@@ -7,10 +7,9 @@ process for its run. The words are sqllogictest's, where it has them:
     restart()     new instance, same process      `.open :memory:`, then the test's preambles again
     respawn()     new process                     not in sqllogictest, which is one process
 
-Each test starts on a fresh instance. `DuckDBPerCall` is the exception: a cold process for every
-call.
+Each test starts on a fresh instance.
 
-Both run with a private HOME, as the unittest binary does: the persistent secrets and the installed
+It runs with a private HOME, as the unittest binary does: the persistent secrets and the installed
 extensions of whoever starts the run stay out of the tests, and what a test persists stays out of
 their home.
 """
@@ -229,38 +228,3 @@ class DuckDBShell:
                 if line.strip() == mark:
                     return "".join(out).strip()
                 out.append(line)
-
-
-class DuckDBPerCall:
-    """A cold process for every call: `preamble`, then the call's statements, with a marker before
-    each, so under `-bail` the last marker reached names the statement that failed. `timeout` is for
-    the whole call."""
-
-    def __init__(self, binary, preamble="", *, timeout=DEFAULT_TIMEOUT_S, home=None, env=None):
-        self.binary = binary
-        self.preamble = preamble
-        self._timeout = timeout
-        self._home = _Home(home, env)
-
-    def run(self, statements):
-        script = [self.preamble]
-        for n, statement in enumerate(statements):
-            script += [f".print {_MARK.format(n)}", statement.rstrip().rstrip(";") + "\n;"]
-        args = [self.binary, "-unsigned", "-bail", "-json", "-init", os.devnull]
-        _log.debug("duckdb (per call): %s", shlex.join(args))
-        try:
-            p = subprocess.run(
-                args,
-                input="\n".join(script) + "\n",
-                capture_output=True,
-                text=True,
-                timeout=self._timeout,
-                env=self._home.env(),
-            )
-        except subprocess.TimeoutExpired:
-            raise SqlError(f"the call was not done in {self._timeout}s; the duckdb shell was killed") from None
-        chunks = p.stdout.split("<<ducktest:")
-        reached = len(chunks) - 2  # chunks[0] is the preamble's output
-        if p.returncode != 0:
-            raise SqlError(p.stderr.strip(), statement=reached if reached >= 0 else None)
-        return _rows(chunks[-1].split(">>", 1)[1].strip() if reached >= 0 else "")

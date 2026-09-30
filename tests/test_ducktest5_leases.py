@@ -209,7 +209,7 @@ def test_the_default_duckdb_engine_sends_the_scoped_secret_over_the_shells_stdin
     monkeypatch.setenv("FAKE_SHELL_RECORD", str(record))
 
     def body(ctx):
-        ctx.duckdb().oks("SELECT echo1")
+        ctx.client("duckdb").oks("SELECT echo1")
 
     test = with_minio(py_test(body), minio_inputs)
     code, run_dir, _, _ = go(tmp_path, [test], duckdb_bin=FAKE_SHELL, shell_factory=DuckDBShell, keep=True)

@@ -6,7 +6,7 @@ import shutil
 import pytest
 
 from ducktest5.resources.client import SqlError
-from ducktest5.engines.duckdb import DuckDBPerCall, DuckDBShell
+from ducktest5.engines.duckdb import DuckDBShell
 
 
 def _shell():
@@ -73,13 +73,6 @@ def test_a_shell_that_died_is_replaced_and_gets_the_preambles_back(shell):
     assert _tables(shell) == ["from_preamble"]
 
 
-def test_per_call_is_a_cold_process_each_time():
-    shell = DuckDBPerCall(_shell())
-    shell.run(["CREATE TABLE gone (i INT)"])
-    with pytest.raises(SqlError, match="does not exist"):
-        shell.run(["SELECT * FROM gone"])
-
-
 def test_two_columns_of_one_name_stay_two_columns(shell):
     assert shell.run(["SELECT 1 AS a, 2 AS a"]) == (["a", "a"], [(1, 2)])
 
@@ -106,16 +99,15 @@ def test_a_statement_that_prints_text_is_a_result_not_an_error(shell):
 _PERSIST = "CREATE PERSISTENT SECRET ducktest_home_probe (TYPE s3, KEY_ID 'k', SECRET 'x')"
 
 
-@pytest.mark.parametrize("client", [DuckDBShell, DuckDBPerCall])
-def test_what_a_test_persists_lands_under_the_private_home_not_the_users(tmp_path, monkeypatch, client):
+def test_what_a_test_persists_lands_under_the_private_home_not_the_users(tmp_path, monkeypatch):
     users_home = tmp_path / "users-home"
     users_home.mkdir()
     monkeypatch.setenv("HOME", str(users_home))
-    c = client(_shell(), home=str(tmp_path / "private"))
+    c = DuckDBShell(_shell(), home=str(tmp_path / "private"))
     try:
         c.run([_PERSIST])
     finally:
-        getattr(c, "close", lambda: None)()
+        c.close()
     assert (tmp_path / "private" / ".duckdb" / "stored_secrets" / "ducktest_home_probe.duckdb_secret").exists()
     assert list(users_home.iterdir()) == []
 
@@ -124,5 +116,9 @@ def test_with_no_home_given_a_temporary_one_is_used(tmp_path, monkeypatch):
     users_home = tmp_path / "users-home"
     users_home.mkdir()
     monkeypatch.setenv("HOME", str(users_home))
-    DuckDBPerCall(_shell()).run([_PERSIST])
+    c = DuckDBShell(_shell())
+    try:
+        c.run([_PERSIST])
+    finally:
+        c.close()
     assert list(users_home.iterdir()) == []

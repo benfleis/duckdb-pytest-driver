@@ -13,8 +13,11 @@ before. Run these from inside a rung, e.g. `cd examples/ladder/02_rules`:
 ## 01_solo
 
 One Python body and one `.test` file, and no `ducktest_conf.py` in this directory or above it. Both
-run on the built-in DuckDB engine: the `.test` file in a `unittest` process, the body through
-`ctx.duckdb()`, a Client on that engine's shell. Each runs one query.
+run on the built-in DuckDB engine, `duckdb`: the `.test` file in a `unittest` process, the body
+through `ctx.client("duckdb")`, a Client on that engine's shell. Each runs one query. A body that
+needs a second connection, such as a thread that must run beside the first, asks for
+`ctx.client("duckdb", new=True)`: a shell of its own, with the same preamble, closed when the test
+ends.
 
 ## 02_rules
 

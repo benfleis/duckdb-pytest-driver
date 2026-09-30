@@ -731,7 +731,6 @@ def held(live, engine="duckdb"):
 
 def ctx_for(test, tmp_path, *, engine=None, shell=None, services=None, test_env=None, **kwargs):
     """A Context with a Client on DuckDB, and on the fake engine where the test uses it."""
-    kwargs.setdefault("shell_factory", FakeShell)
     engines = [held(shell or FakeShell())]
     if "fake" in test.engines:
         engines.append(held(engine or FakeEngine(), "fake"))
@@ -740,7 +739,6 @@ def ctx_for(test, tmp_path, *, engine=None, shell=None, services=None, test_env=
         test_env or resolve(test),
         engines,
         temp_dir=str(tmp_path),
-        duckdb_bin="no-duckdb",
         services=services,
         **kwargs,
     )
@@ -886,7 +884,7 @@ def asks_for_a_binary_that_is_not_there(ctx):
 
 
 def gives_rows_the_wrong_shape(ctx):
-    ctx.duckdb().expects("SELECT 1", 1)
+    ctx.client("duckdb").expects("SELECT 1", 1)
 
 
 @pytest.mark.parametrize(
@@ -940,12 +938,11 @@ def test_ctx_service_is_the_runs_instance_of_a_service_behind_the_inputs(tmp_pat
 #
 
 
-def test_the_test_environment_comes_before_the_bodys_own_preamble_in_the_order_of_the_init_file(tmp_path):
+def test_the_test_environment_reaches_the_preamble_in_the_order_of_the_init_file(tmp_path):
     seen = []
 
     def body(ctx):
-        ctx.duckdb("SELECT 1;")
-        seen.extend(ctx._duckdb.engine.live.preambles)
+        seen.extend(ctx.client("duckdb").engine.live.preambles)
 
     variant = Variant(
         "s3",
@@ -957,7 +954,6 @@ def test_the_test_environment_comes_before_the_bodys_own_preamble_in_the_order_o
     assert code == 0
     assert seen == [
         "LOAD httpfs;\nSET threads = '2';\nSET s3_region = 'it''s';\nCREATE SECRET (ENDPOINT 'http://store');",
-        "SELECT 1;",
     ]
 
 
@@ -1014,7 +1010,7 @@ def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(
         return made[-1]
 
     def body(ctx):
-        ctx.duckdb().oks("SELECT 1")
+        ctx.client("duckdb").oks("SELECT 1")
 
     variant = Variant("no-key", process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None})
     tests = [py_test(body, path="test/plain.py"), py_test(body, {"auth": variant}, path="test/env.py")]
@@ -1024,23 +1020,23 @@ def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(
     assert "AWS_ACCESS_KEY_ID" not in own.env
 
 
-def test_a_preamble_that_fails_is_a_setup_error(tmp_path):
+def test_a_new_client_whose_preamble_fails_is_a_setup_error(tmp_path):
+    made = []
+
+    def factory(binary, **kw):
+        made.append(FakeShell(binary, preamble_fails=bool(made), **kw))
+        return made[-1]
+
     def body(ctx):
-        ctx.duckdb()
+        ctx.client("duckdb", new=True)
 
-    _, _, report, _ = go(tmp_path, [py_test(body)], shell_factory=lambda b, **kw: FakeShell(preamble_fails=True))
+    variant = Variant("s3", init_sql="CREATE SECRET s")
+    _, _, report, _ = go(tmp_path, [py_test(body, {"k": variant})], shell_factory=factory)
     assert report["tests"][0]["outcome"] == "error"
-    assert "the preamble failed: Catalog Error" in report["tests"][0]["problems"][0]
+    assert "[duckdb] the preamble failed: Catalog Error" in report["tests"][0]["problems"][0]
 
 
-def test_an_unknown_shell_kind_is_refused(tmp_path):
-    with pytest.raises(ValueError, match="'per_run', 'per_client', 'per_call'"):
-        ctx_for(py_test(passes), tmp_path).duckdb(shell="per_test")
-    with pytest.raises(UsageError, match=r"is now ctx.duckdb\(shell=...\)"):
-        ctx_for(py_test(passes), tmp_path).duckdb(session="per_client")
-
-
-def test_an_own_shell_is_a_warm_shell_of_its_own_closed_when_the_test_ends(tmp_path):
+def test_a_new_client_is_a_warm_shell_of_its_own_closed_when_the_test_ends(tmp_path):
     made = []
 
     def factory(binary, *, home=None, env=None):
@@ -1052,19 +1048,21 @@ def test_an_own_shell_is_a_warm_shell_of_its_own_closed_when_the_test_ends(tmp_p
     made_closed = []
 
     def body(ctx):
-        shared = ctx.duckdb("LOAD delta;")
-        first = ctx.duckdb("LOAD delta;", shell="per_client")
-        second = ctx.duckdb("LOAD delta;", shell="per_client")
+        shared = ctx.client("duckdb")
+        first = ctx.client("duckdb", new=True)
+        second = ctx.client("duckdb", new=True)
         first.oks("SELECT 1")
         second.oks("SELECT 2")
         shared.oks("SELECT 3")
 
-    code, _, _, _ = go(tmp_path, [py_test(body)], shell_factory=factory)
+    variant = Variant("s3", requires=("httpfs",), process_env={"AWS_PROFILE": "ducktest"})
+    code, _, _, _ = go(tmp_path, [py_test(body, {"k": variant})], shell_factory=factory)
     assert code == 0
-    run_shell, first, second = made  # the run's shell, then one for each `per_client` client
+    run_shell, first, second = made  # the run's shell, then one for each new client
     assert [first.statements, second.statements, run_shell.statements] == [["SELECT 1"], ["SELECT 2"], ["SELECT 3"]]
-    assert [first.preambles, second.preambles] == [run_shell.preambles] * 2
+    assert [first.preambles, second.preambles] == [run_shell.preambles] * 2 == [["LOAD httpfs;"]] * 2
     assert [first.home, second.home] == [run_shell.home] * 2
+    assert first.env["AWS_PROFILE"] == second.env["AWS_PROFILE"] == "ducktest"
     assert made_closed[:2] == [second, first]  # both before the run's own shell goes away
 
 
@@ -1116,28 +1114,27 @@ def test_a_python_body_that_never_passes_keeps_its_first_failure(tmp_path):
     assert "attempt 1" in test["problems"][0] and len(test["problems"]) == 1
 
 
-def test_duckdb_gets_a_home_under_the_run_dir_for_both_kinds_of_shell(tmp_path):
+def test_duckdb_gets_a_home_under_the_run_dir(tmp_path):
     seen = {}
 
     def body(ctx):
-        seen["per_run"] = ctx._duckdb.engine.live.home
-        seen["per_call"] = ctx.duckdb(shell="per_call")._run.__self__._home.path
+        seen["home"] = ctx.client("duckdb").engine.live.home
 
     _, run_dir, _, _ = go(tmp_path, [py_test(body)])
-    assert seen == {"per_run": str(run_dir / "home"), "per_call": str(run_dir / "home")}
+    assert seen == {"home": str(run_dir / "home")}
 
 
-def test_the_timeout_of_a_duckdb_client_reaches_each_of_its_statements(tmp_path):
+def test_the_timeout_of_the_engine_reaches_each_statement_of_a_new_client_too(tmp_path):
     seen = []
 
     def body(ctx):
-        ctx.duckdb(timeout=7).oks("SELECT 1")
-        ctx.duckdb().oks("SELECT 2")
-        seen.extend(ctx._duckdb.engine.live.timeouts)
-        seen.append(ctx.duckdb(shell="per_call", timeout=9)._run.__self__._timeout)
+        ctx.client("duckdb").oks("SELECT 1")
+        new = ctx.client("duckdb", new=True)
+        new.oks("SELECT 2")
+        seen.extend(ctx.client("duckdb").engine.live.timeouts + new.engine.live.timeouts)
 
-    assert go(tmp_path, [py_test(body)])[0] == 0
-    assert seen == [7, 120, 9]
+    assert go(tmp_path, [py_test(body)], engines=[duckdb_engine("duckdb", timeout=7)])[0] == 0
+    assert seen == [7, 7]
 
 
 def test_the_scan_record_names_every_engine_a_test_runs_on_and_its_version(tmp_path):

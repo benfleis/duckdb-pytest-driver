@@ -119,7 +119,7 @@ def test_every_worker_has_a_shell_of_its_own_and_keeps_it_warm(tmp_path):
         body = recorder.body(name)
 
         def run(ctx):
-            ctx.duckdb().oks(f"SELECT '{name}'")
+            ctx.client("duckdb").oks(f"SELECT '{name}'")
             body(ctx)
 
         run.__name__ = name
@@ -142,7 +142,7 @@ def test_a_test_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_p
             made.append(self)
 
     def body(ctx):
-        ctx.duckdb().oks("SELECT 1")
+        ctx.client("duckdb").oks("SELECT 1")
 
     tests = [
         py_test(body, {"auth": Variant("profile", process_env={"AWS_PROFILE": "ducktest"})}, path="test/env.py"),
@@ -309,7 +309,7 @@ def test_a_body_that_sleeps_past_its_timeout_ends_error_and_the_run_moves_on(tmp
 @pytest.mark.parametrize("workers", [1, 4])
 def test_a_hung_duckdb_statement_is_released_and_reported_once(tmp_path, workers):
     def hangs(ctx):
-        ctx.duckdb().oks("SELECT drip")
+        ctx.client("duckdb").oks("SELECT drip")
 
     tests = [py_test(_named(hangs, "hangs"), path="test/hangs.py", timeout=0.3), *_quick_tests(3)]
     code, run_dir, report, _ = go(tmp_path, tests, workers=workers, duckdb_bin=FAKE_SHELL, shell_factory=DuckDBShell)
