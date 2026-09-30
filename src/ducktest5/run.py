@@ -521,6 +521,13 @@ def execute(
             pool.give_back(test.id, held, failed=outcome in (FAILED, ERROR))
             return outcome, problems, failure, temp_dir, ctx
 
+        def place_of(test, dir_name):
+            """The test's own place under a bound storage, which stays with its temp dir when it failed."""
+            try:
+                return test_env(test, dir_name).root_paths.get("temp_dir_root")
+            except Exception:  # its environment could not be made: the attempt reported that already
+                return None
+
         def python_test(test):
             """One Python body, in the worker that took the slot: the worker's engine instances, and
             the locks its mutexes name held for as long as it runs. Its engine instances are registered
@@ -546,7 +553,8 @@ def execute(
                     note = f"passed on attempt {n} of {allowed}"
                 kept = []
                 if outcome != PASSED or keep:
-                    kept = [temp_dir for temp_dir, _ in tried if os.path.isdir(temp_dir)]
+                    places = [place_of(test, os.path.basename(d)) for d, _ in tried]
+                    kept = [p for p in dict.fromkeys([d for d, _ in tried] + places) if p and os.path.isdir(p)]
                 if sqllogic.stopped():  # stopped while this body ran: a resume takes the test up again
                     return
                 if not report_once(test.id):  # its timeout already wrote an ERROR for it

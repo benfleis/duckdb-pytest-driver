@@ -39,6 +39,7 @@ from .binary import UsageError
 from .model import SQLLOGIC
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED
 from .provision import EXISTING, MANAGED, record
+from .resources import ALWAYS, ON_FAILURE
 from .resources.made import services_in
 
 TESTS_FILE, PLAN_FILE, PROVISION_FILE = "01-tests.yaml", "02-plan.yaml", "03-provision.yaml"
@@ -323,6 +324,7 @@ def _paths_by_outcome(event_lines, run_dir):
 def cleanup(run_dir, *, project=None, keep=False, event_lines=None):
     """What a run leaves behind, by what `04` says about each test: the files of a test that passed
     are removed, the files of a test that failed stay, and a service this run started is stopped.
+    Under each storage the run's own prefix goes, but the places of the tests that failed.
     A run that never ended (it was killed) did not end the services behind its storages, nor remove
     what its tests wrote under them: what carries its run token is removed.
 
@@ -347,9 +349,31 @@ def cleanup(run_dir, *, project=None, keep=False, event_lines=None):
     ]
     failed = any(e.get("outcome") in (FAILED, ERROR) for e in event_lines if e.get("event") == events.TEST_END)
     summary.update(end_services(run_dir, project, failed=failed))
-    if project is not None and not keep and not any(e.get("event") == events.RUN_END for e in event_lines):
+    ended = any(e.get("event") == events.RUN_END for e in event_lines)
+    if project is not None and not keep and not ended:
         summary["swept"] = sweep_storages(run_id_of(run_dir), project) + sweep_services(run_id_of(run_dir), project)
+    elif project is not None and not keep:
+        failed_kept = [
+            k
+            for e in event_lines
+            if e.get("event") == events.TEST_END and e.get("outcome") != PASSED
+            for k in e.get("kept") or ()
+        ]
+        summary["removed"] += clear_storages(run_id_of(run_dir), project, failed_kept)
     return summary
+
+
+def clear_storages(run_token, project, failed_kept):
+    """What a run that ended wrote under the project's storages goes, but what a failed test kept
+    where its storage's `retain` keeps it. A storage that takes inputs is left: its root is not known
+    without them."""
+    removed = []
+    for d in project.storages.values():
+        if d.inputs or d.retain == ALWAYS:
+            continue
+        keep = failed_kept if d.retain == ON_FAILURE else ()
+        removed += d.make(run_token=run_token).clear(run_token, keep)
+    return removed
 
 
 def sweep_storages(run_token, project):

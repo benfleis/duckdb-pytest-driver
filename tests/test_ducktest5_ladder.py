@@ -130,3 +130,17 @@ def test_run(rung, binaries, rung_copy, tmp_path, capsys):
     (run_dir,) = runs.iterdir()
     golden(f"{rung}.run.txt", normalized(out, tmp_path) + plan_batches(run_dir))
     assert holding(tmp_path, FAKE_KEY.values()) == []
+
+
+@pytest.mark.parametrize("binaries", ["fake", "real"])
+def test_a_green_run_leaves_nothing_under_its_storages(binaries, rung_copy, tmp_path, capsys):
+    if BINARIES[binaries] is None:
+        pytest.skip("no built duckdb and test/unittest (set $DUCKDB_SHELL)")
+    shell, unittest = BINARIES[binaries]
+    rung_copy("02_rules")
+    runs = tmp_path / "runs"
+    args = ["--duckdb-bin", shell, "--unittest-bin", unittest, "--no-binary-check", "--temp-dir-root", str(runs)]
+    assert main(["run", *args]) == 0, capsys.readouterr().out
+    (run_dir,) = runs.iterdir()
+    assert [p for p in (tmp_path / "tmp").rglob("*") if p.is_file() or p.name == "temp"] == []
+    assert list((run_dir / "tests").iterdir()) == []

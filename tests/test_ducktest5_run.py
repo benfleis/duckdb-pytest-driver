@@ -124,7 +124,8 @@ def py_test(body, axis_values=None, *, path="test/body.py", body_file=None, inpu
 
 def go(tmp_path, tests, *, engines=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
     """Returns (exit code, run dir, report, printed text)."""
-    project = Project(str(tmp_path), {e.id: e for e in engines}, {}, {}, {}, ())
+    storages = {d.id: d for t in tests for d, _ in t.inputs if isinstance(d, StorageDef)}
+    project = Project(str(tmp_path), {e.id: e for e in engines}, {}, {}, {}, (), storages)
     out = io.StringIO()
     kwargs.setdefault("shell_factory", FakeShell)
     code = run(
@@ -617,6 +618,27 @@ def test_what_a_failed_test_wrote_stays_and_is_listed(tmp_path):
 def test_a_batch_dir_stays_only_when_kept_or_not_all_passed(tmp_path, keep):
     _, run_dir, _, _ = go(tmp_path, [sql_test("a.test")], keep=keep)
     assert (run_dir / "batches" / "b001").exists() == keep
+
+
+def test_a_run_removes_its_prefix_under_a_storage_but_a_failed_test_s_place(tmp_path):
+    def writes_to_the_storage(ctx):
+        open(os.path.join(ctx.env.temp_dir, "f"), "w").close()
+
+    def writes_to_the_storage_and_fails(ctx):
+        writes_to_the_storage(ctx)
+        assert False
+
+    storage = StorageDef("scratch", str(tmp_path / "scratch"))
+    passed = py_test(writes_to_the_storage, inputs=[storage], path="test/passed.py")
+    failed = py_test(writes_to_the_storage_and_fails, inputs=[storage], path="test/failed.py")
+    _, run_dir, report, _ = go(tmp_path, [passed, failed])
+    (prefix,) = (tmp_path / "scratch" / "temp").iterdir()
+    assert [p.name for p in prefix.iterdir()] == [failed.dir_name]
+    assert str(prefix / failed.dir_name) in result_of(report, "writes_to_the_storage_and_fails")["kept"]
+
+    (tmp_path / "green").mkdir()
+    assert go(tmp_path / "green", [passed])[0] == 0
+    assert [p.name for p in (tmp_path / "scratch" / "temp").iterdir()] == [prefix.name]
 
 
 def test_a_batch_dir_with_a_failure_stays(tmp_path):

@@ -144,6 +144,28 @@ class Storage(Resource):
         # TODO: remove the run's prefix of a remote store, once `list` finds it.
         return found
 
+    def clear(self, run_token, keep=()):
+        """At the end of a run: remove what the run `run_token` left under this storage but the
+        places in `keep` and what holds them, then the run's own directory and the temp prefix, where
+        they are empty. Returns what it removed."""
+        if self.scheme != "file":
+            return []  # TODO: remove the run's prefix of a remote store, once `list` finds it.
+        under = local_path(self.run_root(run_token))
+        keep = [os.path.abspath(k) for k in keep]
+        removed = []
+        for name in sorted(os.listdir(under)) if os.path.isdir(under) else []:
+            path = os.path.join(under, name)
+            if not any(k == path or k.startswith(path + os.sep) for k in keep):
+                shutil.rmtree(path, ignore_errors=True)
+                removed.append(path)
+        for directory in (under, os.path.dirname(under)):
+            try:
+                os.rmdir(directory)
+                removed.append(directory)
+            except OSError:  # not empty, or not there
+                break
+        return removed
+
     def read(self):
         if self.scheme == "file" and not os.path.isdir(self.path):
             return None
