@@ -71,7 +71,7 @@ def fake_docker(monkeypatch, store):
 
 @pytest.fixture
 def no_service_env(monkeypatch):
-    for name in ("DUCKTEST_SERVICE_BIND", "DUCKTEST_SERVICE_HOST", "DUCKTEST_S3_PORT"):
+    for name in ("DUCKTEST_SERVICE_BIND", "DUCKTEST_SERVICE_HOST", "DUCKTEST_S3_LOCAL_PORT"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -188,7 +188,7 @@ def test_a_server_that_already_answers_is_used_as_it_is(no_service_env, monkeypa
         raise AssertionError(f"docker {args} was called for a server found running")
 
     monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
-    monkeypatch.setenv("DUCKTEST_S3_PORT", "9999")
+    monkeypatch.setenv("DUCKTEST_S3_LOCAL_PORT", "9999")
     monkeypatch.setattr(s3local, "docker", no_docker)
     monkeypatch.setattr(s3local, "s3_answers", lambda endpoint: endpoint == "http://172.18.0.1:9999")
     made = Made("r1")

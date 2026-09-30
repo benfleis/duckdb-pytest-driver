@@ -76,7 +76,7 @@ green.
 The storage is now a prefix in a bucket of a local S3-compatible server, `s3_local()`: the run
 starts one in docker, and a test does not say what backs it. `S3.storage("lake", "lake")` is
 `s3://ducktest/lake` on it, and `S3.credential("keys", scopes=["lake"])` is the server's keys, from
-`DUCKTEST_S3_ACCESS_KEY` and `DUCKTEST_S3_SECRET_KEY` (`admin` and `password` when unset). Both
+`DUCKTEST_S3_LOCAL_ACCESS_KEY` and `DUCKTEST_S3_LOCAL_SECRET_KEY` (`admin` and `password` when unset). Both
 bodies find one secret, scoped to the storage, and write and read `{TEMP_DIR}/answer.csv`: a Python
 body under `s3://ducktest/lake/temp/<run>/<key>`, a `.test` file under the run's prefix, where the
 binary makes its own place. When the run ends, that prefix goes, but the places of the tests that
@@ -87,14 +87,14 @@ where the self-tests name a server at an address nothing answers.
 
 Before the run starts a server, it looks at the address where it would reach one. A server that
 answers there is used as it is: the run makes its bucket, and never stops or removes it. The run
-reaches the server at `DUCKTEST_SERVICE_HOST:DUCKTEST_S3_PORT` (`127.0.0.1:9000` when unset). A
-server the run starts in docker is published at `DUCKTEST_SERVICE_BIND:DUCKTEST_S3_PORT`, and when
+reaches the server at `DUCKTEST_SERVICE_HOST:DUCKTEST_S3_LOCAL_PORT` (`127.0.0.1:9000` when unset). A
+server the run starts in docker is published at `DUCKTEST_SERVICE_BIND:DUCKTEST_S3_LOCAL_PORT`, and when
 `DUCKTEST_SERVICE_HOST` is not set, the run reaches it there too.
 
 So when docker runs on one machine and the tests on another, as in a container, set one variable on
 each side. Where docker runs, set `DUCKTEST_SERVICE_BIND` to the address the other side reaches this
 machine at, e.g. `172.18.0.1`, and start the server with `ducktest5 provision` or a run. Where the
-tests run, set `DUCKTEST_SERVICE_HOST` to that same address. Set `DUCKTEST_S3_PORT` on both sides if
+tests run, set `DUCKTEST_SERVICE_HOST` to that same address. Set `DUCKTEST_S3_LOCAL_PORT` on both sides if
 the port is not 9000.
 
 `--existing-service s3=http://HOST:PORT` still names a server at any address, but a server that

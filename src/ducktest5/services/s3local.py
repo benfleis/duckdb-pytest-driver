@@ -1,6 +1,6 @@
 """A local S3-compatible server, as a Service: run in docker, or found running at an address.
 
-It runs as RustFS (`DUCKTEST_S3_IMAGE` overrides the image). A server that already answers where
+It runs as RustFS (`DUCKTEST_S3_LOCAL_IMAGE` overrides the image). A server that already answers where
 the run reaches it is used as it is, so a machine with no docker runs against one started elsewhere.
 A test does not see the server directly; it sees the endpoint, the bucket, and the credential the
 service produces.
@@ -30,18 +30,18 @@ RUSTFS_ENV = (("RUSTFS_VOLUMES", "/data"), ("RUSTFS_ADDRESS", ":9000"), ("RUSTFS
 
 
 def s3_settings(**overrides):
-    """How one instance is reached and started; `DUCKTEST_S3_*` of the environment give the defaults."""
-    port = int(overrides.get("port", os.environ.get("DUCKTEST_S3_PORT", "9000")))
+    """How one instance is reached and started; `DUCKTEST_S3_LOCAL_*` of the environment give the defaults."""
+    port = int(overrides.get("port", os.environ.get("DUCKTEST_S3_LOCAL_PORT", "9000")))
     # Published on one address, not all, to keep the port off the host's other networks.
     bind = overrides.get("bind", service_bind())
     host = overrides.get("host", service_host())
     endpoint = overrides.get("endpoint", f"http://{in_url(host)}:{port}").rstrip("/")
     return {
         "endpoint": endpoint,
-        "region": overrides.get("region", os.environ.get("DUCKTEST_S3_REGION", "us-east-1")),
-        "access_key": overrides.get("access_key", os.environ.get("DUCKTEST_S3_ACCESS_KEY", "admin")),
-        "secret_key": overrides.get("secret_key", os.environ.get("DUCKTEST_S3_SECRET_KEY", "password")),
-        "bucket": overrides.get("bucket", os.environ.get("DUCKTEST_S3_BUCKET", "ducktest")),
+        "region": overrides.get("region", os.environ.get("DUCKTEST_S3_LOCAL_REGION", "us-east-1")),
+        "access_key": overrides.get("access_key", os.environ.get("DUCKTEST_S3_LOCAL_ACCESS_KEY", "admin")),
+        "secret_key": overrides.get("secret_key", os.environ.get("DUCKTEST_S3_LOCAL_SECRET_KEY", "password")),
+        "bucket": overrides.get("bucket", os.environ.get("DUCKTEST_S3_LOCAL_BUCKET", "ducktest")),
         "container": overrides["container"],
         "port": port,
         "publish": f"{in_url(bind)}:{port}",
@@ -70,17 +70,17 @@ def _start(settings):
         "run", "-d", "--name", settings["container"],
         "-p", f"{settings['publish']}:9000",
         *env,
-        os.environ.get("DUCKTEST_S3_IMAGE", RUSTFS_IMAGE),
+        os.environ.get("DUCKTEST_S3_LOCAL_IMAGE", RUSTFS_IMAGE),
     )  # fmt: skip
 
 
 @dataclass(eq=False)
 class S3LocalDef(ServiceDef):
     """A local S3-compatible server with its bucket made: one that already answers where the run
-    reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_S3_PORT), else in a docker container named for the
+    reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_S3_LOCAL_PORT), else in a docker container named for the
     run, or the one `.as_existing(address=...)` names. It runs as RustFS. Its attributes are
-    `endpoint`, `bucket` and `region`; its keys come from the environment (DUCKTEST_S3_ACCESS_KEY,
-    DUCKTEST_S3_SECRET_KEY) and reach a test through `credential(id, scopes=[...])`.
+    `endpoint`, `bucket` and `region`; its keys come from the environment (DUCKTEST_S3_LOCAL_ACCESS_KEY,
+    DUCKTEST_S3_LOCAL_SECRET_KEY) and reach a test through `credential(id, scopes=[...])`.
     `storage(id, prefix)` declares a storage in its bucket."""
 
     kind = "s3_local"
