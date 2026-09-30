@@ -224,6 +224,19 @@ def test_an_http_server_that_cannot_bind_is_service_not_up(served):
     service.delete()
 
 
+def test_an_http_server_on_every_address_is_reached_on_the_loopback(served, monkeypatch):
+    monkeypatch.setenv("DUCKTEST_SERVICE_BIND", "0.0.0.0")
+    monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "192.0.2.1")  # where services elsewhere are reached; not this one
+    service = HttpServerDef("http", source=served).make(run_token="r1")
+    service.create()
+    try:
+        assert service.server.server_address[0] == "0.0.0.0"
+        assert get(f"{service.attributes['url'].get()}/data.csv") == "a\n1\n2\n"
+        assert service.attributes["url"].get().startswith("http://127.0.0.1:")
+    finally:
+        service.delete()
+
+
 def test_an_existing_http_server_is_adopted_at_its_address(served):
     running = HttpServerDef("http", source=served).make(run_token="r1")
     running.create()

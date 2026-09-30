@@ -7,6 +7,9 @@
                leave it running; the run prints the
                `--existing-service` that adopts it
 
+A managed or kept service that already answers where the run would reach it is used as an existing
+one, `found running`: nothing is started for it, and nothing ends it.
+
 Every mode makes the service in the run's `Made`, so it is made once, whichever phase makes it,
 and every consumer gets that one instance.
 """
@@ -20,7 +23,7 @@ import re
 
 from .binary import UsageError
 from .resources import ALWAYS, ServiceNotUp
-from .resources.made import EXISTING, KEPT, MANAGED  # noqa: F401
+from .resources.made import EXISTING, FOUND, KEPT, MANAGED  # noqa: F401
 
 _log = logging.getLogger(__name__)
 
@@ -110,6 +113,7 @@ def _make(made, definition, mode, errors, on):
             on(definition.id, state="failed", error=errors[definition.id])
         _log.info("service %s: failed to start: %s", definition.id, errors[definition.id])
         return
+    mode = made.modes[definition.id]
     if on:
         on(definition.id, state="up", mode=mode, address=service.address)
     _log.info("service %s (%s): up at %s", definition.id, mode, service.address)

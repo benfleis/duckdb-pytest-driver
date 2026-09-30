@@ -1,13 +1,16 @@
 """ducktest5's local S3 server against a fake docker and a fake store."""
 
+import logging
 import subprocess
 
 import pytest
 from test_ducktest5_leases import opened
 
+from ducktest5 import host
 from ducktest5.engines.duckdb import duckdb_engine
 from ducktest5.resources import RW, ServiceNotUp, check_contract
 from ducktest5.resources.dialect import render
+from ducktest5.resources.made import FOUND, Made
 from ducktest5.services import s3local
 from ducktest5.services.s3local import s3_answers, s3_local, s3_settings
 
@@ -61,8 +64,15 @@ class FakeDocker:
 def fake_docker(monkeypatch, store):
     fake = FakeDocker()
     monkeypatch.setattr(s3local, "docker", fake)
+    monkeypatch.setattr(s3local, "has_docker", lambda: True)
     monkeypatch.setattr(s3local, "s3_answers", fake.answers)
     return fake
+
+
+@pytest.fixture
+def no_service_env(monkeypatch):
+    for name in ("DUCKTEST_SERVICE_BIND", "DUCKTEST_SERVICE_HOST", "DUCKTEST_S3_PORT"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_s3_local_keeps_the_contract(fake_docker):
@@ -152,11 +162,69 @@ def test_an_error_making_its_bucket_is_not_hidden(fake_docker, monkeypatch):
         s3_local().make(run_token="r1").create()
 
 
-def test_a_started_server_is_published_and_reached_on_the_service_host(monkeypatch):
-    assert s3_settings(container="c")["endpoint"] == "http://127.0.0.1:9000"
-    monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
+def published_and_reached():
     settings = s3_settings(container="c")
-    assert (settings["endpoint"], settings["publish"]) == ("http://172.18.0.1:9000", "172.18.0.1:9000")
+    return settings["publish"], settings["endpoint"]
+
+
+def test_a_started_server_is_published_and_reached_on_the_loopback_by_default(no_service_env):
+    assert published_and_reached() == ("127.0.0.1:9000", "http://127.0.0.1:9000")
+
+
+def test_the_bind_address_is_where_it_is_published_and_reached(no_service_env, monkeypatch):
+    monkeypatch.setenv("DUCKTEST_SERVICE_BIND", "172.18.0.1")
+    assert published_and_reached() == ("172.18.0.1:9000", "http://172.18.0.1:9000")
+    monkeypatch.setenv("DUCKTEST_SERVICE_BIND", "0.0.0.0")
+    assert published_and_reached() == ("0.0.0.0:9000", "http://127.0.0.1:9000")
+
+
+def test_the_service_host_is_where_it_is_reached_only(no_service_env, monkeypatch):
+    monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
+    assert published_and_reached() == ("127.0.0.1:9000", "http://172.18.0.1:9000")
+
+
+def test_a_server_that_already_answers_is_used_as_it_is(no_service_env, monkeypatch, store, caplog):
+    def no_docker(*args, **kwargs):
+        raise AssertionError(f"docker {args} was called for a server found running")
+
+    monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
+    monkeypatch.setenv("DUCKTEST_S3_PORT", "9999")
+    monkeypatch.setattr(s3local, "docker", no_docker)
+    monkeypatch.setattr(s3local, "s3_answers", lambda endpoint: endpoint == "http://172.18.0.1:9999")
+    made = Made("r1")
+    with caplog.at_level(logging.INFO):
+        service = made.create(s3_local())
+    assert made.modes["s3"] == FOUND and service.existing and not service.owned
+    assert service.attributes["endpoint"].get() == "http://172.18.0.1:9999" and store.buckets == ["ducktest"]
+    assert "found running at http://172.18.0.1:9999" in caplog.text
+    assert service.read() is not None and service.list("r1") == []
+    service.end(failed=True)
+    service.end(failed=False)
+    service.delete()
+    with caplog.at_level(logging.INFO):
+        made.end(failed=False)
+    assert "service s3 (found running): left alone at http://172.18.0.1:9999" in caplog.text
+
+
+def test_with_nothing_answering_and_no_docker_it_says_where_it_looked(no_service_env, monkeypatch, store):
+    monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
+    monkeypatch.setattr(s3local, "has_docker", lambda: False)
+    monkeypatch.setattr(s3local, "s3_answers", lambda endpoint: False)
+    monkeypatch.setattr(s3local, "docker", FakeDocker())
+    service = s3_local().make(run_token="r1")
+    with pytest.raises(ServiceNotUp, match="nothing answers at http://172.18.0.1:9000, and there is no docker here"):
+        service.create()
+    assert service.list("r1") == [] and service.read() is None
+
+
+def test_docker_missing_is_a_clear_error_and_a_no_op_for_cleanup(monkeypatch):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(host.subprocess, "run", missing)
+    with pytest.raises(RuntimeError, match="there is no docker here"):
+        host.docker("run", "x")
+    assert host.docker("rm", "-f", "x", check=False).returncode != 0
 
 
 def test_an_existing_server_that_does_not_answer_is_service_not_up(fake_docker):

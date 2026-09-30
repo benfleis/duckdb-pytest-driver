@@ -12,6 +12,7 @@ from .service import Service, ServiceDef, ServiceNotUp
 _log = logging.getLogger(__name__)
 
 MANAGED, EXISTING, KEPT = "managed", "existing", "kept"
+FOUND = "found running"  # a managed or kept one that answered before the run started it: used as an existing one
 
 
 def services_in(definitions: Iterable[ResourceDef]) -> list[ServiceDef]:
@@ -65,8 +66,8 @@ class Made:
         return {ref: self.make(sub, mode) for ref, mode, sub in definition.edges() if sub is not None}
 
     def create(self, definition: ServiceDef, mode: str = MANAGED) -> Service:
-        """Start the service, or adopt the existing one; raises ServiceNotUp, and remembers why. A
-        KEPT one is left running when the run ends."""
+        """Start the service, or adopt the existing one or one found running; raises ServiceNotUp, and
+        remembers why. A KEPT one is left running when the run ends."""
         try:
             service = definition.make(self.inputs_of(definition), run_token=self.run_token)
             service.create()
@@ -74,7 +75,7 @@ class Made:
             self.errors[definition.id] = str(exc) if isinstance(exc, ServiceNotUp) else f"{type(exc).__name__}: {exc}"
             raise ServiceNotUp(self.errors[definition.id]) from exc
         self.services[definition.id] = service
-        self.modes[definition.id] = mode
+        self.modes[definition.id] = FOUND if service.found else mode
         return service
 
     def end(self, failed: bool, on_error=None):

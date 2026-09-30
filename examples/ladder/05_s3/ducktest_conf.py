@@ -2,7 +2,7 @@ from ducktest5 import default
 from ducktest5.engines.duckdb import duckdb_engine
 from ducktest5.services.s3local import s3_local
 
-# The run starts it in docker; `--existing-service s3=http://HOST:PORT` names one that runs already.
+# The run uses a server that answers at DUCKTEST_SERVICE_HOST:DUCKTEST_S3_PORT, else starts one in docker.
 S3 = s3_local()
 
 ENGINES = [duckdb_engine("duck", requires=["httpfs"])]

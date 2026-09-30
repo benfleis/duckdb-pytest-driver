@@ -12,13 +12,15 @@ import urllib.request
 from dataclasses import dataclass, field
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+from ..host import in_url, reached_at, service_bind
 from ..resources import ON_FAILURE, Service, ServiceDef
 
 
 @dataclass(eq=False)
 class HttpServerDef(ServiceDef):
-    """Serves a copy of the directory `source` (or an empty one) on a free port of `host`, under a
-    directory of the system temp dir named for the run. Its attribute is `url`."""
+    """Serves a copy of the directory `source` (or an empty one) on a free port of `host`
+    (DUCKTEST_SERVICE_BIND by default), under a directory of the system temp dir named for the run.
+    Its attribute is `url`."""
 
     kind = "http"
     attributes = ("url",)
@@ -26,7 +28,7 @@ class HttpServerDef(ServiceDef):
 
     id: str
     source: str | None = None
-    host: str = "127.0.0.1"
+    host: str | None = None
     address: str | None = None
     inputs: list = field(default_factory=list)
     retain: str = ON_FAILURE
@@ -46,6 +48,7 @@ class HttpServer(Service):
         super().__init__(definition, identity, run_token, inputs)
         self.server = None
         self.thread = None
+        self.bind = definition.host or service_bind()
 
     @property
     def handle(self):
@@ -59,7 +62,8 @@ class HttpServer(Service):
     def url(self):
         if self.existing:
             return self.definition.address
-        return f"http://{self.definition.host}:{self.server.server_port}" if self.server else None
+        # It runs in this process, so it is reached here, not at DUCKTEST_SERVICE_HOST.
+        return f"http://{in_url(reached_at(self.bind))}:{self.server.server_port}" if self.server else None
 
     def alloc(self):
         if self.run_token is None:
@@ -76,7 +80,7 @@ class HttpServer(Service):
         if self.server is not None:
             return
         handler = functools.partial(_Quiet, directory=self.handle)
-        self.server = ThreadingHTTPServer((self.definition.host, 0), handler)
+        self.server = ThreadingHTTPServer((self.bind, 0), handler)
         # stop() waits for one poll of serve_forever; its default is half a second.
         serve = functools.partial(self.server.serve_forever, poll_interval=0.05)
         self.thread = threading.Thread(target=serve, name=f"ducktest-{self.id}", daemon=True)

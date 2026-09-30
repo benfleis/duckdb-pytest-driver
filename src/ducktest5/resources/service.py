@@ -1,17 +1,20 @@
 """Services: something that runs and that a test reaches at an address -- a file server, an object
 store, a catalog. The run starts one instance of each declaration and ends it with the run, or finds
-one already running: `.as_existing(address=...)`. A test reaches one through its inputs: a storage
-on it, a credential it produces, or the service itself."""
+one already running: `.as_existing(address=...)`, or one that answers where it would start it. A
+test reaches one through its inputs: a storage on it, a credential it produces, or the service itself."""
 
 from __future__ import annotations
 
 import dataclasses
+import logging
 from dataclasses import dataclass
 from typing import ClassVar, Mapping
 
 from ..host import wait_until
 from .base import SHARED_RW, Attribute, Resource, ResourceDef
 from .credential import CredentialDef
+
+_log = logging.getLogger(__name__)
 
 
 class ServiceNotUp(RuntimeError):
@@ -74,11 +77,17 @@ class FromService:
 class Service(Resource):
     """A service instance. A kind overrides `alloc`/`dealloc` (what it keeps: a directory, a
     volume), `start`/`stop` (what runs), `read` (its attributes while it exists, else None) and
-    `ready`. An existing one is only read: create adopts it when it answers, delete leaves it."""
+    `ready`. An existing one is only read: create adopts it when it answers, delete leaves it.
+
+    A kind whose address is known before it starts may also override `answers`: create then adopts
+    one that already answers there, found running, as it would an existing one."""
+
+    found = False  # adopted by create: it answered before the run started anything
+    _started = False
 
     @property
     def existing(self) -> bool:
-        return self.definition.address is not None
+        return self.definition.address is not None or self.found
 
     @property
     def owned(self):
@@ -89,19 +98,29 @@ class Service(Resource):
         """Where it answers: what `as_existing` takes to find this instance again."""
         return self.definition.address
 
+    def answers(self) -> bool:
+        """Whether something already answers where this instance is reached, before the run starts it."""
+        return False
+
     def _up(self) -> bool:
         return self.read() is not None and self.ready()
 
     def create(self):
+        if not self.existing and not self._started and self.answers():
+            self.found = True
+            _log.info("service %s: found running at %s, used as it is", self.id, self.address)
         if not self._up():
             if self.existing:
-                raise ServiceNotUp(f"existing service {self.id!r} does not answer at {self.definition.address}")
+                raise ServiceNotUp(f"existing service {self.id!r} does not answer at {self.address}")
             self.alloc()
+            self._started = True
             try:
                 self.start()
                 wait_until(self._up, self.definition.ready_timeout_s, lambda: f"service {self.id!r} is not ready")
             except Exception as exc:
                 self.delete()
+                if isinstance(exc, ServiceNotUp):
+                    raise
                 raise ServiceNotUp(f"{type(exc).__name__}: {exc}") from exc
         found, source = self.read(), f"service {self.id}"
         self.attributes = {name: Attribute(found.get(name), source) for name in self.definition.attributes}

@@ -1,9 +1,11 @@
-"""What a service needs from the host it runs on: the docker CLI, and waiting until something is up.
-Nothing here imports pytest; `ducktest.resources` re-exports both."""
+"""What a service needs from the host it runs on: the addresses it is published and reached at, the
+docker CLI, and waiting until something is up. Nothing here imports pytest."""
 
 import logging
+import os
 import re
 import shlex
+import shutil
 import subprocess
 import time
 
@@ -30,10 +32,37 @@ def _redacted(args):
     return out
 
 
+def service_bind():
+    """Where a service the run starts is published: DUCKTEST_SERVICE_BIND, else 127.0.0.1."""
+    return os.environ.get("DUCKTEST_SERVICE_BIND") or "127.0.0.1"
+
+
+def service_host():
+    """Where the run reaches its services: DUCKTEST_SERVICE_HOST, else where they are published,
+    and 127.0.0.1 when that is every address. The host that runs docker sets the bind address,
+    a machine that only reaches its services sets this one."""
+    return os.environ.get("DUCKTEST_SERVICE_HOST") or reached_at(service_bind())
+
+
+def reached_at(bind):
+    """Where something published on `bind` is reached from this machine."""
+    return "127.0.0.1" if bind in ("0.0.0.0", "::") else bind
+
+
+def in_url(address):
+    """`address` as the host part of a URL or a `-p` publish: an IPv6 one in brackets."""
+    return f"[{address}]" if ":" in address and not address.startswith("[") else address
+
+
+def has_docker():
+    return shutil.which("docker") is not None
+
+
 def docker(*args, check=True, timeout_s=_DOCKER_TIMEOUT_S):
     """Run ``docker <args>``. On a checked failure, raise with docker's own stderr tail -- a bare
     ``CalledProcessError`` hides *why* (e.g. ``docker run`` exit 125 = image unpullable / port in use).
-    ``check=False`` (the ``rm -f`` cleanup calls) never raises, so a missing container is a no-op.
+    ``check=False`` (the ``rm -f`` cleanup calls) never raises, so a missing container, or no docker
+    here at all, is a no-op.
 
     Every call has a timeout: a wedged docker CLI otherwise hangs the run with no output at all.
     """
@@ -42,6 +71,10 @@ def docker(*args, check=True, timeout_s=_DOCKER_TIMEOUT_S):
         proc = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"docker {args[0]} gave no answer in {timeout_s}s") from None
+    except FileNotFoundError:
+        if check:
+            raise RuntimeError(f"docker {args[0]}: there is no docker here (no `docker` on PATH)") from None
+        return subprocess.CompletedProcess(["docker", *args], 127, "", "no docker here")
     if check and proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()
         detail = " | ".join(tail[-3:]) if tail else f"exit {proc.returncode}"

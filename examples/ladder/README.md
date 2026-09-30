@@ -83,12 +83,19 @@ binary makes its own place. When the run ends, that prefix goes, but the places 
 failed.
 
 With no S3 server to reach, and no docker to start one, both tests end BLOCKED; that is the golden,
-where the self-tests name a server at an address nothing answers. To run them against a server
-that runs already:
+where the self-tests name a server at an address nothing answers.
 
-    ducktest5 run --no-binary-check --existing-service s3=http://HOST:PORT
+Before the run starts a server, it looks at the address where it would reach one. A server that
+answers there is used as it is: the run makes its bucket, and never stops or removes it. The run
+reaches the server at `DUCKTEST_SERVICE_HOST:DUCKTEST_S3_PORT` (`127.0.0.1:9000` when unset). A
+server the run starts in docker is published at `DUCKTEST_SERVICE_BIND:DUCKTEST_S3_PORT`, and when
+`DUCKTEST_SERVICE_HOST` is not set, the run reaches it there too.
 
-A server the run starts is published on `DUCKTEST_SERVICE_HOST:DUCKTEST_S3_PORT` (`127.0.0.1:9000`
-when unset). When the docker daemon is not on this machine's loopback, as from inside a container,
-set both to where the daemon's host is reached from here, e.g. `172.18.0.1` and `9999`, in the
-shell that runs `ducktest5 provision` or `run`.
+So when docker runs on one machine and the tests on another, as in a container, set one variable on
+each side. Where docker runs, set `DUCKTEST_SERVICE_BIND` to the address the other side reaches this
+machine at, e.g. `172.18.0.1`, and start the server with `ducktest5 provision` or a run. Where the
+tests run, set `DUCKTEST_SERVICE_HOST` to that same address. Set `DUCKTEST_S3_PORT` on both sides if
+the port is not 9000.
+
+`--existing-service s3=http://HOST:PORT` still names a server at any address, but a server that
+answers where the run reaches it needs no flag.
