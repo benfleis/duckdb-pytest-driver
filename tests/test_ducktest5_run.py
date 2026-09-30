@@ -450,6 +450,8 @@ def test_a_failed_test_says_what_it_was_made_of(tmp_path):
         {"what": "values", "is": "storage=s3", "from": "AXES storage"},
         {"what": "values", "is": "root=s3://bucket", "from": "AXES storage=s3"},
         {"what": "values", "is": "STORE_ENDPOINT=http://store", "from": "service store"},
+        {"what": "root", "is": f"temp_dir_root={run_dir}", "from": "default storage"},
+        {"what": "root", "is": f"data_dir={tmp_path}/data", "from": "default storage"},
     ]
     assert {name: os.path.basename(p) for name, p in facts["files"].items()} == {
         "config": "config.json",
@@ -933,6 +935,7 @@ def test_a_python_body_reads_the_roots_and_puts_what_it_makes_under_the_temp_roo
     assert seen["roots"] == {
         "temp_dir_root": f"http://origin/temp/{run_token}/{test.dir_name}",
         "local_temp_dir_root": f"/www/temp/{run_token}/{test.dir_name}",
+        "data_dir": f"{tmp_path}/data",  # the default storage gives what the variant does not
     }
     assert seen["location"] == f"http://origin/temp/{run_token}/{test.dir_name}/tbl"
 
@@ -1124,3 +1127,37 @@ def test_a_terse_run_prints_blocks_and_one_summary_line_instead_of_the_live_outp
     assert "PASSED" not in text
     assert text.splitlines()[0] == "test: b_fail.test::b_fail"
     assert text.splitlines()[-1].startswith("summary: 1 passed, 1 failed, 0 error, 0 blocked, 0 skipped in ")
+
+
+# -----------------------------------------------------------------------------
+# The default storage
+#
+
+
+def test_a_python_body_that_binds_no_storage_is_given_the_roots_a_test_file_is(tmp_path):
+    seen = {}
+
+    def body(ctx):
+        seen["roots"] = dict(ctx.roots)
+        seen["names"] = {name: ctx.session.values[name] for name in ("DATA_DIR", "TEMP_DIR")}
+
+    test = py_test(body)
+    code, run_dir, _, _ = go(tmp_path, [test, sql_test("x.test")], keep=True)
+    assert code == 0
+    data, own = f"{tmp_path}/data", f"{run_dir}/tests/{test.dir_name}"
+    assert seen["roots"] == {"temp_dir_root": own, "data_dir": data}
+    assert seen["names"] == {"DATA_DIR": data, "TEMP_DIR": own}
+    (config,) = run_dir.glob("batches/*/config.json")
+    given = json.loads(config.read_text())
+    assert (given["data_dir"], given["temp_dir_root"]) == (data, str(run_dir))
+
+
+def test_a_storage_the_test_binds_wins_over_the_default(tmp_path):
+    seen = {}
+
+    def body(ctx):
+        seen.update(ctx.roots)
+
+    assert go(tmp_path, [py_test(body, inputs=[StorageDef("scratch", str(tmp_path / "store"))])])[0] == 0
+    assert seen["data_dir"] == str(tmp_path / "store")
+    assert seen["temp_dir_root"].startswith(f"{tmp_path}/store/temp/")

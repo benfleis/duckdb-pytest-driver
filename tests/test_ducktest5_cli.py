@@ -192,3 +192,61 @@ def test_an_excluded_file_that_the_binary_knows_is_not_a_stale_build(tree, monke
     assert main(run_args("test/a")) == 2
     err = capsys.readouterr().err
     assert "test/gone.test" in err and "test/b/z_fail.test" in err and "generated" not in err
+
+
+# -----------------------------------------------------------------------------
+# The default storage
+#
+
+
+def data_dir_line(out):
+    (line,) = {line.strip() for line in out.splitlines() if "root: data_dir=" in line}
+    return line
+
+
+@pytest.mark.parametrize("git", ["dir", "file"])  # a worktree's .git is a file
+def test_the_default_data_dir_is_data_at_the_top_of_the_repository_from_any_directory_in_it(
+    tree, monkeypatch, capsys, git
+):
+    (tree / ".git").mkdir() if git == "dir" else (tree / ".git").write_text("gitdir: elsewhere\n")
+    assert main(["scan", "--env"]) == 0
+    from_root = data_dir_line(capsys.readouterr().out)
+    monkeypatch.chdir(tree / "test" / "a")
+    assert main(["scan", "--env", "x.test"]) == 0
+    assert data_dir_line(capsys.readouterr().out) == from_root == f"root: data_dir={tree}/data  <- default storage"
+
+
+def test_outside_a_repository_the_default_data_dir_is_data_under_the_project_root(tree, capsys):
+    assert main(["scan", "--env"]) == 0
+    assert data_dir_line(capsys.readouterr().out) == f"root: data_dir={tree}/test/data  <- default storage"
+
+
+def test_the_command_line_moves_the_default_storage_for_the_run(tree, capsys):
+    assert main(["scan", "--env", "test/a/x.test", "--data-dir", "fixtures", "--temp-dir-root", "scratch"]) == 0
+    out = capsys.readouterr().out
+    assert f"root: temp_dir_root={tree}/scratch/<run_token>  <- default storage" in out
+    assert f"root: data_dir={tree}/fixtures  <- default storage" in out
+    assert main([*run_args("test/a/x.test", "--keep", "--no-binary-check"), "--data-dir", "fixtures"]) == 0
+    (run_dir,) = (tree / "runs").iterdir()
+    (config,) = run_dir.glob("batches/*/config.json")
+    given = json.loads(config.read_text())
+    assert (given["data_dir"], given["temp_dir_root"]) == (f"{tree}/fixtures", str(run_dir))
+
+
+def test_a_storage_bound_in_the_conf_wins_over_the_default_and_the_command_line(tmp_path, monkeypatch, capsys):
+    (tmp_path / "ducktest_conf.py").write_text(
+        textwrap.dedent(
+            """
+            from ducktest5 import default
+            from ducktest5.resources import StorageDef
+            STORAGES = [StorageDef("scratch", "/srv/scratch")]
+            RULES = [default(bind={"storage": "scratch"})]
+            """
+        )
+    )
+    (tmp_path / "x.test").write_text("")
+    monkeypatch.chdir(tmp_path)
+    assert main(["scan", "--env", "--data-dir", "fixtures"]) == 0
+    out = capsys.readouterr().out
+    assert data_dir_line(out) == "root: data_dir=/srv/scratch  <- storage scratch"
+    assert "default storage" not in out

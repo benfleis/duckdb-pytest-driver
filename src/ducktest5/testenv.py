@@ -213,11 +213,13 @@ def set_entry(name, value, source):
     )
 
 
-def resolve(test, made=None, key=None):
+def resolve(test, made=None, key=None, default=None):
     """The test environment of `test`. `made` is what the run made, its services among them; None
     before provisioning, as `scan` sees it. An input that needs a service that is not up is listed
     in `pending`. With `key` (a Python body's), a storage gives the child it mints for `key`, so the
-    temp roots are the test's own; without it they are the run's, and the binary adds the rest."""
+    temp roots are the test's own; without it they are the run's, and the binary adds the rest.
+    `default`, the run's DefaultStorage, gives the roots of a test that binds no storage, each one
+    no variant gives."""
     definition = test.definition
     env = TestEnv()
 
@@ -280,6 +282,8 @@ def resolve(test, made=None, key=None):
             e = env.roots.get(name)
             if e is not None and e is from_axes.get(name):
                 env.roots[name] = replace(e, value=f"{e.value}/{made.run_token}/{key}")
+    if default is not None and not any(d.kind == "storage" for d, _ in test.inputs):
+        _default_roots(env, default, made.run_token, key)
     if definition.body_file:
         for credential, storages in pairs(i for i in instances if i is not None):
             rendered = render("unittest", "secret", storages, credential)
@@ -289,6 +293,16 @@ def resolve(test, made=None, key=None):
                     env.secret_requires.append(Entry(extension, where, kind="require"))
             env.secret_sql += [Entry(sql, where, kind="secret") for sql in rendered.sql]
     return env
+
+
+def _default_roots(env, default, run_token, key):
+    temp = default.run_root(run_token) if key is None else default.test_dir(run_token, key)
+    for name, local, value in (
+        ("temp_dir_root", "local_temp_dir_root", temp),
+        ("data_dir", "local_data_dir", default.data_dir),
+    ):
+        if name not in env.roots and local not in env.roots:
+            env.roots[name] = Entry(value, "default storage", kind="root", name=name)
 
 
 def _deliver(env, definition, mode, scanning, value, made, key=None):

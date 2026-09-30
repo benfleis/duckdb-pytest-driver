@@ -49,7 +49,7 @@ from dataclasses import dataclass, field, replace
 
 from .binary import UsageError
 from .declare import CONF_FILE, Variant, as_mutex
-from .resources import CredentialDef, EngineDef, ResourceDef, ServiceDef, StorageDef
+from .resources import CredentialDef, DefaultStorage, EngineDef, ResourceDef, ServiceDef, StorageDef
 from .resources.client import check_names
 from .resources.made import services_in
 
@@ -201,6 +201,11 @@ class Project:
     _rules_by_dir: dict = field(default_factory=dict)
     _used: set = field(default_factory=set)
     unused_rules: list = field(default_factory=list)
+    default_storage: DefaultStorage | None = None  # None: `<repo>/data` and the default temp root
+
+    def __post_init__(self):
+        if self.default_storage is None:
+            self.default_storage = DefaultStorage(os.path.join(repo_root(self.root), "data"))
 
     def inputs(self):
         """What a test may bind or a variant may name as an input, by id."""
@@ -267,9 +272,23 @@ def find_root(start):
         if os.path.isfile(os.path.join(here, CONF_FILE)):
             found = here
         parent = os.path.dirname(here)
-        if parent == here or os.path.isdir(os.path.join(here, ".git")) or os.path.isfile(os.path.join(here, ".git")):
+        if parent == here or _has_git(here):
             return found or os.path.abspath(start if os.path.isdir(start) else os.path.dirname(start))
         here = parent
+
+
+def _has_git(path):
+    return os.path.isdir(os.path.join(path, ".git")) or os.path.isfile(os.path.join(path, ".git"))
+
+
+def repo_root(project_root):
+    """The top of the git repository the project is in, else the project root."""
+    here = os.path.abspath(project_root)
+    while not _has_git(here):
+        if os.path.dirname(here) == here:
+            return os.path.abspath(project_root)
+        here = os.path.dirname(here)
+    return here
 
 
 def load_project(start):

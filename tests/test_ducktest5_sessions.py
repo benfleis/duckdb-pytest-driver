@@ -529,19 +529,29 @@ def engines_project(root, services, rules="[]"):
     return {t.definition.name: t for t in tests}, project
 
 
+def default_roots(root):
+    return (
+        f"  root: temp_dir_root={root}/duckdb_unittest_tempdir/<run_token>  <- default storage\n"
+        f"  root: data_dir={root}/data  <- default storage\n"
+    )
+
+
 def test_the_projects_only_duckdb_engine_is_the_default(tmp_path, monkeypatch, capsys):
     tests, project = engines_project(tmp_path / "p", "duckdb_engine('duck', requires=['json'])")
     assert [d.id for d in sessions.bind(tests["body"], resolve(tests["body"]), project)] == ["duck"]
     assert sessions.environment(tests["x"], resolve(tests["x"]), project).extensions == ["json"]
     monkeypatch.chdir(tmp_path / "p")
     assert main(["scan", "--env"]) == 0
+    roots = default_roots(tmp_path / "p")
     assert capsys.readouterr().out == (
         "body.py::body\n"
         "  client: duck (duckdb)  <- SERVICES duck (the only DuckDB engine)\n"
         "    require: json  <- engine duck\n"
+        f"{roots}"
         "x.test::x\n"
         "  client: duck (unittest)  <- SERVICES duck (the only DuckDB engine)\n"
         "    require: json  <- engine duck\n"
+        f"{roots}"
     )
 
 
@@ -559,4 +569,5 @@ def test_with_no_duckdb_engine_a_test_runs_on_the_built_in_one(tmp_path, monkeyp
     assert [sessions.duckdb_of(t, project) for t in tests.values()] == [sessions.DEFAULT, sessions.DEFAULT]
     monkeypatch.chdir(tmp_path / "p")
     assert main(["scan", "--env"]) == 0
-    assert capsys.readouterr().out == "body.py::body\nx.test::x\n"
+    roots = default_roots(tmp_path / "p")
+    assert capsys.readouterr().out == f"body.py::body\n{roots}x.test::x\n{roots}"

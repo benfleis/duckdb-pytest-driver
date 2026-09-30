@@ -362,6 +362,8 @@ def execute(
     boot_errors, handles, debugged = {}, {}, False
     made = Made(run_id)
     resolved = {}
+    # The run directory is the default storage's run level, wherever --run-dir put it.
+    default = project.default_storage.with_(temp_root=os.path.dirname(os.path.abspath(run_dir)))
 
     def test_env(test, key=None):
         """The test's environment, computed once: after provisioning, before anything runs. A `.test`
@@ -372,7 +374,7 @@ def execute(
         elif key is None:
             key = test.dir_name
         if (id(test), key) not in resolved:
-            env = testenv.resolve(test, made, key=key)
+            env = testenv.resolve(test, made, key=key, default=default)
             resolved[(id(test), key)] = (
                 sessions.environment(test, env, project) if test.definition.type == SQLLOGIC else env
             )
@@ -484,7 +486,7 @@ def execute(
             # An attempt after the first has its own directory and prefix, so it does not see what
             # the one before it left.
             dir_name = test.dir_name if n == 1 else f"{test.dir_name}.attempt{n}"
-            temp_dir = os.path.join(run_dir, "tests", dir_name)
+            temp_dir = default.test_dir(run_id, dir_name)
             held = {}
             try:
                 os.makedirs(temp_dir)

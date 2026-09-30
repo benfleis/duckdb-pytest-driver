@@ -34,6 +34,7 @@ from .binary import UsageError, find_duckdb
 from .conf import load_project
 from .provision import bring_up
 from .resources.made import Made
+from .resources.storage import DEFAULT_TEMP_ROOT
 from .reports import FORMATS, LEVELS, Report, render, write_files
 from .reports.live import wants_colour
 from .run import execute, run
@@ -62,6 +63,24 @@ def _binary_options(parser):
     parser.add_argument("--duckdb-bin")
     parser.add_argument("--unittest-bin")
     parser.add_argument("--run-bin", help="DuckDB's run wrapper, for --runner run (default: beside test/unittest)")
+
+
+def _storage_options(parser, *, temp=True):
+    """The default storage of the run: what a test that binds no storage is given. A storage a
+    test binds keeps its own roots."""
+    parser.add_argument(
+        "--data-dir",
+        metavar="DIR",
+        help="DATA_DIR of a test that binds no storage (default: data/ at the top of the git repository, "
+        "else of the project root)",
+    )
+    if temp:
+        parser.add_argument(
+            "--temp-dir-root",
+            metavar="DIR",
+            help=f"where run directories go; a run's is the TEMP_DIR_ROOT of a test that binds no storage "
+            f"(default: ./{DEFAULT_TEMP_ROOT})",
+        )
 
 
 def _service_options(parser):
@@ -143,9 +162,10 @@ def main(argv=None):
             )
             p.add_argument("--run-dir", metavar="DIR", help="write 01-tests.yaml there instead of printing the record")
             p.add_argument("--force", action="store_true", help="write 01-tests.yaml again if it is already there")
+            _storage_options(p)
     run_options = commands["run"]
     _binary_options(run_options)
-    run_options.add_argument("--temp-dir-root", default="duckdb_unittest_tempdir")
+    _storage_options(run_options)
     run_options.add_argument("--keep", action="store_true", help="keep what passed tests wrote, too")
     _plan_options(run_options)
     run_options.add_argument(
@@ -171,6 +191,7 @@ def main(argv=None):
     _plan_options(plan_options)
     exec_options = sub.add_parser("exec", help="run the batches of 02-plan.yaml and write 04-events.jsonl")
     _binary_options(exec_options)
+    _storage_options(exec_options, temp=False)
     exec_options.add_argument("--keep", action="store_true", help="keep what passed tests wrote, too")
     exec_options.add_argument(
         "--no-binary-check", action="store_true", help="do not compare the .test files on disk with `unittest -l`"
@@ -256,7 +277,11 @@ def main(argv=None):
                 for c in selected:
                     print(c.id)
                     # No service is started here, so what a variant makes out of one is named, not called.
-                    for line in sessions.lines(c, project) + c.bind_lines() + testenv.resolve(c).lines():
+                    for line in (
+                        sessions.lines(c, project)
+                        + c.bind_lines()
+                        + testenv.resolve(c, default=project.default_storage).lines()
+                    ):
                         print(f"  {line}")
                 return 0
             yaml.safe_dump([c.record(project) for c in selected], sys.stdout, sort_keys=False, width=100)
@@ -281,7 +306,7 @@ def main(argv=None):
             duckdb_bin=duckdb_bin,
             unittest_bin=unittest_bin,
             working_dir=cwd,
-            temp_root=args.temp_dir_root,
+            temp_root=project.default_storage.temp_root,
             keep=args.keep,
             existing_services=args.existing_service,
             keep_services=args.keep_services,
@@ -307,7 +332,11 @@ def main(argv=None):
 
 def _scan(args, working_dir):
     root = args.root or ("test" if os.path.isdir("test") else ".")
-    return scan(root, working_dir=working_dir)
+    tests, project = scan(root, working_dir=working_dir)
+    project.default_storage = project.default_storage.with_(
+        data_dir=getattr(args, "data_dir", None), temp_root=getattr(args, "temp_dir_root", None)
+    )
+    return tests, project
 
 
 def _tests_by_id(args, ids, working_dir):
@@ -332,7 +361,7 @@ def _binaries(args, selected, tests, project, working_dir):
     if any(c.definition.body_file for c in selected):
         unittest_bin = sqllogic.find_unittest(explicit=args.unittest_bin, build=args.build, working_dir=working_dir)
         if not args.no_binary_check:
-            scratch = os.path.join(getattr(args, "temp_dir_root", None) or args.run_dir, ".list")
+            scratch = os.path.join(getattr(args, "run_dir", None) or project.default_storage.temp_root, ".list")
             problems = sqllogic.check_against_binary(
                 [c.definition.body_file for c in tests if c.definition.body_file],
                 unittest_bin,

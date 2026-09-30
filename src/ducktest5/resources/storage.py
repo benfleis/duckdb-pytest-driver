@@ -172,3 +172,27 @@ class Storage(Resource):
 
 
 StorageDef.instance = Storage
+
+
+DEFAULT_TEMP_ROOT = "duckdb_unittest_tempdir"
+
+
+@dataclass(frozen=True)
+class DefaultStorage:
+    """The storage of a test that binds none, one for the run: fixtures are read from `data_dir`, and
+    what the run writes is under `<temp_root>/<run_token>`, the run directory, where a Python body's
+    own place is `tests/<key>`; a `.test` body's is `<batch_token>/<test id>`, made by the binary."""
+
+    data_dir: str
+    temp_root: str = DEFAULT_TEMP_ROOT
+
+    def run_root(self, run_token):
+        return os.path.join(os.path.abspath(self.temp_root), run_token or RUN_TOKEN_PENDING)
+
+    def test_dir(self, run_token, key):
+        return os.path.join(self.run_root(run_token), "tests", key)
+
+    def with_(self, *, data_dir=None, temp_root=None):
+        """A copy with the values given, made absolute; one left None stays."""
+        given = lambda path, kept: os.path.abspath(path) if path else kept  # noqa: E731
+        return DefaultStorage(given(data_dir, self.data_dir), given(temp_root, self.temp_root))
