@@ -1,0 +1,8 @@
+# name: solo_sqllogic.test
+# description: solo sqllogic just runs
+# group: [ladder]
+
+query I
+SELECT 42 AS answer;
+----
+42

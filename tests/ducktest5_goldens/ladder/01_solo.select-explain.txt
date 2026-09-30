@@ -1,3 +1,4 @@
 run   solo_body.py::solo_body
+run   solo_sqllogic.test::solo_sqllogic
 
-1 of 1 tests
+2 of 2 tests
