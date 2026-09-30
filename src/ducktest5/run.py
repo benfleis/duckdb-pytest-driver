@@ -512,7 +512,7 @@ def execute(
                     held.values(),
                     temp_dir=temp_dir,
                     services={s: made.services[s] for s in test.services},
-                    run_test=lambda **kw: _run_paired(
+                    run_paired=lambda **kw: _run_paired(
                         test,
                         leases.environment(test, env, project),
                         unittest_bin,
@@ -807,11 +807,11 @@ def _identity(test):
 
 
 def _run_paired(test, test_env, unittest_bin, working_dir, temp_dir, *, env=None, init_sql=""):
-    """`ctx.run_test()`: the `.test` file beside a Python body, as a batch of one."""
+    """`ctx.run_paired()`: the `.test` file beside a Python body, as a batch of one."""
     if unittest_bin is None:
         raise UsageError(f"{test.id} runs {test.definition.body_file}, and no unittest binary was found")
     batch = sqllogic.Batch(
-        os.path.join(temp_dir, "run_test"),
+        os.path.join(temp_dir, "run_paired"),
         [(test.id, test.definition.body_file)],
         test_env.plus(values=env, init_sql=init_sql),
         test.definition.timeout or sqllogic.DEFAULT_TIMEOUT_S,

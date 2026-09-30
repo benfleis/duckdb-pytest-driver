@@ -178,7 +178,7 @@ def test_a_python_body_adds_values_and_sql_for_the_test_file_beside_it():
     more = env.plus(values={"TABLE": "id_name"}, init_sql="CREATE SECRET s")
     assert more.sql == "SET a = 1;\nCREATE SECRET s;"
     assert more.names["TABLE"] == "id_name"
-    assert "values: TABLE=id_name  <- ctx.run_test()" in more.lines()
+    assert "values: TABLE=id_name  <- ctx.run_paired()" in more.lines()
     assert env.sql == "SET a = 1;" and "TABLE" not in env.names  # the test's own is untouched
 
 

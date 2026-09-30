@@ -135,7 +135,7 @@ class TestEnv:
                 out[name] = str(value)
         return out
 
-    def plus(self, *, values=None, init_sql="", source="ctx.run_test()"):
+    def plus(self, *, values=None, init_sql="", source="ctx.run_paired()"):
         """A copy with what a Python body adds for the `.test` file beside it."""
         out = replace(self, values=dict(self.values), init_sql=list(self.init_sql))
         for name, value in check_names(values or {}, source).items():

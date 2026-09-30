@@ -25,7 +25,9 @@ ends.
 loads `parquet`. `default()` binds the role `storage` to `scratch_a` for every test and names `duck`
 in `engines=`: every test drives that engine, through a Client made for it. Each `match()` rule names
 one file. `own_inputs.py` and `paired_own_inputs.py` bind `storage` to `scratch_b` on `@test(...)`,
-and that wins over the rule; `select --explain` shows both bindings. `default.test` is named by no
+and that wins over the rule; `select --explain` shows both bindings. `paired_own_inputs.py` calls
+`ctx.run_paired()`, which runs `paired_own_inputs.test`, the file of its stem beside it, through the
+binary with the body's own test environment, so the file sees `scratch_b` too. `default.test` is named by no
 `match()` and runs with what `default()` gives. `rule_matched_body.py` does what `default.test` does,
 through the Client on `duck`: its SQL names `'{TEMP_DIR}/t'` as a `.test` file would, and the Client
 fills in the test's own place under `scratch_a`. The rule of `excluded.test` declares it out of the
@@ -49,7 +51,8 @@ The storage is now an S3 bucket that nothing reads. A credential scoped to it ta
 `LADDER_FAKE_KEY_ID` and `LADDER_FAKE_SECRET`; set both before a run. The axis `auth` makes two tests
 of each body: `key` binds the credential, and `none` unsets the names it delivers, which hides it.
 Each body asks DuckDB for its secrets: one, scoped to the bucket, under `auth=key`, and none under
-`auth=none`; a Python body reads the axis value as `ctx.env.auth`. A Python body's DuckDB engine creates the secret with the values. For a `.test` body the
+`auth=none`; a Python body reads the axis value as `ctx.env.auth`. `paired_scoped_secret.py` asks,
+then runs the `.test` file beside it with `ctx.run_paired()`, which asks again. A Python body's DuckDB engine creates the secret with the values. For a `.test` body the
 init file holds only a template, `KEY_ID '{AWS_ACCESS_KEY_ID}'`, and the binary fills it from the
 variables passed through to it; `scan --env` shows it as the `secret:` line. The init file and the
 run's own records hold the names of the secrets, never their values.

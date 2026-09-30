@@ -26,7 +26,7 @@ class Context:
         *,
         temp_dir=None,
         services=None,
-        run_test=None,
+        run_paired=None,
     ):
         self.id = test.id
         self.params = test.params
@@ -38,7 +38,8 @@ class Context:
         self._own = []  # the clients `client(name, new=True)` made
         for engine in engines:
             self.clients[engine.id] = engine.client(**self._wiring())
-        self._run_test = run_test
+        self._body_path = test.definition.path
+        self._run_paired = run_paired
         self._services = dict(services or {})  # id -> the run's instance of each service behind its inputs
 
     def _wiring(self):
@@ -79,12 +80,16 @@ class Context:
         self._own.append(client)
         return client
 
-    def run_test(self, *, env=None, init_sql=""):
-        """For a paired test: run the `.test` file of this body's stem through the unittest binary.
-        `env` adds `{NAME}` values for the file; `init_sql` runs before it."""
-        if self._run_test is None:
-            raise RuntimeError("run_test() is for a Python body that has a .test file of the same stem")
-        self._run_test(env=env, init_sql=init_sql)
+    def run_paired(self, *, env=None, init_sql=""):
+        """Run the `.test` file of this body's stem, beside it, through the unittest binary. `env`
+        adds `{NAME}` values for the file; `init_sql` runs before it."""
+        if self._run_paired is None:
+            sibling = os.path.splitext(self._body_path)[0] + ".test"
+            raise UsageError(
+                f"ctx.run_paired() runs the .test file of the body's stem, and there is no {sibling} "
+                f"beside {self._body_path}"
+            )
+        self._run_paired(env=env, init_sql=init_sql)
 
     def seconds_by_client(self):
         totals = {}

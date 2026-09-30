@@ -49,7 +49,7 @@ def project(tmp_path):
             "test/b/paired.py": """
                 from ducktest5 import test
                 @test(params={"cmt": {}, "plain": {}}, tags=["mine"])
-                def body(ctx): ctx.run_test()
+                def body(ctx): ctx.run_paired()
             """,
             "test/b/solo.py": """
                 from ducktest5 import test

@@ -3,4 +3,4 @@ from ducktest5 import test
 
 @test(bind={"storage": "scratch_b"})
 def paired_own_inputs(ctx):
-    ctx.run_test()
+    ctx.run_paired()

@@ -340,7 +340,7 @@ def test_init_sql_does_not_stay_in_a_batch_that_is_kept_for_its_failure(tmp_path
 def test_init_sql_does_not_stay_in_the_directory_of_a_failed_paired_test(tmp_path):
     test = py_test(runs_its_file, {"k": SECRET}, body_file="test/p_fail.test")
     _, run_dir, report, _ = go(tmp_path, [test])
-    assert (run_dir / "tests" / test.dir_name / "run_test" / "init.sqllogic").exists()
+    assert (run_dir / "tests" / test.dir_name / "run_paired" / "init.sqllogic").exists()
     assert files_with_the_secret(run_dir) == []
 
 
@@ -852,12 +852,12 @@ def test_an_engine_the_test_did_not_name_is_a_usage_error_that_says_where_to_nam
 
 
 # -----------------------------------------------------------------------------
-# ctx.run_test(): the .test file beside a Python body
+# ctx.run_paired(): the .test file beside a Python body
 #
 
 
 def runs_its_file(ctx):
-    ctx.run_test(env={"EXTRA": "x"})
+    ctx.run_paired(env={"EXTRA": "x"})
 
 
 @pytest.mark.parametrize(
@@ -875,12 +875,12 @@ def test_a_paired_test_runs_its_file_through_the_binary(tmp_path, body_file, out
     if text:
         assert text in report["tests"][0]["problems"][0]
     else:
-        output = (run_dir / "tests" / test.dir_name / "run_test" / "output.txt").read_text()
+        output = (run_dir / "tests" / test.dir_name / "run_paired" / "output.txt").read_text()
         assert 'ENV {"CATALOG": "duck", "EXTRA": "x"}' in output
 
 
 def asks_for_a_binary_that_is_not_there(ctx):
-    ctx.run_test()
+    ctx.run_paired()
 
 
 def gives_rows_the_wrong_shape(ctx):
@@ -902,9 +902,12 @@ def test_a_usage_error_in_a_body_is_an_error_of_the_test_and_the_run_goes_on(tmp
     assert problem.startswith("usage error of the test, not of the command line\n") and text in problem
 
 
-def test_run_test_in_a_body_with_no_file_says_what_it_is_for(tmp_path):
-    with pytest.raises(RuntimeError, match="a .test file of the same stem"):
-        ctx_for(py_test(passes), tmp_path).run_test()
+def test_run_paired_in_a_body_with_no_test_file_beside_it_says_so(tmp_path):
+    message = (
+        "ctx.run_paired() runs the .test file of the body's stem, and there is no test/body.test beside test/body.py"
+    )
+    with pytest.raises(UsageError, match=re.escape(message)):
+        ctx_for(py_test(passes), tmp_path).run_paired()
 
 
 # -----------------------------------------------------------------------------
