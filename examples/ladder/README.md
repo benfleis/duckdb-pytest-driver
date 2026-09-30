@@ -19,16 +19,21 @@ its Session holds one Client, on the default DuckDB engine, and it runs one quer
 
 `ducktest_conf.py` declares two local storages and, among its services, a DuckDB engine, `duck`, that
 loads `parquet`. `default()` binds the role `storage` to `scratch_a` for every test and names `duck`
-in `engines=`: every test drives that engine, through a Client made for it. Each `match()` rule names one file. `own_inputs.py` and
-`paired_own_inputs.py` bind `storage` to `scratch_b` on `@test(...)`, and that wins over the rule;
-`select --explain` shows both bindings. `default.test` is named by no `match()` and runs with what
-`default()` gives. The rule of `excluded.test` declares it out of the default suite, so a bare run
-leaves it out and `select --explain` names that rule; `--suite all` runs it.
+in `engines=`: every test drives that engine, through a Client made for it. Each `match()` rule names
+one file. `own_inputs.py` and `paired_own_inputs.py` bind `storage` to `scratch_b` on `@test(...)`,
+and that wins over the rule; `select --explain` shows both bindings. `default.test` is named by no
+`match()` and runs with what `default()` gives. `rule_matched_body.py` does what `default.test` does,
+through the Client on `duck`: its SQL names `'{TEMP_DIR}/t'` as a `.test` file would, and the Client
+fills in the test's own place under `scratch_a`. The rule of `excluded.test` declares it out of the
+default suite, so a bare run leaves it out and `select --explain` names that rule; `--suite all` runs
+it.
 
-Tests with the same bindings lease an engine of one identity. The two `.test` files run in one
-`unittest` process, although `rule_matched.test` has an inline `require json`: that is part of its
-body. A binding on `@test` gives another identity. The batches in `02-plan.yaml`, in the run
-directory, show both.
+The batches in `02-plan.yaml`, in the run directory, are labelled by the identity of their Session.
+The two `.test` files run in one `unittest` process, although `rule_matched.test` has an inline
+`require json`: that is part of its body. A Python body leases the `duck` engine, not a `unittest`
+process, so its label is never that of a `.test` batch. `own_inputs.py` and `paired_own_inputs.py`
+share one label; their binding on `@test` gives them a label other than that of
+`rule_matched_body.py`.
 
 ## 03_credentials
 

@@ -7,12 +7,15 @@ answers `.print X` with X, and a statement that holds a word below with what the
 
 Any other statement is read up to the `;` line after it. A `CREATE SECRET` is kept until the next
 `.open`, and a statement that reads `duckdb_secrets()` gets what is kept. `count(*)` of a
-`read_csv('http://...')` fetches the file and counts its rows. Any other `SELECT` is answered by
-SQLite, which is enough for a constant.
+`read_csv('http://...')` fetches the file and counts its rows. `COPY (SELECT ...) TO 'path' (FORMAT
+csv)` writes a local file with a header, and `SELECT col FROM read_csv('path')` reads one column of
+it back. Any other `SELECT` is answered by SQLite, which is enough for a constant; SQLite has no
+booleans, so the result of a `LIKE` is given as one.
 
 With FAKE_SHELL_RECORD set, every line it reads is appended to that file.
 """
 
+import csv
 import json
 import os
 import re
@@ -24,6 +27,8 @@ import urllib.request
 _SECRET = re.compile(r"CREATE SECRET (\w+) \((.*)\)", re.S)
 _OPTION = re.compile(r"(\w+) '((?:[^']|'')*)'")
 _COUNT_CSV = re.compile(r"SELECT count\(\*\) FROM read_csv\('(http://[^']+)'\)", re.I)
+_COPY_CSV = re.compile(r"COPY \((SELECT .*)\) TO '([^']+)' \(FORMAT csv\)", re.I | re.S)
+_READ_CSV = re.compile(r"SELECT (\w+) FROM read_csv\('(/[^']+)'\)", re.I)
 
 
 def answer(sql, secrets):
@@ -34,6 +39,14 @@ def answer(sql, secrets):
         with urllib.request.urlopen(m.group(1), timeout=5) as response:
             rows = response.read().decode().splitlines()[1:]
         print(json.dumps([{"count_star()": len(rows)}]), flush=True)
+    elif m := _COPY_CSV.match(sql):
+        cursor = sqlite3.connect(":memory:").execute(m.group(1))
+        with open(m.group(2), "w", newline="") as f:
+            csv.writer(f).writerows([[d[0] for d in cursor.description], *cursor])
+    elif m := _READ_CSV.match(sql):
+        with open(m.group(2), newline="") as f:
+            rows = list(csv.DictReader(f))
+        print(json.dumps([{m.group(1): int(r[m.group(1)])} for r in rows]), flush=True)
     elif "duckdb_secrets()" in sql:
         if secrets:
             print(json.dumps(secrets), flush=True)
@@ -45,6 +58,8 @@ def answer(sql, secrets):
             return
         names = [d[0] for d in cursor.description]
         rows = [dict(zip(names, row)) for row in cursor]
+        if " LIKE " in sql.upper():
+            rows = [{k: bool(v) for k, v in row.items()} for row in rows]
         if rows:
             print(json.dumps(rows), flush=True)
 
