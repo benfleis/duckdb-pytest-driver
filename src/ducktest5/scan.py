@@ -234,8 +234,11 @@ def _settle(definition, project, working_dir):
         "mutex": definition.mutex,
     }
     for name in own:
-        merged = getattr(settled, name) + [x for x in own[name] if x not in getattr(settled, name)]
-        setattr(definition, name, merged)
+        added = [x for x in own[name] if x not in getattr(settled, name)]
+        setattr(definition, name, getattr(settled, name) + added)
+        if name == "engines" and added:
+            settled.why.append(f"engines={added!r}  <- @test")
+            settled.sources.update({("engines", x): "@test" for x in added})
     if definition.bind:
         settled.apply({"bind": definition.bind}, "@test")
     check_suites(definition.suites, f"{definition.path}::{definition.name}")

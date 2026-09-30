@@ -56,6 +56,14 @@ def duckdb_of(test, project):
     return duckdb[0] if duckdb else default_of(test, project)
 
 
+def engines_of(test, project) -> list:
+    """The engines a test runs on: those it names, and its DuckDB engine where it names none."""
+    engines = named(test, project)
+    if not any(d.kind == DEFAULT.kind for d in engines):
+        engines.insert(0, default_of(test, project))
+    return engines
+
+
 def check(definition, engines):
     """A `.test` body runs in one DuckDB engine, and that engine takes the test's inputs only."""
     if definition.type != SQLLOGIC:
@@ -152,9 +160,7 @@ def lines(test, project) -> list[str]:
 
 def bind(test, test_env, project) -> list:
     """The engines the test leases, each bound to what the test gets."""
-    engines = named(test, project)
-    if not any(d.kind == DEFAULT.kind for d in engines):
-        engines.insert(0, default_of(test, project))
+    engines = engines_of(test, project)
     inputs = [{d: mode} for d, mode in test.inputs]
     out = []
     for d in engines:

@@ -125,6 +125,8 @@ class Test:
         return f"{readable}-{hashlib.sha1(self.id.encode()).hexdigest()[:6]}"
 
     def record(self, project):
+        from .leases import engines_of  # it imports this module
+
         return {
             "identity": {
                 "id": self.id,
@@ -139,7 +141,7 @@ class Test:
             },
             "preconditions": {
                 "services": self.services,
-                "engines": [{"id": e, "version": project.engines[e].version} for e in self.engines],
+                "engines": [{"id": d.id, "version": d.version} for d in engines_of(self, project)],
                 **({"mutex": self.mutex} if self.mutex else {}),
             },
             "runtime": {

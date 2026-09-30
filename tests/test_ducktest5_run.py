@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from ducktest5 import phases
+from ducktest5.cli import main
 from ducktest5.binary import UsageError
 from ducktest5.resources.client import SqlError
 from ducktest5.conf import Project
@@ -1126,10 +1127,24 @@ def test_the_timeout_of_a_duckdb_client_reaches_each_of_its_statements(tmp_path)
     assert seen == [7, 120, 9]
 
 
-def test_the_scan_record_names_the_version_of_an_engine(tmp_path):
+def test_the_scan_record_names_every_engine_a_test_runs_on_and_its_version(tmp_path):
     project = Project(str(tmp_path), {"fake": FakeEngine().engine()}, {}, {}, {}, ())
     record = py_test(passes, engines=["fake"]).record(project)
-    assert record["preconditions"]["engines"] == [{"id": "fake", "version": "fake:1"}]
+    assert record["preconditions"]["engines"] == [
+        {"id": "duckdb", "version": "duckdb"},
+        {"id": "fake", "version": "fake:1"},
+    ]
+    assert sql_test("a.test").record(project)["preconditions"]["engines"] == [{"id": "duckdb", "version": "duckdb"}]
+
+
+def test_select_explain_shows_an_engine_named_on_test(tmp_path, capsys, monkeypatch):
+    (tmp_path / "ducktest_conf.py").write_text(
+        "from ducktest5.engines.duckdb import duckdb_engine\nENGINES = [duckdb_engine('duck')]\n"
+    )
+    (tmp_path / "t.py").write_text("from ducktest5 import test\n\n\n@test(engines=['duck'])\ndef t(ctx):\n    pass\n")
+    monkeypatch.chdir(tmp_path)
+    assert main(["select", "--explain"]) == 0
+    assert "engines=['duck']  <- @test" in capsys.readouterr().out
 
 
 # -----------------------------------------------------------------------------
