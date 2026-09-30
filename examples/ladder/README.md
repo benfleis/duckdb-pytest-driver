@@ -70,3 +70,20 @@ stops it after the last one.
 `blocked.test` binds a second storage, whose server listens on an address no machine has, so it
 cannot start. The test ends BLOCKED with the reason, the rest of the run goes on, and the run is not
 green.
+
+## 05_s3
+
+The storage is now a prefix in a bucket of a local S3-compatible server, `s3_local()`: the run
+starts one in docker, and a test does not say what backs it. `S3.storage("lake", "lake")` is
+`s3://ducktest/lake` on it, and `S3.credential("keys", scopes=["lake"])` is the server's keys, from
+`DUCKTEST_S3_ACCESS_KEY` and `DUCKTEST_S3_SECRET_KEY` (`admin` and `password` when unset). Both
+bodies find one secret, scoped to the storage, and write and read `{TEMP_DIR}/answer.csv`: a Python
+body under `s3://ducktest/lake/temp/<run>/<key>`, a `.test` file under the run's prefix, where the
+binary makes its own place. When the run ends, that prefix goes, but the places of the tests that
+failed.
+
+With no S3 server to reach, and no docker to start one, both tests end BLOCKED; that is the golden,
+where the self-tests name a server at an address nothing answers. To run them against a server
+that runs already:
+
+    ducktest5 run --no-binary-check --existing-service s3=http://HOST:PORT

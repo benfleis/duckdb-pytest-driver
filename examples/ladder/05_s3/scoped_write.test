@@ -1,0 +1,24 @@
+# name: scoped_write.test
+# description: Writes and reads under its own place on the local S3 server, with the secret made for it.
+# group: [ladder]
+
+# -----------------------------------------------------------------------------
+# One secret, scoped to the storage
+#
+
+query III
+SELECT name, type, scope FROM duckdb_secrets()
+----
+ducktest_lake	s3	[s3://ducktest/lake]
+
+# -----------------------------------------------------------------------------
+# A write and a read under the test's own place
+#
+
+statement ok
+COPY (SELECT 42 AS answer) TO '{TEMP_DIR}/answer.csv'
+
+query I
+SELECT answer FROM read_csv('{TEMP_DIR}/answer.csv')
+----
+42
