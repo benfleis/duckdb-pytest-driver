@@ -10,11 +10,11 @@ service http -- managed
 
   nowhere did not come up
 
-  root: <OSError: [Errno 99] Cannot assign requested address>  <- storage unserved
+  not served: nowhere did not come up (OSError: Cannot assign requested address)  <- storage unserved
   again: ducktest5 run --id blocked.test::blocked
 
 
-'nowhere' did not come up: 1 tests blocked
+'nowhere' did not come up: 1 test blocked
   OSError: [Errno 99] Cannot assign requested address
 
 2 passed, 1 blocked in <s>

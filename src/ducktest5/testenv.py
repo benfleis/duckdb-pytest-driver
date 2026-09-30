@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field, replace
 
 from .binary import UsageError
@@ -54,7 +55,9 @@ _LABELS = {
     "root": "root",
     "env": "process env",
     "unset": "process env unset",
+    "unserved": "not served",
 }
+_ERRNO = re.compile(r"\[Errno \d+\] ")
 
 
 @dataclass(frozen=True)
@@ -316,11 +319,14 @@ def _deliver(env, definition, mode, scanning, value, made, key=None):
     try:
         instance = made.make(definition, mode)
     except ServiceNotUp as exc:
-        needs = ", ".join(s.id for s in services_in([definition]))
-        kind = "root" if definition.kind == "storage" else "value" if service else "env"
-        env.pending.append(
-            Entry("inputs", where, kind=kind, shown=f"<from service {needs}>" if scanning else f"<{exc}>")
-        )
+        needs = [s.id for s in services_in([definition])]
+        if scanning:
+            kind = "root" if definition.kind == "storage" else "value" if service else "env"
+            env.pending.append(Entry("inputs", where, kind=kind, shown=f"<from service {', '.join(needs)}>"))
+        else:
+            down = [s for s in needs if s in made.errors] or needs
+            why = "; ".join(f"{s} did not come up ({_ERRNO.sub('', made.errors.get(s, str(exc)))})" for s in down)
+            env.pending.append(Entry("inputs", where, kind="unserved", shown=why))
         return None
     try:
         if scanning and any(callable(s) for s in getattr(definition, "sources", ())):

@@ -178,7 +178,12 @@ def summary_lines(report, *, color=False):
     for service in report.services:
         if service.get("state") == "failed":
             blocked = sum(service["id"] in (c.get("blocked_by") or ()) for c in report.tests)
-            out += ["", f"{service['id']!r} did not come up: {blocked} tests blocked", f"  {service.get('error', '')}"]
+            tests = "test" if blocked == 1 else "tests"
+            out += [
+                "",
+                f"{service['id']!r} did not come up: {blocked} {tests} blocked",
+                f"  {service.get('error', '')}",
+            ]
     if slowest := report.slowest(5):
         out += ["", "slowest:"]
         out += [f"  {c['seconds']:>7}s  {c['id']}" for c in slowest]

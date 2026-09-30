@@ -562,7 +562,7 @@ def test_a_service_that_is_down_blocks_its_tests_and_their_engine_is_not_booted(
     assert report["tests"][0]["blocked_by"] == ["store"]
     assert "does not answer" in report["not_provisioned"]["store"]
     assert engine.calls == []
-    assert "'store' did not come up: 1 tests blocked" in text
+    assert "'store' did not come up: 1 test blocked" in text
 
 
 def test_an_engine_that_does_not_boot_blocks_its_tests(tmp_path):
