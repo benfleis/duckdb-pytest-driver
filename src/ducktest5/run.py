@@ -594,8 +594,10 @@ def execute(
         def python_timed_out(test, test_timeout):
             """A thread cannot be killed: give up waiting on it, release whatever it holds, and
             report it now, so the pool's slot is free for the next test in the plan."""
+            # Claimed before the cancel: the body then fails on its dead engine, and must not report that.
+            first = report_once(test.id)
             pool.cancel(test.id)
-            if report_once(test.id):
+            if first:
                 done(test, ERROR, runner=phases.PYTHON_RUNNER, note=f"timed out after {test_timeout:.0f}s")
 
         # One budget of slots for both kinds of body: a batch of `.test` files and a Python test
