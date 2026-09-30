@@ -11,8 +11,8 @@ HTTP = HttpServerDef("http", source=DATA)
 NOWHERE = HttpServerDef("nowhere", source=DATA, host="192.0.2.1")
 
 STORAGES = [
-    StorageDef("served", "{http.url}", inputs=[HTTP]),
-    StorageDef("unserved", "{nowhere.url}", inputs=[NOWHERE]),
+    StorageDef("served", "{http.url}", inputs=[HTTP], data="{http.url}"),
+    StorageDef("unserved", "{nowhere.url}", inputs=[NOWHERE], data="{nowhere.url}"),
 ]
 
 RULES = [

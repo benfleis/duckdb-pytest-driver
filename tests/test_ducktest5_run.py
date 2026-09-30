@@ -1152,12 +1152,14 @@ def test_a_python_body_that_binds_no_storage_is_given_the_roots_a_test_file_is(t
     assert (given["data_dir"], given["temp_dir_root"]) == (data, str(run_dir))
 
 
-def test_a_storage_the_test_binds_wins_over_the_default(tmp_path):
+@pytest.mark.parametrize("data", [None, "fixtures"])
+def test_a_storage_the_test_binds_gives_the_temp_roots_and_the_data_dir_only_where_it_declares_one(tmp_path, data):
     seen = {}
 
     def body(ctx):
         seen.update(ctx.roots)
 
-    assert go(tmp_path, [py_test(body, inputs=[StorageDef("scratch", str(tmp_path / "store"))])])[0] == 0
-    assert seen["data_dir"] == str(tmp_path / "store")
+    storage = StorageDef("scratch", str(tmp_path / "store"), data=data and str(tmp_path / data))
+    assert go(tmp_path, [py_test(body, inputs=[storage])])[0] == 0
+    assert seen["data_dir"] == str(tmp_path / (data or "data"))
     assert seen["temp_dir_root"].startswith(f"{tmp_path}/store/temp/")

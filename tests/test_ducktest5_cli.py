@@ -237,23 +237,33 @@ def test_the_command_line_moves_the_default_storage_for_the_run(tree, capsys):
     assert (given["data_dir"], given["temp_dir_root"]) == (f"{tree}/fixtures", str(run_dir))
 
 
+STORAGE_CONF = """
+    from ducktest5 import default
+    from ducktest5.resources import StorageDef
+    STORAGES = [StorageDef("scratch", "/srv/scratch"{data})]
+    RULES = [default(bind={{"storage": "scratch"}})]
+"""
+
+
 def test_a_storage_bound_in_the_conf_wins_over_the_default_and_the_command_line(tmp_path, monkeypatch, capsys):
-    (tmp_path / "ducktest_conf.py").write_text(
-        textwrap.dedent(
-            """
-            from ducktest5 import default
-            from ducktest5.resources import StorageDef
-            STORAGES = [StorageDef("scratch", "/srv/scratch")]
-            RULES = [default(bind={"storage": "scratch"})]
-            """
-        )
-    )
+    (tmp_path / "ducktest_conf.py").write_text(textwrap.dedent(STORAGE_CONF.format(data=', data="/srv/data"')))
     (tmp_path / "x.test").write_text("")
     monkeypatch.chdir(tmp_path)
-    assert main(["scan", "--env", "--data-dir", "fixtures"]) == 0
+    assert main(["scan", "--env", "--data-dir", "fixtures", "--temp-dir-root", "scratch"]) == 0
     out = capsys.readouterr().out
-    assert data_dir_line(out) == "root: data_dir=/srv/scratch  <- storage scratch"
+    assert "root: temp_dir_root=/srv/scratch/temp/<run_token>  <- storage scratch" in out
+    assert data_dir_line(out) == "root: data_dir=/srv/data  <- storage scratch"
     assert "default storage" not in out
+
+
+def test_a_bound_storage_that_declares_no_data_leaves_the_data_dir_to_the_default(tmp_path, monkeypatch, capsys):
+    (tmp_path / "ducktest_conf.py").write_text(textwrap.dedent(STORAGE_CONF.format(data="")))
+    (tmp_path / "x.test").write_text("")
+    monkeypatch.chdir(tmp_path)
+    assert main(["scan", "--env"]) == 0
+    out = capsys.readouterr().out
+    assert "root: temp_dir_root=/srv/scratch/temp/<run_token>  <- storage scratch" in out
+    assert data_dir_line(out) == f"root: data_dir={tmp_path}/data  <- default storage"
 
 
 # -----------------------------------------------------------------------------

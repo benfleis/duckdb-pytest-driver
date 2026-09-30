@@ -58,7 +58,8 @@ class StorageDef(ResourceDef):
 
     Its temp roots have three levels: the root, bound to the storage; `<root>/<temp prefix>/<run
     token>`, bound to the run (`TEMP_DIR_ROOT`); and a child minted under that with a test's key
-    (`TEMP_DIR`). The data root is where fixtures are read, so it is the root, in every run."""
+    (`TEMP_DIR`). `data` is where fixtures are read, the same in every run; a storage that declares
+    none gives no `DATA_DIR`, and a test that binds it reads the default storage's."""
 
     kind = "storage"
     sharing = SHARED_RW
@@ -71,6 +72,7 @@ class StorageDef(ResourceDef):
     temp_prefix: str = "temp"  # where children are minted, under the root
     inputs: list = field(default_factory=list)
     retain: str = "on_failure"
+    data: str | None = None  # a URI or a path, often the root; may reference an input
 
 
 class Storage(Resource):
@@ -83,6 +85,7 @@ class Storage(Resource):
         self.root = (root or fill(definition.root, self.inputs)).rstrip("/")
         self.scheme = scheme_of(self.root)
         endpoint = fill(definition.endpoint, self.inputs) if definition.endpoint else None
+        data = fill(definition.data, self.inputs).rstrip("/") if definition.data else None
         account = definition.account
         if account is None and self.scheme == "abfss" and "@" in self.root:
             account = self.root.split("@", 1)[1].split(".", 1)[0]
@@ -90,7 +93,7 @@ class Storage(Resource):
         facts = {
             "root": self.root,
             "scheme": self.scheme,
-            "data_root": parent.root if parent else self.root,
+            "data_root": data,
             "temp_root": self.root if parent else self.run_root(run_token or RUN_TOKEN_PENDING),
             "endpoint": endpoint,
             "account": account,
@@ -158,10 +161,13 @@ class Storage(Resource):
 
     def delivery(self):
         facts = {name: out.value for name, out in self.env.items()}
-        out = {"TEMP_DIR": facts["temp_root"], "DATA_DIR": facts["data_root"]}
+        out = {"TEMP_DIR": facts["temp_root"]}
         if self.scheme == "file":
-            out = {k: local_path(v) for k, v in out.items()}
-            out["LOCAL_TEMP_DIR"], out["LOCAL_DATA_DIR"] = out["TEMP_DIR"], out["DATA_DIR"]
+            out["TEMP_DIR"] = out["LOCAL_TEMP_DIR"] = local_path(out["TEMP_DIR"])
+        if facts["data_root"] is not None:
+            out["DATA_DIR"] = facts["data_root"]
+            if scheme_of(out["DATA_DIR"]) == "file":
+                out["DATA_DIR"] = out["LOCAL_DATA_DIR"] = local_path(out["DATA_DIR"])
         if self.scheme == "s3" and facts["endpoint"]:
             out["S3_ENDPOINT"] = facts["endpoint"].split("://", 1)[-1]
             out["S3_USE_SSL"] = "true" if facts["endpoint"].startswith("https://") else "false"

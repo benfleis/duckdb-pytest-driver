@@ -218,8 +218,8 @@ def resolve(test, made=None, key=None, default=None):
     before provisioning, as `scan` sees it. An input that needs a service that is not up is listed
     in `pending`. With `key` (a Python body's), a storage gives the child it mints for `key`, so the
     temp roots are the test's own; without it they are the run's, and the binary adds the rest.
-    `default`, the run's DefaultStorage, gives the roots of a test that binds no storage, each one
-    no variant gives."""
+    `default`, the run's DefaultStorage, gives the roots that neither a variant nor a bound storage
+    gives."""
     definition = test.definition
     env = TestEnv()
 
@@ -282,8 +282,8 @@ def resolve(test, made=None, key=None, default=None):
             e = env.roots.get(name)
             if e is not None and e is from_axes.get(name):
                 env.roots[name] = replace(e, value=f"{e.value}/{made.run_token}/{key}")
-    if default is not None and not any(d.kind == "storage" for d, _ in test.inputs):
-        _default_roots(env, default, made.run_token, key)
+    if default is not None:
+        _default_roots(env, default, made.run_token, key, test.inputs)
     if definition.body_file:
         for credential, storages in pairs(i for i in instances if i is not None):
             rendered = render("unittest", "secret", storages, credential)
@@ -295,13 +295,16 @@ def resolve(test, made=None, key=None, default=None):
     return env
 
 
-def _default_roots(env, default, run_token, key):
+def _default_roots(env, default, run_token, key, inputs):
+    """What the default storage gives: the roots no variant gives, and none a bound storage gives,
+    also one whose service is not up yet; a bound storage always gives the temp roots."""
+    storages = [d for d, _ in inputs if d.kind == "storage"]
     temp = default.run_root(run_token) if key is None else default.test_dir(run_token, key)
-    for name, local, value in (
-        ("temp_dir_root", "local_temp_dir_root", temp),
-        ("data_dir", "local_data_dir", default.data_dir),
+    for name, local, value, bound in (
+        ("temp_dir_root", "local_temp_dir_root", temp, bool(storages)),
+        ("data_dir", "local_data_dir", default.data_dir, any(d.data for d in storages)),
     ):
-        if name not in env.roots and local not in env.roots:
+        if not bound and name not in env.roots and local not in env.roots:
             env.roots[name] = Entry(value, "default storage", kind="root", name=name)
 
 

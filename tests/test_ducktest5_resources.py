@@ -373,7 +373,7 @@ def test_an_unknown_scheme_is_a_usage_error():
 
 
 def test_a_local_storage_delivers_the_four_roots(tmp_path):
-    env, secrets = StorageDef("local", str(tmp_path)).make(run_token="run1").delivery()
+    env, secrets = StorageDef("local", str(tmp_path), data=str(tmp_path)).make(run_token="run1").delivery()
     assert {k: v.get() for k, v in env.items()} == {
         "TEMP_DIR": f"{tmp_path}/temp/run1",
         "DATA_DIR": str(tmp_path),
@@ -385,10 +385,17 @@ def test_a_local_storage_delivers_the_four_roots(tmp_path):
     assert scanned["TEMP_DIR"].get() == f"{tmp_path}/temp/<run_token>"
 
 
+def test_a_storage_that_declares_no_data_gives_no_data_dir(tmp_path):
+    env, _ = StorageDef("local", str(tmp_path)).make(run_token="run1").delivery()
+    assert sorted(env) == ["LOCAL_TEMP_DIR", "TEMP_DIR"]
+
+
 def test_an_s3_storage_takes_its_bucket_and_endpoint_from_an_input():
     minio = ThingDef("minio").make()
     minio.env = {"bucket": Output("ducktest", "minio"), "endpoint": Output("http://10.0.0.1:9000", "minio")}
-    store = StorageDef("s3", "s3://{minio.bucket}", endpoint="{minio.endpoint}", inputs=["minio"])
+    store = StorageDef(
+        "s3", "s3://{minio.bucket}", endpoint="{minio.endpoint}", inputs=["minio"], data="s3://{minio.bucket}"
+    )
     env, _ = store.make({"minio": minio}, run_token="run1").delivery()
     assert {k: v.get() for k, v in env.items()} == {
         "TEMP_DIR": "s3://ducktest/temp/run1",
@@ -419,7 +426,7 @@ def test_a_storage_is_shared_rw_and_mints_children_for_an_exclusive_writer():
 
 
 def test_a_writer_with_a_key_gets_a_prefix_of_its_own(tmp_path):
-    store = StorageDef("local", str(tmp_path)).make(run_token="run1")
+    store = StorageDef("local", str(tmp_path), data=str(tmp_path)).make(run_token="run1")
     parent_identity = store.identity
     one, two = store.acquire(RW, "t1"), store.acquire(RW, "t2")
     assert one.root == f"{tmp_path}/temp/run1/t1" and one.owned and not store.owned
@@ -483,7 +490,7 @@ def test_scan_env_shows_the_storage_roots_and_the_credential_masked(tree, capsys
           bind: storage=local  <- AXES storage=local
           values: storage=local  <- AXES storage
           root: temp_dir_root=ROOT/store/temp/<run_token>  <- storage local
-          root: data_dir=ROOT/store  <- storage local
+          root: data_dir=ROOT/test/data  <- default storage
           env: AWS_SECRET_ACCESS_KEY=***  <- credential local-key: env DT_SECRET
         """
     )
