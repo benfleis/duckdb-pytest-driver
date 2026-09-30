@@ -6,7 +6,7 @@ time. An instance wider than one test is reset between tests: a fresh instance o
 its preamble again. After a test that failed it is closed and opened again instead, so nothing a
 broken test left behind can reach the next one.
 
-`scope` says how long one instance lives: `worker` (one per worker and identity, warm from test to
+`lifetime` says how long one instance lives: `worker` (one per worker and identity, warm from test to
 test), `batch` (one per batch; a Python body is a batch of its own) or `run` (one for the run, held
 by one test at a time). Two tests whose engines have one identity may share one instance, one after
 the other.
@@ -25,7 +25,7 @@ from .dialect import Preamble, preamble
 from .service import Service, ServiceDef
 
 WORKER, BATCH, RUN = "worker", "batch", "run"
-SCOPES = (WORKER, BATCH, RUN)
+LIFETIMES = (WORKER, BATCH, RUN)
 
 
 @dataclass
@@ -40,8 +40,8 @@ class Runtime:
 class EngineDef(ServiceDef):
     """An engine. `requires` and `settings` are loaded and set before every test; `init` are
     statements that follow them, and `process_env` sets (a value) or unsets (None) process variables
-    of the engine. They are part of its identity; `scope` and `timeout` (for one statement, in seconds) are
-    not.
+    of the engine. They are part of its identity; `lifetime` and `timeout` (for one statement, in
+    seconds) are not.
 
     A kind is a dataclass with these fields, then its own; it has a `dialect`, the way its preamble
     and the storages and credentials among its inputs are written for it (`resources/dialect.py`;
@@ -58,17 +58,17 @@ class EngineDef(ServiceDef):
     settings: dict = field(default_factory=dict)
     init: list = field(default_factory=list)
     process_env: dict = field(default_factory=dict)
-    scope: str = WORKER
+    lifetime: str = WORKER
     timeout: float | None = None
     address: str | None = None
     inputs: list = field(default_factory=list)
     retain: str = NEVER
 
-    not_content = ServiceDef.not_content + ("scope", "timeout")
+    not_content = ServiceDef.not_content + ("lifetime", "timeout")
 
     def __post_init__(self):
-        if self.scope not in SCOPES:
-            raise UsageError(f"engine {self.id!r}: scope {self.scope!r}; it is one of {SCOPES}")
+        if self.lifetime not in LIFETIMES:
+            raise UsageError(f"engine {self.id!r}: lifetime {self.lifetime!r}; it is one of {LIFETIMES}")
 
     def with_(self, **changes) -> EngineDef:
         return replace(self, **changes)

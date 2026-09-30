@@ -17,5 +17,5 @@ class UnittestEngineDef(EngineDef):
     kind = "unittest"
     dialect = "unittest"
 
-    scope: str = BATCH
+    lifetime: str = BATCH
     environment: str = ""

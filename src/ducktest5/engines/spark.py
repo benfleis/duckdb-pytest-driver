@@ -131,7 +131,7 @@ def _hadoop_version():
 def delta_spark(id="spark", *, s3a=False, **fields):
     """Local Spark with the delta-spark that matches the installed pyspark. `s3a=True` puts the
     hadoop-aws that matches Spark's Hadoop on the classpath, so it can take an s3 storage as input.
-    `fields` are those of every engine (`settings`, `scope`, ...)."""
+    `fields` are those of every engine (`settings`, `lifetime`, ...)."""
     from importlib.metadata import PackageNotFoundError, version
 
     def v(dist):

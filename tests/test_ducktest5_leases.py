@@ -60,9 +60,9 @@ def opened(definition, inputs=None):
 #
 
 
-def test_identity_is_the_content_not_the_label_scope_or_timeout():
+def test_identity_is_the_content_not_the_label_lifetime_or_timeout():
     one = duckdb_engine("duck", requires=["delta"])
-    assert one.identity() == duckdb_engine("other", requires=["delta"], scope="run", timeout=5).identity()
+    assert one.identity() == duckdb_engine("other", requires=["delta"], lifetime="run", timeout=5).identity()
     assert one.identity() != duckdb_engine("duck", requires=["httpfs"]).identity()
     assert one.identity() != BootedEngineDef("duck", requires=["delta"]).identity()
 
@@ -74,9 +74,9 @@ def test_identity_follows_the_inputs_and_the_env_it_is_bound_to(tmp_path):
     assert duckdb_engine("duck").identity() != duckdb_engine("duck").with_(process_env={"AWS_PROFILE": None}).identity()
 
 
-def test_an_unknown_scope_is_a_usage_error():
-    with pytest.raises(UsageError, match="scope 'test'"):
-        duckdb_engine("duck", scope="test")
+def test_an_unknown_lifetime_is_a_usage_error():
+    with pytest.raises(UsageError, match="lifetime 'test'"):
+        duckdb_engine("duck", lifetime="test")
 
 
 # -----------------------------------------------------------------------------
@@ -251,7 +251,9 @@ def test_a_batch_scoped_engine_is_closed_when_its_python_test_ends(tmp_path):
         ctx.client("own").oks("SELECT 1")
 
     tests = [py_test(body, path=f"test/{n}.py", engines=["own"]) for n in "ab"]
-    code, _, _, _ = go(tmp_path, tests, shell_factory=factory, workers=1, engines=[duckdb_engine("own", scope="batch")])
+    code, _, _, _ = go(
+        tmp_path, tests, shell_factory=factory, workers=1, engines=[duckdb_engine("own", lifetime="batch")]
+    )
     assert code == 0
     assert [s.closed >= 1 for s in made] == [True, True]
 
@@ -267,7 +269,7 @@ def test_an_engine_that_cannot_open_is_a_setup_error_of_the_test(tmp_path):
     assert "could not be set up: SqlError: Catalog Error" in report["tests"][0]["problems"][0]
 
 
-def test_an_engine_of_scope_run_is_one_instance_for_the_run(tmp_path):
+def test_an_engine_of_lifetime_run_is_one_instance_for_the_run(tmp_path):
     clones = []
 
     class Cloning(FakeEngine):
@@ -277,7 +279,7 @@ def test_an_engine_of_scope_run_is_one_instance_for_the_run(tmp_path):
 
     engine = Cloning()
     tests = [py_test(passes, path=f"test/{n}.py", engines=["fake"]) for n in "abcd"]
-    code, _, _, _ = go(tmp_path, tests, engines=[engine.engine().with_(scope="run")], workers=4)
+    code, _, _, _ = go(tmp_path, tests, engines=[engine.engine().with_(lifetime="run")], workers=4)
     assert (code, len(clones), engine.calls.count("begin_test")) == (0, 1, 4)
 
 
@@ -454,7 +456,7 @@ def test_a_test_file_s_identity_is_that_of_the_unittest_engine_of_its_batch(boun
     tests, project = scan(str(bound), working_dir=str(bound))
     of = {t.definition.path: leases.environment(t, resolve(t), project) for t in tests if t.definition.type == SQLLOGIC}
     unittest = UnittestEngineDef("unittest", environment=of["json.test"].key()).make()
-    assert (unittest.dialect, unittest.definition.scope) == ("unittest", "batch")
+    assert (unittest.dialect, unittest.definition.lifetime) == ("unittest", "batch")
     assert leases.batch_identity(of["json.test"]) == leases.identity([unittest.identity], of["json.test"])
     assert leases.batch_identity(of["json.test"]) == leases.batch_identity(of["also_json.test"])
     assert leases.batch_identity(of["json.test"]) != leases.batch_identity(of["delta.test"])

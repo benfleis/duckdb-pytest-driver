@@ -5,7 +5,7 @@ Spark session boots in 13.3 s, so four processes would boot four JVMs and hold f
 JVM holds. Four threads on one session ran their SQL at the same time instead -- four bodies whose
 own times add up to 11.0 s took 2.9 s of wall time, against 2.0 s for one of them alone.
 
-What a worker owns, and never shares, are its engine instances (`resources/engine.py`) of scope
+What a worker owns, and never shares, are its engine instances (`resources/engine.py`) of lifetime
 `worker`, one for each identity its tests need, reset between tests and reopened after a failed one:
 
 - Its own DuckDB shell. A shell takes one statement at a time behind a lock, so two workers on one
@@ -52,7 +52,7 @@ class Pool:
         self._runtime = runtime
         self._made = made or Made()
         self._mine = threading.local()
-        self._shared = {}  # identity -> the run's instance, for an engine of scope `run`
+        self._shared = {}  # identity -> the run's instance, for an engine of lifetime `run`
         self._engines = []  # every instance made, so that the run can close them all
         self._mutexes = {}
         self._running = {}  # test id -> {engine id: Engine}, while it runs
@@ -62,9 +62,9 @@ class Pool:
         return self._pool.submit(fn, *args)
 
     def take(self, test_id, definitions):
-        """The test's engine instances, acquired: one of scope `worker` is this worker's instance of
-        that identity, one of scope `run` the run's, each made when it is first needed and warm
-        after; one of scope `batch` is made for this test. Registered under `test_id` until
+        """The test's engine instances, acquired: one of lifetime `worker` is this worker's instance of
+        that identity, one of lifetime `run` the run's, each made when it is first needed and warm
+        after; one of lifetime `batch` is made for this test. Registered under `test_id` until
         `give_back`, so a timeout noticed on another thread can reach them (`cancel`)."""
         mine = getattr(self._mine, "engines", None)
         if mine is None:
@@ -75,9 +75,9 @@ class Pool:
                 engine = d.make(self._made.inputs_of(d), run_token=self._made.run_token)
                 engine.runtime = self._runtime
                 with self._guard:
-                    if d.scope == WORKER:
+                    if d.lifetime == WORKER:
                         engine = mine.setdefault(engine.identity, engine)
-                    elif d.scope == RUN:
+                    elif d.lifetime == RUN:
                         engine = self._shared.setdefault(engine.identity, engine)
                     if engine not in self._engines:
                         self._engines.append(engine)
@@ -95,7 +95,7 @@ class Pool:
             self._running.pop(test_id, None)
         for engine in engines.values():
             engine.release(engine, RW, failed=failed)
-            if engine.definition.scope == BATCH:
+            if engine.definition.lifetime == BATCH:
                 engine.close()
 
     def cancel(self, test_id):
