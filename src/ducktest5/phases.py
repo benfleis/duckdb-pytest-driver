@@ -29,6 +29,7 @@ output already there refuses, unless `--force` (`exec`: `--resume`, `--only-fail
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 
@@ -41,6 +42,8 @@ from .outcomes import BLOCKED, ERROR, FAILED, PASSED
 from .provision import EXISTING, MANAGED, record
 from .resources import ALWAYS, ON_FAILURE, DefaultStorageDef
 from .resources.made import services_in
+
+_log = logging.getLogger(__name__)
 
 TESTS_FILE, PLAN_FILE, PROVISION_FILE = "01-tests.yaml", "02-plan.yaml", "03-provision.yaml"
 TESTS_SCHEMA = PLAN_SCHEMA = PROVISION_SCHEMA = 1
@@ -172,20 +175,25 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST
         groups.setdefault(leases.batch_identity(environment(test)), []).append(test)
     for group in groups.values():
         for chunk in _chunks(group, batch_size):
-            batches.append(
-                {
-                    "id": f"b{len(batches) + 1:03d}",
-                    "runner": runner,
-                    "order": len(batches) + 1,
-                    "tests": [c.id for c in chunk],
-                    "files": [c.definition.root_path for c in chunk],
-                    "timeout": sqllogic.DEFAULT_TIMEOUT_S,
-                    "timeouts": {c.id: c.definition.timeout for c in chunk if c.definition.timeout},
-                    "retries": {c.id: c.definition.retries for c in chunk if c.definition.retries},
-                    **({"mutex": sorted({m for c in chunk for m in c.mutex})} if any(c.mutex for c in chunk) else {}),
-                    "key": _key_record(chunk[0], project),
-                }
-            )
+            entry = {
+                "id": f"b{len(batches) + 1:03d}",
+                "runner": runner,
+                "order": len(batches) + 1,
+                "tests": [c.id for c in chunk],
+                "files": [c.definition.root_path for c in chunk],
+                "timeout": sqllogic.DEFAULT_TIMEOUT_S,
+                "timeouts": {c.id: c.definition.timeout for c in chunk if c.definition.timeout},
+                "retries": {c.id: c.definition.retries for c in chunk if c.definition.retries},
+                **({"mutex": sorted({m for c in chunk for m in c.mutex})} if any(c.mutex for c in chunk) else {}),
+                "key": _key_record(chunk[0], project),
+            }
+            batches.append(entry)
+            if len(chunk) == 1 and _alone(chunk[0]):
+                c = chunk[0]
+                why = "slow" if "slow" in c.tags else "a service" if c.services else "a mutex"
+                _log.debug("batch %s: %s alone (%s)", entry["id"], c.id, why)
+            else:
+                _log.debug("batch %s: %d test(s) share identity %s", entry["id"], len(chunk), entry["key"]["digest"])
     for test in (c for c in tests if c.definition.type != SQLLOGIC):
         batches.append(
             {
@@ -360,6 +368,14 @@ def cleanup(run_dir, *, project=None, keep=False, event_lines=None):
             for k in e.get("kept") or ()
         ]
         summary["removed"] += clear_storages(run_id_of(run_dir), project, failed_kept)
+    _log.debug(
+        "cleanup %s: removed %d, kept %d, stopped %s, swept %d",
+        run_id_of(run_dir),
+        len(summary["removed"]),
+        len(summary["kept"]),
+        summary["stopped"],
+        len(summary["swept"]),
+    )
     return summary
 
 
@@ -372,7 +388,10 @@ def clear_storages(run_token, project, failed_kept):
         if d.inputs or d.retain == ALWAYS or isinstance(d, DefaultStorageDef):
             continue
         keep = failed_kept if d.retain == ON_FAILURE else ()
-        removed += d.make(run_token=run_token).clear(run_token, keep)
+        found = d.make(run_token=run_token).clear(run_token, keep)
+        if found:
+            _log.debug("storage %s: removed the run's prefix, %d path(s)", d.id, len(found))
+        removed += found
     return removed
 
 
@@ -382,7 +401,10 @@ def sweep_storages(run_token, project):
     swept = []
     for d in project.storages.values():
         if not d.inputs and not isinstance(d, DefaultStorageDef):
-            swept += d.make(run_token=run_token).sweep(run_token)
+            found = d.make(run_token=run_token).sweep(run_token)
+            if found:
+                _log.debug("storage %s: swept what a run that never ended left, %d path(s)", d.id, len(found))
+            swept += found
     return swept
 
 

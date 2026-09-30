@@ -6,6 +6,7 @@ credential all the same, because an existing instance may be anyone's.
 
 from __future__ import annotations
 
+import logging
 import os
 import urllib.error
 import urllib.request
@@ -13,6 +14,8 @@ from dataclasses import dataclass, field
 
 from ..host import docker
 from ..resources import ON_FAILURE, Service, ServiceDef
+
+_log = logging.getLogger(__name__)
 
 _IMAGE = os.environ.get("DUCKTEST_MINIO_IMAGE", "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1")
 
@@ -60,7 +63,9 @@ def _s3(settings):
 
 
 def _start(settings):
-    docker("rm", "-f", settings["container"], check=False)  # a container leaked by an interrupted run holds the port
+    # A container leaked by an interrupted run holds the port; `rm -f` succeeding here means one was found.
+    if docker("rm", "-f", settings["container"], check=False).returncode == 0:
+        _log.warning("minio: removing a container left by an earlier run: %s", settings["container"])
     docker(
         "run", "-d", "--name", settings["container"],
         "-p", f"{settings['publish']}:9000",

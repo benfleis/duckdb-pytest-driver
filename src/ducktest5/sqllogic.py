@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import queue
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -30,6 +32,8 @@ from .binary import UsageError, find_built
 from .outcomes import ERROR, FAILED, PASSED, SKIPPED
 from .resources.dialect import render
 from .testenv import TestEnv
+
+_log = logging.getLogger(__name__)
 
 _EVENT = re.compile(r"\[TEST_EVENT\] (\{.*\})")
 _SKIP = re.compile(r"\[SKIP_TEST\] (.*?) :: (.*)")
@@ -239,6 +243,7 @@ def _invoke(binary, batch, working_dir):
         raise RuntimeError("the run was stopped")
     batch.write()
     args = batch_args(binary, batch, working_dir)
+    _log.debug("unittest: %s", shlex.join(args))
     proc = subprocess.Popen(
         args,
         cwd=working_dir,
@@ -378,6 +383,8 @@ def run_batch(binary, batch, working_dir):
             results[name] = result
         else:
             result = first
+        if attempt > 1:
+            _log.warning("%s: retried (%d of %d attempts), ended %s", name, attempt, allowed, result.outcome)
         result.attempts = attempt
     return {batch._key[name]: result for name, result in results.items()}
 
@@ -470,9 +477,9 @@ def list_binary_tests(binary, working_dir, scratch):
     extension's tests by relative and by absolute path; both forms fold into one."""
     os.makedirs(scratch, exist_ok=True)
     # The pattern "*" also lists hidden tests (.test_slow, .test_coverage); a bare -l leaves them out.
-    p = subprocess.run(
-        [binary, "-l", "*", "--temp-dir-root", scratch], cwd=working_dir, capture_output=True, text=True, timeout=120
-    )
+    args = [binary, "-l", "*", "--temp-dir-root", scratch]
+    _log.debug("unittest -l: %s", shlex.join(args))
+    p = subprocess.run(args, cwd=working_dir, capture_output=True, text=True, timeout=120)
     if "\t" not in p.stdout:
         # The exit code of -l is the test count, so it says nothing; no listing at all says the binary
         # did not start (for example Catch refuses a directory name that gives a tag it reserves).

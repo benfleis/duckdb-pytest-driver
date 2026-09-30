@@ -39,6 +39,9 @@ directory of a repo and adds one idea to the one before. From inside a rung:
     ducktest5 select --explain      what a run takes, which rule gave each test what, and why not
     ducktest5 run                   run it
 
+`-v`/`-vv` put ducktest5's own diagnostics (not the report) on stderr, at INFO and DEBUG; a run
+directory always gets `ducktest.log` at DEBUG, whatever `-v` says.
+
 ## Collecting Python-native tests
 
 The first two shapes work with no setup. A plain pytest test (a `.py` with no `.test` beside it)

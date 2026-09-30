@@ -150,6 +150,20 @@ def test_run(rung, binaries, rung_copy, tmp_path, capsys):
     assert holding(tmp_path, FAKE_KEY.values()) == []
 
 
+def test_the_run_s_debug_log_never_holds_the_fake_secret(rung_copy, tmp_path, capsys):
+    """DEBUG diagnostics see every subprocess command line and template resolution; none of that may
+    put a real value where a secret's name says one belongs (rung 03's credential, LADDER_FAKE_*)."""
+    rung_copy("03_credentials")
+    runs = tmp_path / "runs"
+    shell, unittest = BINARIES["fake"]
+    args = ["--duckdb-bin", shell, "--unittest-bin", unittest, "--no-binary-check", "--temp-dir-root", str(runs)]
+    assert main(["run", *args, "-vv", "--keep"]) == 0, capsys.readouterr().out
+    (run_dir,) = runs.iterdir()
+    log = run_dir / "ducktest.log"
+    assert "DEBUG" in log.read_text()
+    assert holding(tmp_path, FAKE_KEY.values()) == []
+
+
 @pytest.mark.parametrize("binaries", ["fake", "real"])
 def test_a_green_run_leaves_nothing_under_its_storages(binaries, rung_copy, tmp_path, capsys):
     if BINARIES[binaries] is None:

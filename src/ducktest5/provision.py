@@ -14,12 +14,15 @@ and every consumer gets that one instance.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import re
 
 from .binary import UsageError
 from .resources import ALWAYS, ServiceNotUp
 from .resources.made import EXISTING, KEPT, MANAGED  # noqa: F401
+
+_log = logging.getLogger(__name__)
 
 MASK = "***"
 
@@ -105,9 +108,11 @@ def _make(made, definition, mode, errors, on):
         errors[definition.id] = str(exc)
         if on:
             on(definition.id, state="failed", error=errors[definition.id])
+        _log.info("service %s: failed to start: %s", definition.id, errors[definition.id])
         return
     if on:
         on(definition.id, state="up", mode=mode, address=service.address)
+    _log.info("service %s (%s): up at %s", definition.id, mode, service.address)
 
 
 def record(service, mode, *, owned):

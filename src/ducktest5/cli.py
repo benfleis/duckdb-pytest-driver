@@ -29,7 +29,7 @@ import sys
 
 import yaml
 
-from . import events, phases, leases, sqllogic, testenv
+from . import events, logconfig, phases, leases, sqllogic, testenv
 from .binary import UsageError, find_duckdb
 from .conf import load_project, repo_root
 from .provision import bring_up
@@ -84,6 +84,18 @@ def _storage_options(parser, *, temp=True):
             help=f"where run directories go; a run's is the TEMP_DIR_ROOT of a test that binds no storage "
             f"(default: ./{DEFAULT_TEMP_ROOT})",
         )
+
+
+def _diagnostics_options(parser):
+    """What the tool logs about itself, apart from the report on stdout (`--format`, `--level`)."""
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="diagnostics on stderr: once for INFO, twice for DEBUG (always DEBUG in <run dir>/ducktest.log)",
+    )
+    parser.add_argument("--log-file", metavar="FILE", help="also write DEBUG diagnostics there")
 
 
 def _service_options(parser):
@@ -254,7 +266,13 @@ def main(argv=None):
     )
     _report_options(report_options)
 
+    for p in (*commands.values(), report_options):
+        _diagnostics_options(p)
+
     args = parser.parse_args(argv)
+    logconfig.configure(args.verbose)
+    if args.log_file:
+        logconfig.add_file(args.log_file)
     debugger = None
     if getattr(args, "lldb", False) or getattr(args, "debugger", None):
         debugger = args.debugger or os.environ.get("DUCKTEST_DEBUGGER") or "lldb --"
@@ -263,6 +281,7 @@ def main(argv=None):
         if args.command == "report":
             return _report(args)
         if args.command in ("plan", "provision", "exec", "cleanup"):
+            logconfig.add_run_dir(args.run_dir)
             return {"plan": _plan, "provision": _provision, "exec": _exec, "cleanup": _cleanup}[args.command](args)
         cwd = os.getcwd()
         tests, project = _scan(args, cwd)
@@ -271,6 +290,7 @@ def main(argv=None):
         asked = {"paths": args.paths, "select": args.select, "skip": args.skip, "ids": args.id, "suites": args.suite}
         if args.command == "scan":
             if args.run_dir:
+                logconfig.add_run_dir(args.run_dir)
                 path = phases.write_tests(
                     args.run_dir, selected, project, working_dir=cwd, selection=asked, force=args.force
                 )

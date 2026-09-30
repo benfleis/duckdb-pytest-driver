@@ -1,10 +1,13 @@
 """An embedded PySpark session with Delta Lake, as an engine booted once per run. pyspark is imported at boot, not here."""
 
 import contextlib
+import logging
 import os
 
 from ..resources.client import SqlError
 from ..resources.engine import BootedEngineDef
+
+_log = logging.getLogger(__name__)
 
 
 class SparkHandle:
@@ -47,9 +50,10 @@ class SparkHandle:
         if self._conf is None:
             return
         now = self._current_conf()
-        for key in now.keys() | self._conf.keys():
-            if now.get(key) == self._conf.get(key):
-                continue
+        changed = sorted(k for k in now.keys() | self._conf.keys() if now.get(k) != self._conf.get(k))
+        if changed:
+            _log.debug("spark conf restored by reset: %s", ", ".join(changed))
+        for key in changed:
             if key in self._conf:
                 self.session.conf.set(key, self._conf[key])
             else:

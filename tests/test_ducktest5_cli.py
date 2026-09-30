@@ -302,3 +302,46 @@ def test_run_finds_the_build_of_the_repository_from_a_directory_below_it(tree, m
     monkeypatch.chdir(tree / "test" / "a")
     assert main(["run", "x.test", "--no-binary-check", "--temp-dir-root", str(tree / "runs"), "--format", "json"]) == 0
     assert f"{tree}/build/debug/test/unittest" in capsys.readouterr().out
+
+
+# -----------------------------------------------------------------------------
+# Diagnostic logging: what the tool did, apart from the report (`--format`, `--level`)
+#
+
+
+def test_by_default_stderr_is_quiet(tree, capsys):
+    assert main(run_args("test/a/x.test", "--no-binary-check")) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_v_puts_info_on_stderr_but_not_debug(tree, capsys):
+    assert main(run_args("test/a/x.test", "--no-binary-check", "-v")) == 0
+    err = capsys.readouterr().err
+    assert "INFO" in err and "run start:" in err
+    assert "DEBUG" not in err
+
+
+def test_vv_puts_debug_on_stderr_too(tree, capsys):
+    assert main(run_args("test/a/x.test", "--no-binary-check", "-vv")) == 0
+    err = capsys.readouterr().err
+    assert "DEBUG" in err
+
+
+def test_vv_does_not_change_a_terse_report_on_stdout(tree, capsys):
+    def once(*more):
+        assert main(run_args("test/a/x.test", "--no-binary-check", "--level", "terse", *more)) == 0
+        out = capsys.readouterr().out
+        (run_dir,) = (tree / "runs").iterdir()
+        shutil.rmtree(run_dir)
+        out = out.replace(str(run_dir), "<run-dir>")
+        return re.sub(r"\d+(\.\d+)?s;", "<s>;", out)
+
+    assert once() == once("-vv")
+
+
+def test_the_run_dir_always_holds_a_debug_log(tree, capsys):
+    assert main(run_args("test/a/x.test", "--no-binary-check")) == 0  # no -v at all
+    (run_dir,) = (tree / "runs").iterdir()
+    log = (run_dir / "ducktest.log").read_text()
+    assert "DEBUG" in log
+    assert "INFO" in log and "run start:" in log

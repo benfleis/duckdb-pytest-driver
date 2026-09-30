@@ -23,6 +23,7 @@ The batch dir stays behind for a second look, or a second debugger.
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import os
 import shlex
 import signal
@@ -32,7 +33,7 @@ import threading
 import time
 import traceback
 
-from . import events, phases, runners, leases, sqllogic, testenv
+from . import events, logconfig, phases, runners, leases, sqllogic, testenv
 from .binary import UsageError
 from .resources.client import SetupFailed
 from .ctx import Context
@@ -49,6 +50,8 @@ from .resources.made import Made
 from .reports import Report, render, write_files
 from .reports.live import Live
 from .workers import Pool
+
+_log = logging.getLogger(__name__)
 
 
 def _describe_failure(exc, test):
@@ -208,6 +211,7 @@ def run(
         _only_one_test(tests)
     run_dir = os.path.join(os.path.abspath(temp_root), make_run_id())
     os.makedirs(run_dir)
+    logconfig.add_run_dir(run_dir)
     phases.write_tests(run_dir, tests, project, working_dir=working_dir, selection=selection)
     plan = phases.build_plan(
         tests, project, batch_size=batch_size, workers=workers, runner=runner, run_args=run_args, keep=keep
@@ -301,6 +305,7 @@ def execute(
         append=append,
     )
     started = time.perf_counter()
+    _log.info("run start: %s (%d tests) -> %s", run_id, len(tests), run_dir)
     writer.emit(
         RUN_START,
         at=events.now(),
@@ -423,6 +428,7 @@ def execute(
             log = os.path.join(run_dir, f"engine-{engine_id}.log")
             version = engines[engine_id].version
             service_event(engine_id, kind="engine", state="starting", version=version, log=log)
+            _log.info("engine %s: starting (booted, version %s)", engine_id, version)
             t0 = time.perf_counter()
             try:
                 handles[engine_id] = engines[engine_id].boot(log)
@@ -434,9 +440,11 @@ def execute(
                     log=log,
                     seconds=round(time.perf_counter() - t0, 2),
                 )
+                _log.info("engine %s: up (version %s)", engine_id, version)
             except Exception as exc:
                 boot_errors[engine_id] = f"{type(exc).__name__}: {exc} (log: {log})"
                 service_event(engine_id, kind="engine", state="failed", version=version, error=boot_errors[engine_id])
+                _log.info("engine %s: failed to start: %s", engine_id, boot_errors[engine_id])
 
         runnable = {}
         for test in tests:
@@ -479,7 +487,10 @@ def execute(
             with pool.holding({m for test in chunk for m in test.mutex}):
                 for test in chunk:
                     begin(test, runner)
-                return sqllogic.run_batch(unittest_bin, batch, working_dir)
+                _log.info("batch %s: starting, %d test(s)", os.path.basename(batch.dir), len(chunk))
+                results = sqllogic.run_batch(unittest_bin, batch, working_dir)
+                _log.info("batch %s: finished, %d test(s)", os.path.basename(batch.dir), len(chunk))
+                return results
 
         def attempt(test, n):
             """Returns (outcome, problems, the failure in parts, the test's directory, its ctx)."""
@@ -551,6 +562,8 @@ def execute(
                     outcome, problems, failure = first
                 elif n > 1:
                     note = f"passed on attempt {n} of {allowed}"
+                if n > 1:
+                    _log.warning("test %s: retried (%d of %d attempts), ended %s", test.id, n, allowed, outcome)
                 kept = []
                 if outcome != PASSED or keep:
                     places = [place_of(test, os.path.basename(d)) for d, _ in tried]
@@ -660,7 +673,8 @@ def execute(
         # The order is what a stopped run needs: no test that was waiting starts, then everything a
         # body can be waiting for is gone, and only then are the workers waited out.
         pool.stop()
-        for handle in handles.values():
+        for engine_id, handle in handles.items():
+            _log.info("engine %s: stopping", engine_id)
             try:
                 handle.stop()
             except Exception:
@@ -670,7 +684,13 @@ def execute(
         for service_id, service in made.services.items():
             if made.modes[service_id] == KEPT:
                 service_event(service_id, state="kept", attach=attach_argument(service))
-        made.end(failed, on_error=lambda service, exc: service_event(service.id, state="stop_failed", error=str(exc)))
+                _log.info("service %s (kept): left running at %s", service_id, service.address)
+
+        def _stop_failed(service, exc):
+            service_event(service.id, state="stop_failed", error=str(exc))
+            _log.warning("service %s: could not be stopped: %s", service.id, exc)
+
+        made.end(failed, on_error=_stop_failed)
         if not debugged:  # the debugger ran the test, so nothing here has an outcome to report
             ended = [e for e in writer.events if e.get("event") == TEST_END]
             counts = {o: sum(e["outcome"] == o for e in ended) for o in OUTCOMES}
@@ -689,6 +709,7 @@ def execute(
                 exit_code=code,
                 stopped=stopped["by"],
             )
+            _log.info("run end: %s, exit %d, %s -> %s", run_id, code, counts, run_dir)
         writer.close()
         if not debugged:
             if clean:

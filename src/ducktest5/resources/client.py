@@ -41,6 +41,7 @@ the type matters, ask in SQL (`SELECT typeof(x)`). DuckDB, Spark and Databricks 
 `assert_true(cond[, message])`, so a statement can check itself.
 """
 
+import logging
 import re
 import time
 import traceback
@@ -50,6 +51,7 @@ from collections.abc import Mapping
 from ..binary import UsageError
 from ..sqltext import format_rows, parse_rows, render_rows, split_statements, sql_values
 
+_log = logging.getLogger(__name__)
 
 ON_FAIL = ("abort_test", "continue")
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}|\{(\w+)\}")
@@ -248,6 +250,8 @@ class Client:
                     cycle = " -> ".join(f"{{{n}}}" for n in [*chain[chain.index(key) :], key])
                     raise UsageError(f"[{self.name}] the values refer to each other in a cycle: {cycle}")
                 v = known[name]
+                if chain:
+                    _log.debug("[%s] resolving {%s} for {%s}, in order", self.name, name, chain[-1])
                 filled[key] = fill(v, [*chain, key]) if isinstance(v, str) else v
             return filled[key]
 

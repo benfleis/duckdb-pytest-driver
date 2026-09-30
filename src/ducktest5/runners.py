@@ -29,6 +29,7 @@ does not (`evidence: run-summary`). A report says so in one line when any test w
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
@@ -38,6 +39,8 @@ import sys
 from . import sqllogic
 from .binary import UsageError
 from .outcomes import ERROR, PASSED
+
+_log = logging.getLogger(__name__)
 
 EVENT, SUMMARY = "event", "run-summary"
 
@@ -157,6 +160,7 @@ def _results(group, texts, wrapper_text, wrapper_code):
 
 def _call(args, working_dir, env):
     """The wrapper as a child of this process, killed with it when the run is stopped."""
+    _log.debug("run: %s", shlex.join(args))
     proc = subprocess.Popen(
         args, cwd=working_dir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
     )
@@ -194,8 +198,10 @@ def run_wrapper(unittest_bin, units, working_dir, *, run_dir, workers=4, run_arg
             _shim_command(group_dir),
             *shlex.split(run_args),
         ]
+        _log.info("batch %s: starting, %d test(s)", os.path.basename(group_dir), len(tests))
         done = _call(args, working_dir, group.test_env.environ())
         text, code = done
+        _log.info("batch %s: finished, %d test(s)", os.path.basename(group_dir), len(tests))
         with open(os.path.join(group_dir, "output.txt"), "w") as f:
             f.write(text)
         by_name = _results(group, _kept_output(group_dir), text, code)

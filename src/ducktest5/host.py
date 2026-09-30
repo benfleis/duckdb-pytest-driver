@@ -1,11 +1,33 @@
 """What a service needs from the host it runs on: the docker CLI, and waiting until something is up.
 Nothing here imports pytest; `ducktest.resources` re-exports both."""
 
+import logging
+import re
+import shlex
 import subprocess
 import time
 
+_log = logging.getLogger(__name__)
+
 _READY_POLL_S = 0.3
 _DOCKER_TIMEOUT_S = 180
+
+# A copy of provision.SECRET_NAME: this layer takes no dependency of its own (see wait_until below),
+# and this is the only place a secret could reach a command line -- `docker run -e NAME=value`, not env.
+_SECRET_NAME = re.compile(r"SECRET|TOKEN|PASSW|CREDENTIAL|_KEY(_ID)?$", re.IGNORECASE)
+
+
+def _redacted(args):
+    """`args`, for the log: the value of a `-e NAME=value` masked when `NAME` looks like a secret."""
+    out, next_is_env = [], False
+    for a in args:
+        if next_is_env:
+            name, sep, _ = a.partition("=")
+            out.append(f"{name}=***" if sep and _SECRET_NAME.search(name) else a)
+        else:
+            out.append(a)
+        next_is_env = a == "-e"
+    return out
 
 
 def docker(*args, check=True, timeout_s=_DOCKER_TIMEOUT_S):
@@ -15,6 +37,7 @@ def docker(*args, check=True, timeout_s=_DOCKER_TIMEOUT_S):
 
     Every call has a timeout: a wedged docker CLI otherwise hangs the run with no output at all.
     """
+    _log.debug("docker: %s", shlex.join(_redacted(args)))
     try:
         proc = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:

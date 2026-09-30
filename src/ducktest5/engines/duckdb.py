@@ -16,9 +16,11 @@ their home.
 """
 
 import json
+import logging
 import os
 import queue
 import re
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -28,6 +30,8 @@ from dataclasses import dataclass
 from ..resources.client import SqlError
 from ..resources.engine import Engine, EngineDef, environ
 from ..sqltext import split_statements
+
+_log = logging.getLogger(__name__)
 
 _MARK = "<<ducktest:{}>>"
 
@@ -154,8 +158,10 @@ class DuckDBShell:
 
     def _spawn(self):
         # stderr joins stdout, so an error arrives in order, before the marker of its statement.
+        args = [self.binary, "-unsigned", "-json", "-init", os.devnull]
+        _log.debug("duckdb shell: %s", shlex.join(args))
         self._process = subprocess.Popen(
-            [self.binary, "-unsigned", "-json", "-init", os.devnull],
+            args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -240,9 +246,11 @@ class DuckDBPerCall:
         script = [self.preamble]
         for n, statement in enumerate(statements):
             script += [f".print {_MARK.format(n)}", statement.rstrip().rstrip(";") + "\n;"]
+        args = [self.binary, "-unsigned", "-bail", "-json", "-init", os.devnull]
+        _log.debug("duckdb (per call): %s", shlex.join(args))
         try:
             p = subprocess.run(
-                [self.binary, "-unsigned", "-bail", "-json", "-init", os.devnull],
+                args,
                 input="\n".join(script) + "\n",
                 capture_output=True,
                 text=True,

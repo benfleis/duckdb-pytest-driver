@@ -3,10 +3,13 @@ and shared by every consumer, whichever phase made it."""
 
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 
 from .base import RW, Resource, ResourceDef
 from .service import Service, ServiceDef, ServiceNotUp
+
+_log = logging.getLogger(__name__)
 
 MANAGED, EXISTING, KEPT = "managed", "existing", "kept"
 
@@ -78,8 +81,11 @@ class Made:
         """Every service ends, the last one made first, except a kept one. One that cannot be ended
         is given to `on_error(service, exc)`, and the others still end."""
         for service in reversed(list(self.services.values())):
-            if self.modes[service.id] == KEPT:
+            mode = self.modes[service.id]
+            if mode == KEPT:
                 continue
+            verb = "left alone" if service.existing else "stopping"
+            _log.info("service %s (%s): %s at %s", service.id, mode, verb, service.address)
             try:
                 service.end(failed)
             except Exception as exc:
