@@ -25,6 +25,20 @@ The design and internals are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (th
 [docs/INTERNALS.md](docs/INTERNALS.md) (extending it), [docs/MATRIX.md](docs/MATRIX.md) (running one
 `.test` body across cells — backends, configs), and [docs/PLAN.md](docs/PLAN.md) (the roadmap).
 
+## ducktest5
+
+`ducktest5` is the runner that follows, in `src/ducktest5/`, with no pytest underneath. It scans a
+test tree (`.test` files, and Python bodies marked `@test`), plans batches, brings up the services
+the tests need, runs them, cleans up and reports. A repo configures it in one `ducktest_conf.py`:
+its engines (DuckDB, Spark), storages, credentials, services and rules.
+
+The way in is the ladder, [examples/ladder/](examples/ladder/README.md): each rung is the test
+directory of a repo and adds one idea to the one before. From inside a rung:
+
+    ducktest5 scan --env            what each test is given, and where each part came from
+    ducktest5 select --explain      what a run takes, which rule gave each test what, and why not
+    ducktest5 run                   run it
+
 ## Collecting Python-native tests
 
 The first two shapes work with no setup. A plain pytest test (a `.py` with no `.test` beside it)

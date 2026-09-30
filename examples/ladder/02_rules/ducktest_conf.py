@@ -5,7 +5,7 @@ from ducktest5 import default, match
 from ducktest5.engines.duckdb import duckdb_engine
 from ducktest5.resources import StorageDef
 
-# Under the system temp directory, so a run writes nothing into the repo.
+# Under the system temp directory; a run removes what it wrote there when it ends, but a failed test's place.
 SCRATCH = os.path.join(tempfile.gettempdir(), "ducktest-ladder")
 
 STORAGES = [

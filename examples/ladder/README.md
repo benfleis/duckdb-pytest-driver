@@ -12,8 +12,9 @@ before. Run these from inside a rung, e.g. `cd examples/ladder/02_rules`:
 
 ## 01_solo
 
-One Python body, and no `ducktest_conf.py` in this directory or above it. The body names nothing, so
-its context holds one Client, on the default DuckDB engine, and it runs one query.
+One Python body and one `.test` file, and no `ducktest_conf.py` in this directory or above it. Both
+run on the built-in DuckDB engine: the `.test` file in a `unittest` process, the body through
+`ctx.duckdb()`, a Client on that engine's shell. Each runs one query.
 
 ## 02_rules
 
@@ -28,6 +29,10 @@ fills in the test's own place under `scratch_a`. The rule of `excluded.test` dec
 default suite, so a bare run leaves it out and `select --explain` names that rule; `--suite all` runs
 it.
 
+A run writes its records to `duckdb_unittest_tempdir/<run>/` in the working directory, and what its
+tests write under `<storage>/temp/<run>/`; when the run ends, that prefix goes, but the places of the
+tests that failed.
+
 The batches in `02-plan.yaml`, in the run directory, are labelled by the identity of their tests.
 The two `.test` files run in one `unittest` process, although `rule_matched.test` has an inline
 `require json`: that is part of its body. A Python body leases the `duck` engine, not a `unittest`
@@ -41,7 +46,7 @@ The storage is now an S3 bucket that nothing reads. A credential scoped to it ta
 `LADDER_FAKE_KEY_ID` and `LADDER_FAKE_SECRET`; set both before a run. The axis `auth` makes two tests
 of each body: `key` binds the credential, and `none` unsets the names it delivers, which hides it.
 Each body asks DuckDB for its secrets: one, scoped to the bucket, under `auth=key`, and none under
-`auth=none`. A Python body's DuckDB engine creates the secret with the values. For a `.test` body the
+`auth=none`; a Python body reads the axis value as `ctx.env.auth`. A Python body's DuckDB engine creates the secret with the values. For a `.test` body the
 init file holds only a template, `KEY_ID '{AWS_ACCESS_KEY_ID}'`, and the binary fills it from the
 variables passed through to it; `scan --env` shows it as the `secret:` line. The init file and the
 run's own records hold the names of the secrets, never their values.
