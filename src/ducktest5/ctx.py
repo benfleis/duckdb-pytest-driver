@@ -2,12 +2,13 @@
 
 import os
 
-from .engines.duckdb import DEFAULT_TIMEOUT_S, DuckDBPerCall, DuckDBSession
+from .binary import UsageError
+from .engines.duckdb import DEFAULT_TIMEOUT_S, DuckDBPerCall, DuckDBShell
 from .resources.client import Names, SetupFailed, SqlError
 from .resources.engine import process_env
 from .steps import step
 
-SESSIONS = ("per_run", "per_client", "per_call")
+SHELLS = ("per_run", "per_client", "per_call")
 
 
 def _no_reconnect():
@@ -31,7 +32,7 @@ class Ctx:
         duckdb_home=None,
         services=None,
         run_test=None,
-        session_factory=DuckDBSession,
+        shell_factory=DuckDBShell,
     ):
         self.id = test.id
         self.params = test.params
@@ -44,7 +45,7 @@ class Ctx:
         self.temp_dir = temp_dir
         self._duckdb_bin = duckdb_bin
         self._duckdb_home = duckdb_home
-        self._session_factory = session_factory
+        self._shell_factory = shell_factory
         self._services = dict(services or {})  # id -> the run's instance of each service behind its inputs
 
     @property
@@ -66,8 +67,9 @@ class Ctx:
         reach its templates alone -- `ctx.session.bind(...)` gives a value to every Client."""
         return self.session.client(name, table=table, **values)
 
-    def duckdb(self, preamble="", *, table=None, session="per_run", timeout=DEFAULT_TIMEOUT_S):
-        """DuckDB as a client. `per_run` (the rule): the shell of the test's DuckDB engine, the one
+    def duckdb(self, preamble="", *, table=None, shell="per_run", timeout=DEFAULT_TIMEOUT_S, **gone):
+        """DuckDB as a client, on the shell `shell` names. `per_run` (the rule): the shell of the test's
+        DuckDB engine, the one
         `client()` also runs on, on the instance this test started fresh; `preamble` runs once, now.
         The client has `restart()` (new instance, then the test's preambles again) and `respawn()`
         (new process, the same).
@@ -84,28 +86,32 @@ class Ctx:
         `per_run` client are safe and wait for each other. For statements that must really run at the
         same time, give each thread a client of its own: `per_client` is a warm shell each, `per_call`
         a cold process per call, with nothing shared but files."""
-        if session not in SESSIONS:
-            raise ValueError(f"session={session!r}; it is one of {SESSIONS}")
+        if "session" in gone:
+            raise UsageError("ctx.duckdb(session=...) is now ctx.duckdb(shell=...), with the same values")
+        if gone:
+            raise TypeError(f"duckdb() got unexpected keyword arguments {sorted(gone)}")
+        if shell not in SHELLS:
+            raise ValueError(f"shell={shell!r}; it is one of {SHELLS}")
         engine = self.session.duckdb.engine
-        shell = engine.live
-        if session != "per_run":
+        live = engine.live
+        if shell != "per_run":
             preamble = "\n".join(x for x in (*engine.preamble().sql, preamble) if x)
             environ = process_env(engine.definition.env)
-        if session == "per_call":
+        if shell == "per_call":
             per_call = DuckDBPerCall(self._duckdb_bin, preamble, timeout=timeout, home=self._duckdb_home, env=environ)
             return self.session.own_client("duckdb", per_call.run, table=table)
-        if session == "per_client":
-            shell = self._session_factory(self._duckdb_bin, home=self._duckdb_home, env=environ)
-            shell.begin_test()
-            self.teardowns.append(shell.close)
+        if shell == "per_client":
+            live = self._shell_factory(self._duckdb_bin, home=self._duckdb_home, env=environ)
+            live.begin_test()
+            self.teardowns.append(live.close)
         try:
-            shell.add_preamble(preamble)
+            live.add_preamble(preamble)
         except SqlError as exc:
             raise SetupFailed(f"[duckdb] the preamble failed: {exc}") from None
         client = self.session.own_client(
-            "duckdb", lambda statements: shell.run(statements, timeout=timeout), table=table, engine=engine
+            "duckdb", lambda statements: live.run(statements, timeout=timeout), table=table, engine=engine
         )
-        client.restart, client.respawn, client.reconnect = shell.restart, shell.respawn, _no_reconnect
+        client.restart, client.respawn, client.reconnect = live.restart, live.respawn, _no_reconnect
         return client
 
     def run_test(self, *, env=None, init_sql=""):

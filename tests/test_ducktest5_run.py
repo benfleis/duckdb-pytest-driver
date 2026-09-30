@@ -1,5 +1,5 @@
 """ducktest5's run loop, with no DuckDB and no Spark: a fake engine, a fake service, a fake DuckDB
-session and the fake unittest binary."""
+shell and the fake unittest binary."""
 
 import io
 import json
@@ -87,7 +87,7 @@ class Store(Service):
 StoreDef.instance = Store
 
 
-class FakeSession:
+class FakeShell:
     """Stands in for the run's DuckDB shell: keeps the text it was given."""
 
     def __init__(self, binary=None, *, home=None, env=None, preamble_fails=False):
@@ -127,7 +127,7 @@ def go(tmp_path, tests, *, engines=(), unittest_bin=FAKE, duckdb_bin="no-duckdb"
     """Returns (exit code, run dir, report, printed text)."""
     project = Project(str(tmp_path), {e.id: e for e in engines}, {}, {}, {}, ())
     out = io.StringIO()
-    kwargs.setdefault("session_factory", FakeSession)
+    kwargs.setdefault("shell_factory", FakeShell)
     code = run(
         tests,
         project,
@@ -371,7 +371,7 @@ def debug(tmp_path, tests, command, **kwargs):
         working_dir=str(tmp_path),
         temp_root=str(tmp_path / "runs"),
         out=out,
-        session_factory=FakeSession,
+        shell_factory=FakeShell,
         debugger=command,
         **kwargs,
     )
@@ -662,7 +662,7 @@ def test_the_report_is_written_and_services_are_released_when_the_run_raises(tmp
             unittest_bin=None,
             temp_root=str(tmp_path / "runs"),
             out=io.StringIO(),
-            session_factory=FakeSession,
+            shell_factory=FakeShell,
         )
     (run_dir,) = (tmp_path / "runs").iterdir()
     assert yaml.safe_load((run_dir / "05-report.yaml").read_text())["counts"]["passed"] == 0
@@ -695,10 +695,10 @@ def held(live, engine="duckdb"):
     return instance
 
 
-def ctx_for(test, tmp_path, *, engine=None, session=None, services=None, test_env=None, **kwargs):
+def ctx_for(test, tmp_path, *, engine=None, shell=None, services=None, test_env=None, **kwargs):
     """A Ctx with a Client on DuckDB, and on the fake engine where the test uses it."""
-    kwargs.setdefault("session_factory", FakeSession)
-    engines = [held(session or FakeSession())]
+    kwargs.setdefault("shell_factory", FakeShell)
+    engines = [held(shell or FakeShell())]
     if "fake" in test.engines:
         engines.append(held(engine or FakeEngine(), "fake"))
     return Ctx(
@@ -965,7 +965,7 @@ def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(
     made = []
 
     def factory(binary, *, home=None, env=None):
-        made.append(FakeSession(binary, home=home, env=env))
+        made.append(FakeShell(binary, home=home, env=env))
         return made[-1]
 
     def body(ctx):
@@ -973,7 +973,7 @@ def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(
 
     variant = Variant("no-key", env={"AWS_PROFILE": "ducktest"}, env_unset=("AWS_ACCESS_KEY_ID",))
     tests = [py_test(body, path="test/plain.py"), py_test(body, {"auth": variant}, path="test/env.py")]
-    assert go(tmp_path, tests, session_factory=factory, workers=1)[0] == 0
+    assert go(tmp_path, tests, shell_factory=factory, workers=1)[0] == 0
     plain, own = sorted(made, key=lambda s: s.env is not None)
     assert (plain.env, own.env["AWS_PROFILE"]) == (None, "ducktest")
     assert "AWS_ACCESS_KEY_ID" not in own.env
@@ -983,36 +983,38 @@ def test_a_preamble_that_fails_is_a_setup_error(tmp_path):
     def body(ctx):
         ctx.duckdb()
 
-    _, _, report, _ = go(tmp_path, [py_test(body)], session_factory=lambda b, **kw: FakeSession(preamble_fails=True))
+    _, _, report, _ = go(tmp_path, [py_test(body)], shell_factory=lambda b, **kw: FakeShell(preamble_fails=True))
     assert report["tests"][0]["outcome"] == "error"
     assert "the preamble failed: Catalog Error" in report["tests"][0]["problems"][0]
 
 
-def test_an_unknown_session_kind_is_refused(tmp_path):
+def test_an_unknown_shell_kind_is_refused(tmp_path):
     with pytest.raises(ValueError, match="'per_run', 'per_client', 'per_call'"):
-        ctx_for(py_test(passes), tmp_path).duckdb(session="per_test")
+        ctx_for(py_test(passes), tmp_path).duckdb(shell="per_test")
+    with pytest.raises(UsageError, match=r"is now ctx.duckdb\(shell=...\)"):
+        ctx_for(py_test(passes), tmp_path).duckdb(session="per_client")
 
 
-def test_an_own_session_is_a_warm_shell_of_its_own_closed_when_the_test_ends(tmp_path):
+def test_an_own_shell_is_a_warm_shell_of_its_own_closed_when_the_test_ends(tmp_path):
     made = []
 
     def factory(binary, *, home=None, env=None):
-        session = FakeSession(binary, home=home, env=env)
-        session.close = lambda: made_closed.append(session)
-        made.append(session)
-        return session
+        shell = FakeShell(binary, home=home, env=env)
+        shell.close = lambda: made_closed.append(shell)
+        made.append(shell)
+        return shell
 
     made_closed = []
 
     def body(ctx):
         shared = ctx.duckdb("LOAD delta;")
-        first = ctx.duckdb("LOAD delta;", session="per_client")
-        second = ctx.duckdb("LOAD delta;", session="per_client")
+        first = ctx.duckdb("LOAD delta;", shell="per_client")
+        second = ctx.duckdb("LOAD delta;", shell="per_client")
         first.oks("SELECT 1")
         second.oks("SELECT 2")
         shared.oks("SELECT 3")
 
-    code, _, _, _ = go(tmp_path, [py_test(body)], session_factory=factory)
+    code, _, _, _ = go(tmp_path, [py_test(body)], shell_factory=factory)
     assert code == 0
     run_shell, first, second = made  # the run's shell, then one for each `per_client` client
     assert [first.statements, second.statements, run_shell.statements] == [["SELECT 1"], ["SELECT 2"], ["SELECT 3"]]
@@ -1069,15 +1071,15 @@ def test_a_python_body_that_never_passes_keeps_its_first_failure(tmp_path):
     assert "attempt 1" in test["problems"][0] and len(test["problems"]) == 1
 
 
-def test_duckdb_gets_a_home_under_the_run_dir_for_both_kinds_of_session(tmp_path):
+def test_duckdb_gets_a_home_under_the_run_dir_for_both_kinds_of_shell(tmp_path):
     seen = {}
 
     def body(ctx):
-        seen["session"] = ctx.session.duckdb.engine.live.home
-        seen["per_call"] = ctx.duckdb(session="per_call")._run.__self__._home.path
+        seen["per_run"] = ctx.session.duckdb.engine.live.home
+        seen["per_call"] = ctx.duckdb(shell="per_call")._run.__self__._home.path
 
     _, run_dir, _, _ = go(tmp_path, [py_test(body)])
-    assert seen == {"session": str(run_dir / "home"), "per_call": str(run_dir / "home")}
+    assert seen == {"per_run": str(run_dir / "home"), "per_call": str(run_dir / "home")}
 
 
 def test_the_timeout_of_a_duckdb_client_reaches_each_of_its_statements(tmp_path):
@@ -1087,7 +1089,7 @@ def test_the_timeout_of_a_duckdb_client_reaches_each_of_its_statements(tmp_path)
         ctx.duckdb(timeout=7).oks("SELECT 1")
         ctx.duckdb().oks("SELECT 2")
         seen.extend(ctx.session.duckdb.engine.live.timeouts)
-        seen.append(ctx.duckdb(session="per_call", timeout=9)._run.__self__._timeout)
+        seen.append(ctx.duckdb(shell="per_call", timeout=9)._run.__self__._timeout)
 
     assert go(tmp_path, [py_test(body)])[0] == 0
     assert seen == [7, 120, 9]

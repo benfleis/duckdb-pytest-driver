@@ -143,7 +143,7 @@ def test_nothing_is_written_beside_the_test_file(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["probe.py"]
 
 
-class NoSession:
+class NoShell:
     """The run's DuckDB shell, for a body that never asks for one."""
 
     def __init__(self, binary, *, home=None, env=None):
@@ -177,7 +177,7 @@ def test_the_failure_text_reaches_the_terminal_the_report_and_the_events(tmp_pat
         working_dir=str(tmp_path),
         temp_root=str(tmp_path / "runs"),
         out=printed,
-        session_factory=NoSession,
+        shell_factory=NoShell,
     )
     assert code == 1
     (run_dir,) = (tmp_path / "runs").iterdir()

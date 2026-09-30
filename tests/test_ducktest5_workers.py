@@ -11,8 +11,8 @@ import time
 import pytest
 
 from ducktest5 import events, phases, sqllogic
-from ducktest5.engines.duckdb import DuckDBSession
-from test_ducktest5_run import FAKE, FakeSession, go, outcomes, py_test, sql_test
+from ducktest5.engines.duckdb import DuckDBShell
+from test_ducktest5_run import FAKE, FakeShell, go, outcomes, py_test, sql_test
 
 SLEEP_S = 0.3  # long enough that tests overlap, short enough for a self-test
 FAKE_SHELL = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_shell.py")
@@ -108,7 +108,7 @@ def test_a_test_that_raises_does_not_stop_the_others(tmp_path):
 def test_every_worker_has_a_shell_of_its_own_and_keeps_it_warm(tmp_path):
     made = []
 
-    class Counted(FakeSession):
+    class Counted(FakeShell):
         def __init__(self, *a, **kw):
             super().__init__(*a, **kw)
             made.append(self)
@@ -126,7 +126,7 @@ def test_every_worker_has_a_shell_of_its_own_and_keeps_it_warm(tmp_path):
         return run
 
     tests = [py_test(uses_the_shell(n), path=f"test/{n}.py") for n in ("a", "b", "c", "d")]
-    assert go(tmp_path, tests, workers=2, session_factory=Counted)[0] == 0
+    assert go(tmp_path, tests, workers=2, shell_factory=Counted)[0] == 0
     assert len(made) == 2  # one for each worker, not one for each test
     assert sum(len(s.statements) for s in made) == 4
 
@@ -136,7 +136,7 @@ def test_a_test_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_p
 
     made = []
 
-    class Counted(FakeSession):
+    class Counted(FakeShell):
         def __init__(self, *a, **kw):
             super().__init__(*a, **kw)
             made.append(self)
@@ -148,7 +148,7 @@ def test_a_test_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_p
         py_test(body, {"auth": Variant("profile", env={"AWS_PROFILE": "ducktest"})}, path="test/env.py"),
         py_test(body, path="test/plain.py"),
     ]
-    assert go(tmp_path, tests, workers=2, session_factory=Counted)[0] == 0
+    assert go(tmp_path, tests, workers=2, shell_factory=Counted)[0] == 0
     with_env = [s for s in made if s.env is not None]
     assert len(with_env) == 1 and with_env[0].env["AWS_PROFILE"] == "ducktest"
 
@@ -312,9 +312,7 @@ def test_a_hung_duckdb_statement_is_released_and_reported_once(tmp_path, workers
         ctx.duckdb().oks("SELECT drip")
 
     tests = [py_test(_named(hangs, "hangs"), path="test/hangs.py", timeout=0.3), *_quick_tests(3)]
-    code, run_dir, report, _ = go(
-        tmp_path, tests, workers=workers, duckdb_bin=FAKE_SHELL, session_factory=DuckDBSession
-    )
+    code, run_dir, report, _ = go(tmp_path, tests, workers=workers, duckdb_bin=FAKE_SHELL, shell_factory=DuckDBShell)
     out = outcomes(report)
     assert out["hangs"] == "error"
     assert all(out[f"quick{i}"] == "passed" for i in range(3))

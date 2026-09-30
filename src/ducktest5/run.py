@@ -36,7 +36,7 @@ from . import events, phases, runners, sessions, sqllogic, testenv
 from .binary import UsageError
 from .resources.client import SetupFailed
 from .ctx import Ctx
-from .engines.duckdb import DuckDBSession
+from .engines.duckdb import DuckDBShell
 from .events import RUN_END, RUN_START, SERVICE, TEST_END, TEST_START
 from .mnemonic import run_id as make_run_id
 from .model import SQLLOGIC
@@ -192,7 +192,7 @@ def run(
     run_args="",
     run_bin=None,
     out=None,
-    session_factory=DuckDBSession,
+    shell_factory=DuckDBShell,
     debugger=None,
     command=None,
     selection=None,
@@ -228,7 +228,7 @@ def run(
         clean=True,
         run_bin=run_bin,
         out=out,
-        session_factory=session_factory,
+        shell_factory=shell_factory,
         debugger=debugger,
         command=command,
         selection=selection,
@@ -260,7 +260,7 @@ def execute(
     append=False,
     interrupted=(),
     out=None,
-    session_factory=DuckDBSession,
+    shell_factory=DuckDBShell,
     debugger=None,
     command=None,
     selection=None,
@@ -396,7 +396,7 @@ def execute(
 
     duckdb_home = os.path.join(run_dir, "home")
 
-    runtime = Runtime(shell=lambda env: session_factory(duckdb_bin, home=duckdb_home, env=env), booted=handles)
+    runtime = Runtime(shell=lambda env: shell_factory(duckdb_bin, home=duckdb_home, env=env), booted=handles)
     pool = Pool(workers, runtime=runtime, made=made)
     stopped = _stop_on_signal()
     blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
@@ -508,7 +508,7 @@ def execute(
                         temp_dir,
                         **kw,
                     ),
-                    session_factory=session_factory,
+                    shell_factory=shell_factory,
                 )
             except Exception as exc:
                 pool.give_back(test.id, held, failed=True)

@@ -19,7 +19,7 @@ APPENDS = 3
 @test()
 def concurrent_writers_append_without_a_gap(ctx):
     shared = ctx.location("shared.db")
-    maker = ctx.duckdb(session="per_client")
+    maker = ctx.duckdb(shell="per_client")
     maker.setup(
         """
         ATTACH '{db}' AS shared;
@@ -48,7 +48,7 @@ def concurrent_writers_append_without_a_gap(ctx):
             committed += append(db, who)
         return committed
 
-    writers = [(ctx.duckdb(session="per_client"), f"w{n}") for n in range(WRITERS)]
+    writers = [(ctx.duckdb(shell="per_client"), f"w{n}") for n in range(WRITERS)]
     with concurrent.futures.ThreadPoolExecutor(max_workers=WRITERS) as pool:
         submitted = [pool.submit(writer, db, who) for db, who in writers]
         assert [f.result() for f in submitted] == [APPENDS] * WRITERS

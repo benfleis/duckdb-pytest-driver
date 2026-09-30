@@ -5,14 +5,14 @@ import os
 from types import SimpleNamespace
 
 import pytest
-from test_ducktest5_run import FakeEngine, FakeSession, ctx_for, go, passes, py_test, sql_test
+from test_ducktest5_run import FakeEngine, FakeShell, ctx_for, go, passes, py_test, sql_test
 
 from ducktest5 import declare, phases, sessions
 from ducktest5.binary import UsageError
 from ducktest5.cli import main
 from ducktest5.conf import Project
 from ducktest5.declare import Variant
-from ducktest5.engines.duckdb import DuckDBSession, duckdb_engine
+from ducktest5.engines.duckdb import DuckDBShell, duckdb_engine
 from ducktest5.model import PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.resources import RO, RW, BootedEngineDef, CredentialDef, StorageDef, check_contract, from_env
 from ducktest5.resources.engine import Runtime
@@ -187,7 +187,7 @@ def test_the_default_duckdb_engine_sends_the_scoped_secret_over_the_shells_stdin
         ctx.duckdb().oks("SELECT echo1")
 
     test = with_minio(py_test(body), minio_inputs)
-    code, run_dir, _, _ = go(tmp_path, [test], duckdb_bin=FAKE_SHELL, session_factory=DuckDBSession, keep=True)
+    code, run_dir, _, _ = go(tmp_path, [test], duckdb_bin=FAKE_SHELL, shell_factory=DuckDBShell, keep=True)
     assert code == 0
     sent = [line for line in record.read_text().splitlines() if not line.startswith(".print")]
     assert sent == [
@@ -221,7 +221,7 @@ def test_a_worker_engine_is_reset_between_tests_and_reopened_after_a_failure(tmp
     made = []
 
     def factory(binary, *, home=None, env=None):
-        made.append(FakeSession(binary, home=home, env=env))
+        made.append(FakeShell(binary, home=home, env=env))
         made[-1].calls = []
         made[-1].begin_test = lambda s=made[-1]: s.calls.append("reset")
         made[-1].close = lambda s=made[-1]: s.calls.append("close")
@@ -231,7 +231,7 @@ def test_a_worker_engine_is_reset_between_tests_and_reopened_after_a_failure(tmp
         raise AssertionError("no")
 
     tests = [py_test(passes, path="test/a.py"), py_test(fails, path="test/b.py"), py_test(passes, path="test/c.py")]
-    go(tmp_path, tests, session_factory=factory, workers=1)
+    go(tmp_path, tests, shell_factory=factory, workers=1)
     first, second = made  # the second shell is closed when the run ends
     assert (first.calls, second.calls) == (["reset", "reset", "close"], ["reset", "close"])
 
@@ -240,7 +240,7 @@ def test_a_batch_scoped_engine_is_closed_when_its_python_test_ends(tmp_path):
     made = []
 
     def factory(binary, *, home=None, env=None):
-        made.append(FakeSession(binary, home=home, env=env))
+        made.append(FakeShell(binary, home=home, env=env))
         made[-1].closed = 0
         made[-1].close = lambda s=made[-1]: setattr(s, "closed", s.closed + 1)
         return made[-1]
@@ -249,9 +249,7 @@ def test_a_batch_scoped_engine_is_closed_when_its_python_test_ends(tmp_path):
         ctx.client("own").oks("SELECT 1")
 
     tests = [py_test(body, path=f"test/{n}.py", engines=["own"]) for n in "ab"]
-    code, _, _, _ = go(
-        tmp_path, tests, session_factory=factory, workers=1, engines=[duckdb_engine("own", scope="batch")]
-    )
+    code, _, _, _ = go(tmp_path, tests, shell_factory=factory, workers=1, engines=[duckdb_engine("own", scope="batch")])
     assert code == 0
     assert [s.closed >= 1 for s in made] == [True, True]
 
@@ -261,8 +259,8 @@ def test_an_engine_that_cannot_open_is_a_setup_error_of_the_test(tmp_path):
         pass
 
     engines = [duckdb_engine("bad", requires=["nope"])]
-    factory = lambda b, **kw: FakeSession(preamble_fails=True)  # noqa: E731
-    _, _, report, _ = go(tmp_path, [py_test(body, engines=["bad"])], session_factory=factory, engines=engines)
+    factory = lambda b, **kw: FakeShell(preamble_fails=True)  # noqa: E731
+    _, _, report, _ = go(tmp_path, [py_test(body, engines=["bad"])], shell_factory=factory, engines=engines)
     assert report["tests"][0]["outcome"] == "error"
     assert "could not be set up: SqlError: Catalog Error" in report["tests"][0]["problems"][0]
 

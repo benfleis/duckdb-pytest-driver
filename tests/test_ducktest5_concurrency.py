@@ -7,7 +7,7 @@ import shutil
 import pytest
 
 from ducktest5.ctx import Ctx
-from ducktest5.engines.duckdb import DuckDBSession
+from ducktest5.engines.duckdb import DuckDBShell
 from ducktest5.model import PYTHON, Test, TestDef
 from ducktest5.run import run
 from ducktest5.scan import scan
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(_shell() is None, reason="no duckdb shell (set $
 def ctx(tmp_path):
     test = Test(TestDef(path="t.py", name="t", type=PYTHON, body=lambda ctx: None), None, {})
     home = str(tmp_path / "home")
-    shared = DuckDBSession(_shell(), home=home)
+    shared = DuckDBShell(_shell(), home=home)
     shared.begin_test()
     context = Ctx(
         test,
@@ -43,8 +43,8 @@ def ctx(tmp_path):
 
 
 def test_own_clients_are_warm_and_do_not_see_each_others_instance(ctx):
-    first = ctx.duckdb("CREATE TABLE mine (i INT);", session="per_client")
-    second = ctx.duckdb("CREATE TABLE mine (i INT);", session="per_client")
+    first = ctx.duckdb("CREATE TABLE mine (i INT);", shell="per_client")
+    second = ctx.duckdb("CREATE TABLE mine (i INT);", shell="per_client")
     first.oks("INSERT INTO mine VALUES (1)")
     first.expects("SELECT count(*) FROM mine", [1])  # the same shell answered twice: it stayed warm
     second.expects("SELECT count(*) FROM mine", [0])
@@ -55,7 +55,7 @@ def test_what_an_own_client_persists_lands_under_the_runs_private_home(ctx, tmp_
     users_home = tmp_path / "users-home"
     users_home.mkdir()
     monkeypatch.setenv("HOME", str(users_home))
-    ctx.duckdb(session="per_client").oks("CREATE PERSISTENT SECRET probe (TYPE s3, KEY_ID 'k', SECRET 'x')")
+    ctx.duckdb(shell="per_client").oks("CREATE PERSISTENT SECRET probe (TYPE s3, KEY_ID 'k', SECRET 'x')")
     assert (tmp_path / "home" / ".duckdb" / "stored_secrets" / "probe.duckdb_secret").exists()
     assert list(users_home.iterdir()) == []
 

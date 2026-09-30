@@ -1,6 +1,6 @@
 """The built duckdb shell as a client.
 
-`DuckDBSession` is the rule: one shell process for the whole run, as the unittest binary is one
+`DuckDBShell` is the rule: one shell process for the whole run, as the unittest binary is one
 process for its run. The words are sqllogictest's, where it has them:
 
     reconnect()   new connection, same instance   the shell has one connection, so it cannot
@@ -106,7 +106,7 @@ def duckdb_engine(id="duckdb", **fields) -> DuckDBEngineDef:
     return DuckDBEngineDef(id, **fields)
 
 
-class DuckDBSession:
+class DuckDBShell:
     def __init__(self, binary, *, timeout=DEFAULT_TIMEOUT_S, home=None, env=None):
         self.binary = binary
         self._timeout = timeout
