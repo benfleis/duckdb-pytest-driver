@@ -3,7 +3,7 @@
 import contextlib
 import os
 
-from ..client import SqlError
+from ..resources.client import SqlError
 from ..resources import EngineDef
 
 

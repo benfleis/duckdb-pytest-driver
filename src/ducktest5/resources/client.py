@@ -35,8 +35,8 @@ import time
 import traceback
 from collections import Counter
 
-from .binary import UsageError
-from .sqltext import format_rows, parse_rows, render_rows, split_statements, sql_values
+from ..binary import UsageError
+from ..sqltext import format_rows, parse_rows, render_rows, split_statements, sql_values
 
 
 ON_FAIL = ("abort_test", "continue")

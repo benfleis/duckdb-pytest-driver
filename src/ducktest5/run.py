@@ -34,7 +34,7 @@ import traceback
 
 from . import events, phases, runners, sessions, sqllogic, testenv
 from .binary import UsageError
-from .client import SetupFailed
+from .resources.client import SetupFailed
 from .ctx import Ctx
 from .engines.duckdb import DuckDBSession
 from .events import RUN_END, RUN_START, SERVICE, TEST_END, TEST_START

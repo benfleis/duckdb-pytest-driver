@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from ducktest5.client import SqlError
+from ducktest5.resources.client import SqlError
 from ducktest5.engines.duckdb import DuckDBSession
 from ducktest5.engines.spark import SparkHandle
 

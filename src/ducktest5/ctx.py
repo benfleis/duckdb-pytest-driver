@@ -2,7 +2,7 @@
 
 import os
 
-from .client import Client, SetupFailed, SqlError
+from .resources.client import Client, SetupFailed, SqlError
 from .engines.duckdb import DEFAULT_TIMEOUT_S, DuckDBPerCall, DuckDBSession
 from .resources.session import process_env
 from .steps import step

@@ -6,7 +6,7 @@ import decimal
 import pytest
 
 from ducktest5.binary import UsageError
-from ducktest5.client import Client, ExpectationFailed, SetupFailed, SqlError
+from ducktest5.resources.client import Client, ExpectationFailed, SetupFailed, SqlError
 from ducktest5.sqltext import L, parse_rows, render_rows, split_statements, sql_values
 
 

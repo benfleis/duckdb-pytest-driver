@@ -15,7 +15,7 @@ import yaml
 
 from ducktest5 import phases
 from ducktest5.binary import UsageError
-from ducktest5.client import SqlError
+from ducktest5.resources.client import SqlError
 from ducktest5.conf import Project
 from ducktest5.ctx import Ctx
 from ducktest5.declare import Variant

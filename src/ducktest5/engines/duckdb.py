@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 
-from ..client import SqlError
+from ..resources.client import SqlError
 from ..sqltext import split_statements
 
 _MARK = "<<ducktest:{}>>"
