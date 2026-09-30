@@ -348,7 +348,7 @@ def test_names_are_case_insensitive_and_two_spellings_of_one_are_an_error(tmp_pa
     assert fake.statements == ["SELECT '/p', '/p', 'c', 'c'", "SELECT '/own'"]
     assert ctx.env["catalog"] == ctx.env["CATALOG"] == ctx.env.Catalog == "c"
     with pytest.raises(UsageError, match="'path' and 'PATH' are one name"):
-        ctx.client("fake").oks("SELECT 1", {"path": "a", "PATH": "b"})
+        ctx.client("fake").oks("SELECT 1", params={"path": "a", "PATH": "b"})
     with pytest.raises(UsageError, match="are one name"):
         ctx.env.set(path="a", PATH="b")
 

@@ -14,7 +14,7 @@ records the failure and lets the body go on, for independent checks a reader wan
 a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
 and `rows` / `text` belong to the last one. `{t}` is this client's spelling of the table under test;
 other `{name}` placeholders come from the test's env (`ctx.env`, what a `.test` file reads as
-`{NAME}`), from a dict given after the SQL (a params row goes there), or from keyword arguments; an
+`{NAME}`), from `params=` (a dict: a params row goes there), or from keyword arguments; an
 unknown one is an error, and `{{word}}` is a literal brace pair. A value that is a list of rows goes
 in as a SQL VALUES list, so the values a test inserts and the rows it expects back are one definition
 (`L("...")` puts hand-written SQL in a value; rows can then not be derived and must be given). Braces
@@ -275,23 +275,23 @@ class Client:
         failed = statements[exc.statement] if exc.statement is not None else "(not a statement of this call)"
         raise ExpectationFailed(self.name, failed, f"statement failed: {exc}") from None
 
-    def rows(self, sql, params=None, **more):
+    def rows(self, sql, *, params=None, **more):
         return self._must_run(self._statements(sql, params, more), "query")[1]
 
-    def record(self, sql, params=None, **more):
+    def record(self, sql, *, params=None, **more):
         """The single row of `sql` as a dict, for DESCRIBE-like statements with many columns."""
         statements = self._statements(sql, params, more)
         columns, rows = self._must_run(statements, "query")
         assert len(rows) == 1, f"[{self.name}] expected one row, got {len(rows)}\n{_indent(statements[-1])}"
         return dict(zip(columns, rows[0]))
 
-    def setup(self, sql, params=None, **more):
+    def setup(self, sql, *, params=None, **more):
         try:
             self._assert_ok(sql, params, **more)
         except ExpectationFailed as failure:
             raise SetupFailed(str(failure)) from None
 
-    def teardown(self, sql, params=None, **more):
+    def teardown(self, sql, *, params=None, **more):
         def run():
             try:
                 self._assert_ok(sql, params, **more)
@@ -300,16 +300,16 @@ class Client:
 
         self._defer(run) if self._defer else run()
 
-    def oks(self, sql, params=None, *, on_fail="abort_test", **more):
+    def oks(self, sql, *, params=None, on_fail="abort_test", **more):
         self._check(on_fail, self._assert_ok, sql, params, **more)
 
-    def errs(self, sql, text, params=None, *, on_fail="abort_test", **more):
+    def errs(self, sql, text, *, params=None, on_fail="abort_test", **more):
         self._check(on_fail, self._assert_error, sql, text, params, **more)
 
-    def expects(self, sql, rows, params=None, *, sort=False, on_fail="abort_test", **more):
+    def expects(self, sql, rows, *, params=None, sort=False, on_fail="abort_test", **more):
         self._check(on_fail, self._assert_rows, sql, rows, params, sort=sort, **more)
 
-    def exec(self, sql, params=None, **more):
+    def exec(self, sql, *, params=None, **more):
         """Run the statements and give back what happened, instead of judging it: for a body that has
         to branch, such as a retry loop around a commit that can conflict. A statement that failed is
         not a failed check, and does not abort the test."""
@@ -321,7 +321,7 @@ class Client:
             return Executed(self.name, statements[-1], error=str(exc))
         return Executed(self.name, statements[-1], columns=columns, rows=rows)
 
-    def expects_contains(self, sql, rows, params=None, *, on_fail="abort_test", **more):
+    def expects_contains(self, sql, rows, *, params=None, on_fail="abort_test", **more):
         """Every row of `rows` is in the result, as often as it is in `rows`; the result may hold more."""
         self._check(on_fail, self._assert_contains, sql, rows, params, **more)
 
