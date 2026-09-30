@@ -391,15 +391,15 @@ def test_a_storage_that_declares_no_data_gives_no_data_dir(tmp_path):
 
 
 def test_an_s3_storage_takes_its_bucket_and_endpoint_from_an_input():
-    minio = ThingDef("minio").make()
-    minio.attributes = {
-        "bucket": Attribute("ducktest", "minio"),
-        "endpoint": Attribute("http://10.0.0.1:9000", "minio"),
+    s3local = ThingDef("s3local").make()
+    s3local.attributes = {
+        "bucket": Attribute("ducktest", "s3local"),
+        "endpoint": Attribute("http://10.0.0.1:9000", "s3local"),
     }
     store = StorageDef(
-        "s3", "s3://{minio.bucket}", endpoint="{minio.endpoint}", inputs=["minio"], data="s3://{minio.bucket}"
+        "s3", "s3://{s3local.bucket}", endpoint="{s3local.endpoint}", inputs=["s3local"], data="s3://{s3local.bucket}"
     )
-    env, _ = store.make({"minio": minio}, run_token="run1").delivery()
+    env, _ = store.make({"s3local": s3local}, run_token="run1").delivery()
     assert {k: v.get() for k, v in env.items()} == {
         "TEMP_DIR": "s3://ducktest/temp/run1",
         "DATA_DIR": "s3://ducktest",
@@ -415,8 +415,8 @@ def test_an_azure_storage_delivers_its_account():
 
 
 def test_a_reference_to_what_no_input_gives_is_a_usage_error():
-    with pytest.raises(UsageError, match=r"\{minio.bucket\} is not an attribute of an input"):
-        StorageDef("s3", "s3://{minio.bucket}").make()
+    with pytest.raises(UsageError, match=r"\{s3local.bucket\} is not an attribute of an input"):
+        StorageDef("s3", "s3://{s3local.bucket}").make()
 
 
 def test_a_storage_is_shared_rw_and_mints_children_for_an_exclusive_writer():

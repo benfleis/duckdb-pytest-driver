@@ -12,12 +12,12 @@ KEYS = {"DT_KEY": "AWS_ACCESS_KEY_ID", "DT_SECRET": "AWS_SECRET_ACCESS_KEY"}
 
 
 @pytest.fixture
-def minio(monkeypatch):
+def remote(monkeypatch):
     """A storage on an S3-compatible endpoint and the credential scoped to it, both started."""
     monkeypatch.setenv("DT_KEY", "admin")
     monkeypatch.setenv("DT_SECRET", "it's-secret")
-    storage = StorageDef("minio", "s3://ducktest/delta", endpoint="http://172.18.0.1:9999").make()
-    credential = CredentialDef("minio-key", sources=[from_env(KEYS)], scopes=["minio"]).make()
+    storage = StorageDef("remote", "s3://ducktest/delta", endpoint="http://172.18.0.1:9999").make()
+    credential = CredentialDef("remote-key", sources=[from_env(KEYS)], scopes=["remote"]).make()
     credential.start()
     return storage, credential
 
@@ -64,10 +64,10 @@ def test_an_unknown_dialect_or_action_is_a_usage_error():
 #
 
 
-def test_duckdb_gets_one_secret_scoped_to_the_storage_root(minio):
-    storage, credential = minio
+def test_duckdb_gets_one_secret_scoped_to_the_storage_root(remote):
+    storage, credential = remote
     assert render("duckdb", "secret", [storage], credential).sql == [
-        "CREATE SECRET ducktest_minio (TYPE 's3', KEY_ID 'admin', SECRET 'it''s-secret', "
+        "CREATE SECRET ducktest_remote (TYPE 's3', KEY_ID 'admin', SECRET 'it''s-secret', "
         "ENDPOINT '172.18.0.1:9999', USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/delta');"
     ]
 
@@ -80,8 +80,8 @@ def test_a_credential_scoped_to_two_storages_gets_one_duckdb_secret_with_both_sc
     ]
 
 
-def test_spark_gets_the_settings_of_the_one_bucket(minio):
-    storage, credential = minio
+def test_spark_gets_the_settings_of_the_one_bucket(remote):
+    storage, credential = remote
     assert render("spark", "secret", [storage], credential).conf == {
         "fs.s3a.bucket.ducktest.access.key": "admin",
         "fs.s3a.bucket.ducktest.secret.key": "it's-secret",
@@ -102,12 +102,12 @@ def test_a_credential_scoped_to_two_storages_gets_spark_settings_for_both_bucket
     assert conf["fs.s3.impl"] == "org.apache.hadoop.fs.s3a.S3AFileSystem"
 
 
-def test_the_unittest_binary_gets_the_names_of_the_secrets_never_their_values(minio):
-    storage, credential = minio
+def test_the_unittest_binary_gets_the_names_of_the_secrets_never_their_values(remote):
+    storage, credential = remote
     delivered = render("unittest", "secret", [storage], credential)
     assert delivered == Preamble(
         sql=[
-            "CREATE SECRET ducktest_minio (TYPE 's3', KEY_ID '{AWS_ACCESS_KEY_ID}', SECRET '{AWS_SECRET_ACCESS_KEY}', "
+            "CREATE SECRET ducktest_remote (TYPE 's3', KEY_ID '{AWS_ACCESS_KEY_ID}', SECRET '{AWS_SECRET_ACCESS_KEY}', "
             "ENDPOINT '172.18.0.1:9999', USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/delta');"
         ],
         passthrough=["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
@@ -144,8 +144,8 @@ def test_a_local_storage_needs_no_secret(tmp_path, monkeypatch):
 #
 
 
-def test_a_credential_pairs_with_the_storage_it_is_scoped_to(minio):
-    storage, credential = minio
+def test_a_credential_pairs_with_the_storage_it_is_scoped_to(remote):
+    storage, credential = remote
     other = StorageDef("other", "s3://elsewhere").make()
     assert pairs([credential, other, storage]) == [(credential, [storage])]
 
@@ -155,10 +155,10 @@ def test_a_credential_pairs_with_every_storage_it_is_scoped_to(two_storages):
     assert pairs([*storages, credential]) == [(credential, storages)]
 
 
-def test_the_preamble_is_requires_then_settings_then_secrets_then_init(minio):
-    storage, credential = minio
+def test_the_preamble_is_requires_then_settings_then_secrets_then_init(remote):
+    storage, credential = remote
     session = SimpleNamespace(requires=["httpfs"], settings={"threads": 1}, init=["SELECT 42;"])
-    assert preamble("duckdb", session, minio).sql == [
+    assert preamble("duckdb", session, remote).sql == [
         "LOAD httpfs;",
         "SET threads = '1';",
         render("duckdb", "secret", [storage], credential).sql[0],

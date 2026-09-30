@@ -66,7 +66,7 @@ class StorageDef(ResourceDef):
     mints_children = True
 
     id: str
-    root: str  # a URI or a path; `{minio.bucket}` takes an input's attribute
+    root: str  # a URI or a path; `{s3local.bucket}` takes an input's attribute
     endpoint: str | None = None  # http(s)://host:port of an S3-compatible store; may reference an input
     account: str | None = None  # the Azure account, where the root does not name it
     temp_prefix: str = "temp"  # where children are minted, under the root

@@ -82,34 +82,13 @@ def test_s3_local_runs_in_a_container_named_for_the_run_and_makes_its_bucket(fak
     }
 
 
-@pytest.mark.parametrize(
-    "backend, expected",
-    [
-        (
-            "rustfs",
-            [
-                "-e", "RUSTFS_ACCESS_KEY=admin", "-e", "RUSTFS_SECRET_KEY=password", "-e", "RUSTFS_VOLUMES=/data",
-                "-e", "RUSTFS_ADDRESS=:9000", "-e", "RUSTFS_CONSOLE_ENABLE=false", "rustfs/rustfs:1.0.0",
-            ],
-        ),
-        (
-            "minio",
-            [
-                "-e", "MINIO_ROOT_USER=admin", "-e", "MINIO_ROOT_PASSWORD=password", "--tmpfs", "/data:size=2g",
-                "ghcr.io/hendriklambert/ducktest-minio:2026-07-28", "server", "/data",
-            ],
-        ),
-    ],
-)  # fmt: skip
-def test_the_backend_is_what_the_run_starts(fake_docker, backend, expected):
-    s3_local(backend=backend).make(run_token="r1").create()
+def test_the_server_is_started_as_rustfs(fake_docker):
+    s3_local().make(run_token="r1").create()
     (run,) = fake_docker.runs
-    assert list(run[run.index("-p") + 2 :]) == expected
-
-
-def test_a_backend_that_does_not_exist_is_refused():
-    with pytest.raises(ValueError, match="backend 'ceph' is not one of \\['minio', 'rustfs'\\]"):
-        s3_local(backend="ceph")
+    assert list(run[run.index("-p") + 2 :]) == [
+        "-e", "RUSTFS_ACCESS_KEY=admin", "-e", "RUSTFS_SECRET_KEY=password", "-e", "RUSTFS_VOLUMES=/data",
+        "-e", "RUSTFS_ADDRESS=:9000", "-e", "RUSTFS_CONSOLE_ENABLE=false", "rustfs/rustfs:1.0.0",
+    ]  # fmt: skip
 
 
 def test_a_failed_run_leaves_the_container_stopped(fake_docker):

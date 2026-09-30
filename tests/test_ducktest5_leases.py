@@ -148,29 +148,29 @@ def test_a_spark_worker_s_configuration_goes_back_to_what_it_opened_with_before_
 
 
 @pytest.fixture
-def minio_inputs(monkeypatch):
+def remote_inputs(monkeypatch):
     monkeypatch.setenv("DT_KEY", "admin")
     monkeypatch.setenv("DT_SECRET", "password")
-    storage = StorageDef("minio", "s3://ducktest/delta", endpoint="http://172.18.0.1:9999")
+    storage = StorageDef("remote", "s3://ducktest/delta", endpoint="http://172.18.0.1:9999")
     keys = {"DT_KEY": "AWS_ACCESS_KEY_ID", "DT_SECRET": "AWS_SECRET_ACCESS_KEY"}
-    credential = CredentialDef("minio-key", sources=[from_env(keys)], scopes=["minio"])
-    return [storage, credential], {"minio": storage.make(), "minio-key": credential.make()}
+    credential = CredentialDef("remote-key", sources=[from_env(keys)], scopes=["remote"])
+    return [storage, credential], {"remote": storage.make(), "remote-key": credential.make()}
 
 
-def test_a_duckdb_engine_sends_its_scoped_secret_as_sql(minio_inputs):
-    defs, inputs = minio_inputs
+def test_a_duckdb_engine_sends_its_scoped_secret_as_sql(remote_inputs):
+    defs, inputs = remote_inputs
     engine, made = opened(duckdb_engine("duck", requires=["httpfs"], inputs=defs), inputs)
     engine.acquire(RW)
     assert made[0].calls == [
         "begin_test",
         "LOAD httpfs;\n"
-        "CREATE SECRET ducktest_minio (TYPE 's3', KEY_ID 'admin', SECRET 'password', ENDPOINT '172.18.0.1:9999', "
+        "CREATE SECRET ducktest_remote (TYPE 's3', KEY_ID 'admin', SECRET 'password', ENDPOINT '172.18.0.1:9999', "
         "USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/delta');",
     ]
 
 
-def test_a_spark_engine_sets_the_buckets_settings_at_runtime(minio_inputs):
-    defs, inputs = minio_inputs
+def test_a_spark_engine_sets_the_buckets_settings_at_runtime(remote_inputs):
+    defs, inputs = remote_inputs
     engine, made = opened(BootedEngineDef("spark", dialect="spark", inputs=defs), inputs)
     engine.acquire(RW)
     assert made[0].calls == ["begin_test"]
@@ -199,24 +199,24 @@ class SparkRecorder(FakeEngine):
         self.conf[key] = value
 
 
-def with_minio(test, minio_inputs):
-    defs, _ = minio_inputs
+def with_remote(test, remote_inputs):
+    defs, _ = remote_inputs
     return Test(test.definition, None, {}, ((defs[0], RW), (defs[1], RO)))
 
 
-def test_the_default_duckdb_engine_sends_the_scoped_secret_over_the_shells_stdin(tmp_path, monkeypatch, minio_inputs):
+def test_the_default_duckdb_engine_sends_the_scoped_secret_over_the_shells_stdin(tmp_path, monkeypatch, remote_inputs):
     record = tmp_path / "stdin.txt"
     monkeypatch.setenv("FAKE_SHELL_RECORD", str(record))
 
     def body(ctx):
         ctx.client("duckdb").oks("SELECT echo1")
 
-    test = with_minio(py_test(body), minio_inputs)
+    test = with_remote(py_test(body), remote_inputs)
     code, run_dir, _, _ = go(tmp_path, [test], duckdb_bin=FAKE_SHELL, shell_factory=DuckDBShell, keep=True)
     assert code == 0
     sent = [line for line in record.read_text().splitlines() if not line.startswith(".print")]
     assert sent == [
-        "CREATE SECRET ducktest_minio (TYPE 's3', KEY_ID 'admin', SECRET 'password', ENDPOINT '172.18.0.1:9999', "
+        "CREATE SECRET ducktest_remote (TYPE 's3', KEY_ID 'admin', SECRET 'password', ENDPOINT '172.18.0.1:9999', "
         "USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/delta')",
         ";",
         "SELECT echo1",
@@ -226,7 +226,7 @@ def test_the_default_duckdb_engine_sends_the_scoped_secret_over_the_shells_stdin
     assert not any("password" in text for text in written)
 
 
-def test_a_spark_client_is_one_per_test_and_its_engine_gets_the_buckets_settings(tmp_path, minio_inputs):
+def test_a_spark_client_is_one_per_test_and_its_engine_gets_the_buckets_settings(tmp_path, remote_inputs):
     spark = SparkRecorder()
     seen = {}
 
@@ -234,7 +234,7 @@ def test_a_spark_client_is_one_per_test_and_its_engine_gets_the_buckets_settings
         seen["first"] = ctx.client("spark").exec("SELECT 1").rows
         seen["same"] = ctx.client("spark") is ctx.clients["spark"]
 
-    test = with_minio(py_test(body, engines=["spark"]), minio_inputs)
+    test = with_remote(py_test(body, engines=["spark"]), remote_inputs)
     code, _, _, _ = go(tmp_path, [test], engines=[spark.engine()])
     assert code == 0
     assert seen == {"first": [(1,)], "same": True}
@@ -325,7 +325,7 @@ def test_a_value_set_on_the_context_reaches_every_client_and_one_set_on_a_client
     assert (ctx.env.path, ctx.client("fake").env.path, "only" in ctx.env) == ("/p", "/p", False)
 
 
-def test_a_client_template_sees_the_names_a_test_file_sees_and_no_secret(tmp_path, minio_inputs):
+def test_a_client_template_sees_the_names_a_test_file_sees_and_no_secret(tmp_path, remote_inputs):
     seen = {}
 
     def body(ctx):
@@ -344,7 +344,7 @@ def test_a_client_template_sees_the_names_a_test_file_sees_and_no_secret(tmp_pat
     assert names["LOCAL_TEMP_DIR"] == names["TEMP_DIR"] == os.path.dirname(seen["location"])
 
     seen.clear()
-    remote = with_minio(py_test(body, values={"catalog": "c"}), minio_inputs)
+    remote = with_remote(py_test(body, values={"catalog": "c"}), remote_inputs)
     assert go(tmp_path / "remote", [remote])[0] == 0
     names = seen["names"]
     assert names["TEMP_DIR"].startswith("s3://ducktest/delta/temp/")
