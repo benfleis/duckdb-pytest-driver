@@ -298,6 +298,31 @@ def test_a_value_bound_on_the_session_reaches_every_client_and_one_bound_on_a_cl
     assert ctx.session.duckdb.engine.live.statements == ["SELECT '/p'"]
 
 
+def test_a_client_template_sees_the_names_a_test_file_sees_and_no_secret(tmp_path, minio_inputs):
+    seen = {}
+
+    def body(ctx):
+        seen.update(ctx.session.values)
+        ctx.client("duckdb").oks("SELECT '{TEMP_DIR}', '{CATALOG}', '{catalog}'")
+        seen["location"] = ctx.location("t")
+
+    local = py_test(body, {"k": Variant("local", roots={"data_dir": "/data"})}, values={"catalog": "c"})
+    assert go(tmp_path / "local", [local])[0] == 0
+    assert {n: seen[n] for n in ("DATA_DIR", "LOCAL_DATA_DIR", "CATALOG", "catalog")} == {
+        "DATA_DIR": "/data",
+        "LOCAL_DATA_DIR": "/data",
+        "CATALOG": "c",
+        "catalog": "c",
+    }
+    assert seen["LOCAL_TEMP_DIR"] == seen["TEMP_DIR"] == os.path.dirname(seen["location"])
+
+    seen.clear()
+    remote = with_minio(py_test(body, values={"catalog": "c"}), minio_inputs)
+    assert go(tmp_path / "remote", [remote])[0] == 0
+    assert seen["TEMP_DIR"].startswith("s3://ducktest/delta/temp/")
+    assert "LOCAL_TEMP_DIR" not in seen and "AWS_SECRET_ACCESS_KEY" not in seen
+
+
 def test_a_session_holds_one_client_per_engine_and_its_identity_is_theirs_and_the_environment(tmp_path):
     ctx = ctx_for(py_test(passes, engines=["fake"]), tmp_path)
     assert ctx.client("fake") is ctx.client("fake", table="t") is ctx.session.client("fake")

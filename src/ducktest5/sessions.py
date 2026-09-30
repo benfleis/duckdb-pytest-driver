@@ -148,15 +148,35 @@ def _process_env(test_env) -> dict:
     }
 
 
+def template_names(test_env, temp_dir=None) -> dict:
+    """The names a Client's templates see: those a `.test` body sees. The test's values, by the name
+    they were given and upper-cased as a `.test` writes them, and its roots as `{TEMP_DIR}` (the
+    test's own place, under a storage's temp root when it has one, else `temp_dir`), `{DATA_DIR}`,
+    and `{LOCAL_TEMP_DIR}` / `{LOCAL_DATA_DIR}` where the root is local or has a local twin. Never a
+    secret: a credential reaches an engine as its preamble."""
+    names = {**test_env.value_map, **test_env.names}
+    roots = test_env.root_paths
+    for name, root, local in (
+        ("TEMP_DIR", roots.get("temp_dir_root") or temp_dir, roots.get("local_temp_dir_root")),
+        ("DATA_DIR", roots.get("data_dir"), roots.get("local_data_dir")),
+    ):
+        if root is None:
+            continue
+        names[name] = root
+        if local or "://" not in root:
+            names[f"LOCAL_{name}"] = local or root
+    return names
+
+
 class Session:
     """The one Session of a test: a Client on each engine it leases, the values their templates
     see, and what the test gathers as it runs -- the checks that failed, the teardowns, the log of
     its statements. A value bound here (`bind`) reaches every Client; one bound on a Client
     reaches that engine only."""
 
-    def __init__(self, test_env, engines=()):
+    def __init__(self, test_env, engines=(), *, temp_dir=None):
         self.environment = test_env
-        self.values = dict(test_env.value_map)
+        self.values = template_names(test_env, temp_dir)
         self.failed_checks, self.teardowns, self.statements = [], [], []
         self.clients = {}  # engine id -> the Client on the instance this test leases
         self._own = []  # clients on no lease: a shell a body starts for itself

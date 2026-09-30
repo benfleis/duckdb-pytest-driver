@@ -497,7 +497,7 @@ def execute(
                     test,
                     temp_dir=temp_dir,
                     duckdb_bin=duckdb_bin,
-                    session=sessions.Session(env, held.values()),
+                    session=sessions.Session(env, held.values(), temp_dir=temp_dir),
                     duckdb_home=duckdb_home,
                     services={s: made.services[s] for s in test.services},
                     run_test=lambda **kw: _run_paired(
