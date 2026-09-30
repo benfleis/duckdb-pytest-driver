@@ -73,6 +73,11 @@ class EngineDef(ServiceDef):
     def with_(self, **changes) -> EngineDef:
         return replace(self, **changes)
 
+    @property
+    def version(self) -> str:
+        """What the scan record and the report name it by; a kind that boots names what it booted."""
+        return self.kind
+
     def open(self, runtime: Runtime):
         raise NotImplementedError(f"engine kind {self.kind!r} has no open()")
 
@@ -113,10 +118,6 @@ class Engine(Service):
 
     def delete(self):
         self.stop()
-
-    def reopen(self):
-        self.close()
-        self.start()
 
     def reset(self):
         """A fresh instance on the open handle, then the preamble again."""
