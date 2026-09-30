@@ -39,7 +39,7 @@ from .binary import UsageError
 from .model import SQLLOGIC
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED
 from .provision import EXISTING, MANAGED, record
-from .resources import ALWAYS, ON_FAILURE
+from .resources import ALWAYS, ON_FAILURE, DefaultStorageDef
 from .resources.made import services_in
 
 TESTS_FILE, PLAN_FILE, PROVISION_FILE = "01-tests.yaml", "02-plan.yaml", "03-provision.yaml"
@@ -369,7 +369,7 @@ def clear_storages(run_token, project, failed_kept):
     without them."""
     removed = []
     for d in project.storages.values():
-        if d.inputs or d.retain == ALWAYS:
+        if d.inputs or d.retain == ALWAYS or isinstance(d, DefaultStorageDef):
             continue
         keep = failed_kept if d.retain == ON_FAILURE else ()
         removed += d.make(run_token=run_token).clear(run_token, keep)
@@ -381,7 +381,7 @@ def sweep_storages(run_token, project):
     storage that takes inputs is not swept: its root is not known without them."""
     swept = []
     for d in project.storages.values():
-        if not d.inputs:
+        if not d.inputs and not isinstance(d, DefaultStorageDef):
             swept += d.make(run_token=run_token).sweep(run_token)
     return swept
 

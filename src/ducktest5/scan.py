@@ -16,7 +16,7 @@ from .binary import UsageError
 from .conf import check_suites, is_default, load_project, merge_suites
 from .declare import CONF_FILE
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef
-from .resources import RO, RW, CredentialDef, StorageDef, pick_credentials
+from .resources import RO, RW, CredentialDef, DefaultStorageDef, StorageDef, pick_credentials
 
 _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 
@@ -61,7 +61,8 @@ def _inputs(bindings, combo, project):
     one is named. A credential all of whose names the axis values unset is left out."""
     modes = {}
     for _, d, mode, _ in bindings:
-        modes[d] = RW if RW in (mode, modes.get(d)) else mode
+        if not isinstance(d, DefaultStorageDef):  # binding the default storage is binding none
+            modes[d] = RW if RW in (mode, modes.get(d)) else mode
     storages = {d.id: mode for d, mode in modes.items() if isinstance(d, StorageDef)}
     named = [d for d in modes if isinstance(d, CredentialDef)]
     unset = {name for _, v in combo for name, value in v.process_env.items() if value is None}

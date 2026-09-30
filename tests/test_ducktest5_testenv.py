@@ -3,6 +3,7 @@
 import pytest
 from test_ducktest5_run import StoreDef
 
+from ducktest5 import leases
 from ducktest5.binary import UsageError
 from ducktest5.declare import Variant
 from ducktest5.model import SQLLOGIC, Test, TestDef
@@ -10,6 +11,7 @@ from ducktest5.resources import RO, RW, CredentialDef, StorageDef
 from ducktest5.resources import from_env
 from ducktest5.resources.made import Made
 from ducktest5.sqllogic import init_file_text
+from ducktest5.scan import scan
 from ducktest5.testenv import resolve
 
 
@@ -193,3 +195,29 @@ def test_the_scoped_secret_of_a_test_file_does_not_change_its_key(monkeypatch):
         test.inputs = ((storage, RW), (credential, RO))
     assert resolve(sql_file).secret_sql and not resolve(python).secret_sql
     assert resolve(sql_file).key() == resolve(python).key()
+
+
+# -----------------------------------------------------------------------------
+# The default storage, declared
+#
+
+
+def test_binding_the_declared_default_storage_gives_what_binding_none_gives(tmp_path):
+    (tmp_path / "ducktest_conf.py").write_text(
+        "from ducktest5.resources import default_storage\nSTORAGES = [default_storage()]\n"
+    )
+    (tmp_path / "t.py").write_text(
+        "from ducktest5 import test\n\n\n@test(bind={'storage': 'default'})\ndef bound(ctx):\n    pass\n\n\n"
+        "@test()\ndef plain(ctx):\n    pass\n"
+    )
+    tests, project = scan(str(tmp_path), working_dir=str(tmp_path))
+    by_name = {t.definition.name: t for t in tests}
+    assert [d.id for d in project.storages.values()] == ["default"]
+    assert by_name["bound"].inputs == by_name["plain"].inputs == ()
+
+    def given(test, key):
+        env = resolve(test, Made("r1"), key=key, default=project.default_storage)
+        return env.record(), leases.planned(test, env, project)
+
+    for key in ("k", None):  # a Python body's own place, and the run's temp root a .test body gets
+        assert given(by_name["bound"], key) == given(by_name["plain"], key)

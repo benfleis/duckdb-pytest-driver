@@ -202,6 +202,20 @@ class Storage(Resource):
 StorageDef.instance = Storage
 
 
+@dataclass(eq=False)
+class DefaultStorageDef(StorageDef):
+    """The run's default storage, declared: a project file may name it in STORAGES to say what its
+    tests use. Binding it is binding nothing: the test gets the default storage's roots."""
+
+    root: str = "(the run's default storage)"
+
+
+def default_storage(id="default") -> DefaultStorageDef:
+    """The storage a test gets when it binds none: `DATA_DIR` is `data/` at the top of the
+    repository, and the test's `TEMP_DIR` is its own place in the run directory."""
+    return DefaultStorageDef(id)
+
+
 DEFAULT_TEMP_ROOT = "duckdb_unittest_tempdir"
 
 
