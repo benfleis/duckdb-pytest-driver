@@ -198,6 +198,21 @@ class BootedEngineDef(EngineDef):
         return handle.for_worker() if hasattr(handle, "for_worker") else handle
 
 
+@dataclass(frozen=True)
+class Delivered:
+    """A process variable read when the engine process starts: a credential's. It counts toward the
+    engine's identity by `source` (the credential and where it reads from), never by its value."""
+
+    get: Callable = field(compare=False)
+    source: str
+
+    def __call__(self):
+        return self.get()
+
+    def content(self):
+        return {"from": self.source}
+
+
 def environ(process_env: dict) -> dict | None:
     """The process environment an engine with `process_env` gets; None when it is this process's."""
     if not process_env:

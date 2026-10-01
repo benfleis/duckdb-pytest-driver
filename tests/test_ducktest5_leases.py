@@ -19,6 +19,7 @@ from ducktest5.engines.unittest import UnittestEngineDef
 from ducktest5.model import PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.resources import RO, RW, BootedEngineDef, S3Credential, StorageDef, check_contract, from_env
 from ducktest5.resources.engine import Runtime
+from ducktest5.resources.made import planned_identity
 from ducktest5.scan import scan
 from ducktest5.sqllogic import init_file_text
 from ducktest5.testenv import resolve
@@ -240,6 +241,58 @@ def test_a_spark_client_is_one_per_test_and_its_engine_gets_the_buckets_settings
     assert seen == {"first": [(1,)], "same": True}
     assert spark.statements == ["SELECT 1"]
     assert spark.conf["fs.s3a.bucket.ducktest.access.key"] == "admin"
+
+
+def test_a_python_bodys_shell_gets_the_credentials_sdk_env(tmp_path, remote_inputs):
+    given = []
+
+    def factory(binary, *, home=None, env=None):
+        given.append(env)
+        return FakeShell(binary, home=home, env=env)
+
+    def body(ctx):
+        ctx.client("duckdb").oks("SELECT 1")
+
+    code, _, _, _ = go(tmp_path, [with_remote(py_test(body), remote_inputs)], shell_factory=factory)
+    assert code == 0
+    ((env,),) = [given]
+    assert (env["AWS_ACCESS_KEY_ID"], env["AWS_SECRET_ACCESS_KEY"]) == ("admin", "password")
+
+
+def test_a_credentials_env_counts_toward_the_engines_identity_by_source_never_by_value(monkeypatch):
+    project = Project("/p", {}, {}, {}, {}, ())
+    storage = StorageDef("bucket", "s3://bucket")
+
+    def identity(keys):
+        credential = S3Credential("key", sources=[from_env(keys)], scopes=["bucket"])
+        test = Test(TestDef(path="t.py", name="t", type=PYTHON), None, {}, ((storage, RW), (credential, RO)))
+        (engine,) = leases.bind(test, resolve(test), project)
+        return planned_identity(engine)
+
+    monkeypatch.setenv("DT_KEY", "one")
+    monkeypatch.setenv("DT_SECRET", "s")
+    monkeypatch.setenv("DT_OTHER", "o")
+    first = identity({"DT_KEY": "key_id", "DT_SECRET": "secret"})
+    monkeypatch.setenv("DT_KEY", "two")
+    assert identity({"DT_KEY": "key_id", "DT_SECRET": "secret"}) == first
+    assert identity({"DT_OTHER": "key_id", "DT_SECRET": "secret"}) != first
+
+
+def test_a_booted_engine_gets_the_credentials_of_its_tests_when_it_boots(tmp_path, remote_inputs, monkeypatch):
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    spark, at_boot = SparkRecorder(), {}
+    booted = spark._boot
+
+    def boot(log_path):
+        at_boot.update({n: os.environ.get(n) for n in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")})
+        return booted(log_path)
+
+    spark._boot = boot
+    test = with_remote(py_test(passes, engines=["spark"]), remote_inputs)
+    code, _, _, _ = go(tmp_path, [test], engines=[spark.engine()])
+    assert code == 0
+    assert at_boot == {"AWS_ACCESS_KEY_ID": "admin", "AWS_SECRET_ACCESS_KEY": "password"}
+    assert "AWS_ACCESS_KEY_ID" not in os.environ, "the run's own env is back after the boot"
 
 
 def test_a_worker_engine_is_reset_between_tests_and_reopened_after_a_failure(tmp_path):

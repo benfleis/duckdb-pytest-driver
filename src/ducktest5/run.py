@@ -23,6 +23,7 @@ The batch dir stays behind for a second look, or a second debugger.
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import logging
 import os
 import shlex
@@ -44,7 +45,7 @@ from .model import SQLLOGIC
 from .outcomes import ALL as OUTCOMES
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED, Skip
 from .provision import KEPT, adopt, attach_argument, bring_up
-from .resources import BootedEngineDef
+from .resources import RO, BootedEngineDef, ServiceNotUp
 from .resources.engine import Runtime
 from .resources.made import Made
 from .reports import Report, render, write_files
@@ -437,7 +438,8 @@ def execute(
             _log.info("engine %s: starting (booted, version %s)", engine_id, version)
             t0 = time.perf_counter()
             try:
-                handles[engine_id] = engines[engine_id].boot(log)
+                with _boot_environ(_credential_env(tests, engine_id, made)):
+                    handles[engine_id] = engines[engine_id].boot(log)
                 service_event(
                     engine_id,
                     kind="engine",
@@ -737,6 +739,40 @@ def execute(
                 duckdb_bin=duckdb_bin,
             )
     return code
+
+
+def _credential_env(tests, engine_id, made):
+    """The SDK env of the credentials the tests on a booted engine hold: it boots once, so it gets
+    them when it boots. Scan made sure there is one of each type. One that does not resolve is left
+    out; its tests say why."""
+    env, seen = {}, set()
+    for test in tests:
+        if engine_id not in test.engines:
+            continue
+        for d, mode in test.inputs:
+            if d.kind != "credential" or d.id in seen:
+                continue
+            seen.add(d.id)
+            try:
+                credential = made.make(d, mode)
+                credential.start()
+                credential.release(credential.acquire(RO), RO)
+            except (UsageError, ServiceNotUp):
+                continue
+            env.update({name: str(a.get()) for name, a in credential.secrets.items()})
+    return env
+
+
+@contextlib.contextmanager
+def _boot_environ(add):
+    """This process's env, with `add`, for what a boot starts (a JVM takes it); the run's own after."""
+    saved = dict(os.environ)
+    os.environ.update(add)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 def _batch_of(run_dir, entry, chunk, test_env):

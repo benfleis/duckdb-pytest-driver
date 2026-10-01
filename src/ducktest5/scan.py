@@ -17,7 +17,7 @@ from .conf import check_suites, is_default, load_project, merge_suites
 from .declare import CONF_FILE
 from .outcomes import Skip
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef
-from .resources import RO, RW, CredentialDef, DefaultStorageDef, StorageDef, pick_credentials
+from .resources import RO, RW, BootedEngineDef, CredentialDef, DefaultStorageDef, StorageDef, pick_credentials
 
 _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 
@@ -214,7 +214,27 @@ def scan(start, *, working_dir="."):
         leases.check(test.definition, [leases.duckdb_of(test, project)])
         testenv.check_values(test)
         _one_set_per_type(test)
+    _one_set_per_booted_engine(tests, project)
     return tests, project
+
+
+def _one_set_per_booted_engine(tests, project):
+    """A booted engine gets the credentials of its tests when it boots, once per run: one of each type."""
+    for engine_id, d in project.engines.items():
+        if not isinstance(d, BootedEngineDef):
+            continue
+        by_type = {}
+        for test in tests:
+            if engine_id in test.engines:
+                for c, _ in test.inputs:
+                    if isinstance(c, CredentialDef) and c.id not in by_type.setdefault(type(c), []):
+                        by_type[type(c)].append(c.id)
+        for cls, ids in by_type.items():
+            if len(ids) > 1:
+                raise UsageError(
+                    f"engine {engine_id!r}: its tests hold {cls.__name__}s {' and '.join(repr(i) for i in ids)} "
+                    "by env, and it boots once per run: declare a second engine of its kind for the other tests"
+                )
 
 
 def _one_set_per_type(test):

@@ -1143,6 +1143,22 @@ CREDENTIAL_CONF = """
 """
 
 
+def test_two_credentials_of_one_type_on_one_booted_engine_are_a_scan_error(tmp_path):
+    conf = (
+        CREDENTIAL_CONF.replace("{scopes_a}", '["lake"]').replace("{bind}", "{}")
+        + """
+    from ducktest5.resources import BootedEngineDef
+    from ducktest5 import match
+    ENGINES = [BootedEngineDef("spark", boot=lambda log: None, dialect="spark")]
+    RULES = [match("a.py", bind={"storage": "lake"}), match("b.py", bind={"storage": "other"})]
+"""
+    )
+    body = "from ducktest5 import test\n@test(engines=['spark'])\ndef t(ctx): pass\n"
+    message = "engine 'spark': its tests hold S3Credentials 'keys_a' and 'keys_b' by env, and it boots once per run"
+    with pytest.raises(UsageError, match=re.escape(message)):
+        tree(tmp_path, {"test/ducktest_conf.py": conf, "test/a.py": body, "test/b.py": body})
+
+
 @pytest.mark.parametrize(
     "scopes_a, bind, message",
     [

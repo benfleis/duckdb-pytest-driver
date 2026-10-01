@@ -28,6 +28,7 @@ from .model import SQLLOGIC
 from .provision import MASK, SECRET_NAME
 from .resources.base import digest
 from .resources.client import Names
+from .resources.engine import Delivered
 from .resources.made import planned_identity
 from .testenv import Entry, set_entry
 
@@ -177,13 +178,18 @@ def bind(test, test_env, project) -> list:
 
 
 def _process_env(test_env) -> dict:
-    """The variables the test sets (a value) or unsets (None), in the order that decides; secrets
-    are not among them: an engine delivers those in its own dialect."""
-    return {
-        name: test_env.process_env[name].value if action == "set" else None
-        for name, action in test_env.process_state.items()
-        if name not in test_env.passthrough
-    }
+    """The variables the test sets (a value) or unsets (None), in the order that decides; a
+    credential's among them, read when the engine process starts."""
+    out = {}
+    for name, action in test_env.process_state.items():
+        entry = test_env.process_env.get(name)
+        if action != "set":
+            out[name] = None
+        elif callable(entry.value):
+            out[name] = Delivered(entry.value, entry.source)
+        else:
+            out[name] = entry.value
+    return out
 
 
 def template_names(test_env, temp_dir=None) -> Names:
@@ -191,7 +197,7 @@ def template_names(test_env, temp_dir=None) -> Names:
     roots as `{TEMP_DIR}` (the test's own place, under a storage's temp root when it has one, else
     `temp_dir`), `{TEMP_DIR_ROOT}` (the run level above it), `{DATA_DIR}`, and `{LOCAL_TEMP_DIR}` /
     `{LOCAL_DATA_DIR}` where the root is local or has a local twin. Never a secret: a credential
-    reaches an engine as its preamble."""
+    reaches an engine as process env."""
     names = Names(test_env.value_map)
     roots = test_env.root_paths
     run_level = test_env.run_temp_root or roots.get("temp_dir_root") or temp_dir
