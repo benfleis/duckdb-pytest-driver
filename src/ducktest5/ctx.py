@@ -93,6 +93,18 @@ class Context:
             )
         self._run_paired(values=values, init_sql=init_sql)
 
+    def credential(self, id):
+        """The credential `id` this test holds, as a `CredentialView`: what it is, the secret the run
+        made for it, the env names it reaches the engines under; its values masked."""
+        held = {c.id: c for c in self._test_env.credentials}
+        if id not in held:
+            raise UsageError(f"ctx.credential({id!r}): this test holds credentials {sorted(held)}")
+        return held[id]
+
+    def credentials(self):
+        """Every credential this test holds, in the order their secrets are made."""
+        return list(self._test_env.credentials)
+
     def seconds_by_client(self):
         totals = {}
         for client in [*self.clients.values(), *self._own]:

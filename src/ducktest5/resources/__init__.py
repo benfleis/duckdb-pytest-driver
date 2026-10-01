@@ -21,6 +21,7 @@ from .credential import (  # noqa: F401
     S3Credential,
     S3CredentialDef,
     from_env,
+    s3_credential,
     pick_credentials,
 )
 from .service import Service, ServiceDef, ServiceNotUp  # noqa: F401

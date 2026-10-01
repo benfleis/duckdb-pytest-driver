@@ -262,6 +262,46 @@ def test_a_python_bodys_shell_gets_the_credentials_sdk_env(tmp_path, remote_inpu
     assert (env["AWS_ACCESS_KEY_ID"], env["AWS_SECRET_ACCESS_KEY"]) == ("admin", "password")
 
 
+def test_a_body_reads_the_credentials_it_holds_with_their_values_masked(tmp_path, remote_inputs, monkeypatch):
+    seen = {}
+
+    def body(ctx):
+        seen["one"] = ctx.credential("remote-key")
+        seen["all"] = ctx.credentials()
+        with pytest.raises(UsageError, match=r"ctx.credential\('nope'\): this test holds credentials \['remote-key'\]"):
+            ctx.credential("nope")
+
+    code, _, _, _ = go(tmp_path, [with_remote(py_test(body), remote_inputs)])
+    assert code == 0
+    view = seen["one"]
+    assert seen["all"] == [view]
+    assert (view.id, view.type, view.secret_name, view.storages, view.scope) == (
+        "remote-key",
+        "s3",
+        "ducktest_remote_key",
+        ("remote",),
+        ["s3://ducktest/delta"],
+    )
+    assert view.env == ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+    assert view.fields == {"key_id": "***", "secret": "***"}
+    assert view.source == "env DT_KEY, DT_SECRET"
+
+
+def test_a_failed_test_says_what_its_engines_did_not_take_from_the_shells_env(tmp_path, remote_inputs, monkeypatch):
+    monkeypatch.setenv("AWS_PROFILE", "mine")
+
+    def body(ctx):
+        raise AssertionError("no")
+
+    _, _, report, _ = go(tmp_path, [with_remote(py_test(body), remote_inputs)])
+    made_of = report["tests"][0]["made_of"]["environment"]
+    assert {
+        "what": "process env removed",
+        "is": "AWS_PROFILE",
+        "from": "the shell's env (AWS_ of S3CredentialDef)",
+    } in made_of
+
+
 def test_a_credentials_env_counts_toward_the_engines_identity_by_source_never_by_value(monkeypatch):
     project = Project("/p", {}, {}, {}, {}, ())
     storage = StorageDef("bucket", "s3://bucket")

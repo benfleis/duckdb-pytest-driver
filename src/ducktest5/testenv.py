@@ -35,8 +35,8 @@ from .provision import MASK
 from .provision import SECRET_NAME as _SECRET_NAME
 from .resources import RO, RW, ServiceDef, ServiceNotUp
 from .resources.client import check_names
-from .resources.credential import engine_env
-from .resources.dialect import pairs, render
+from .resources.credential import CredentialView, credential_types, engine_env, kept_names, removed_names
+from .resources.dialect import pairs, render, secret_name
 from .resources.made import Made, services_in
 
 ROOTS = ("data_dir", "local_data_dir", "temp_dir_root", "local_temp_dir_root")
@@ -57,6 +57,8 @@ _LABELS = {
     "env": "process env",
     "unset": "process env unset",
     "unserved": "not served",
+    "removed": "process env removed",
+    "kept": "process env kept",
 }
 _ERRNO = re.compile(r"\[Errno \d+\] ")
 
@@ -84,6 +86,8 @@ class TestEnv:
     init_sql: list = field(default_factory=list)  # Entry(value=one statement), in delivery order
     secret_sql: list = field(default_factory=list)  # Entry(value=CREATE SECRET); the init file of a .test body has it
     unrendered: list = field(default_factory=list)  # Entry(shown="none (why)"): a credential with no secret
+    shell_env: list = field(default_factory=list)  # Entry(value=names) the shell's env holds and an engine does not
+    credentials: list = field(default_factory=list)  # CredentialView of each credential it holds, in order
     secret_requires: list = field(default_factory=list)  # Entry(value=extension) that secret_sql needs
     values: dict = field(default_factory=dict)  # name -> Entry
     roots: dict = field(default_factory=dict)  # one of ROOTS -> Entry
@@ -174,6 +178,7 @@ class TestEnv:
             *self.roots.values(),
             *self.process_env.values(),
             *self.process_unset.values(),
+            *self.shell_env,
             *self.pending,
         ]
 
@@ -295,7 +300,9 @@ def resolve(test, made=None, key=None, default=None):
     scoped = {c.id: storages for c, storages in pairs(held)}
     for credential in (i for i in held if i.definition.kind == "credential"):
         storages = scoped.get(credential.id)
-        if definition.own_secrets or not storages:
+        rendered = bool(storages) and not definition.own_secrets
+        env.credentials.append(_view(credential, storages or [], rendered))
+        if not rendered:
             why = "own_secrets" if definition.own_secrets else "no storage of the test is in its scope"
             env.unrendered.append(Entry("", f"credential {credential.id}", kind="secret", shown=f"none ({why})"))
             continue
@@ -306,7 +313,38 @@ def resolve(test, made=None, key=None, default=None):
             if extension not in env.extensions + [e.value for e in env.secret_requires]:
                 env.secret_requires.append(Entry(extension, where, kind="require"))
         env.secret_sql += [Entry(sql, where, kind="secret") for sql in rendered.sql]
+    _shell_env(env)
     return env
+
+
+def _view(credential, storages, rendered):
+    d = credential.definition
+    cls = type(d)
+    fields = {name: MASK if cls.fields[name].secret else a.get() for name, a in credential.fields.items()}
+    return CredentialView(
+        id=d.id,
+        type=cls.type,
+        secret_name=secret_name(d) if rendered else None,
+        storages=tuple(s.id for s in storages),
+        scope=[s.attribute_values()["root"] for s in storages],
+        env=tuple(credential.secrets),
+        fields=fields,
+        source=credential.source,
+    )
+
+
+def _shell_env(env):
+    """What the shell's env holds that no engine process of the test gets, and what INHERIT_ENV
+    keeps: by name only, never a value."""
+    own = set(env.process_state)
+    for cls in credential_types():
+        names = [n for n in removed_names() if n.startswith(cls.sdk_prefixes) and n not in own]
+        if names:
+            prefixes = ", ".join(cls.sdk_prefixes)
+            source = f"the shell's env ({prefixes} of {cls.__name__})"
+            env.shell_env.append(Entry(", ".join(names), source, kind="removed"))
+    if kept := kept_names():
+        env.shell_env.append(Entry(", ".join(kept), "INHERIT_ENV", kind="kept"))
 
 
 def _ruled_values(test):

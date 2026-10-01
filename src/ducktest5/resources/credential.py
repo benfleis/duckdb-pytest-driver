@@ -386,6 +386,27 @@ class S3Credential(Credential):
 S3CredentialDef.instance = S3Credential
 
 
+def s3_credential(id: str, **fields) -> S3CredentialDef:
+    """An S3 credential; see S3CredentialDef."""
+    return S3CredentialDef(id, **fields)
+
+
+@dataclass(frozen=True)
+class CredentialView:
+    """What a body sees of a credential its test holds: never a secret value. `secret_name` is the
+    secret the run made for it, None where it made none; `scope` is that secret's scope, as
+    `duckdb_secrets()` shows it; `env` the process env names it is delivered under."""
+
+    id: str
+    type: str
+    secret_name: str | None
+    storages: tuple
+    scope: list
+    env: tuple
+    fields: dict
+    source: str
+
+
 def pick_credentials(
     storages: Mapping[str, str],
     declared: Iterable[CredentialDef],

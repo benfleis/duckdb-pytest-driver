@@ -106,6 +106,8 @@ def rung_copy(tmp_path, monkeypatch):
     """Works in a copy of a rung, with the fake key set and the system temp directory in tmp_path."""
     for name, value in FAKE_KEY.items():
         monkeypatch.setenv(name, value)
+    for name in [n for n in os.environ if n.startswith("AWS_")]:  # the goldens list what the shell's env holds
+        monkeypatch.delenv(name)
     # Nothing answers there, so rung 05's server is BLOCKED the same way with or without docker.
     monkeypatch.setenv("DUCKTEST_EXISTING_SERVICE_S3", "http://127.0.0.1:9")
     (tmp_path / "tmp").mkdir()

@@ -34,6 +34,7 @@ from ducktest5.resources import (
     local_path,
     scheme_of,
 )
+from ducktest5.resources import credential as credential_module
 from ducktest5.scan import scan
 from ducktest5.testenv import resolve
 
@@ -623,6 +624,19 @@ def test_scan_env_shows_the_storage_roots_and_the_credential_masked(tree, capsys
           process env: AWS_SECRET_ACCESS_KEY=***  <- credential local-key (S3CredentialDef, from env DT_SECRET)
         """
     )
+
+
+def test_scan_env_names_what_the_shells_env_holds_that_engines_do_not_take(tree, capsys, monkeypatch):
+    monkeypatch.setattr(credential_module, "_inherit", ())  # put back once the test is done
+    conf = tree / "test" / "ducktest_conf.py"
+    conf.write_text(conf.read_text() + 'INHERIT_ENV = ["AWS_CA_BUNDLE"]\n')
+    for name in ("AWS_PROFILE", "AWS_SECRET_ACCESS_KEY", "AWS_CA_BUNDLE"):
+        monkeypatch.setenv(name, "x")
+    assert main(["scan", "test/a/x.test", "--env"]) == 0
+    out = capsys.readouterr().out
+    assert "  process env removed: AWS_PROFILE  <- the shell's env (AWS_ of S3CredentialDef)\n" in out
+    assert "  process env kept: AWS_CA_BUNDLE  <- INHERIT_ENV\n" in out
+    assert "=x" not in out
 
 
 def test_the_secret_reaches_the_process_environment_and_no_file_the_run_writes(tree):
