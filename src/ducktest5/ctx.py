@@ -83,7 +83,8 @@ class Context:
 
     def run_paired(self, *, values=None, init_sql=""):
         """Run the `.test` file of this body's stem, beside it, through the unittest binary. `values`
-        adds `{NAME}` values for the file; `init_sql` runs before it."""
+        adds `{NAME}` values for the file; `init_sql` runs before it. A file the binary skips (a `require`
+        that is not met) ends the body SKIPPED with the binary's reason, as `skip(reason)` does."""
         if self._run_paired is None:
             sibling = os.path.splitext(self._body_path)[0] + ".test"
             raise UsageError(

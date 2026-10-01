@@ -874,7 +874,7 @@ def runs_its_file(ctx):
     [
         ("test/p_env.test", "passed", None),
         ("test/p_fail.test", "failed", "Wrong result in query"),
-        ("test/p_skip.test", "error", "was skipped inside the binary: require-env NOT_SET"),
+        ("test/p_skip.test", "skipped", "require-env NOT_SET"),
     ],
 )
 def test_a_paired_test_runs_its_file_through_the_binary(tmp_path, body_file, outcome, text):

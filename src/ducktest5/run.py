@@ -826,6 +826,6 @@ def _run_paired(test, test_env, unittest_bin, working_dir, temp_dir, *, values=N
     )
     result = sqllogic.run_batch(unittest_bin, batch, working_dir)[test.id]
     if result.outcome == SKIPPED:
-        raise SetupFailed(f"{test.definition.body_file} was skipped inside the binary: {result.detail}")
+        raise Skip(result.detail)
     if result.outcome != PASSED:
         raise AssertionError(f"{test.definition.body_file}\n{result.detail}")

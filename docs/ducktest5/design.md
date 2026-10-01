@@ -138,7 +138,8 @@ A Python body ends SKIPPED with `ctx.skip("duckdb CLI not built")`, or `ducktest
 helper that has no `ctx`. The report shows the reason, as for a `require` the binary did not meet.
 Skip only on a condition the body checks itself (a binary not built, a feature off in this build); a
 service, an engine or a credential is declared, and when it does not come up the test is BLOCKED. A
-skip after statements ran keeps their log; a check that failed before it makes the test FAILED.
+skip after statements ran keeps their log; a check that failed before it makes the test FAILED. When
+the binary skips the file that `ctx.run_paired()` runs, the body ends SKIPPED with the binary's reason.
 
 ## 1.6 Moving an existing repo
 
@@ -369,6 +370,7 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-01: `ctx.run_paired()` of a file the binary skips ends the body SKIPPED, not ERROR.
 - 2026-10-01: `select` counts what it left out in one line; `--explain` lists each.
 - 2026-10-01: `PYTHONPATH` in the root `ducktest_conf.py`.
 - 2026-10-01: a Python body can skip: `ctx.skip(reason)`, `ducktest5.skip(reason)`.
