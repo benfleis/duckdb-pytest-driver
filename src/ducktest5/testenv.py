@@ -419,9 +419,10 @@ def _deliver(env, definition, mode, scanning, value, made, key=None):
             instance.release(instance.acquire(RO), RO)
         values, secrets = given.delivery()
     except UsageError as exc:
-        if not scanning:
+        if not scanning and definition.kind != "credential":
             raise
-        env.pending.append(Entry("secrets", where, kind="env", shown=f"<{exc}>"))
+        # A credential that does not resolve at run time blocks its test; this is what it says.
+        env.pending.append(Entry("secrets", where, kind="env" if scanning else "unserved", shown=f"<{exc}>"))
         return None
     for name, out in values.items():
         if name in _ROOT_OF:

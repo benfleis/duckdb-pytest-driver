@@ -414,7 +414,12 @@ def execute(
     runtime = Runtime(shell=lambda env: shell_factory(duckdb_bin, home=duckdb_home, env=env), booted=handles)
     pool = Pool(workers, runtime=runtime, made=made)
     stopped = _stop_on_signal()
-    blocked = lambda c: [x for x in (*c.services, *c.engines) if x in boot_errors]  # noqa: E731
+    unresolved = {}  # credential id -> why none of its sources resolved
+
+    def blocked(c):
+        down = [x for x in (*c.services, *c.engines) if x in boot_errors]
+        return down + [f"credential {d.id}" for d, _ in c.inputs if d.kind == "credential" and d.id in unresolved]
+
     code = 1
     try:
         # provision: each service some selected test needs, then each engine. One that does not come
@@ -429,6 +434,19 @@ def execute(
             recorded = phases.read_provision(run_dir).get("services") or {}
             boot_errors = adopt(made, needed, recorded, existing_services=existing_services, on=service_event)
             phases.write_provision(run_dir, made, boot_errors, recorded=recorded, force=True)
+
+        # A credential none of whose sources resolve blocks its tests, as a service that is not up does.
+        for test in tests:
+            for d, mode in test.inputs:
+                if d.kind == "credential" and d.id not in unresolved and not blocked(test):
+                    try:
+                        credential = made.make(d, mode)
+                        credential.start()
+                        credential.release(credential.acquire(RO), RO)
+                    except UsageError as exc:
+                        unresolved[d.id] = str(exc)
+                    except ServiceNotUp:
+                        pass  # the service blocks it
 
         # An engine booted for the run boots only when a test that can still run needs it.
         needed_engines = {e for c in tests if not blocked(c) for e in c.engines}
@@ -459,7 +477,8 @@ def execute(
         for test in tests:
             if by := blocked(test):
                 begin(test, "-")
-                done(test, BLOCKED, runner="-", blocked_by=by, note=f"{by[0]} did not come up")
+                why = unresolved.get(by[0].removeprefix("credential ")) or f"{by[0]} did not come up"
+                done(test, BLOCKED, runner="-", blocked_by=by, note=why)
             else:
                 runnable[test.id] = test
 

@@ -681,6 +681,18 @@ def test_a_credential_that_does_not_resolve_waits_at_scan(tree, monkeypatch, cap
     assert "process env: <credential 'local-key': none of its sources resolved" in capsys.readouterr().out
 
 
+def test_a_credential_that_does_not_resolve_blocks_its_test_and_the_run_goes_on(tree, monkeypatch, capsys):
+    monkeypatch.delenv("DT_SECRET")
+    (tree / "test" / "b.test").write_text("")
+    args = ["run", "--duckdb-bin", FAKE, "--unittest-bin", FAKE, "--temp-dir-root", "runs", "--no-binary-check"]
+    assert main([*args, "--format", "json"]) == 1
+    ended = [json.loads(line) for line in capsys.readouterr().out.splitlines() if '"test_end"' in line]
+    outcomes = {t["id"]: (t["outcome"], t.get("note")) for t in ended}
+    assert outcomes["b.test::b"] == ("passed", None)
+    outcome, note = outcomes["a/x.test::x[storage=local]"]
+    assert outcome == "blocked" and note.startswith("credential 'local-key': none of its sources resolved")
+
+
 @pytest.mark.parametrize(
     "root, path",
     [("/data/x", "/data/x"), ("file:///data/x", "/data/x"), ("file://localhost/data/x", "/data/x")],
