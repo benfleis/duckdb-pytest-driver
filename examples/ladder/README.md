@@ -142,3 +142,22 @@ the port is not 9000.
 
 `--existing-service s3=http://HOST:PORT` still names a server at any address, but a server that
 answers where the run reaches it needs no flag.
+
+## 06_azurite
+
+Rung 05 again, on Azure blob storage: `az_local()` is a local Azure blob server, Azurite
+(`flavor="azurite"`, the only one), started in docker or found running. `AZ.storage("blobs",
+"lake")` is `az://ducktest/lake` on it, and `AZ.credential("keys", scopes=["blobs"])` is an
+`AzureCredentialDef` of the server's connection string, made of Azurite's own account,
+`devstoreaccount1`, and its well-known key (`DUCKTEST_AZ_LOCAL_ACCOUNT` and `DUCKTEST_AZ_LOCAL_KEY`
+give another). The connection string reaches every engine process of the test as
+`AZURE_STORAGE_CONNECTION_STRING`; DuckDB gets one secret, `ducktest_keys`, `TYPE azure`, that reads
+it by that name and is scoped to the storage. Both tests write and read `{TEMP_DIR}/answer.csv`
+under it, and the run removes what they wrote with rclone's `azureblob` backend.
+
+With no Azurite to reach, and no docker to start one, both tests end BLOCKED; that is the golden.
+The run reaches Azurite at `DUCKTEST_SERVICE_HOST:DUCKTEST_AZ_LOCAL_PORT` (`127.0.0.1:10000` when
+unset) and publishes one it starts at `DUCKTEST_SERVICE_BIND`, as for S3.
+
+Azurite serves blob only. A storage on it is `az://`; an `abfss://` storage on it is a scan error,
+as it has no DFS endpoint.

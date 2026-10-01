@@ -13,9 +13,10 @@ Code: `src/ducktest5/` in this repo, branch `feat/resources`. It will be squashe
 
 | What | Result |
 | --- | --- |
-| Runner self-tests | 677 passed |
-| The ladder, rungs 01-05 | pass; the self-tests compare them with goldens |
+| Runner self-tests | 816 passed, 1 skipped (the live Azurite check) |
+| The ladder, rungs 00-06 | pass; the self-tests compare them with goldens |
 | Rung 05 (S3) with a live RustFS server | passes; its golden is the BLOCKED case (no server) |
+| Rung 06 (Azure blob) with a live Azurite | not run yet: no Azurite or docker where it was built; its golden is the BLOCKED case |
 | duckdb-delta, `storage` axis `local` and `s3`, live RustFS | 118 passed, 1 failed, 44 skipped |
 
 The one delta failure is `sql/cloud/gcs.test`. It needs the network. The 44 skips are `.test`
@@ -65,11 +66,17 @@ docker and publishes it at `DUCKTEST_SERVICE_BIND:DUCKTEST_S3_LOCAL_PORT`.
   (`s3_local(buckets=[bucket(...)])`) are made by the server's own S3 API calls.
 - If Spark does not start in a container, try `JAVA_TOOL_OPTIONS=-XX:-UseContainerSupport`.
 
+Azure blob, `az_local()`, works the same way: Azurite, reached at
+`DUCKTEST_SERVICE_HOST:DUCKTEST_AZ_LOCAL_PORT` (port 10000), started in docker at
+`DUCKTEST_SERVICE_BIND` when nothing answers there. Other settings are `DUCKTEST_AZ_LOCAL_*`:
+`ACCOUNT`, `KEY` (Azurite's own `devstoreaccount1` and its well-known key when unset), `CONTAINER`,
+`IMAGE`. `--existing-service az=http://HOST:PORT` names one at another address.
+
 ## Where to read
 
 - `README.md`: install, and a first run in an existing repo.
-- `examples/ladder/README.md`: six small test trees. Each adds one idea: an existing repo, no
-  config, rules, credentials, an HTTP service, S3.
+- `examples/ladder/README.md`: seven small test trees. Each adds one idea: an existing repo, no
+  config, rules, credentials, an HTTP service, S3, Azure blob.
 - [design.md](design.md). Part 1: how to write a test. Part 2:
   how it works, for people who write resource kinds or debug the runner. Appendix B: the delta
   configuration.
@@ -91,18 +98,22 @@ docker and publishes it at `DUCKTEST_SERVICE_BIND:DUCKTEST_S3_LOCAL_PORT`.
 - A remote storage has no local twin (`LOCAL_TEMP_DIR`, `LOCAL_DATA_DIR`).
 - The ladder has no two-engine rung and no example of `setup`, `teardown` or `params`.
 - Rung 05's golden is the BLOCKED case. A live S3 run is checked by hand, not by the self-tests.
+- Azure (`AzureCredentialDef`, `AZLocalDef`, rung 06) is checked offline only: the SharedKey signer
+  against the Azure SDK's signatures, everything else against fakes. No Azurite run yet.
 
 - Two credentials of one type in one test (wiring, `wired(...)`) are a scan error until wiring is
   built.
 - Engines no longer take `AWS_*` from the shell's env. A repo whose tests relied on personal keys
   declares `S3CredentialDef.from_aws_env(...)`, and lists other names it needs (`AWS_CA_BUNDLE`) in
-  `INHERIT_ENV`.
+  `INHERIT_ENV`. The same holds for `AZURE_*`, `IDENTITY_*` and `MSI_*`: declare
+  `AzureCredentialDef.from_azure_env(...)`; keep `AZURE_CONFIG_DIR` (az cli login) in `INHERIT_ENV`.
 
 ## Not in this release, on purpose
 
 - Tables per test (`TableDef`) and catalog services (Unity Catalog, Databricks).
 - The `1password:` credential source. It is accepted in a declaration and refused when used.
-- Azure (Azurite) and an HTTP proxy kind for httpfs. Credential types other than S3 (Azure, GCS, R2).
+- An HTTP proxy kind for httpfs. Credential types other than S3 and Azure (GCS, R2). Spark with an
+  Azure credential. Azure DFS (`abfss://`) on a local server: Azurite has none.
 - MinIO, and any choice of S3 server. RustFS is the only one; `DUCKTEST_S3_LOCAL_IMAGE` changes
   the image.
 - pytest. The old pytest-based `ducktest` stays in the same repo and does not change.

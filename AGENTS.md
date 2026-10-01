@@ -10,7 +10,7 @@ Code auto-loads the same rules. If a rule here is wrong or stale, **fix it here*
 `.test` (SQLLogic) files through the duckdb `unittest` binary and Python test bodies, and makes the
 services, storages and credentials a repo declares in `ducktest_conf.py`. New work goes there.
 Canonical docs: **`README.md`** (install, first run), **`docs/ducktest5/design.md`** (how to write a
-test; how it works), **`docs/ducktest5/status.md`**, and **`examples/ladder/`** (rungs 00-05, checked
+test; how it works), **`docs/ducktest5/status.md`**, and **`examples/ladder/`** (rungs 00-06, checked
 against `tests/ducktest5_goldens/ladder/` by `tests/test_ducktest5_ladder.py`). Change behavior →
 update the ladder golden and the doc that describes it.
 

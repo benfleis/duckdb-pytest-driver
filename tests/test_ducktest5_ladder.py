@@ -27,7 +27,7 @@ FAKES = os.path.join(HERE, "ducktest5_fakes")
 RUNGS = sorted(d for d in os.listdir(LADDER) if os.path.isdir(os.path.join(LADDER, d)))
 # A rung whose README selects by path gives the same arguments to `select` and `run`.
 ARGS = {"00_existing": ["test/sql/math", "--suite", "default"]}
-EXIT_CODES = {"04_service": 1, "05_s3": 1}  # a blocked test fails the run
+EXIT_CODES = {"04_service": 1, "05_s3": 1, "06_azurite": 1}  # a blocked test fails the run
 FAKE_KEY = {"LADDER_FAKE_KEY_ID": "ladder-key-id-7f3a", "LADDER_FAKE_SECRET": "ladder-secret-9c1e"}
 
 
@@ -109,8 +109,9 @@ def rung_copy(tmp_path, monkeypatch):
         monkeypatch.setenv(name, value)
     for name in [n for n in os.environ if n.startswith(sdk_prefixes())]:  # the goldens list what the shell's env holds
         monkeypatch.delenv(name)
-    # Nothing answers there, so rung 05's server is BLOCKED the same way with or without docker.
+    # Nothing answers there, so the servers of rungs 05 and 06 are BLOCKED the same way with or without docker.
     monkeypatch.setenv("DUCKTEST_EXISTING_SERVICE_S3", "http://127.0.0.1:9")
+    monkeypatch.setenv("DUCKTEST_EXISTING_SERVICE_AZ", "http://127.0.0.1:9")
     (tmp_path / "tmp").mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
     monkeypatch.setattr(sys, "dont_write_bytecode", True)

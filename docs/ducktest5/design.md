@@ -171,7 +171,7 @@ storage's root, an engine's `requires`), **inputs** (the Defs it consumes; a bar
 | Kind | Instance is | Inputs | Attributes |
 | --- | --- | --- | --- |
 | `StorageDef` | a directory, a bucket, a served URL | a service, or none | `TEMP_DIR`, `DATA_DIR`, `LOCAL_*`, `S3_ENDPOINT` |
-| `S3CredentialDef` (a `CredentialDef`) | fields from the first source that resolves | a service that makes it, or none | its fields, as SDK env |
+| `S3CredentialDef`, `AzureCredentialDef` (a `CredentialDef`) | fields from the first source that resolves | a service that makes it, or none | its fields, as SDK env |
 | `ServiceDef` | a thing that runs at an address | storages, credentials | `<id>.<name>` (`http.url`) |
 | `EngineDef` | a service with a live SQL handle | the test's storages, credentials | its preamble, clients |
 
@@ -250,6 +250,19 @@ every engine process of the test, removes SDK names that come from the shell's e
 case, and their SDK env names (`AWS_ACCESS_KEY_ID`, ..., `region` as `AWS_REGION` and
 `AWS_DEFAULT_REGION`). A bare `CredentialDef` is a scan error.
 
+`AzureCredentialDef` (or `azure_credential(...)`) takes DuckDB's azure secret providers as
+`provider`: `config` (`connection_string`, or only `account_name` for anonymous reads),
+`service_principal` (`tenant_id`, `client_id`, `client_secret` or `client_certificate_path`),
+`credential_chain` (with `chain`: `'env'`, `'cli'`, `'managed_identity'`, `'cli;env'`, ...) and
+`access_token`. Each provider says what a source must give; with `chain="env"` that is the service
+principal. Its SDK env names are `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_ACCOUNT`,
+`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_CLIENT_CERTIFICATE_PATH` and
+`AZURE_ACCESS_TOKEN`: the names the SDK's environment credential reads, and those the azure
+extension's `.test` files read. `AzureCredentialDef.from_azure_env(id, provider=...)` takes the
+shell's own. Its secret is `TYPE azure` with the provider's keys by env name, `ACCOUNT_NAME` from
+the storage (an abfss root names it) and `SCOPE`; `credential_chain` keeps its keys in the env, where
+the SDK reads them. Spark renders no Azure secret: a Spark test that scopes one is a scan error.
+
 **Sources.** `sources` is one ordered list, tried at acquire; the first that resolves gives every
 field, and sources never mix. `from_env({"MY_KEY_ID": "key_id", "MY_SECRET": "secret"})` reads each
 variable into a field; `from_env([...])` and `"env:NAME"` read SDK env names of the class;
@@ -269,8 +282,9 @@ type, and a booted engine (Spark) one for the whole run; several are a scan erro
 **Delivery.** The fields reach every engine process of the test as SDK env: a Python body's DuckDB
 shell, the `unittest` binary (and by name in `env_passthrough`), and the Spark JVM when it boots. That
 env is part of the engine's identity, counted by credential and source, never by value. Every engine
-process starts from the shell's env without the SDK prefixes of every credential type (`AWS_`); the
-root file's `INHERIT_ENV = ["AWS_CA_BUNDLE"]` keeps names, never a key.
+process starts from the shell's env without the SDK prefixes of every credential type (`AWS_`;
+`AZURE_`, `IDENTITY_`, `MSI_`); the root file's `INHERIT_ENV = ["AWS_CA_BUNDLE"]` keeps names, never a
+key, such as `AZURE_CONFIG_DIR` for an az cli login or `AZURE_LOG_LEVEL`.
 
 **Secrets.** For each credential and the test's storages in its scope, DuckDB gets one secret,
 `ducktest_<credential id>`: the storage's connection options and scope, with each key named by its
@@ -288,7 +302,9 @@ fields masked, source. A service can make a credential: `s3.credential("keys", s
 A service runs; a test reaches it through a storage on it (`StorageDef("served", "{http.url}",
 inputs=[HTTP])`), a credential it makes, or `bind=`. Kinds: `HttpServerDef`, `S3LocalDef` (a local S3
 server, RustFS today, the author does not care; `s3.storage("lake", "prefix")` declares
-a storage on it), and the engines. The run starts each needed service once, before any test, and stops it after the last.
+a storage on it), `AZLocalDef` (a local Azure blob server, `az_local(flavor="azurite")`;
+`az.storage("blobs", "prefix")` is `az://ducktest/prefix`, and `az.credential(...)` an
+`AzureCredentialDef` of its connection string), and the engines. The run starts each needed service once, before any test, and stops it after the last.
 `.as_existing(address=...)` or `--existing-service ID=URL` is the same service found running: adopted
 when it answers, never removed. A service whose kind knows its address before it starts (S3) is
 adopted the same way, with no flag, when it already answers there (mode `found running`). The run
@@ -305,7 +321,10 @@ bucket calls are the service's own: create, head, remove (with what is in it), a
 as signed S3 API requests. Per bucket: one the run made is removed at the end unless its `retain`
 (default `never`) keeps it; one already there that holds what it seeds (rclone `check`), public when
 asked, is used as it is and never changed; one there with other content is refused, and the service
-is not up.
+is not up. `az_local(containers=[container("data", seed=[(dir, "")], public="blob")])` is the same for
+Azure, with Blob service calls signed with the account key (SharedKey); `public` is `True` or
+`"container"` (list and read), or `"blob"` (read). Azurite serves blob only: a storage on it other than
+`az://`, such as `abfss://`, is a scan error, as it has no DFS endpoint.
 
 **A storage is a URL and a credential.** Its files -- list, remove a prefix, copy and sync a local
 directory in, check one -- go through rclone, whose verbs are the same for S3, Azure blob, GCS and R2;
@@ -350,8 +369,8 @@ path itself. `scan --env` prints it first.
 ## 2.10 Not built yet
 
 `TableDef` and tables per test; catalog services (UC, Databricks); input slots declared by a kind;
-the `1password:` source; credential types other than S3 (Azure, GCS); wiring several credentials of
-one type into one test (`wired(...)`); scan checks of `{NAME}` references and of
+the `1password:` source; credential types other than S3 and Azure (GCS, R2); Spark with an Azure
+credential; wiring several credentials of one type into one test (`wired(...)`); scan checks of `{NAME}` references and of
 `ctx.client("...")` names; `.test` header blocks as rules; the `Run` object.
 
 ---
@@ -368,6 +387,7 @@ one type into one test (`wired(...)`); scan checks of `{NAME}` references and of
 | 03 | an S3 credential from env; a test that holds none | `03_credentials/` |
 | 04 | an HTTP service under a storage; BLOCKED | `04_service/` |
 | 05 | a local S3 server (RustFS), a storage and a credential on it | `05_s3/` |
+| 06 | a local Azure blob server (Azurite), a storage and a credential on it | `06_azurite/` |
 
 # Appendix B. The delta cross-engine tests
 
@@ -416,9 +436,8 @@ def duckdb_creates_then_spark_and_duckdb_interleave(ctx):
 
 # Appendix C. Next
 
-- **Azure**: `.test` only; Azurite, blob and DFS as a `storage` axis. Needs an Azurite kind and an
-  `AzureCredentialDef` (and its `AzureCredential`): a class, a DuckDB secret renderer
-  (`duckdb_secret(...)`), its `AZURE_` prefixes, and a service's `credential_type`.
+- **Azure**: the azure extension's `.test` files on `AZLocalDef` and `AzureCredentialDef` (built,
+  not yet run live); blob and DFS on real Azure as more values of a `storage` axis.
 - **httpfs**: a `storage` axis (http, s3, s3 through a proxy) and two DuckDB engines (curl,
   httplib) named by a Variant's `engines`. Needs a proxy kind.
 - **Unity Catalog**: deployments as an axis binding a catalog service and a storage. Needs
@@ -436,6 +455,9 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-01: `AzureCredentialDef` (providers config, service_principal, credential_chain,
+  access_token; `AZURE_`, `IDENTITY_`, `MSI_` removed from engines) and `AZLocalDef` (Azurite, its
+  containers by the Blob service, files by rclone `azureblob`); rung 06.
 - 2026-10-01: typed credentials (`S3CredentialDef`): fields, delivery as SDK env to every engine
   process, SDK names of the shell's env removed, `INHERIT_ENV`, `own_secrets`, `ctx.credential(s)`;
   secrets are `ducktest_<credential id>`; the unset-hides rule and the `auth` axis of rung 03 are gone.
