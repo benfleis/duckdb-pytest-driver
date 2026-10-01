@@ -404,6 +404,16 @@ def _check(path, project):
     ):
         if not all(isinstance(d, kind) for d in declared.values()):
             raise UsageError(f"{path}: {name} must hold {kind.__name__}")
+    for c in project.credentials.values():
+        for storage_id in c.scope_storages:
+            storage = project.storages.get(storage_id)
+            scheme = storage.root.split("://", 1)[0].lower() if storage and "://" in storage.root else "file"
+            # A scheme a template gives is checked where the storage is made.
+            if storage is not None and "{" not in scheme and scheme not in type(c).schemes:
+                raise UsageError(
+                    f"{path}: {c.label} is scoped to storage {storage_id!r} ({storage.root}): an "
+                    f"{type(c).__name__} is for {', '.join(type(c).schemes)} storages only"
+                )
     bad_engine = next((e for e in project.engines.values() if not isinstance(e, EngineDef)), None)
     if bad_engine is not None:
         raise UsageError(f"{path}: {bad_engine!r} is not an engine; declare services in SERVICES")

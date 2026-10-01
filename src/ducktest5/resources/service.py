@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Mapping
 
 from ..host import wait_until
+from ..binary import UsageError
 from .base import SHARED_RW, Attribute, Resource, ResourceDef
 from .credential import CredentialDef
 
@@ -28,7 +29,8 @@ class ServiceDef(ResourceDef):
 
     `attributes` names what `read()` of a running instance gives its consumers, as `<id>.<name>`
     (`http.url`). `secret_attributes` are read the same way but reach a consumer only through a
-    credential the service produces (`credential()`), under the names `delivers` gives them.
+    credential the service produces (`credential()`): one of `credential_type`, whose fields `delivers`
+    maps to attributes.
     `detached` says an instance outlives the ducktest process that started it (a container), so
     `ducktest5 provision` may make it apart from the exec that uses it; one that lives in this
     process (a thread) ends with it."""
@@ -38,7 +40,8 @@ class ServiceDef(ResourceDef):
     detached: ClassVar[bool] = False
     attributes: ClassVar[tuple] = ()
     secret_attributes: ClassVar[tuple] = ()
-    delivers: ClassVar[Mapping[str, str]] = {}  # delivered name -> attribute or secret attribute
+    credential_type: ClassVar[type | None] = None  # the CredentialDef class of `credential()`
+    delivers: ClassVar[Mapping[str, str]] = {}  # field of credential_type -> attribute or secret attribute
     ready_timeout_s: ClassVar[float] = 60
     provisioned: ClassVar[bool] = (
         True  # False: not made by the run's provisioning (an engine, made where a test leases it)
@@ -52,8 +55,13 @@ class ServiceDef(ResourceDef):
 
     def credential(self, id: str, scopes: list, **fields) -> CredentialDef:
         """A credential made of this service's secrets, scoped to `scopes`: the storages it serves."""
+        cls = self.credential_type
+        if cls is None:
+            raise UsageError(f"service {self.id!r} ({type(self).__name__}) produces no credential")
+        if unknown := sorted(set(self.delivers) - set(cls.fields)):
+            raise UsageError(f"service {self.id!r}: delivers {unknown}, not fields of {cls.__name__}")
         source = FromService(self.id, tuple(sorted(self.delivers.items())))
-        return CredentialDef(id, sources=[source], scopes=scopes, inputs=[self], **fields)
+        return cls(id, sources=[source], scopes=scopes, inputs=[self], **fields)
 
 
 @dataclass(frozen=True)
@@ -61,7 +69,7 @@ class FromService:
     """A credential source that reads a service's attributes when the credential is acquired."""
 
     service: str
-    names: tuple  # ((delivered name, attribute), ...)
+    names: tuple  # ((field, attribute), ...)
 
     def content(self):
         return {"service": self.service, "names": dict(self.names)}

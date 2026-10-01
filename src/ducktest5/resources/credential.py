@@ -1,37 +1,102 @@
-"""Credentials: a secret from the first of an ordered list of sources, scoped to one or more storages."""
+"""Credentials: typed by their class, made of fields, from the first of an ordered list of sources,
+scoped to one or more storages.
+
+A class names its DuckDB secret `type`, the storage `schemes` it can be scoped to, its `fields` (DuckDB's
+secret options in lower case), the SDK env names of each field (`env`), and the name prefixes its SDK
+reads (`sdk_prefixes`). The run delivers a credential to every engine process of a test as process
+env, under the SDK names: an SDK reads them with getenv(), whether or not a file names them.
+"""
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping
+from typing import ClassVar, Iterable, Mapping
 
 from ..binary import UsageError
 from .base import RO, RW, SHARED_RO, Attribute, Resource, ResourceDef, canonical
 
 
 @dataclass(frozen=True)
-class EnvSource:
-    """Secrets read from this process's environment: delivered name -> variable name."""
+class Field:
+    """One field of a credential class: `required` by every source, `secret` masked wherever it is shown."""
 
-    names: tuple  # ((delivered name, variable), ...)
+    required: bool = False
+    secret: bool = False
+
+
+@dataclass(frozen=True)
+class EnvSource:
+    """Fields read from this process's environment. `mapped`: `names` is ((variable, field), ...);
+    else it is (variable, ...), each an SDK env name of the class."""
+
+    names: tuple
+    mapped: bool
 
     def content(self):
-        return {"env": dict(self.names)}
+        return {"env": dict(self.names) if self.mapped else list(self.names)}
 
-    def resolve(self, credential_id: str) -> dict | None:
-        """Getters, not values: the value is read at delivery. None when a variable is not set."""
-        if not all(var in os.environ for _, var in self.names):
-            return None
-        return {name: Attribute(lambda var=var: os.environ.get(var), f"env {var}") for name, var in self.names}
+    def __str__(self):
+        return "env " + ", ".join(var for var, _ in self.names) if self.mapped else "env " + ", ".join(self.names)
+
+    def shown(self):
+        return f"from_env({dict(self.names)!r})" if self.mapped else f"from_env({list(self.names)!r})"
+
+    def variables(self, credential) -> dict:
+        """field -> (variable, ...), the first one set giving the field; a usage error for a variable
+        `credential`'s class does not know, or a source that misses a required field."""
+        cls = type(credential)
+        out = {}
+        if self.mapped:
+            for var, name in self.names:
+                if name not in cls.fields:
+                    raise UsageError(
+                        f"{credential.label}: from_env maps {var} to {name!r}, which is not a field of "
+                        f"{cls.__name__} ({', '.join(cls.fields)})"
+                    )
+                out.setdefault(name, ())
+                out[name] += (var,)
+        else:
+            by_var = {var: name for name, names in cls.env.items() for var in names}
+            for var in self.names:
+                if var not in by_var:
+                    known = ", ".join(v for names in cls.env.values() for v in names)
+                    raise UsageError(
+                        f"{credential.label}: {self.shown()}: {var} is not an env name of {cls.__name__} ({known}); "
+                        f"map it with from_env({{{var!r}: field}})"
+                    )
+                out.setdefault(by_var[var], ())
+                out[by_var[var]] += (var,)
+            # The class's own order: AWS_REGION before AWS_DEFAULT_REGION, whatever order the list gives.
+            out = {name: tuple(v for v in cls.env[name] if v in out[name]) for name in out}
+        for name in cls.required():
+            if name not in out:
+                raise UsageError(
+                    f"{credential.label}: source {self.shown()} gives no {name!r}; a source must give every "
+                    f"required field ({', '.join(cls.required())})"
+                )
+        return out
+
+    def resolve(self, credential) -> dict | None:
+        """Getters, not values: a value is read at delivery. None when a required field is not set."""
+        out = {}
+        for name, variables in self.variables(credential).items():
+            var = next((v for v in variables if v in os.environ), None)
+            if var is not None:
+                out[name] = Attribute(lambda var=var: os.environ.get(var), f"env {var}")
+            elif type(credential).fields[name].required:
+                return None
+        return out
 
 
 def from_env(names: Mapping[str, str] | Iterable[str]) -> EnvSource:
-    """A source from the process environment. A mapping reads each key and delivers it under its
-    value, `{"MY_KEY_VAR": "AWS_ACCESS_KEY_ID"}`; a list delivers each name as it is."""
-    pairs = ((out, var) for var, out in names.items()) if isinstance(names, Mapping) else ((n, n) for n in names)
-    return EnvSource(tuple(sorted(pairs)))
+    """A source from the process environment. A mapping reads each variable into the field it names,
+    `{"MY_KEY_ID": "key_id"}`; a list reads SDK env names of the credential's class, `["AWS_ACCESS_KEY_ID", ...]`."""
+    if isinstance(names, Mapping):
+        return EnvSource(tuple(sorted(names.items())), True)
+    return EnvSource(tuple(names), False)
 
 
 @dataclass(frozen=True)
@@ -41,9 +106,9 @@ class OnePasswordSource:
     def content(self):
         return {"1password": self.item}
 
-    def resolve(self, credential_id: str):
+    def resolve(self, credential):
         raise UsageError(
-            f"credential {credential_id!r}: source 1password:{self.item} is not available here; "
+            f"credential {credential.id!r}: source 1password:{self.item} is not available here; "
             "put a from_env(...) source before it"
         )
 
@@ -84,37 +149,77 @@ def _scope(credential_id, entry):
 
 @dataclass(eq=False)
 class CredentialDef(ResourceDef):
-    """A secret a test needs. `sources` is one ordered list, tried at acquire: a `from_env(...)` source,
-    a string reference with a known scheme (`"1password:NAME"`; `"env:NAME"` is shorthand for
-    `from_env([NAME])`), or a callable. A callable is called with the credential's resolved inputs (as
-    `from_env(...)` sources are) and returns the secret mapping, or None to try the next source; it is
-    late-bound, called at acquire and never at plan. Its attributes are `secrets` only, under
-    the names its source gives (`AWS_ACCESS_KEY_ID`). `scopes` lists the storages it is for -- each
-    a storage id, or `(storage id, "ro" | "rw")` -- and it is that storage's credential when a test
-    names none; a credential may be scoped to several storages, and an empty list binds only by
-    name. When a source made something (a callable that logs in), `dealloc` is its revoke or
-    logout, and `retain` decides whether it runs; a credential is not kept after a run by default."""
+    """A secret a test needs, of a typed class (`S3Credential`); this base is never declared itself.
+
+    `sources` is one ordered list, tried at acquire, and the first that resolves gives all the fields:
+    `from_env(...)`, a string reference with a known scheme (`"1password:NAME"`; `"env:NAME"` is
+    shorthand for `from_env([NAME])`), or a callable. A callable is called with the credential's
+    resolved inputs and returns `{field: value}`, or None to try the next source; it is late-bound,
+    called at acquire and never at plan. A non-secret field of the class may be given as a literal
+    (`region="eu-west-1"`): a default that a source overrides.
+
+    `scopes` lists the storages it is for -- each a storage id, or `(storage id, "ro" | "rw")` -- and
+    it is that storage's credential when a test names none; an empty list binds only by name.
+    `values` are plain `{NAME}` values a test gets when it holds it, such as the signal an existing
+    `.test` file checks with `require-env`. When a source made something (a callable that logs in),
+    `dealloc` is its revoke or logout, and `retain` decides whether it runs."""
 
     kind = "credential"
     sharing = SHARED_RO
+    type: ClassVar[str] = ""  # the DuckDB secret TYPE
+    schemes: ClassVar[tuple] = ()  # the storage schemes it can be scoped to
+    fields: ClassVar[dict] = {}  # DuckDB option in lower case -> Field
+    env: ClassVar[dict] = {}  # field -> its SDK env names: read, the first that is set; delivered, all
+    sdk_prefixes: ClassVar[tuple] = ()  # what engines never take from the shell's env
 
     id: str
-    sources: list = field(default_factory=list)  # from_env(...), "1password:NAME"/"env:NAME", or a callable, in order
+    sources: list = field(default_factory=list)
     scopes: list = field(default_factory=list)  # storage id, or (storage id, "ro" | "rw"), each
     default: bool = False  # the one to pick when several share a scope
+    values: dict = field(default_factory=dict)
     inputs: list = field(default_factory=list)
     retain: str = "never"
 
     not_content = ResourceDef.not_content + ("default",)
 
     def __post_init__(self):
+        if type(self) is CredentialDef:
+            raise UsageError(
+                f"CredentialDef({self.id!r}): CredentialDef is the base class; declare a typed credential, "
+                "such as S3Credential"
+            )
+        from .client import check_names
+
         self.sources = [_source(s) for s in self.sources]
+        for source in self.sources:
+            if isinstance(source, EnvSource):
+                source.variables(self)
         self.scopes = [_scope(self.id, s) for s in self.scopes]
+        check_names(self.values, f"{self.label}: values")
+
+    def content(self) -> dict:
+        return {"class": type(self).__name__, **super().content()}
 
     @property
-    def names(self) -> tuple:
-        """The names its sources deliver, as far as they are known before it is acquired."""
-        return tuple(sorted({name for s in self.sources if isinstance(s, EnvSource) for name, _ in s.names}))
+    def label(self) -> str:
+        return f"{type(self).__name__}({self.id!r})"
+
+    @classmethod
+    def required(cls) -> tuple:
+        return tuple(name for name, f in cls.fields.items() if f.required)
+
+    @classmethod
+    def secret_env(cls) -> tuple:
+        """The SDK env names of its secret fields."""
+        return tuple(n for name, f in cls.fields.items() if f.secret for n in cls.env.get(name, ()))
+
+    def literals(self) -> dict:
+        """The non-secret fields given as literals on the declaration."""
+        return {
+            f.name: getattr(self, f.name)
+            for f in dataclasses.fields(self)
+            if f.name in type(self).fields and getattr(self, f.name) is not None
+        }
 
     @property
     def scope_storages(self) -> tuple:
@@ -125,9 +230,30 @@ class CredentialDef(ResourceDef):
         return next(m for s, m in self.scopes if s == storage)
 
 
+def credential_types() -> list:
+    """Every credential class there is, the base left out."""
+    out, todo = [], list(CredentialDef.__subclasses__())
+    while todo:
+        cls = todo.pop(0)
+        out.append(cls)
+        todo += cls.__subclasses__()
+    return out
+
+
+def _getter(value):
+    return lambda: value
+
+
 class Credential(Resource):
-    """A resolved credential. Its secrets are getters, read when delivered; one a callable source
-    makes is made again at every acquire."""
+    """A resolved credential: `fields` by name, each a getter read when delivered, and `secrets`, the
+    same under the SDK env names of its class. One a callable source makes is made again at every acquire."""
+
+    def __init__(self, definition, identity, run_token, inputs=None):
+        super().__init__(definition, identity, run_token, inputs)
+        self.fields: dict[str, Attribute] = {}
+        self.source = ""  # what gave the fields, for a reader
+        source = f"credential {definition.id}"
+        self.attributes = {name: Attribute(value, source) for name, value in definition.values.items()}
 
     def start(self):
         # A callable is late-bound: resolving it (and anything after it, in order) waits for acquire.
@@ -142,27 +268,75 @@ class Credential(Resource):
 
     def _try_sources(self):
         """The first of `sources` that resolves, tried in order."""
-        for source in self.definition.sources:
+        d = self.definition
+        for source in d.sources:
             if callable(source):
                 found = source(self.inputs)
                 if found is None:
                     continue
                 label = str(source) if hasattr(source, "content") else f"callable {source.__qualname__}"
-                self.secrets = {name: Attribute(v, label) for name, v in found.items()}
+                self._set(self._checked(found, label), label)
                 return
-            found = source.resolve(self.id)
+            found = source.resolve(d)
             if found is not None:
-                self.secrets = found
+                self._set(found, str(source))
                 return
-        if self.definition.sources:
-            shown = ", ".join(str(canonical(s)) for s in self.definition.sources)
+        if d.sources:
+            shown = ", ".join(str(canonical(s)) for s in d.sources)
             raise UsageError(f"credential {self.id!r}: none of its sources resolved: {shown}")
+
+    def _checked(self, found, label):
+        """What a callable gave, as getters: a value never counts toward an identity."""
+        cls = type(self.definition)
+        if unknown := sorted(set(found) - set(cls.fields)):
+            raise UsageError(
+                f"{self.definition.label}: {label} gave {unknown}, not fields of {cls.__name__} ({', '.join(cls.fields)})"
+            )
+        if missing := [name for name in cls.required() if found.get(name) is None]:
+            raise UsageError(f"{self.definition.label}: {label} gave no {missing[0]!r}, a required field")
+        return {name: Attribute(_getter(v), label) for name, v in found.items() if v is not None}
+
+    def _set(self, found, label):
+        given = self.definition.literals()
+        literal = {n: Attribute(_getter(v), f"credential {self.id}") for n, v in given.items() if n not in found}
+        self.fields = {**literal, **found}
+        self.source = label
+        env = type(self.definition).env
+        self.secrets = {name: a for field_name, a in self.fields.items() for name in env.get(field_name, ())}
 
     def read(self):
         return {"id": self.id, "names": sorted(self.secrets)}
 
 
 CredentialDef.instance = Credential
+
+
+@dataclass(eq=False)
+class S3Credential(CredentialDef):
+    """Keys of an S3 store, or of one that speaks S3. httpfs reads them from the AWS_* env by itself."""
+
+    type = "s3"
+    schemes = ("s3",)
+    fields = {
+        "key_id": Field(required=True, secret=True),
+        "secret": Field(required=True, secret=True),
+        "session_token": Field(secret=True),
+        "region": Field(),
+    }
+    env = {
+        "key_id": ("AWS_ACCESS_KEY_ID",),
+        "secret": ("AWS_SECRET_ACCESS_KEY",),
+        "session_token": ("AWS_SESSION_TOKEN",),
+        "region": ("AWS_REGION", "AWS_DEFAULT_REGION"),
+    }
+    sdk_prefixes = ("AWS_",)
+
+    region: str | None = None
+
+    @classmethod
+    def from_aws_env(cls, id: str, **fields) -> S3Credential:
+        """The keys of the shell's own AWS_* env, said so explicitly."""
+        return cls(id, sources=[from_env([n for names in cls.env.values() for n in names])], **fields)
 
 
 def pick_credentials(

@@ -57,22 +57,16 @@ def _bindings(definition, combo, project):
     return [(role, d, RW, source) for role, (d, source) in ruled.items()] + from_axes
 
 
-def _inputs(bindings, combo, project):
+def _inputs(bindings, project):
     """What a test binds, a writer's mode winning, and a credential for each storage by scope unless
-    one is named. A credential all of whose names the axis values unset is left out."""
+    one is named."""
     modes = {}
     for _, d, mode, _ in bindings:
         if not isinstance(d, DefaultStorageDef):  # binding the default storage is binding none
             modes[d] = RW if RW in (mode, modes.get(d)) else mode
     storages = {d.id: mode for d, mode in modes.items() if isinstance(d, StorageDef)}
     named = [d for d in modes if isinstance(d, CredentialDef)]
-    unset = {name for _, v in combo for name, value in v.process_env.items() if value is None}
-    # A test that unsets every name a credential delivers must not see it, whatever its scope.
-    credentials = [
-        c
-        for c in pick_credentials(storages, project.credentials.values(), named)
-        if not (c.names and set(c.names) <= unset)
-    ]
+    credentials = pick_credentials(storages, project.credentials.values(), named)
     return tuple((d, m) for d, m in modes.items() if not isinstance(d, CredentialDef)) + tuple(
         (c, RO) for c in credentials
     )
@@ -206,7 +200,7 @@ def scan(start, *, working_dir="."):
             for combo in itertools.product(*axes):
                 bindings = _bindings(definition, combo, project)
                 bind = tuple((role, d.id, source) for role, d, _, source in bindings)
-                tests.append(Test(definition, params_key, dict(combo), _inputs(bindings, combo, project), bind))
+                tests.append(Test(definition, params_key, dict(combo), _inputs(bindings, project), bind))
     project.note_unused_rules()
     if project.unused_rules:
         raise UsageError(
@@ -219,7 +213,24 @@ def scan(start, *, working_dir="."):
         # A test's DuckDB engine may come from the project, not the test: settle it before the run.
         leases.check(test.definition, [leases.duckdb_of(test, project)])
         testenv.check_values(test)
+        _one_set_per_type(test)
     return tests, project
+
+
+def _one_set_per_type(test):
+    """A process has one set of each SDK's env names, so a test holds one credential of a type."""
+    by_type = {}
+    for d, _ in test.inputs:
+        if isinstance(d, CredentialDef):
+            by_type.setdefault(type(d), []).append(d.id)
+    for cls, ids in by_type.items():
+        if len(ids) > 1:
+            names = " and ".join(repr(i) for i in ids)
+            raise UsageError(
+                f"{test.id}: holds {cls.__name__}s {names} by {'/'.join(p + '*' for p in cls.sdk_prefixes)} env; "
+                "one process has one set. Wiring several into one test (wired(...)) is not built yet; "
+                "split the test until it is"
+            )
 
 
 def _engines(definition, project):

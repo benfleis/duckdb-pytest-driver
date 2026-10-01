@@ -17,7 +17,7 @@ from ducktest5.engines.duckdb import DuckDBShell, duckdb_engine
 from ducktest5.engines.spark import SparkHandle
 from ducktest5.engines.unittest import UnittestEngineDef
 from ducktest5.model import PYTHON, SQLLOGIC, Test, TestDef
-from ducktest5.resources import RO, RW, BootedEngineDef, CredentialDef, StorageDef, check_contract, from_env
+from ducktest5.resources import RO, RW, BootedEngineDef, S3Credential, StorageDef, check_contract, from_env
 from ducktest5.resources.engine import Runtime
 from ducktest5.scan import scan
 from ducktest5.sqllogic import init_file_text
@@ -152,8 +152,8 @@ def remote_inputs(monkeypatch):
     monkeypatch.setenv("DT_KEY", "admin")
     monkeypatch.setenv("DT_SECRET", "password")
     storage = StorageDef("remote", "s3://ducktest/delta", endpoint="http://172.18.0.1:9999")
-    keys = {"DT_KEY": "AWS_ACCESS_KEY_ID", "DT_SECRET": "AWS_SECRET_ACCESS_KEY"}
-    credential = CredentialDef("remote-key", sources=[from_env(keys)], scopes=["remote"])
+    keys = {"DT_KEY": "key_id", "DT_SECRET": "secret"}
+    credential = S3Credential("remote-key", sources=[from_env(keys)], scopes=["remote"])
     return [storage, credential], {"remote": storage.make(), "remote-key": credential.make()}
 
 

@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from ducktest5.binary import UsageError
-from ducktest5.resources import CredentialDef, StorageDef, from_env
+from ducktest5.resources import S3Credential, StorageDef, from_env
 from ducktest5.resources.dialect import Preamble, pairs, preamble, render
 
-KEYS = {"DT_KEY": "AWS_ACCESS_KEY_ID", "DT_SECRET": "AWS_SECRET_ACCESS_KEY"}
+KEYS = {"DT_KEY": "key_id", "DT_SECRET": "secret"}
 
 
 @pytest.fixture
@@ -17,7 +17,7 @@ def remote(monkeypatch):
     monkeypatch.setenv("DT_KEY", "admin")
     monkeypatch.setenv("DT_SECRET", "it's-secret")
     storage = StorageDef("remote", "s3://ducktest/delta", endpoint="http://172.18.0.1:9999").make()
-    credential = CredentialDef("remote-key", sources=[from_env(KEYS)], scopes=["remote"]).make()
+    credential = S3Credential("remote-key", sources=[from_env(KEYS)], scopes=["remote"]).make()
     credential.start()
     return storage, credential
 
@@ -29,7 +29,7 @@ def two_storages(monkeypatch):
     monkeypatch.setenv("DT_SECRET", "it's-secret")
     a = StorageDef("bucket-a", "s3://bucket-a", endpoint="http://172.18.0.1:9999").make()
     b = StorageDef("bucket-b", "s3://bucket-b", endpoint="http://172.18.0.1:9999").make()
-    credential = CredentialDef("shared-key", sources=[from_env(KEYS)], scopes=["bucket-a", "bucket-b"]).make()
+    credential = S3Credential("shared-key", sources=[from_env(KEYS)], scopes=["bucket-a", "bucket-b"]).make()
     credential.start()
     return [a, b], credential
 
@@ -115,25 +115,11 @@ def test_the_unittest_binary_gets_the_names_of_the_secrets_never_their_values(re
     )
 
 
-def test_an_azure_storage_gets_a_service_principal_secret(monkeypatch):
-    names = ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
-    for n in names:
-        monkeypatch.setenv(n, n.lower())
-    storage = StorageDef("az", "abfss://c@acct.dfs.core.windows.net/x").make()
-    credential = CredentialDef("spn", sources=[from_env(list(names))], scopes=["az"]).make()
-    credential.start()
-    assert render("duckdb", "secret", [storage], credential).sql == [
-        "CREATE SECRET ducktest_az (TYPE 'azure', PROVIDER 'service_principal', TENANT_ID 'azure_tenant_id', "
-        "CLIENT_ID 'azure_client_id', CLIENT_SECRET 'azure_client_secret', ACCOUNT_NAME 'acct', "
-        "SCOPE 'abfss://c@acct.dfs.core.windows.net/x');"
-    ]
-
-
 def test_a_local_storage_needs_no_secret(tmp_path, monkeypatch):
     monkeypatch.setenv("DT_KEY", "k")
     monkeypatch.setenv("DT_SECRET", "s")
     storage = StorageDef("local", str(tmp_path)).make()
-    credential = CredentialDef("c", sources=[from_env(KEYS)], scopes=["local"]).make()
+    credential = S3Credential("c", sources=[from_env(KEYS)], scopes=["local"]).make()
     credential.start()
     assert render("duckdb", "secret", [storage], credential) == render("spark", "secret", [storage], credential)
     assert render("duckdb", "secret", [storage], credential) == Preamble()

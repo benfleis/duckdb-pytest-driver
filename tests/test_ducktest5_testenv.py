@@ -7,7 +7,7 @@ from ducktest5 import leases
 from ducktest5.binary import UsageError
 from ducktest5.declare import Variant
 from ducktest5.model import SQLLOGIC, Test, TestDef
-from ducktest5.resources import RO, RW, CredentialDef, StorageDef
+from ducktest5.resources import RO, RW, S3Credential, StorageDef
 from ducktest5.resources import from_env
 from ducktest5.resources.made import Made
 from ducktest5.sqllogic import init_file_text
@@ -186,9 +186,9 @@ def test_a_test_file_creates_its_scoped_secret_from_a_template_the_binary_fills(
     monkeypatch.setenv("DT_KEY", "k-value")
     monkeypatch.setenv("DT_SECRET", "s-value")
     storage = StorageDef("bucket", "s3://bucket")
-    credential = CredentialDef(
+    credential = S3Credential(
         "key",
-        sources=[from_env({"DT_KEY": "AWS_ACCESS_KEY_ID", "DT_SECRET": "AWS_SECRET_ACCESS_KEY"})],
+        sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})],
         scopes=["bucket"],
     )
     test = make_test()
@@ -208,8 +208,9 @@ def test_a_test_file_creates_its_scoped_secret_from_a_template_the_binary_fills(
 
 def test_the_scoped_secret_of_a_test_file_does_not_change_its_key(monkeypatch):
     monkeypatch.setenv("DT_KEY", "k-value")
+    monkeypatch.setenv("DT_SECRET", "s-value")
     storage = StorageDef("bucket", "s3://bucket")
-    credential = CredentialDef("key", sources=[from_env({"DT_KEY": "AWS_ACCESS_KEY_ID"})], scopes=["bucket"])
+    credential = S3Credential("key", sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})], scopes=["bucket"])
     sql_file = make_test()
     python = Test(TestDef(path="t.py", name="t", type="python"), None, {})
     for test in (sql_file, python):

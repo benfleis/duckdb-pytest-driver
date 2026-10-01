@@ -12,6 +12,8 @@ import pytest
 from ducktest5 import phases
 from ducktest5.resources import (
     ON_FAILURE,
+    CredentialDef,
+    Field,
     RO,
     SHARED_RW,
     Service,
@@ -66,11 +68,19 @@ class Fake(Service):
 
 
 @dataclass(eq=False)
+class FakeCredential(CredentialDef):
+    type = "fake"
+    fields = {"key": Field(required=True, secret=True), "url": Field()}
+    env = {"key": ("FAKE_KEY",), "url": ("FAKE_URL",)}
+
+
+@dataclass(eq=False)
 class FakeDef(ServiceDef):
     kind = "fake"
     attributes = ("url",)
     secret_attributes = ("key",)
-    delivers = {"FAKE_KEY": "key", "FAKE_URL": "url"}
+    credential_type = FakeCredential
+    delivers = {"key": "key", "url": "url"}
     ready_timeout_s = 1
 
     id: str

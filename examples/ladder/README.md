@@ -81,15 +81,14 @@ share one label; their binding on `@test` gives them a label other than that of
 
 ## 03_credentials
 
-The storage is now an S3 bucket that nothing reads. A credential scoped to it takes a fake key from
-`LADDER_FAKE_KEY_ID` and `LADDER_FAKE_SECRET`; set both before a run. The axis `auth` makes two tests
-of each body: `key` binds the credential, and `none` unsets the names it delivers, which hides it.
-Each body asks DuckDB for its secrets: one, scoped to the bucket, under `auth=key`, and none under
-`auth=none`; a Python body reads the axis value as `ctx.values.auth`. `paired_scoped_secret.py` asks,
-then runs the `.test` file beside it with `ctx.run_paired()`, which asks again. A Python body's DuckDB engine creates the secret with the values. For a `.test` body the
-init file holds only a template, `KEY_ID '{AWS_ACCESS_KEY_ID}'`, and the binary fills it from the
-variables passed through to it; `scan --env` shows it as the `secret:` line. The init file and the
-run's own records hold the names of the secrets, never their values.
+The storage is now an S3 bucket that nothing reads. `S3Credential("fake_key", ...)` is scoped to it
+and takes its two fields, `key_id` and `secret`, from `LADDER_FAKE_KEY_ID` and `LADDER_FAKE_SECRET`;
+set both before a run. The rule binds the bucket for the `scoped_*` tests, so they hold the
+credential; `no_secret.test` binds nothing and holds none. Each body asks DuckDB for its secrets: one,
+scoped to the bucket, or none. `paired_scoped_secret.py` asks, then runs the `.test` file beside it
+with `ctx.run_paired()`, which asks again. The keys reach every engine process as `AWS_ACCESS_KEY_ID`
+and `AWS_SECRET_ACCESS_KEY`; `scan --env` shows them masked, with where they came from. The init file
+and the run's own records hold the names of the keys, never their values.
 
 ## 04_service
 

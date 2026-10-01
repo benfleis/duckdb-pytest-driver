@@ -30,9 +30,8 @@ class Variant:
                  `temp_dir_root`), `ctx.values.data_dir` and their `local_` twins.
     `process_env`  the process environment of the engine that runs the test: a value sets a
                  variable, None unsets it. For what DuckDB or a library inside it reads with getenv
-                 (AWS_*, AZURE_*, HTTP_PROXY); the absence of a variable is a fact a literal cannot
-                 express. A test that unsets every name a credential delivers does not get that
-                 credential, even where its scope matches.
+                 (HTTP_PROXY, ...); the absence of a variable is a fact a literal cannot express.
+                 Keys come from a credential, never from here.
 
     `engines` are what the test then needs, and `tags` name it for a selection. `inputs` names
     STORAGES, CREDENTIALS and SERVICES: a bare id is read-write, `{"id": "ro"}` read-only; a bound

@@ -389,10 +389,12 @@ def _deliver(env, definition, mode, scanning, value, made, key=None):
                 env.roots[_ROOT_OF[name]] = Entry(out.get(), where, kind="root", name=_ROOT_OF[name])
         else:
             value(name, out.get(), where)
+    secret_names = type(definition).secret_env() if definition.kind == "credential" else ()
     for name, out in secrets.items():
         if name in env.process_env:
             raise UsageError(f"{name!r} is given by both {env.process_env[name].source} and {where}")
-        env.process_env[name] = Entry(out.value, f"{where}: {out.source}", kind="env", name=name, secret=True)
+        source = f"{where} ({type(definition).__name__}, from {out.source})"
+        env.process_env[name] = Entry(out.value, source, kind="env", name=name, secret=name in secret_names)
         env.process_state[name] = "unset" if out.unset else "set"
         env.passthrough.append(name)
     return instance

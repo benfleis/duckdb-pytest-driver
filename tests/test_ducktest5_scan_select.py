@@ -1118,22 +1118,51 @@ def test_a_binding_names_a_declared_storage_credential_or_service(tmp_path):
         )
 
 
-def test_an_axis_value_that_unsets_a_credentials_names_hides_it(tmp_path, monkeypatch):
-    monkeypatch.setenv("DT_KEY", "k")
+def test_an_axis_value_that_unsets_a_credentials_names_does_not_hide_it(tmp_path, monkeypatch):
     conf = """
         from ducktest5 import Variant, default
-        from ducktest5.resources import CredentialDef, StorageDef, from_env
+        from ducktest5.resources import S3Credential, StorageDef
 
         STORAGES = [StorageDef("bucket", "s3://bucket")]
-        CREDENTIALS = [CredentialDef("key", sources=[from_env({"DT_KEY": "AWS_ACCESS_KEY_ID"})], scopes=["bucket"])]
+        CREDENTIALS = [S3Credential.from_aws_env("key", scopes=["bucket"])]
         AXES = {"auth": [Variant("key"), Variant("none", process_env={"AWS_ACCESS_KEY_ID": None})]}
         RULES = [default(bind={"storage": "bucket"}, variants=["auth"])]
     """
     tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
-    by_auth = {c.axis_values["auth"].id: c for c in tests}
-    assert [d.id for d, _ in by_auth["key"].inputs] == ["bucket", "key"]
-    assert [d.id for d, _ in by_auth["none"].inputs] == ["bucket"]
-    assert "process env unset: AWS_ACCESS_KEY_ID  <- AXES auth=none" in resolve(by_auth["none"]).lines()
+    assert [[d.id for d, _ in c.inputs] for c in tests] == [["bucket", "key"], ["bucket", "key"]]
+
+
+CREDENTIAL_CONF = """
+    from ducktest5 import default
+    from ducktest5.resources import S3Credential, StorageDef, from_env
+
+    STORAGES = [StorageDef("lake", "s3://lake"), StorageDef("blobs", "az://c/p"), StorageDef("other", "s3://other")]
+    KEYS = from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})
+    CREDENTIALS = [S3Credential("keys_a", sources=[KEYS], scopes={scopes_a}), S3Credential("keys_b", sources=[KEYS], scopes=["other"])]
+    RULES = [default(bind={bind})]
+"""
+
+
+@pytest.mark.parametrize(
+    "scopes_a, bind, message",
+    [
+        (
+            '["blobs"]',
+            '{"storage": "blobs"}',
+            "S3Credential('keys_a') is scoped to storage 'blobs' (az://c/p): an S3Credential is for s3 storages only",
+        ),
+        (
+            '["lake"]',
+            '{"storage": "lake", "credential": "keys_b"}',
+            "t.test::t: holds S3Credentials 'keys_b' and 'keys_a' by AWS_* env; one process has one set. "
+            "Wiring several into one test (wired(...)) is not built yet",
+        ),
+    ],
+)
+def test_a_credential_a_test_cannot_be_given_is_a_scan_error(tmp_path, scopes_a, bind, message):
+    conf = CREDENTIAL_CONF.replace("{scopes_a}", scopes_a).replace("{bind}", bind)
+    with pytest.raises(UsageError, match=re.escape(message)):
+        tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
 
 
 def test_an_engine_is_declared_among_the_engines_not_the_services(tmp_path):
