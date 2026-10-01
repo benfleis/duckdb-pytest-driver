@@ -27,6 +27,7 @@ import time
 from dataclasses import dataclass
 
 from ..resources.client import SqlError
+from ..resources.credential import engine_env
 from ..resources.engine import Engine, EngineDef, environ
 from ..sqltext import split_statements
 
@@ -54,11 +55,11 @@ class _Home:
     def __init__(self, path=None, env=None):
         self._temporary = None if path else tempfile.TemporaryDirectory(prefix="ducktest-home-")
         self.path = os.path.abspath(path or self._temporary.name)
-        self._env = env  # the test environment's, where it has one; else this process's
+        self._env = env  # the test environment's, where it has one; else what any engine starts from
 
     def env(self):
         os.makedirs(self.path, exist_ok=True)  # DuckDB fails on a home directory that is set and absent
-        return {**(os.environ if self._env is None else self._env), "HOME": self.path}
+        return {**(engine_env() if self._env is None else self._env), "HOME": self.path}
 
 
 _ERROR_LINE = re.compile(r"^(?:[A-Za-z]+(?: [A-Za-z]+)* )?Error:", re.M)

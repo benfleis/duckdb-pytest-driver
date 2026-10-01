@@ -1,5 +1,7 @@
 """The test environment: what one test is made of, where each part came from, and what is masked."""
 
+import re
+
 import pytest
 from test_ducktest5_run import StoreDef
 
@@ -8,6 +10,7 @@ from ducktest5.binary import UsageError
 from ducktest5.declare import Variant
 from ducktest5.model import SQLLOGIC, Test, TestDef
 from ducktest5.resources import RO, RW, S3Credential, StorageDef
+from ducktest5.resources import credential as cred_mod
 from ducktest5.resources import from_env
 from ducktest5.resources.made import Made
 from ducktest5.sqllogic import init_file_text
@@ -96,9 +99,24 @@ def test_a_root_the_binary_does_not_have_is_refused():
 def test_the_environment_of_the_engine_process_is_this_process_with_the_variant_on_top():
     variant = Variant("no-key", process_env={"AWS_PROFILE": "ducktest", "PATH": None})
     env = resolve(make_test({"auth": variant}))
-    assert env.changes_environment
     assert env.environ({"PATH": "/bin", "HOME": "/home/me"}) == {"HOME": "/home/me", "AWS_PROFILE": "ducktest"}
-    assert resolve(make_test()).environ() is None  # nothing to change: the engine keeps ours
+
+
+def test_an_engine_process_gets_no_sdk_name_of_the_shells_env_but_what_inherit_env_keeps(monkeypatch):
+    for name, value in (("AWS_PROFILE", "me"), ("AWS_SECRET_ACCESS_KEY", "mine"), ("AWS_CA_BUNDLE", "/ca"), ("X", "1")):
+        monkeypatch.setenv(name, value)
+    environ = resolve(make_test()).environ()
+    assert ("X" in environ, [n for n in environ if n.startswith("AWS_")]) == (True, [])
+    monkeypatch.setattr(cred_mod, "_inherit", ())
+    cred_mod.inherit_env(["AWS_CA_BUNDLE"])
+    assert [n for n in resolve(make_test()).environ() if n.startswith("AWS_")] == ["AWS_CA_BUNDLE"]
+    assert cred_mod.removed_names() == ["AWS_PROFILE", "AWS_SECRET_ACCESS_KEY"]
+
+
+def test_a_key_in_inherit_env_is_a_usage_error():
+    message = "INHERIT_ENV: AWS_SECRET_ACCESS_KEY is a credential name; declare S3Credential.from_aws_env(...) instead"
+    with pytest.raises(UsageError, match=re.escape(message)):
+        cred_mod.inherit_env(["AWS_SECRET_ACCESS_KEY"])
 
 
 def test_an_unset_removes_what_an_earlier_axis_set():

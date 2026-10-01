@@ -1027,8 +1027,8 @@ def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(
     variant = Variant("no-key", process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None})
     tests = [py_test(body, path="test/plain.py"), py_test(body, {"auth": variant}, path="test/env.py")]
     assert go(tmp_path, tests, shell_factory=factory, workers=1)[0] == 0
-    plain, own = sorted(made, key=lambda s: s.env is not None)
-    assert (plain.env, own.env["AWS_PROFILE"]) == (None, "ducktest")
+    plain, own = sorted(made, key=lambda s: "AWS_PROFILE" in s.env)
+    assert ("AWS_PROFILE" in plain.env, own.env["AWS_PROFILE"]) == (False, "ducktest")
     assert "AWS_ACCESS_KEY_ID" not in own.env
 
 

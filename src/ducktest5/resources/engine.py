@@ -15,13 +15,13 @@ the other.
 from __future__ import annotations
 
 import copy
-import os
 from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from ..binary import UsageError
 from .base import EXCLUSIVE, NEVER, RO, RW
 from .client import Client
+from .credential import engine_env
 from .dialect import Preamble, preamble
 from .service import Service, ServiceDef
 
@@ -213,11 +213,10 @@ class Delivered:
         return {"from": self.source}
 
 
-def environ(process_env: dict) -> dict | None:
-    """The process environment an engine with `process_env` gets; None when it is this process's."""
-    if not process_env:
-        return None
-    out = dict(os.environ)
+def environ(process_env: dict) -> dict:
+    """The process environment an engine with `process_env` gets: the shell's, without the names an
+    SDK reads (`engine_env`), then `process_env`."""
+    out = engine_env()
     for name, value in process_env.items():
         value = value() if callable(value) else value
         if value is None:

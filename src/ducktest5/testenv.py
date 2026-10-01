@@ -27,7 +27,6 @@ failed to come up; `resolve()` lists those in `pending`.
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass, field, replace
 
@@ -36,6 +35,7 @@ from .provision import MASK
 from .provision import SECRET_NAME as _SECRET_NAME
 from .resources import RO, RW, ServiceDef, ServiceNotUp
 from .resources.client import check_names
+from .resources.credential import engine_env
 from .resources.dialect import pairs, render
 from .resources.made import Made, services_in
 
@@ -115,16 +115,10 @@ class TestEnv:
     def root_paths(self):
         return {name: e.value for name, e in self.roots.items()}
 
-    @property
-    def changes_environment(self):
-        return bool(self.process_env or self.process_unset)
-
     def environ(self, base=None):
-        """The process environment for the engine of this test, or None when it is this process's."""
-        if not self.changes_environment:
-            return None
-        base = os.environ if base is None else base
-        out = dict(base)
+        """The process environment for the engine of this test: `base`, by default the shell's without
+        the names an SDK reads (`engine_env`), then what the test sets and unsets."""
+        out = engine_env() if base is None else dict(base)
         # Replay in axis order so an unset after a set from an earlier axis wins, and vice versa.
         for name, action in self.process_state.items():
             value = self.process_env[name].value if action == "set" else None

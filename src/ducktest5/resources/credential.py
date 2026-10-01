@@ -240,6 +240,46 @@ def credential_types() -> list:
     return out
 
 
+_inherit: tuple = ()  # the project's INHERIT_ENV; the process holds one project, as for PYTHONPATH
+
+
+def inherit_env(names, where="INHERIT_ENV") -> tuple:
+    """Names engines keep from the shell's env although an SDK prefix would remove them. A key is never
+    one of them: it comes from a credential."""
+    global _inherit
+    for name in names:
+        owner = next((cls for cls in credential_types() if name in cls.secret_env()), None)
+        if owner is not None:
+            how = f"{owner.__name__}.from_aws_env(...)" if hasattr(owner, "from_aws_env") else f"an {owner.__name__}"
+            raise UsageError(f"{where}: {name} is a credential name; declare {how} instead")
+    _inherit = tuple(names)
+    return _inherit
+
+
+def sdk_prefixes() -> tuple:
+    return tuple(p for cls in credential_types() for p in cls.sdk_prefixes)
+
+
+def removed_names(environ=None) -> list:
+    """The names of the shell's env that no engine process gets: an SDK reads them, and only a
+    credential may give them. INHERIT_ENV keeps some."""
+    environ = os.environ if environ is None else environ
+    prefixes = sdk_prefixes()
+    return sorted(n for n in environ if n.startswith(prefixes) and n not in _inherit)
+
+
+def kept_names(environ=None) -> list:
+    environ = os.environ if environ is None else environ
+    return sorted(n for n in _inherit if n in environ)
+
+
+def engine_env(environ=None) -> dict:
+    """What an engine process starts from: the shell's env without the names an SDK would read."""
+    environ = os.environ if environ is None else environ
+    gone = set(removed_names(environ))
+    return {n: v for n, v in environ.items() if n not in gone}
+
+
 def _getter(value):
     return lambda: value
 

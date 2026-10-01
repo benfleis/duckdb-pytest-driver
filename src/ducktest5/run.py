@@ -46,6 +46,7 @@ from .outcomes import ALL as OUTCOMES
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED, Skip
 from .provision import KEPT, adopt, attach_argument, bring_up
 from .resources import RO, BootedEngineDef, ServiceNotUp
+from .resources.credential import engine_env
 from .resources.engine import Runtime
 from .resources.made import Made
 from .reports import Report, render, write_files
@@ -479,7 +480,9 @@ def execute(
             args = shlex.split(debugger) + sqllogic.batch_args(unittest_bin, batch, working_dir)
             print("\n" + " ".join(shlex.quote(a) for a in args) + "\n", file=out, flush=True)
             debugged = True
-            code = subprocess.call(args, cwd=working_dir)  # the terminal is the debugger's
+            code = subprocess.call(
+                args, cwd=working_dir, env=batch.test_env.environ()
+            )  # the terminal is the debugger's
             print(f"\nbatch kept: {batch.dir}", file=out, flush=True)
             if batch.test_env.init_sql:
                 print(
@@ -765,9 +768,11 @@ def _credential_env(tests, engine_id, made):
 
 @contextlib.contextmanager
 def _boot_environ(add):
-    """This process's env, with `add`, for what a boot starts (a JVM takes it); the run's own after."""
+    """What a boot starts (a JVM) takes this process's env: for the boot, it is the env any engine
+    starts from (`engine_env`), with `add`; the run's own after."""
     saved = dict(os.environ)
-    os.environ.update(add)
+    os.environ.clear()
+    os.environ.update({**engine_env(saved), **add})
     try:
         yield
     finally:

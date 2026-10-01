@@ -278,13 +278,16 @@ def test_a_credentials_env_counts_toward_the_engines_identity_by_source_never_by
     assert identity({"DT_OTHER": "key_id", "DT_SECRET": "secret"}) != first
 
 
-def test_a_booted_engine_gets_the_credentials_of_its_tests_when_it_boots(tmp_path, remote_inputs, monkeypatch):
+def test_a_booted_engine_boots_with_its_tests_credentials_and_no_sdk_name_of_the_shell(
+    tmp_path, remote_inputs, monkeypatch
+):
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.setenv("AWS_PROFILE", "mine")
     spark, at_boot = SparkRecorder(), {}
     booted = spark._boot
 
     def boot(log_path):
-        at_boot.update({n: os.environ.get(n) for n in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")})
+        at_boot.update({n: v for n, v in os.environ.items() if n.startswith("AWS_")})
         return booted(log_path)
 
     spark._boot = boot
@@ -292,7 +295,7 @@ def test_a_booted_engine_gets_the_credentials_of_its_tests_when_it_boots(tmp_pat
     code, _, _, _ = go(tmp_path, [test], engines=[spark.engine()])
     assert code == 0
     assert at_boot == {"AWS_ACCESS_KEY_ID": "admin", "AWS_SECRET_ACCESS_KEY": "password"}
-    assert "AWS_ACCESS_KEY_ID" not in os.environ, "the run's own env is back after the boot"
+    assert "AWS_ACCESS_KEY_ID" not in os.environ and os.environ["AWS_PROFILE"] == "mine", "the run's own env is back"
 
 
 def test_a_worker_engine_is_reset_between_tests_and_reopened_after_a_failure(tmp_path):

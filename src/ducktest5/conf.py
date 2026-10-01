@@ -1,7 +1,12 @@
 """`ducktest_conf.py`: configuration for a directory and everything below it.
 
 The file at the root of the scanned tree is the project file; it may also declare ENGINES, SERVICES,
-STORAGES, CREDENTIALS, AXES, SUITES, EXCLUDE and PYTHONPATH.
+STORAGES, CREDENTIALS, AXES, SUITES, EXCLUDE, PYTHONPATH and INHERIT_ENV.
+
+`INHERIT_ENV = ["AWS_CA_BUNDLE"]` names variables engine processes keep from the shell's env. Every
+other name under an SDK prefix (`AWS_`) is left out of them: an SDK reads it with getenv(), so a test
+that gets it from the shell can pass with one person's setup and fail elsewhere. Keys come from a
+credential, never from here.
 
 `PYTHONPATH = ["py", "../scripts"]` puts the repo's helper code on `sys.path`, each path relative to
 the project file, before the project file itself runs: it is read from the file's source, so it must
@@ -58,6 +63,7 @@ from .binary import UsageError
 from .declare import CONF_FILE, Variant, as_mutex
 from .resources import CredentialDef, DefaultStorage, EngineDef, ResourceDef, ServiceDef, StorageDef
 from .resources.client import check_names
+from .resources.credential import inherit_env
 from .resources.made import services_in
 
 _LISTS = ("tags", "engines", "variants", "mutex", "suites")
@@ -210,6 +216,7 @@ class Project:
     unused_rules: list = field(default_factory=list)
     default_storage: DefaultStorage | None = None  # None: `<repo>/data` and the default temp root
     pythonpath: tuple = ()  # absolute, in the order PYTHONPATH gave them
+    inherit_env: tuple = ()  # names engines keep from the shell's env under an SDK prefix
 
     def __post_init__(self):
         if self.default_storage is None:
@@ -343,6 +350,7 @@ def _apply_pythonpath(paths):
 def load_project(start):
     root = find_root(start)
     project = Project(root, {}, {}, {}, {}, ())
+    inherit_env(())
     root_file = os.path.join(root, CONF_FILE)
     if os.path.isfile(root_file):
         project.pythonpath = _literal_pythonpath(root_file, root)
@@ -371,6 +379,7 @@ def load_project(start):
             if "all" in project.suites:
                 raise UsageError(f"{path}: a project may not define a suite named 'all' -- it always exists, built in")
             project.exclude = tuple(getattr(module, "EXCLUDE", ()))
+            project.inherit_env = inherit_env(list(getattr(module, "INHERIT_ENV", ())), f"{path}: INHERIT_ENV")
             if (
                 hasattr(module, "PYTHONPATH")
                 and tuple(os.path.normpath(os.path.join(root, p)) for p in module.PYTHONPATH) != project.pythonpath
@@ -381,7 +390,17 @@ def load_project(start):
                 )
             _check(path, project)
         else:
-            for name in ("ENGINES", "SERVICES", "STORAGES", "CREDENTIALS", "AXES", "SUITES", "EXCLUDE", "PYTHONPATH"):
+            for name in (
+                "ENGINES",
+                "SERVICES",
+                "STORAGES",
+                "CREDENTIALS",
+                "AXES",
+                "SUITES",
+                "EXCLUDE",
+                "PYTHONPATH",
+                "INHERIT_ENV",
+            ):
                 if hasattr(module, name):
                     raise UsageError(f"{path}: {name} belongs in the root {CONF_FILE} only; this file may hold RULES")
         _prune(project, root, dirpath, dirnames)
