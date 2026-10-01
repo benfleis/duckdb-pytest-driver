@@ -1,7 +1,8 @@
 # The ladder
 
 Each rung is the test directory of a repo that uses ducktest5, and each adds one idea to the one
-before. Run these from inside a rung, e.g. `cd examples/ladder/02_rules`:
+before. Rung 00 is a repo that has never heard of ducktest5. Run these from inside a rung, e.g.
+`cd examples/ladder/02_rules`:
 
     ducktest5 scan --env                what each test is given, and where each part came from
     ducktest5 select --explain          what a bare run takes, which rule gave each test what, and why not
@@ -9,6 +10,31 @@ before. Run these from inside a rung, e.g. `cd examples/ladder/02_rules`:
 
 `run` needs a DuckDB build: set `BUILD_DIR` to the directory that holds `duckdb` and `test/unittest`.
 `--no-binary-check` is there because the build does not list these `.test` files.
+
+## 00_existing
+
+A repo as DuckDB core or an extension has it: `.test` files under `test/`, no `ducktest_conf.py`,
+nothing written for ducktest5. Run it in place, from the top of the repo. When there is a `test/`
+directory, ducktest5 takes it as the root of the tests, so a test id is relative to `test/`
+(`sql/math/add.test::add`), but a path you give is relative to where you are:
+
+    ducktest5 select --explain test/sql/math --suite default
+    ducktest5 run --no-binary-check test/sql/math --suite default
+
+A path selects every test under it, the `.test_slow` files too. A bare run leaves those out, because
+they are not in the suite `default`; with a path, add `--suite default` to leave them out again.
+`many_rows.test_slow` is the slow test here, and `strings/concat.test` is outside the path.
+
+A test is SKIPPED when a `require` in it is not met: here, `require-env DUCKTEST_LADDER_NEVER_SET`
+in the middle of `mid_file_skip.test`. The statements above it ran and passed, but ducktest5 reports
+the whole file as SKIPPED; DuckDB's `test/run` counts such a file as passed. Under "skipped inside
+the binary", the report says what each skipped test needed.
+
+`{DATA_DIR}` is `data/` at the top of the git repository, and `{TEMP_DIR}` is the test's own place
+in the run directory, `duckdb_unittest_tempdir/<run>/` in the working directory. For duckdb core,
+that is all: build it, go to the top of the checkout, and run
+`ducktest5 run test/sql/aggregate --suite default`. The build is found in `build/debug/` there, and
+the binary lists the files, so `--no-binary-check` is not needed.
 
 ## 01_solo
 

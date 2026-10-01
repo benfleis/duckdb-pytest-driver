@@ -1,0 +1,23 @@
+# name: test/sql/math/mid_file_skip.test
+# description: A require in the middle of the file that is not met.
+# group: [math]
+
+# -----------------------------------------------------------------------------
+# Runs
+#
+
+query I
+SELECT 2 * 3;
+----
+6
+
+# -----------------------------------------------------------------------------
+# Not met: the binary stops here, and the file is SKIPPED
+#
+
+require-env DUCKTEST_LADDER_NEVER_SET
+
+query I
+SELECT 1;
+----
+1

@@ -1,0 +1,8 @@
+# name: test/sql/math/many_rows.test_slow
+# description: A slow test: suite default leaves it out.
+# group: [math]
+
+query I
+SELECT sum(i) FROM range(1000000) t(i);
+----
+499999500000

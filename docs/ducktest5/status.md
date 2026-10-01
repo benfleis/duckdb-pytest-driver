@@ -67,8 +67,8 @@ docker and publishes it at `DUCKTEST_SERVICE_BIND:DUCKTEST_S3_LOCAL_PORT`.
 ## Where to read
 
 - `README.md`: install, and a first run in an existing repo.
-- `examples/ladder/README.md`: five small test trees. Each adds one idea: no config, rules,
-  credentials, an HTTP service, S3.
+- `examples/ladder/README.md`: six small test trees. Each adds one idea: an existing repo, no
+  config, rules, credentials, an HTTP service, S3.
 - [design.md](design.md). Part 1: how to write a test. Part 2:
   how it works, for people who write resource kinds or debug the runner. Appendix B: the delta
   configuration.

@@ -24,6 +24,8 @@ LADDER = os.path.join(os.path.dirname(HERE), "examples", "ladder")
 GOLDENS = os.path.join(HERE, "ducktest5_goldens", "ladder")
 FAKES = os.path.join(HERE, "ducktest5_fakes")
 RUNGS = sorted(d for d in os.listdir(LADDER) if os.path.isdir(os.path.join(LADDER, d)))
+# A rung whose README selects by path gives the same arguments to `select` and `run`.
+ARGS = {"00_existing": ["test/sql/math", "--suite", "default"]}
 EXIT_CODES = {"04_service": 1, "05_s3": 1}  # a blocked test fails the run
 FAKE_KEY = {"LADDER_FAKE_KEY_ID": "ladder-key-id-7f3a", "LADDER_FAKE_SECRET": "ladder-secret-9c1e"}
 
@@ -115,6 +117,8 @@ def rung_copy(tmp_path, monkeypatch):
         shutil.copytree(
             os.path.join(LADDER, rung), where, ignore=shutil.ignore_patterns("__pycache__", "duckdb_unittest_tempdir")
         )
+        if rung == "00_existing":
+            (where / ".git").mkdir()  # its top is a git repository's, where {DATA_DIR} is found
         monkeypatch.chdir(where)
 
     return copy
@@ -130,7 +134,7 @@ def test_scan_env(rung, rung_copy, tmp_path, capsys):
 @pytest.mark.parametrize("rung", RUNGS)
 def test_select_explain(rung, rung_copy, tmp_path, capsys):
     rung_copy(rung)
-    assert main(["select", "--explain"]) == 0
+    assert main(["select", "--explain", *ARGS.get(rung, [])]) == 0
     golden(f"{rung}.select-explain.txt", normalized(capsys.readouterr().out, tmp_path))
 
 
@@ -144,7 +148,7 @@ def test_run(rung, binaries, rung_copy, tmp_path, capsys):
     runs = tmp_path / "runs"
     args = ["--duckdb-bin", shell, "--unittest-bin", unittest, "--no-binary-check", "--temp-dir-root", str(runs)]
     # --keep leaves every file of the run for the search below.
-    code = main(["run", *args, "--workers", "1", "--keep"])
+    code = main(["run", *args, "--workers", "1", "--keep", *ARGS.get(rung, [])])
     out = capsys.readouterr().out
     assert code == EXIT_CODES.get(rung, 0), out
     (run_dir,) = runs.iterdir()

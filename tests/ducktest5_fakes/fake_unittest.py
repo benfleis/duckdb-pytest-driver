@@ -4,7 +4,7 @@
 `-l PATTERN` lists. What a test does comes from its file name:
 
     *fail*   ends with status error        *hang*    never ends
-    *crash*  exits before its end event    *skip*    ends as skip-requirement
+    *crash*  exits before its end event    *skip*    ends as skip-requirement, on its first `require-env`
     *giveup* prints a SKIP_TEST line and ends ok, as the binary does for an error on its skip list
     *onlyinbatch_fail* fails beside other tests and passes alone
     *stallatexit* / *badexit* end ok, then the process hangs / exits 7
@@ -38,6 +38,15 @@ def runs_so_far(name):
     with open(path, "w") as f:
         f.write(str(runs))
     return runs
+
+
+def unmet_env(name):
+    """The name of the first `require-env` in the file, if it is there to read."""
+    if os.path.isfile(name):
+        for line in open(name):
+            if line.startswith("require-env "):
+                return line.split()[1]
+    return "NOT_SET"
 
 
 def init_statement(config, which=1):
@@ -116,7 +125,7 @@ def main(argv):
             print(f"[SKIP_TEST] {name} :: skip on error_message matching 'HTTP'", file=sys.stderr, flush=True)
             event(event="end", name=name, status="ok", passes=1, fails=0, **{"skip-mode": 0}, temp_dir=temp)
         elif "skip" in name:
-            print(f"[SKIP_TEST] {name} :: require-env NOT_SET", file=sys.stderr, flush=True)
+            print(f"[SKIP_TEST] {name} :: require-env {unmet_env(name)}", file=sys.stderr, flush=True)
             event(
                 event="end", name=name, status="skip-requirement", passes=0, fails=0, **{"skip-mode": 0}, temp_dir=temp
             )

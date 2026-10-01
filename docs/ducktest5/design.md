@@ -100,6 +100,7 @@ def duckdb_creates_by_path_spark_appends_by_path(ctx):
 
 Run from above your tests (`ducktest5` finds `./test`, else `.`). The DuckDB build is found at the
 top of the repository, else set `BUILD_DIR`. Paths narrow each command; `--id ID` runs one test.
+A path also takes the `.test_slow` files under it; `--suite default` leaves them out, as a bare run does.
 From `examples/ladder/02_rules`, shortened (`--no-binary-check`: the build does not list the ladder):
 
 ```
@@ -135,7 +136,8 @@ A name with no value is an ERROR that lists the test's names. BLOCKED: a service
 
 ## 1.6 Moving an existing repo
 
-1. Run your `.test` tree with no `ducktest_conf.py` (1.1).
+1. Run your `.test` tree with no `ducktest_conf.py` (1.1): from the top of the repo,
+   `ducktest5 run test/sql --suite default` (rung 00).
 2. Extensions the tests need go on the engine: `duckdb_engine("duck", requires=[...])`.
 3. Scripts that export keys become a `CredentialDef` with `from_env` (2.5). CI keeps its secrets.
 4. `docker compose` services become `SERVICES`; one that runs already is `.as_existing(address=...)`.
@@ -278,6 +280,7 @@ the `1password:` source; scan checks of `{NAME}` references and of
 
 | Rung | Adds | Path |
 | --- | --- | --- |
+| 00 | an existing repo's `test/` tree: select by path, `--suite default`, SKIPPED | `00_existing/` |
 | 01 | no config: a `.test` and a Python body | `01_solo/` |
 | 02 | storages, an engine, `default`/`match`, `@test(bind=)` | `02_rules/` |
 | 03 | an s3 credential from env, an `auth` axis | `03_credentials/` |
