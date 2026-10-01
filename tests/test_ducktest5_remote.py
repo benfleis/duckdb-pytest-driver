@@ -195,3 +195,152 @@ def test_boto3_does_not_hide_another_error_of_a_bucket(monkeypatch):
     monkeypatch.setattr(store, "_client", lambda: FakeS3Client({}, create_error="AccessDenied"))
     with pytest.raises(FakeClientError, match="AccessDenied"):
         store.make_bucket("ducktest")
+
+
+# -----------------------------------------------------------------------------
+# Loading data in, checking it, and whole buckets
+#
+
+
+@pytest.fixture
+def dat(tmp_path):
+    root = tmp_path / "dat"
+    (root / "t1").mkdir(parents=True)
+    (root / "t1" / "a.parquet").write_bytes(b"one")
+    (root / "b.json").write_bytes(b"{}")
+    return str(root)
+
+
+def test_rclone_copies_syncs_and_removes_a_bucket(rclone, dat):
+    store = remote_for(ACCESS)
+    store.copy(dat, "s3://test-bucket/dat")
+    store.sync(dat, "s3://test-bucket/dat")
+    store.make_bucket("test-bucket")
+    store.delete_bucket("test-bucket")
+    assert [_command(c) for c in rclone()] == [
+        ["copy", dat, "ducktest:test-bucket/dat"],
+        ["sync", dat, "ducktest:test-bucket/dat"],
+        ["mkdir", "ducktest:test-bucket"],
+        ["purge", "ducktest:test-bucket"],
+    ]
+
+
+@pytest.mark.parametrize("code, same", [(0, True), (1, False), (3, False)])
+def test_rclone_check_says_whether_the_store_holds_the_directory(rclone, monkeypatch, dat, code, same):
+    monkeypatch.setenv("FAKE_RCLONE_EXIT", str(code))
+    assert remote_for(ACCESS).check(dat, "s3://test-bucket/dat") is same
+    (call,) = rclone()
+    assert _command(call) == ["check", "--one-way", dat, "ducktest:test-bucket/dat"]
+
+
+def test_an_rclone_check_that_fails_is_not_a_difference(rclone, monkeypatch, dat):
+    monkeypatch.setenv("FAKE_RCLONE_EXIT", "7")
+    with pytest.raises(RuntimeError, match=r"rclone check failed \(exit 7\)"):
+        remote_for(ACCESS).check(dat, "s3://test-bucket/dat")
+
+
+def test_rclone_finds_a_bucket_among_the_buckets(rclone, monkeypatch):
+    monkeypatch.setenv("FAKE_RCLONE_OUT", "ducktest/\ntest-bucket/\n")
+    store = remote_for(ACCESS)
+    assert store.bucket_exists("test-bucket") and not store.bucket_exists("test")
+    assert _command(rclone()[0]) == ["lsf", "ducktest:"]
+
+
+def test_rclone_opens_a_bucket_by_a_policy_through_boto3(rclone, monkeypatch):
+    client = FakeObjectClient({"pub": {}})
+    monkeypatch.setattr(Boto3Remote, "_client", lambda self: client)
+    remote_for(ACCESS).make_public("pub")
+    (statement,) = json.loads(client.policies["pub"])["Statement"]
+    assert statement["Principal"] == {"AWS": ["*"]} and statement["Action"] == ["s3:GetObject", "s3:ListBucket"]
+    assert statement["Resource"] == ["arn:aws:s3:::pub", "arn:aws:s3:::pub/*"]
+    assert rclone() == []
+
+
+def test_a_bucket_is_public_when_it_lists_without_keys(monkeypatch):
+    asked = []
+
+    def urlopen(url, timeout):
+        asked.append(url)
+        raise remote.urllib.error.HTTPError(url, 403, "denied", {}, None)
+
+    monkeypatch.setattr(remote.urllib.request, "urlopen", urlopen)
+    assert not Boto3Remote(ACCESS).is_public("pub")
+    assert asked == ["http://store:9000/pub?list-type=2&max-keys=1"]
+
+
+class FakeObjectClient:
+    """Buckets of {key: bytes}, with sizes and ETags as S3 gives them."""
+
+    def __init__(self, buckets):
+        self.buckets, self.policies = buckets, {}
+
+    def get_paginator(self, name):
+        return self
+
+    def paginate(self, Bucket, Prefix="", Delimiter=None):  # noqa: N803
+        if Bucket not in self.buckets:
+            raise FakeClientError("NoSuchBucket")
+        found = sorted(k for k in self.buckets[Bucket] if k.startswith(Prefix))
+        yield {
+            "Contents": [
+                {
+                    "Key": k,
+                    "Size": len(self.buckets[Bucket][k]),
+                    "ETag": f'"{remote.hashlib.md5(self.buckets[Bucket][k]).hexdigest()}"',
+                }
+                for k in found
+            ]
+        }
+
+    def upload_file(self, path, bucket, key):
+        with open(path, "rb") as f:
+            self.buckets[bucket][key] = f.read()
+
+    def delete_objects(self, Bucket, Delete):  # noqa: N803
+        for o in Delete["Objects"]:
+            del self.buckets[Bucket][o["Key"]]
+
+    def list_buckets(self):
+        return {"Buckets": [{"Name": b} for b in self.buckets]}
+
+    def delete_bucket(self, Bucket):  # noqa: N803
+        if Bucket not in self.buckets:
+            raise FakeClientError("NoSuchBucket")
+        assert not self.buckets[Bucket], "a bucket is emptied before it is removed"
+        del self.buckets[Bucket]
+
+    def put_bucket_policy(self, Bucket, Policy):  # noqa: N803
+        self.policies[Bucket] = Policy
+
+
+@pytest.fixture
+def objects(monkeypatch):
+    client = FakeObjectClient({"test-bucket": {"keep.csv": b"theirs"}})
+    store = Boto3Remote(ACCESS)
+    monkeypatch.setattr(store, "_client", lambda: client)
+    return store, client
+
+
+def test_boto3_copies_a_directory_and_checks_it(objects, dat):
+    store, client = objects
+    assert not store.check(dat, "s3://test-bucket/dat")
+    store.copy(dat, "s3://test-bucket/dat")
+    assert client.buckets["test-bucket"] == {"keep.csv": b"theirs", "dat/t1/a.parquet": b"one", "dat/b.json": b"{}"}
+    assert store.check(dat, "s3://test-bucket/dat")
+    client.buckets["test-bucket"]["dat/b.json"] = b"[]"
+    assert not store.check(dat, "s3://test-bucket/dat"), "same size, other content"
+
+
+def test_boto3_sync_removes_what_the_directory_does_not_have(objects, dat):
+    store, client = objects
+    client.buckets["test-bucket"]["dat/old.json"] = b"x"
+    store.sync(dat, "s3://test-bucket/dat")
+    assert sorted(client.buckets["test-bucket"]) == ["dat/b.json", "dat/t1/a.parquet", "keep.csv"]
+
+
+def test_boto3_removes_a_whole_bucket(objects):
+    store, client = objects
+    assert store.bucket_exists("test-bucket") and not store.bucket_exists("other")
+    store.delete_bucket("test-bucket")
+    store.delete_bucket("test-bucket")
+    assert client.buckets == {}
