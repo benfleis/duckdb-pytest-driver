@@ -6,19 +6,29 @@ Code auto-loads the same rules. If a rule here is wrong or stale, **fix it here*
 
 ## What this is
 
-A generic **pytest front-end over the duckdb `unittest` (Catch2) binary**: collect `.test`
-(SQLLogic) files and run them through the binary, plus Python `initialize`/`finalize` drivers,
-declarative `@requires` provisioning, managed temp dirs, and batching/parallelism. **The
-`.test`/`.sql` file stays the central artifact** — the Python is thin glue, never the test itself.
+**`ducktest5` is the home** (`src/ducktest5/`, CLI `ducktest5`): a pytest-free runner that runs
+`.test` (SQLLogic) files through the duckdb `unittest` binary and Python test bodies, and makes the
+services, storages and credentials a repo declares in `ducktest_conf.py`. New work goes there.
+Canonical docs: **`README.md`** (install, first run), **`docs/ducktest5/design.md`** (how to write a
+test; how it works), **`docs/ducktest5/status.md`**, and **`examples/ladder/`** (rungs 00-05, checked
+against `tests/ducktest5_goldens/ladder/` by `tests/test_ducktest5_ladder.py`). Change behavior →
+update the ladder golden and the doc that describes it.
 
-- **Distribution:** `duckdb-pytest-driver` · **import + CLI:** `ducktest` (dist name ≠ import name, à la pillow/PIL).
+**Legacy: the pytest plugin `ducktest`** (`src/ducktest/`). It stays until it is moved out; the rules
+below that name pytest, `ducktest configure` or `docs/ARCHITECTURE.md` are about it. It is a generic
+**pytest front-end over the duckdb `unittest` (Catch2) binary**: collect `.test` files and run them
+through the binary, plus Python `initialize`/`finalize` drivers, declarative `@requires`
+provisioning, managed temp dirs, and batching/parallelism. In both runners **the `.test`/`.sql` file
+stays the central artifact** — the Python is thin glue, never the test itself.
+
+- **Distribution:** `duckdb-pytest-driver` · **import + CLI:** `ducktest`, and `ducktest5` for the new runner (dist name ≠ import name, à la pillow/PIL).
 - **Auto-registered** pytest plugin via a `pytest11` entry point — no `pytest_plugins`, no `sys.path`
   hacks, no symlinks.
 - **`ducktest configure`** writes the base `pytest.ini` a plugin can't inject (owned: exact-or-fail,
   never clobbered) plus a starter `pyproject.toml` for the test venv (scaffolded: written once, then
   yours — configure won't touch it again). After it, bare `pytest` / `uv run pytest` in a built checkout
   just work.
-- Canonical docs: **`README.md`** (use + integrate, worked example), **`docs/ARCHITECTURE.md`** (the
+- Its docs: **`README.md`**, section "Legacy" (use + integrate, worked example), **`docs/ARCHITECTURE.md`** (the
   model — suites, resources, store, provisioning), **`docs/INTERNALS.md`** (hooks/ordering/extending),
   **`docs/PLAN.md`** (roadmap/TODOs). Read the relevant one before changing behavior it describes.
 
@@ -57,8 +67,19 @@ pyproject.toml              hatchling; pytest11 + ducktest entry points; deps (p
 
 ## Dev loop
 
+ducktest5 (fake binaries; with `DUCKDB_SHELL` set to a built `duckdb` that has `test/unittest` beside
+it, the ladder also runs on that build):
+
 ```bash
-uv run pytest                        # self-tests (offline, stub binary). This is THE command.
+DUCKDB_SHELL=<a duckdb shell> uv run --all-extras --group dev pytest -q tests/test_ducktest5_*.py
+UPDATE_GOLDENS=1 uv run --all-extras --group dev pytest -q tests/test_ducktest5_ladder.py  # re-make the ladder goldens
+ruff check .
+```
+
+The legacy pytest plugin:
+
+```bash
+uv run pytest                        # self-tests (offline, stub binary).
 uv run pytest --run-docker -m docker # opt-in tier: boots real azurite/minio (needs docker + rclone; CI docker job)
 ruff check .
 ```

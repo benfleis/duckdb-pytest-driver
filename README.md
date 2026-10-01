@@ -1,4 +1,112 @@
-# ducktest
+# ducktest5
+
+DuckDB and its extensions are tested mostly with `.test` files: SQL statements and their expected
+results, in the SQLLogic format. ducktest5 runs these files through DuckDB's own `unittest` binary,
+and it runs Python test bodies for what SQL alone cannot set up: a second engine, a server, a
+credential. Your `.test` files stay as they are. When the tests need more, one file,
+`ducktest_conf.py`, declares it; ducktest5 makes it, gives it to the tests as `{NAME}` values, and
+removes it after the run. It does not use pytest.
+
+This repo also holds the older pytest plugin `ducktest`; see
+[Legacy: the pytest plugin `ducktest`](#legacy-the-pytest-plugin-ducktest).
+
+## Install
+
+The package is `duckdb-pytest-driver`, and it gives the command `ducktest5`.
+
+For a repo with only `.test` files, such as duckdb core, install it as a tool:
+
+    uv tool install "duckdb-pytest-driver @ git+https://github.com/benfleis/duckdb-pytest-driver@dev/v0.5"
+
+For a repo with Python test bodies, install it into the repo's test environment, with the packages
+the bodies import:
+
+    uv pip install "duckdb-pytest-driver @ git+https://github.com/benfleis/duckdb-pytest-driver@dev/v0.5"
+
+From a local checkout of this repo, editable, so that your changes here take effect at once:
+
+    uv tool install --editable /path/to/duckdb-pytest-driver
+    uv pip install -e /path/to/duckdb-pytest-driver
+
+## A first run, in duckdb core
+
+Build duckdb (`make debug`), then run from the top of the checkout:
+
+    ducktest5 run test/sql/aggregate --suite default
+
+You need no config file. ducktest5 finds the tests in `test/` and the build in `build/debug/`. For
+another build, use `--build release`, or set `BUILD_DIR` to the directory that holds `duckdb` and
+`test/unittest`.
+
+- **Select by path.** A path selects every test under it, also the `.test_slow` files.
+  `--suite default` leaves the slow files out, as a bare `ducktest5 run` does. Without it, the
+  example above takes more than ten minutes.
+- **Test ids.** A test id is relative to `test/`, for example
+  `sql/aggregate/qualify/test_qualify.test::test_qualify`. A path is relative to where you are, so
+  it starts with `test/`. `--id <test id>` runs one test.
+- **Results.** Each test gets one line: PASSED, FAILED, ERROR, SKIPPED or BLOCKED (a service it
+  needs did not start). A failure prints what is different, what was kept, and the command that
+  runs it again.
+- **SKIPPED** means that a `require` in the file was not met: an extension that is not built, or an
+  environment variable that is not set. The whole file is SKIPPED, also when statements above the
+  `require` ran. DuckDB's `test/run` counts such a file as passed, so the counts can be different.
+- **Speed.** `--workers N` (default 4) runs N batches at the same time. A batch is one `unittest`
+  process with up to 10 `.test` files. For a big run, `--level terse` prints only the summary.
+- **Diagnostics.** `-v` and `-vv` print ducktest5's own diagnostics on stderr, at INFO and DEBUG.
+
+Each run writes a run directory, `duckdb_unittest_tempdir/<run>/`, in the working directory. The
+last line of the output gives its path. It holds `01-tests.yaml` (the tests and what each gets),
+`02-plan.yaml` (the batches), `03-provision.yaml` (what was made), `04-events.jsonl` (what
+happened), `05-report.json` and `05-report.yaml` (the results), and `ducktest.log` (diagnostics at
+DEBUG). `ducktest5 report --run-dir <run dir>` prints the results again; `--junit FILE` also writes
+JUnit XML for CI.
+
+To look before you run:
+
+    ducktest5 select test/sql/aggregate --suite default    # which tests run, and why the others do not
+    ducktest5 scan --env test/sql/aggregate                # what each test gets, and from where
+
+An extension repo works the same way: build it, then run from the top of its checkout. When its
+tests need a service, a storage or a credential, write a `ducktest_conf.py`; the ladder and the
+design page show how.
+
+## The phases
+
+`ducktest5 run` does all phases in one process:
+
+1. **scan**: find the tests and what each needs.
+2. **plan**: put the tests into batches.
+3. **provision**: start the services and make the storages.
+4. **exec**: run the batches.
+5. **cleanup**: remove what the passed tests wrote, and stop the services.
+6. **report**: print the results.
+
+Each phase is also a command of its own (`ducktest5 scan`, `plan`, `provision`, `exec`,
+`cleanup`, `report`), which reads and writes a run directory. Use them to start services in one
+place and run the tests in another, or to report a run again.
+
+## Read next
+
+- [examples/ladder/](examples/ladder/README.md): small test trees, from an existing repo with no
+  config (rung 00) to a local S3 server (rung 05). Each rung adds one idea.
+- [docs/ducktest5/design.md](docs/ducktest5/design.md): how to write a test (Part 1), how it works
+  (Part 2), and how to move an existing repo (1.6).
+- [docs/ducktest5/status.md](docs/ducktest5/status.md): what works today, and what is open.
+- `ducktest5 <command> --help`.
+
+## Develop ducktest5
+
+The self-tests run against fake binaries. With `DUCKDB_SHELL` set to a built `duckdb` that has
+`test/unittest` beside it, the ladder runs on that build too:
+
+    DUCKDB_SHELL=<a duckdb shell> uv run --all-extras --group dev pytest -q tests/test_ducktest5_*.py
+    uvx ruff check .
+
+---
+
+## Legacy: the pytest plugin `ducktest`
+
+The pytest plugin is the older runner. It stays in this repo for now; new work goes into ducktest5.
 
 DuckDB and its extensions are mostly tested with `.test` files: plain-text scripts of SQL
 statements paired with their expected results, in the SQLLogic format DuckDB borrowed from
@@ -21,28 +129,11 @@ There are three shapes of test, and one suite can mix them:
 
 It installs as a pytest plugin, so there's no separate runner: you run `pytest`.
 
-The design and internals are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (the model),
+The plugin's design and internals are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (the model),
 [docs/INTERNALS.md](docs/INTERNALS.md) (extending it), [docs/MATRIX.md](docs/MATRIX.md) (running one
 `.test` body across cells — backends, configs), and [docs/PLAN.md](docs/PLAN.md) (the roadmap).
 
-## ducktest5
-
-`ducktest5` is the runner that follows, in `src/ducktest5/`, with no pytest underneath. It scans a
-test tree (`.test` files, and Python bodies marked `@test`), plans batches, brings up the services
-the tests need, runs them, cleans up and reports. A repo configures it in one `ducktest_conf.py`:
-its engines (DuckDB, Spark), storages, credentials, services and rules.
-
-The way in is the ladder, [examples/ladder/](examples/ladder/README.md): each rung is the test
-directory of a repo and adds one idea to the one before. From inside a rung:
-
-    ducktest5 scan --env            what each test is given, and where each part came from
-    ducktest5 select --explain      what a run takes, which rule gave each test what, and why not
-    ducktest5 run                   run it
-
-`-v`/`-vv` put ducktest5's own diagnostics (not the report) on stderr, at INFO and DEBUG; a run
-directory always gets `ducktest.log` at DEBUG, whatever `-v` says.
-
-## Collecting Python-native tests
+### Collecting Python-native tests
 
 The first two shapes work with no setup. A plain pytest test (a `.py` with no `.test` beside it)
 needs one config line: set `python_files = test_*.py` in your `pytest.ini` so pytest collects it.
@@ -53,7 +144,7 @@ other test, so suites, credentials, and `@requires` all apply.
 
 ---
 
-## Getting started
+### Getting started
 
 pytest imports your test modules, so pytest, this plugin, and everything your tests import all have
 to live in one environment. For a suite with real dependencies (pyspark, a SQL connector, your own
@@ -98,7 +189,7 @@ pytest                       # auto-detects rootdir + test/, resolves build/<var
 Tools come from one build (`build/<KIND>/{test/unittest, duckdb}`), selected with `--build <KIND>` (or
 `$BUILD_DIR`); override them individually with `--unittest-bin` / `--duckdb-bin`.
 
-### Preset credentials in the environment
+#### Preset credentials in the environment
 
 For a suite that needs credentials, ducktest fetches them once, up front, and prompts your secret tool
 (say `op`) only for what's actually missing. To skip the prompt entirely, which you want under
@@ -116,7 +207,7 @@ clear message instead of quietly skipping the test.
 
 ---
 
-## The Python layout that makes this work
+### The Python layout that makes this work
 
 Everything pytest imports — the driver, your `.py` drivers, backend helper packages, generators, and
 their third-party deps — has to resolve from **one** environment and import the **same way regardless of
@@ -179,7 +270,7 @@ how you're supposed to run it.
 
 ---
 
-## Everyday use
+### Everyday use
 
 ducktest follows pytest's conventions, so there's no new command to learn. You run `pytest` with its
 usual flags:
@@ -204,7 +295,7 @@ roadmap (PLAN.md § *Named test sets*).
 
 ---
 
-## Integrating a backend (worked example — Iceberg)
+### Integrating a backend (worked example — Iceberg)
 
 This walks an extension from bare `.test` files up to tests that hit a live REST catalog needing
 credentials and a docker service, with ducktest handling selection, credentials, container sharing,
@@ -213,7 +304,7 @@ A real onboarding usually starts much smaller: the first Iceberg suite we brough
 extension's own data generator through an embedded Spark session, with no catalog server and no
 credentials. Each step below links to [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the details.
 
-### 1. A pure-SQLLogic test (no Python)
+#### 1. A pure-SQLLogic test (no Python)
 
 Drop a body under `test/`; it runs through the binary:
 
@@ -237,7 +328,7 @@ pytest                               # all .test under test/
 
 That's the whole hello-world. Everything below is only for tests that need live resources.
 
-### 2. Declare your suites (`test/conftest.py`)
+#### 2. Declare your suites (`test/conftest.py`)
 
 A **suite** is a named slice of the tests (by directory `path`) with a default-run policy and its
 resources. Declare them in `test/conftest.py` (an *initial* conftest, so the driver sees them on the
@@ -268,7 +359,7 @@ You get the marker for free: the driver applies each suite's `marker` to every `
 `path`, so `-m rest` and `-m 'not rest'` work. A bare `pytest` runs only the `default=True` suites and
 prints a banner naming what it deselected. (ARCHITECTURE.md § *Selection*.)
 
-### 3. Credentials (the REST token)
+#### 3. Credentials (the REST token)
 
 Fetched once, up front, on the controller, then broadcast to workers. You supply four callables:
 
@@ -299,7 +390,7 @@ def token_error():                      # error: shown when creds are missing
   credentials are already usable; otherwise `fetch()` runs once through the shared store.
   (ARCHITECTURE.md § *Credentials*.)
 
-### 4. A docker service (the REST catalog container)
+#### 4. A docker service (the REST catalog container)
 
 Provisioned during collect-first when a selected suite needs it, shared across all workers, and stopped
 once by the controller. A fixture may consume the same service block:
@@ -330,7 +421,7 @@ A fixture consumer receives a stored startup failure without retrying the boot. 
 original provisioning error is currently suppressed and the test may instead fail because its service
 environment is missing. See ARCHITECTURE.md § *Services* and docs/SERVICES.md.
 
-### 5. A Python-driven test (provision a table, run the body, assert)
+#### 5. A Python-driven test (provision a table, run the body, assert)
 
 Pair a `.py` **driver** with a same-stem `.test` **body**. The driver declares the tables it needs
 (`@requires`); the `resources` fixture provisions them into an isolated schema; `run_paired` injects the
@@ -374,7 +465,7 @@ The `${CATALOG}/${SCHEMA}/${TABLE}` names the body substitutes are a convention 
 (reuse UC's `identity.py` or write your own); the `resources` fixture doesn't dictate the keys.
 (ARCHITECTURE.md § *Provisioning*.)
 
-### 6. Run it
+#### 6. Run it
 
 ```
 pytest                     # local/smoke: iceberg_local only; rest deselected + banner; no creds
@@ -383,7 +474,7 @@ pytest test/rest           # same, by path
 pytest -k roundtrip        # collect-first resolves -k; required resources provision up front
 ```
 
-### What you didn't have to write
+#### What you didn't have to write
 
 You wrote two `register_suite` calls, four credential callables, a start/stop pair with a fixture, a
 provisioner, and the tests. Everything else came from ducktest: selection and marking, the smoke
