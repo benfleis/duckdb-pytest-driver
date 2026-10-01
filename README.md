@@ -18,10 +18,19 @@ For a repo with only `.test` files, such as duckdb core, install it as a tool:
 
     uv tool install "duckdb-pytest-driver @ git+https://github.com/benfleis/duckdb-pytest-driver@dev/v0.5"
 
-For a repo with Python test bodies, install it into the repo's test environment, with the packages
-the bodies import:
+For a repo with Python test bodies, give the repo a test environment with `ducktest5 init`, run
+once at the top of its checkout:
 
-    uv pip install "duckdb-pytest-driver @ git+https://github.com/benfleis/duckdb-pytest-driver@dev/v0.5"
+    ducktest5 init --runner git+https://github.com/benfleis/duckdb-pytest-driver.git@<rev> \
+        --extra s3 --dep pyspark==4.2.0
+    uv sync && .venv/bin/ducktest5 run
+
+It writes `pyproject.toml`: the runner pinned by git URL and rev (`--runner path:DIR` for a local
+checkout, editable; the default is where this `ducktest5` was installed from), its extras
+(`--extra`), the packages the bodies import (`--dep`), Python `>=3.12`, and `package = false`. Then
+it runs `uv lock`; check `uv.lock` in. `--conf [DIR]` also writes a starter `ducktest_conf.py` in
+`test/` or DIR; a tree of plain `.test` files needs none. A file that is already there and different
+is not overwritten: init prints the diff and exits 1; merge it by hand, or run again with `--write`.
 
 From a local checkout of this repo, editable, so that your changes here take effect at once:
 

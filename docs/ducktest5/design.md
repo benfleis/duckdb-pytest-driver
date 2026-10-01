@@ -145,7 +145,8 @@ the binary skips the file that `ctx.run_paired()` runs, the body ends SKIPPED wi
 ## 1.6 Moving an existing repo
 
 1. Run your `.test` tree with no `ducktest_conf.py` (1.1): from the top of the repo,
-   `ducktest5 run test/sql --suite default` (rung 00).
+   `ducktest5 run test/sql --suite default` (rung 00). For Python bodies, `ducktest5 init` writes
+   the repo's test environment, `pyproject.toml`, with the runner pinned (README, Install).
 2. Extensions the tests need go on the engine: `duckdb_engine("duck", requires=[...])`.
 3. Scripts that export keys become a typed credential, such as `S3CredentialDef` with `from_env`
    (2.5). CI keeps its secrets. Keys of the shell's own env no longer reach the engines by

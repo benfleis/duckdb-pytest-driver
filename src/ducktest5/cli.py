@@ -21,6 +21,8 @@ refuses unless `--force`; `exec` takes `--resume` (the tests with no end yet), `
 `ducktest5 report --run-dir DIR [DIR ...]` prints an old run again. Nothing is recomputed: every
 format reads `04-events.jsonl` and only that. Several run dirs merge into one report, a later one
 winning a test id they share, so "what does the whole matrix say" is one command.
+
+`ducktest5 init` writes the repo's test environment, `pyproject.toml`, and locks it (`init.py`).
 """
 
 import argparse
@@ -30,7 +32,7 @@ import sys
 
 import yaml
 
-from . import events, logconfig, phases, leases, sqllogic, testenv
+from . import events, init, logconfig, phases, leases, sqllogic, testenv
 from .binary import UsageError, find_duckdb
 from .conf import load_project, repo_root
 from .declare import CONF_FILE
@@ -258,6 +260,8 @@ def main(argv=None):
         if name != "cleanup":
             p.add_argument("--force", action="store_true", help="do this phase again although its file is there")
 
+    commands["init"] = init.add_parser(sub)
+
     report_options = sub.add_parser("report", help="print a run that already happened, in any format")
     report_options.add_argument(
         "--run-dir",
@@ -284,6 +288,8 @@ def main(argv=None):
         debugger = args.debugger or os.environ.get("DUCKTEST_DEBUGGER") or "lldb --"
 
     try:
+        if args.command == "init":
+            return init.run(args)
         if args.command == "report":
             return _report(args)
         if args.command in ("plan", "provision", "exec", "cleanup"):
