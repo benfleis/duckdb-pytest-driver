@@ -369,6 +369,7 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-01: `select` counts what it left out in one line; `--explain` lists each.
 - 2026-10-01: `PYTHONPATH` in the root `ducktest_conf.py`.
 - 2026-10-01: a Python body can skip: `ctx.skip(reason)`, `ducktest5.skip(reason)`.
 - 2026-10-01: `ctx.env` is now `ctx.values` (and `client.values`, `ctx.run_paired(values=)`).

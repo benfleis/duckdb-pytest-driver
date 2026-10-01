@@ -56,7 +56,19 @@ def test_select_says_what_runs_what_does_not_and_with_explain_which_rule_gave_wh
                 timeout=30  <- ducktest_conf.py: match 'a/**'
         skip  b/z_fail.test::z_fail  -- outside the given paths
 
-        2 of 3 tests
+        2 of 3 tests; left out: 1 outside the given paths
+        """
+    )
+
+
+def test_select_without_explain_counts_what_it_left_out_in_one_line(tree, capsys):
+    (tree / "test/b/w.test").write_text("")
+    assert main(["select", "test/a", "--skip", "test/a/y.test_slow"]) == 0
+    assert capsys.readouterr().out == textwrap.dedent(
+        """\
+        run   a/x.test::x
+
+        1 of 4 tests; left out: 2 outside the given paths, 1 --skip test/a/y.test_slow (--explain lists each)
         """
     )
 
@@ -74,7 +86,7 @@ def test_skip_removes_a_test_and_says_which_skip(tree, capsys):
         skip  a/y.test_slow::y  -- --skip tag=all
         skip  b/z_fail.test::z_fail  -- outside the given paths
 
-        0 of 3 tests
+        0 of 3 tests; left out: 2 --skip tag=all, 1 outside the given paths
         """
     )
 

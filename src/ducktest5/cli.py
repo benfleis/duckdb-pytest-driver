@@ -25,6 +25,7 @@ winning a test id they share, so "what does the whole matrix say" is one command
 
 import argparse
 import os
+import re
 import sys
 
 import yaml
@@ -138,7 +139,7 @@ def main(argv=None):
     commands = {}
     for name, text in (
         ("scan", "print every selected test with what it needs, or write 01-tests.yaml"),
-        ("select", "print which tests would run, and for each other test why not"),
+        ("select", "print which tests would run, and how many were left out and why"),
         ("run", "run the selected tests: every phase, in one process"),
     ):
         p = commands[name] = sub.add_parser(name, help=text)
@@ -169,7 +170,11 @@ def main(argv=None):
         )
         p.add_argument("--root", default=None, help="where the tests are (default: ./test, else .)")
         if name == "select":
-            p.add_argument("--explain", action="store_true", help="also print which rule gave each test what")
+            p.add_argument(
+                "--explain",
+                action="store_true",
+                help="also print which rule gave each test what, and why each other test is left out",
+            )
         if name == "scan":
             p.add_argument(
                 "--env",
@@ -319,10 +324,11 @@ def main(argv=None):
                 if args.explain:
                     for line in c.why:
                         print(f"        {line}")
-            for c in tests:
-                if c.id in why_not:
-                    print(f"skip  {c.id}  -- {why_not[c.id]}")
-            print(f"\n{len(selected)} of {len(tests)} tests")
+            if args.explain:
+                for c in tests:
+                    if c.id in why_not:
+                        print(f"skip  {c.id}  -- {why_not[c.id]}")
+            print(f"\n{_select_summary(selected, tests, why_not, explained=args.explain)}")
             return 0
         if not selected:
             raise UsageError("no test selected")
@@ -355,6 +361,21 @@ def main(argv=None):
     except UsageError as exc:
         print(f"ducktest5: {exc}", file=sys.stderr)
         return 2
+
+
+def _select_summary(selected, tests, why_not, *, explained):
+    """`2 of 9 tests; left out: 6 outside the given paths, 1 not in suite 'default'`: each reason cut
+    before the detail that differs per test, so a tree of thousands is one line."""
+    line = f"{len(selected)} of {len(tests)} tests"
+    if not why_not:
+        return line
+    groups = {}
+    for reason in why_not.values():
+        kind = re.split(r":|  <- ", reason, maxsplit=1)[0].strip()
+        groups[kind] = groups.get(kind, 0) + 1
+    by_count = sorted(groups.items(), key=lambda kv: -kv[1])
+    line += "; left out: " + ", ".join(f"{n} {kind}" for kind, n in by_count)
+    return line if explained else line + " (--explain lists each)"
 
 
 def _scan(args, working_dir):

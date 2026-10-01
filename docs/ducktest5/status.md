@@ -13,7 +13,7 @@ Code: `src/ducktest5/` in this repo, branch `feat/resources`. It will be squashe
 
 | What | Result |
 | --- | --- |
-| Runner self-tests | 653 passed |
+| Runner self-tests | 677 passed |
 | The ladder, rungs 01-05 | pass; the self-tests compare them with goldens |
 | Rung 05 (S3) with a live RustFS server | passes; its golden is the BLOCKED case (no server) |
 | duckdb-delta, `storage` axis `local` and `s3`, live RustFS | 118 passed, 1 failed, 44 skipped |
@@ -87,7 +87,6 @@ docker and publishes it at `DUCKTEST_SERVICE_BIND:DUCKTEST_S3_LOCAL_PORT`.
   find it.
 - A `ducktest_conf.py` with declarations below the project root is an error, but the error does
   not say which directory to run from.
-- `select --explain <path>` prints one "outside the given paths" line for every other test.
 - A remote storage has no local twin (`LOCAL_TEMP_DIR`, `LOCAL_DATA_DIR`).
 - The ladder has no two-engine rung and no example of `setup`, `teardown` or `params`.
 - Rung 05's golden is the BLOCKED case. A live S3 run is checked by hand, not by the self-tests.

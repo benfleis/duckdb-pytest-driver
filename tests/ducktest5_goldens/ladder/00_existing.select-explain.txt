@@ -3,4 +3,4 @@ run   sql/math/mid_file_skip.test::mid_file_skip
 skip  sql/math/many_rows.test_slow::many_rows  -- not in suite 'default': tag slow
 skip  sql/strings/concat.test::concat  -- outside the given paths
 
-2 of 4 tests
+2 of 4 tests; left out: 1 not in suite 'default', 1 outside the given paths
