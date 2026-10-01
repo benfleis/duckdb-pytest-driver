@@ -17,7 +17,7 @@ from ducktest5.engines.duckdb import DuckDBShell, duckdb_engine
 from ducktest5.engines.spark import SparkHandle
 from ducktest5.engines.unittest import UnittestEngineDef
 from ducktest5.model import PYTHON, SQLLOGIC, Test, TestDef
-from ducktest5.resources import RO, RW, BootedEngineDef, S3Credential, StorageDef, check_contract, from_env
+from ducktest5.resources import RO, RW, BootedEngineDef, S3CredentialDef, StorageDef, check_contract, from_env
 from ducktest5.resources.engine import Runtime
 from ducktest5.resources.made import planned_identity
 from ducktest5.scan import scan
@@ -154,7 +154,7 @@ def remote_inputs(monkeypatch):
     monkeypatch.setenv("DT_SECRET", "password")
     storage = StorageDef("remote", "s3://ducktest/delta", endpoint="http://172.18.0.1:9999")
     keys = {"DT_KEY": "key_id", "DT_SECRET": "secret"}
-    credential = S3Credential("remote-key", sources=[from_env(keys)], scopes=["remote"])
+    credential = S3CredentialDef("remote-key", sources=[from_env(keys)], scopes=["remote"])
     return [storage, credential], {"remote": storage.make(), "remote-key": credential.make()}
 
 
@@ -264,7 +264,7 @@ def test_a_credentials_env_counts_toward_the_engines_identity_by_source_never_by
     storage = StorageDef("bucket", "s3://bucket")
 
     def identity(keys):
-        credential = S3Credential("key", sources=[from_env(keys)], scopes=["bucket"])
+        credential = S3CredentialDef("key", sources=[from_env(keys)], scopes=["bucket"])
         test = Test(TestDef(path="t.py", name="t", type=PYTHON), None, {}, ((storage, RW), (credential, RO)))
         (engine,) = leases.bind(test, resolve(test), project)
         return planned_identity(engine)

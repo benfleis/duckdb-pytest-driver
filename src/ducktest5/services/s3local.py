@@ -18,7 +18,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from ..host import docker, has_docker, in_url, service_bind, service_host
-from ..resources import ON_FAILURE, S3Credential, Service, ServiceDef, ServiceNotUp, StorageDef
+from ..resources import ON_FAILURE, S3CredentialDef, Service, ServiceDef, ServiceNotUp, StorageDef
 from ..resources.remote import S3Access, remote_for
 
 _log = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ class S3LocalDef(ServiceDef):
     detached = True
     attributes = ("endpoint", "bucket", "region")
     secret_attributes = ("access_key", "secret_key")
-    credential_type = S3Credential
+    credential_type = S3CredentialDef
     delivers = {"key_id": "access_key", "secret": "secret_key", "region": "region"}
 
     id: str = "s3"

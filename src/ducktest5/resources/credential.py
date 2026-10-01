@@ -149,7 +149,7 @@ def _scope(credential_id, entry):
 
 @dataclass(eq=False)
 class CredentialDef(ResourceDef):
-    """A secret a test needs, of a typed class (`S3Credential`); this base is never declared itself.
+    """A secret a test needs, of a typed class (`S3CredentialDef`); this base is never declared itself.
 
     `sources` is one ordered list, tried at acquire, and the first that resolves gives all the fields:
     `from_env(...)`, a string reference with a known scheme (`"1password:NAME"`; `"env:NAME"` is
@@ -186,7 +186,7 @@ class CredentialDef(ResourceDef):
         if type(self) is CredentialDef:
             raise UsageError(
                 f"CredentialDef({self.id!r}): CredentialDef is the base class; declare a typed credential, "
-                "such as S3Credential"
+                "such as S3CredentialDef"
             )
         from .client import check_names
 
@@ -352,7 +352,7 @@ CredentialDef.instance = Credential
 
 
 @dataclass(eq=False)
-class S3Credential(CredentialDef):
+class S3CredentialDef(CredentialDef):
     """Keys of an S3 store, or of one that speaks S3. httpfs reads them from the AWS_* env by itself."""
 
     type = "s3"
@@ -374,9 +374,16 @@ class S3Credential(CredentialDef):
     region: str | None = None
 
     @classmethod
-    def from_aws_env(cls, id: str, **fields) -> S3Credential:
+    def from_aws_env(cls, id: str, **fields) -> S3CredentialDef:
         """The keys of the shell's own AWS_* env, said so explicitly."""
         return cls(id, sources=[from_env([n for names in cls.env.values() for n in names])], **fields)
+
+
+class S3Credential(Credential):
+    """A resolved `S3CredentialDef`."""
+
+
+S3CredentialDef.instance = S3Credential
 
 
 def pick_credentials(

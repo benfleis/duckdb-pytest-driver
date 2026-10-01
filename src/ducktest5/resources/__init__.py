@@ -14,7 +14,15 @@ from .base import (  # noqa: F401
     ResourceDef,
 )
 from .contract import check_contract  # noqa: F401
-from .credential import CredentialDef, Field, S3Credential, from_env, pick_credentials  # noqa: F401
+from .credential import (  # noqa: F401
+    Credential,
+    CredentialDef,
+    Field,
+    S3Credential,
+    S3CredentialDef,
+    from_env,
+    pick_credentials,
+)
 from .service import Service, ServiceDef, ServiceNotUp  # noqa: F401
 from .engine import BootedEngineDef, Engine, EngineDef  # noqa: F401
 from .storage import (  # noqa: F401

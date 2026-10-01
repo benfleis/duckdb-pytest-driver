@@ -68,7 +68,7 @@ class Fake(Service):
 
 
 @dataclass(eq=False)
-class FakeCredential(CredentialDef):
+class FakeCredentialDef(CredentialDef):
     type = "fake"
     fields = {"key": Field(required=True, secret=True), "url": Field()}
     env = {"key": ("FAKE_KEY",), "url": ("FAKE_URL",)}
@@ -79,7 +79,7 @@ class FakeDef(ServiceDef):
     kind = "fake"
     attributes = ("url",)
     secret_attributes = ("key",)
-    credential_type = FakeCredential
+    credential_type = FakeCredentialDef
     delivers = {"key": "key", "url": "url"}
     ready_timeout_s = 1
 

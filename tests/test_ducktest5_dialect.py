@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from ducktest5.binary import UsageError
-from ducktest5.resources import S3Credential, StorageDef, from_env
+from ducktest5.resources import S3CredentialDef, StorageDef, from_env
 from ducktest5.resources.dialect import Preamble, pairs, preamble, render
 
 KEYS = {"DT_KEY": "key_id", "DT_SECRET": "secret"}
@@ -17,7 +17,7 @@ def remote(monkeypatch):
     monkeypatch.setenv("DT_KEY", "admin")
     monkeypatch.setenv("DT_SECRET", "it's-secret")
     storage = StorageDef("remote", "s3://ducktest/delta", endpoint="http://172.18.0.1:9999").make()
-    credential = S3Credential("remote-key", sources=[from_env(KEYS)], scopes=["remote"]).make()
+    credential = S3CredentialDef("remote-key", sources=[from_env(KEYS)], scopes=["remote"]).make()
     credential.start()
     return storage, credential
 
@@ -29,7 +29,7 @@ def two_storages(monkeypatch):
     monkeypatch.setenv("DT_SECRET", "it's-secret")
     a = StorageDef("bucket-a", "s3://bucket-a", endpoint="http://172.18.0.1:9999").make()
     b = StorageDef("bucket-b", "s3://bucket-b", endpoint="http://172.18.0.1:9999").make()
-    credential = S3Credential("shared-key", sources=[from_env(KEYS)], scopes=["bucket-a", "bucket-b"]).make()
+    credential = S3CredentialDef("shared-key", sources=[from_env(KEYS)], scopes=["bucket-a", "bucket-b"]).make()
     credential.start()
     return [a, b], credential
 
@@ -119,7 +119,7 @@ def test_a_local_storage_needs_no_secret(tmp_path, monkeypatch):
     monkeypatch.setenv("DT_KEY", "k")
     monkeypatch.setenv("DT_SECRET", "s")
     storage = StorageDef("local", str(tmp_path)).make()
-    credential = S3Credential("c", sources=[from_env(KEYS)], scopes=["local"]).make()
+    credential = S3CredentialDef("c", sources=[from_env(KEYS)], scopes=["local"]).make()
     credential.start()
     assert render("duckdb", "secret", [storage], credential) == render("spark", "secret", [storage], credential)
     assert render("duckdb", "secret", [storage], credential) == Preamble()

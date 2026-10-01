@@ -9,7 +9,7 @@ from ducktest5 import leases
 from ducktest5.binary import UsageError
 from ducktest5.declare import Variant
 from ducktest5.model import SQLLOGIC, Test, TestDef
-from ducktest5.resources import RO, RW, S3Credential, StorageDef
+from ducktest5.resources import RO, RW, S3CredentialDef, StorageDef
 from ducktest5.resources import credential as cred_mod
 from ducktest5.resources import from_env
 from ducktest5.resources.made import Made
@@ -114,7 +114,9 @@ def test_an_engine_process_gets_no_sdk_name_of_the_shells_env_but_what_inherit_e
 
 
 def test_a_key_in_inherit_env_is_a_usage_error():
-    message = "INHERIT_ENV: AWS_SECRET_ACCESS_KEY is a credential name; declare S3Credential.from_aws_env(...) instead"
+    message = (
+        "INHERIT_ENV: AWS_SECRET_ACCESS_KEY is a credential name; declare S3CredentialDef.from_aws_env(...) instead"
+    )
     with pytest.raises(UsageError, match=re.escape(message)):
         cred_mod.inherit_env(["AWS_SECRET_ACCESS_KEY"])
 
@@ -204,7 +206,7 @@ def test_a_test_file_creates_its_scoped_secret_from_a_template_the_binary_fills(
     monkeypatch.setenv("DT_KEY", "k-value")
     monkeypatch.setenv("DT_SECRET", "s-value")
     storage = StorageDef("bucket", "s3://bucket")
-    credential = S3Credential(
+    credential = S3CredentialDef(
         "key",
         sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})],
         scopes=["bucket"],
@@ -228,7 +230,9 @@ def test_the_scoped_secret_of_a_test_file_does_not_change_its_key(monkeypatch):
     monkeypatch.setenv("DT_KEY", "k-value")
     monkeypatch.setenv("DT_SECRET", "s-value")
     storage = StorageDef("bucket", "s3://bucket")
-    credential = S3Credential("key", sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})], scopes=["bucket"])
+    credential = S3CredentialDef(
+        "key", sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})], scopes=["bucket"]
+    )
     sql_file = make_test()
     python = Test(TestDef(path="t.py", name="t", type="python"), None, {})
     for test in (sql_file, python):

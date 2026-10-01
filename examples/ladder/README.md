@@ -81,7 +81,7 @@ share one label; their binding on `@test` gives them a label other than that of
 
 ## 03_credentials
 
-The storage is now an S3 bucket that nothing reads. `S3Credential("fake_key", ...)` is scoped to it
+The storage is now an S3 bucket that nothing reads. `S3CredentialDef("fake_key", ...)` is scoped to it
 and takes its two fields, `key_id` and `secret`, from `LADDER_FAKE_KEY_ID` and `LADDER_FAKE_SECRET`;
 set both before a run. The rule binds the bucket for the `scoped_*` tests, so they hold the
 credential; `no_secret.test` binds nothing and holds none. Each body asks DuckDB for its secrets: one,

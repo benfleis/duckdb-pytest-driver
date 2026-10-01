@@ -26,6 +26,7 @@ from ducktest5.resources import (
     Field,
     Resource,
     S3Credential,
+    S3CredentialDef,
     StorageDef,
     check_contract,
     from_env,
@@ -213,7 +214,7 @@ KEYS = {"DT_KEY": "key_id", "DT_SECRET": "secret"}
 
 
 @dataclass(eq=False)
-class TokenCredential(CredentialDef):
+class TokenCredentialDef(CredentialDef):
     """A credential class of the tests' own: one token."""
 
     type = "token"
@@ -227,12 +228,18 @@ def test_a_credential_takes_the_first_source_that_resolves(monkeypatch):
     monkeypatch.setenv("DT_KEY", "k1")
     monkeypatch.setenv("DT_SECRET", "s1")
     missing = from_env({"DT_MISSING": "key_id", "DT_MISSING_SECRET": "secret"})
-    cred = S3Credential("key", sources=[missing, from_env(KEYS)]).make()
+    cred = S3CredentialDef("key", sources=[missing, from_env(KEYS)]).make()
     cred.create()
     assert cred.attributes == {}
     assert cred.secrets["AWS_ACCESS_KEY_ID"].source == "env DT_KEY"
     monkeypatch.setenv("DT_KEY", "k2")  # read when delivered, not when resolved
     assert cred.delivery()[1]["AWS_ACCESS_KEY_ID"].get() == "k2"
+
+
+def test_an_s3_credential_def_makes_an_s3_credential(monkeypatch):
+    monkeypatch.setenv("DT_KEY", "k")
+    monkeypatch.setenv("DT_SECRET", "s")
+    assert isinstance(S3CredentialDef("key", sources=[from_env(KEYS)]).make(), S3Credential)
 
 
 def test_sources_never_mix(monkeypatch):
@@ -241,7 +248,7 @@ def test_sources_never_mix(monkeypatch):
     monkeypatch.setenv("DT_SECRET", "s2")
     monkeypatch.setenv("DT_REGION", "eu-west-1")
     first = from_env({"DT_KEY": "key_id", "DT_MISSING_SECRET": "secret", "DT_REGION": "region"})
-    cred = S3Credential("key", sources=[first, from_env(KEYS)]).make()
+    cred = S3CredentialDef("key", sources=[first, from_env(KEYS)]).make()
     cred.create()
     assert sorted(cred.fields) == ["key_id", "secret"], "the region of the first source does not come along"
 
@@ -250,7 +257,7 @@ def test_an_optional_field_that_is_not_set_is_left_out(monkeypatch):
     monkeypatch.setenv("DT_KEY", "k")
     monkeypatch.setenv("DT_SECRET", "s")
     monkeypatch.delenv("DT_REGION", raising=False)
-    cred = S3Credential("key", sources=[from_env({**KEYS, "DT_REGION": "region"})]).make()
+    cred = S3CredentialDef("key", sources=[from_env({**KEYS, "DT_REGION": "region"})]).make()
     cred.create()
     assert sorted(cred.secrets) == ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
 
@@ -260,7 +267,7 @@ def test_a_region_is_delivered_under_both_names_and_read_from_the_first_set(monk
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("AWS_REGION", raising=False)
     monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
-    cred = S3Credential.from_aws_env("aws").make()
+    cred = S3CredentialDef.from_aws_env("aws").make()
     cred.create()
     assert {n: a.get() for n, a in cred.secrets.items()} == {
         "AWS_ACCESS_KEY_ID": "k",
@@ -277,10 +284,10 @@ def test_a_literal_is_a_default_a_source_overrides(monkeypatch):
     monkeypatch.setenv("DT_KEY", "k")
     monkeypatch.setenv("DT_SECRET", "s")
     monkeypatch.setenv("DT_REGION", "from-env")
-    cred = S3Credential("key", sources=[from_env(KEYS)], region="literal").make()
+    cred = S3CredentialDef("key", sources=[from_env(KEYS)], region="literal").make()
     cred.create()
     assert cred.fields["region"].get() == "literal"
-    cred = S3Credential("key", sources=[from_env({**KEYS, "DT_REGION": "region"})], region="literal").make()
+    cred = S3CredentialDef("key", sources=[from_env({**KEYS, "DT_REGION": "region"})], region="literal").make()
     cred.create()
     assert cred.fields["region"].get() == "from-env"
 
@@ -288,12 +295,12 @@ def test_a_literal_is_a_default_a_source_overrides(monkeypatch):
 def test_a_credential_none_of_whose_sources_resolve_says_which_it_tried(monkeypatch):
     monkeypatch.delenv("DT_MISSING", raising=False)
     with pytest.raises(UsageError, match=r"'key': none of its sources resolved: \{'env': \{'DT_MISSING'"):
-        TokenCredential("key", sources=[from_env({"DT_MISSING": "token"})]).make().create()
+        TokenCredentialDef("key", sources=[from_env({"DT_MISSING": "token"})]).make().create()
 
 
 def test_1password_is_not_available_here(monkeypatch):
     monkeypatch.delenv("DT_TOKEN", raising=False)
-    cred = TokenCredential("key", sources=["env:DT_TOKEN", "1password:ducktest-aws"]).make()
+    cred = TokenCredentialDef("key", sources=["env:DT_TOKEN", "1password:ducktest-aws"]).make()
     with pytest.raises(UsageError, match=r"'key': source 1password:ducktest-aws is not available here"):
         cred.create()
 
@@ -302,24 +309,24 @@ def test_1password_is_not_available_here(monkeypatch):
     "make, message",
     [
         (
-            lambda: S3Credential("fake_key", sources=[from_env({"LADDER_FAKE_KEY": "key", "S": "secret"})]),
-            "S3Credential('fake_key'): from_env maps LADDER_FAKE_KEY to 'key', which is not a field of "
-            "S3Credential (key_id, secret, session_token, region)",
+            lambda: S3CredentialDef("fake_key", sources=[from_env({"LADDER_FAKE_KEY": "key", "S": "secret"})]),
+            "S3CredentialDef('fake_key'): from_env maps LADDER_FAKE_KEY to 'key', which is not a field of "
+            "S3CredentialDef (key_id, secret, session_token, region)",
         ),
         (
-            lambda: S3Credential("fake_key", sources=[from_env({"LADDER_FAKE_KEY_ID": "key_id"})]),
-            "S3Credential('fake_key'): source from_env({'LADDER_FAKE_KEY_ID': 'key_id'}) gives no 'secret'; "
+            lambda: S3CredentialDef("fake_key", sources=[from_env({"LADDER_FAKE_KEY_ID": "key_id"})]),
+            "S3CredentialDef('fake_key'): source from_env({'LADDER_FAKE_KEY_ID': 'key_id'}) gives no 'secret'; "
             "a source must give every required field (key_id, secret)",
         ),
         (
-            lambda: S3Credential("ci", sources=[from_env(["AWS_KEY"])]),
-            "S3Credential('ci'): from_env(['AWS_KEY']): AWS_KEY is not an env name of S3Credential "
+            lambda: S3CredentialDef("ci", sources=[from_env(["AWS_KEY"])]),
+            "S3CredentialDef('ci'): from_env(['AWS_KEY']): AWS_KEY is not an env name of S3CredentialDef "
             "(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_REGION, AWS_DEFAULT_REGION); "
             "map it with from_env({'AWS_KEY': field})",
         ),
         (
             lambda: CredentialDef("k"),
-            "CredentialDef('k'): CredentialDef is the base class; declare a typed credential, such as S3Credential",
+            "CredentialDef('k'): CredentialDef is the base class; declare a typed credential, such as S3CredentialDef",
         ),
     ],
 )
@@ -329,20 +336,20 @@ def test_a_credential_of_the_wrong_shape_is_a_usage_error(make, message):
 
 
 def test_a_credential_counts_by_its_type_and_source_never_its_value(monkeypatch):
-    d = TokenCredential("key", sources=["env:DT_TOKEN"])
+    d = TokenCredentialDef("key", sources=["env:DT_TOKEN"])
     monkeypatch.setenv("DT_TOKEN", "one")
     before = d.identity()
     monkeypatch.setenv("DT_TOKEN", "two")
     assert d.identity() == before
-    assert TokenCredential("key", sources=[from_env({"DT_OTHER": "token"})]).identity() != before
-    s3 = S3Credential("key", sources=[from_env(KEYS)])
-    assert s3.identity() != S3Credential("key", sources=[from_env({**KEYS, "DT_REGION": "region"})]).identity()
+    assert TokenCredentialDef("key", sources=[from_env({"DT_OTHER": "token"})]).identity() != before
+    s3 = S3CredentialDef("key", sources=[from_env(KEYS)])
+    assert s3.identity() != S3CredentialDef("key", sources=[from_env({**KEYS, "DT_REGION": "region"})]).identity()
 
     @dataclass(eq=False)
-    class OtherToken(TokenCredential):
+    class OtherTokenDef(TokenCredentialDef):
         type = "other"
 
-    assert OtherToken("key", sources=["env:DT_TOKEN"]).identity() != before
+    assert OtherTokenDef("key", sources=["env:DT_TOKEN"]).identity() != before
 
 
 def test_a_callable_source_makes_the_fields_from_the_inputs_at_acquire(monkeypatch):
@@ -353,9 +360,9 @@ def test_a_callable_source_makes_the_fields_from_the_inputs_at_acquire(monkeypat
         calls.append(1)
         return {"token": "t-" + inputs["root"].fields["token"].get()}
 
-    root = TokenCredential("root", sources=["env:DT_TOKEN"]).make()
+    root = TokenCredentialDef("root", sources=["env:DT_TOKEN"]).make()
     root.create()
-    cred = TokenCredential("token", sources=[token], inputs=["root"]).make({"root": root})
+    cred = TokenCredentialDef("token", sources=[token], inputs=["root"]).make({"root": root})
     cred.create()
     assert calls == [] and cred.secrets == {}
     cred.acquire()
@@ -365,8 +372,8 @@ def test_a_callable_source_makes_the_fields_from_the_inputs_at_acquire(monkeypat
 
 
 def test_a_callable_that_gives_an_unknown_field_is_a_usage_error():
-    cred = TokenCredential("token", sources=[lambda inputs: {"TOKEN": "x"}]).make()
-    with pytest.raises(UsageError, match=r"gave \['TOKEN'\], not fields of TokenCredential \(token\)"):
+    cred = TokenCredentialDef("token", sources=[lambda inputs: {"TOKEN": "x"}]).make()
+    with pytest.raises(UsageError, match=r"gave \['TOKEN'\], not fields of TokenCredentialDef \(token\)"):
         cred.acquire()
 
 
@@ -378,7 +385,7 @@ def test_a_callable_source_returning_none_falls_through_to_the_next_source(monke
         calls.append(1)
         return None
 
-    cred = TokenCredential("key", sources=[skip, from_env(["DT_TOKEN"])]).make()
+    cred = TokenCredentialDef("key", sources=[skip, from_env(["DT_TOKEN"])]).make()
     cred.create()
     cred.acquire()
     assert calls == [1]
@@ -387,32 +394,32 @@ def test_a_callable_source_returning_none_falls_through_to_the_next_source(monke
 
 def test_env_colon_name_is_shorthand_for_env_of_one_name(monkeypatch):
     monkeypatch.setenv("DT_TOKEN", "k")
-    cred = TokenCredential("key", sources=["env:DT_TOKEN"]).make()
+    cred = TokenCredentialDef("key", sources=["env:DT_TOKEN"]).make()
     cred.create()
     assert cred.secrets["DT_TOKEN"].source == "env DT_TOKEN"
 
 
 def test_a_plain_string_source_that_is_not_a_reference_is_a_usage_error():
     with pytest.raises(UsageError, match="names where a secret lives"):
-        TokenCredential("key", sources=["oops"])
+        TokenCredentialDef("key", sources=["oops"])
 
 
 def test_a_credentials_values_are_plain_values_of_the_test(monkeypatch):
     monkeypatch.setenv("DT_TOKEN", "k")
-    cred = TokenCredential("key", sources=["env:DT_TOKEN"], values={"AZURE_AUTH_ENV": "1"}).make()
+    cred = TokenCredentialDef("key", sources=["env:DT_TOKEN"], values={"AZURE_AUTH_ENV": "1"}).make()
     cred.create()
     values, env = cred.delivery()
     assert {n: a.get() for n, a in values.items()} == {"AZURE_AUTH_ENV": "1"} and list(env) == ["DT_TOKEN"]
 
 
 def test_a_credentials_default_retain_is_never():
-    assert TokenCredential("key").retain == NEVER
+    assert TokenCredentialDef("key").retain == NEVER
 
 
-S3_KEY = S3Credential("s3-key", scopes=["s3store"])
-S3_OTHER = S3Credential("s3-other", scopes=["s3store"])
-S3_READ = S3Credential("s3-read", scopes=[("s3store", RO)])
-AZ_KEY = TokenCredential("az-key", scopes=["azstore"])
+S3_KEY = S3CredentialDef("s3-key", scopes=["s3store"])
+S3_OTHER = S3CredentialDef("s3-other", scopes=["s3store"])
+S3_READ = S3CredentialDef("s3-read", scopes=[("s3store", RO)])
+AZ_KEY = TokenCredentialDef("az-key", scopes=["azstore"])
 
 
 def test_a_storage_gets_the_credential_scoped_to_it():
@@ -430,24 +437,24 @@ def test_two_credentials_for_one_storage_none_named_is_a_usage_error_listing_the
 
 
 def test_the_default_credential_breaks_the_tie():
-    default = S3Credential("s3-default", scopes=["s3store"], default=True)
+    default = S3CredentialDef("s3-default", scopes=["s3store"], default=True)
     assert pick_credentials({"s3store": RW}, [S3_KEY, S3_OTHER, default]) == [default]
 
 
 def test_a_named_credential_wins_over_scope_so_a_wrong_credential_test_can_be_declared():
-    wrong = S3Credential("wrong", scopes=["s3store"])
-    none = TokenCredential("none")
+    wrong = S3CredentialDef("wrong", scopes=["s3store"])
+    none = TokenCredentialDef("none")
     assert pick_credentials({"s3store": RW}, [S3_KEY, S3_OTHER], named=[wrong]) == [wrong]
     assert pick_credentials({"s3store": RW}, [S3_KEY], named=[none]) == [none, S3_KEY]
 
 
 def test_a_credential_scoped_to_two_storages_serves_both():
-    both = S3Credential("both", scopes=["s3store", "azstore"])
+    both = S3CredentialDef("both", scopes=["s3store", "azstore"])
     assert pick_credentials({"s3store": RW, "azstore": RW}, [both]) == [both]
 
 
 def test_a_storage_matched_by_two_credentials_still_errors_unless_one_is_named_or_default():
-    both = S3Credential("both", scopes=["s3store", "azstore"])
+    both = S3CredentialDef("both", scopes=["s3store", "azstore"])
     with pytest.raises(UsageError, match=r"storage 's3store' has credentials \['both', 's3-key'\]"):
         pick_credentials({"s3store": RW, "azstore": RW}, [both, S3_KEY])
 
@@ -458,7 +465,7 @@ def test_a_credential_scoped_to_storage_a_is_not_delivered_for_a_test_that_uses_
 
 def test_credential_contract(monkeypatch):
     monkeypatch.setenv("DT_TOKEN", "dt-token-value")
-    check_contract(lambda run_token: TokenCredential("key", sources=["env:DT_TOKEN"]).make(run_token=run_token))
+    check_contract(lambda run_token: TokenCredentialDef("key", sources=["env:DT_TOKEN"]).make(run_token=run_token))
 
 
 # -----------------------------------------------------------------------------
@@ -582,9 +589,9 @@ def test_storage_contract(tmp_path):
 SECRET = "s3cr3t-value-never-written"
 CONF = """
 from ducktest5 import Variant, default, match
-from ducktest5.resources import S3Credential, StorageDef, from_env
+from ducktest5.resources import S3CredentialDef, StorageDef, from_env
 STORAGES = [StorageDef("local", "s3://bucket/store")]
-CREDENTIALS = [S3Credential("local-key", sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})], scopes=["local"])]
+CREDENTIALS = [S3CredentialDef("local-key", sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})], scopes=["local"])]
 AXES = {"storage": [Variant("local", inputs=["local"])]}
 RULES = [match("a/**", variants=["storage"])]
 """
@@ -612,8 +619,8 @@ def test_scan_env_shows_the_storage_roots_and_the_credential_masked(tree, capsys
           values: storage=local  <- AXES storage
           root: temp_dir_root=s3://bucket/store/temp/<run_token>  <- storage local
           root: data_dir=ROOT/test/data  <- default storage
-          process env: AWS_ACCESS_KEY_ID=***  <- credential local-key (S3Credential, from env DT_KEY)
-          process env: AWS_SECRET_ACCESS_KEY=***  <- credential local-key (S3Credential, from env DT_SECRET)
+          process env: AWS_ACCESS_KEY_ID=***  <- credential local-key (S3CredentialDef, from env DT_KEY)
+          process env: AWS_SECRET_ACCESS_KEY=***  <- credential local-key (S3CredentialDef, from env DT_SECRET)
         """
     )
 

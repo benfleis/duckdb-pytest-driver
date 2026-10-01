@@ -232,7 +232,7 @@ def _one_set_per_booted_engine(tests, project):
         for cls, ids in by_type.items():
             if len(ids) > 1:
                 raise UsageError(
-                    f"engine {engine_id!r}: its tests hold {cls.__name__}s {' and '.join(repr(i) for i in ids)} "
+                    f"engine {engine_id!r}: its tests hold {cls.__name__} {' and '.join(repr(i) for i in ids)} "
                     "by env, and it boots once per run: declare a second engine of its kind for the other tests"
                 )
 
@@ -247,7 +247,7 @@ def _one_set_per_type(test):
         if len(ids) > 1:
             names = " and ".join(repr(i) for i in ids)
             raise UsageError(
-                f"{test.id}: holds {cls.__name__}s {names} by {'/'.join(p + '*' for p in cls.sdk_prefixes)} env; "
+                f"{test.id}: holds {cls.__name__} {names} by {'/'.join(p + '*' for p in cls.sdk_prefixes)} env; "
                 "one process has one set. Wiring several into one test (wired(...)) is not built yet; "
                 "split the test until it is"
             )
