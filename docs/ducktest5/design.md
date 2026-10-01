@@ -306,6 +306,8 @@ warm engine.
 `ducktest_conf.py`: `ENGINES`, `SERVICES`, `STORAGES`, `CREDENTIALS`, `AXES`, `SUITES`, `RULES`,
 `PYTHONPATH`, `INHERIT_ENV`; kinds of its own beside its tests (a catalog service, `UCTable`). ducktest owns
 lifetime, identity, delivery, dialects, and the shared kinds.
+The name is exact: a `ducktest_config.py`, `ducktestconf.py` or `Ducktest_Conf.py` is not read,
+and the run says so in a warning.
 
 `PYTHONPATH`, in the root file only, puts the repo's helper code on `sys.path` for the whole process,
 in every phase, so a body that imports a helper as it runs finds it too. It is read from the file's

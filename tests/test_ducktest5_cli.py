@@ -133,6 +133,23 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
 
 
 @pytest.mark.parametrize(
+    "name", ["ducktest_config.py", "ducktestconf.py", "ducktest-conf.py", "Ducktest_Conf.py", "b/ducktest_config.py"]
+)
+def test_a_misnamed_conf_file_is_named_in_a_warning(tree, capsys, name):
+    (tree / "test" / name).write_text('RULES = "never read"\n')
+    assert main(["select"]) == 0
+    err = capsys.readouterr().err
+    assert (
+        f"WARNING ducktest5.conf: {tree / 'test' / name}: not read; the file ducktest5 reads is ducktest_conf.py" in err
+    )
+
+
+def test_the_conf_file_itself_gives_no_warning(tree, capsys):
+    assert main(["select"]) == 0
+    assert "WARNING" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
     "argv, message",
     [
         (["select", "test/nowhere"], "path 'test/nowhere' holds no test"),

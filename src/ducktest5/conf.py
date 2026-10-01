@@ -58,6 +58,7 @@ from __future__ import annotations
 import ast
 import functools
 import importlib.util
+import logging
 import os
 import re
 import sys
@@ -69,6 +70,8 @@ from .resources import CredentialDef, DefaultStorage, EngineDef, ResourceDef, Se
 from .resources.client import check_names
 from .resources.credential import inherit_env
 from .resources.made import services_in
+
+_log = logging.getLogger(__name__)
 
 _LISTS = ("tags", "engines", "variants", "mutex", "suites")
 _DICTS = ("values", "settings", "bind")
@@ -361,6 +364,9 @@ def load_project(start):
         project.pythonpath = _literal_pythonpath(root_file, root)
         _apply_pythonpath(project.pythonpath)
     for dirpath, dirnames, filenames in os.walk(root):  # top-down, so the root file and its EXCLUDE come first
+        for name in filenames:
+            if _misnamed_conf(name):
+                _log.warning("%s: not read; the file ducktest5 reads is %s", os.path.join(dirpath, name), CONF_FILE)
         if CONF_FILE not in filenames:
             _prune(project, root, dirpath, dirnames)
             continue
@@ -410,6 +416,18 @@ def load_project(start):
                     raise UsageError(f"{path}: {name} belongs in the root {CONF_FILE} only; this file may hold RULES")
         _prune(project, root, dirpath, dirnames)
     return project
+
+
+def _misnamed_conf(name):
+    """A name meant as `ducktest_conf.py` and not it: `ducktest_config.py`, `ducktest-conf.py`, the legacy
+    `ducktestconf.py`, another case. It warns and does not fail: the file may be a helper of the repo's own
+    under that name, and a run must not break on a name it never reads."""
+    stem, ext = os.path.splitext(name)
+    return (
+        name != CONF_FILE
+        and ext.lower() == ".py"
+        and re.sub(r"[-_]", "", stem.lower()) in ("ducktestconf", "ducktestconfig")
+    )
 
 
 def _prune(project, root, dirpath, dirnames):
