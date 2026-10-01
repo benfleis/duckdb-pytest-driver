@@ -450,6 +450,10 @@ def _check(path, project):
     ):
         if not all(isinstance(d, kind) for d in declared.values()):
             raise UsageError(f"{path}: {name} must hold {kind.__name__}")
+    for storage in project.storages.values():
+        for _, _, service in storage.edges():
+            if isinstance(service, ServiceDef):
+                service.check_storage(storage)
     for c in project.credentials.values():
         for storage_id in c.scope_storages:
             storage = project.storages.get(storage_id)

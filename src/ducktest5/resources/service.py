@@ -58,6 +58,9 @@ class ServiceDef(ResourceDef):
         storage after the run): a kind drops there what it would make of its own."""
         return self.as_existing(address)
 
+    def check_storage(self, storage) -> None:
+        """A usage error when `storage`, a StorageDef on this service, is one it cannot serve."""
+
     def credential(self, id: str, scopes: list, **fields) -> CredentialDef:
         """A credential made of this service's secrets, scoped to `scopes`: the storages it serves."""
         cls = self.credential_type

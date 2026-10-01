@@ -126,9 +126,9 @@ class Storage(Resource):
         )
 
     def remote(self):
-        """The operations on the store of an s3 root, from the service it is on; None when it is on
+        """The operations on the store of an s3 or az root, from the service it is on; None when it is on
         none, and so the run cannot remove what it wrote there."""
-        if self.scheme != "s3":
+        if self.scheme not in ("s3", "az"):
             return None
         return next((i.remote() for i in self.inputs.values() if callable(getattr(i, "remote", None))), None)
 
