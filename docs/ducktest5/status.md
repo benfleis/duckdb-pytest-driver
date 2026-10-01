@@ -91,11 +91,17 @@ docker and publishes it at `DUCKTEST_SERVICE_BIND:DUCKTEST_S3_LOCAL_PORT`.
 - The ladder has no two-engine rung and no example of `setup`, `teardown` or `params`.
 - Rung 05's golden is the BLOCKED case. A live S3 run is checked by hand, not by the self-tests.
 
+- Two credentials of one type in one test (wiring, `wired(...)`) are a scan error until wiring is
+  built.
+- Engines no longer take `AWS_*` from the shell's env. A repo whose tests relied on personal keys
+  declares `S3CredentialDef.from_aws_env(...)`, and lists other names it needs (`AWS_CA_BUNDLE`) in
+  `INHERIT_ENV`.
+
 ## Not in this release, on purpose
 
 - Tables per test (`TableDef`) and catalog services (Unity Catalog, Databricks).
 - The `1password:` credential source. It is accepted in a declaration and refused when used.
-- Azure (Azurite) and an HTTP proxy kind for httpfs.
+- Azure (Azurite) and an HTTP proxy kind for httpfs. Credential types other than S3 (Azure, GCS, R2).
 - MinIO, and any choice of S3 server. RustFS is the only one; `DUCKTEST_S3_LOCAL_IMAGE` changes
   the image.
 - pytest. The old pytest-based `ducktest` stays in the same repo and does not change.

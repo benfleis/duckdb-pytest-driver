@@ -72,7 +72,8 @@ runs the file through the binary, with the same values. From `examples/ladder/03
 ```python
 @test()
 def paired_scoped_secret(ctx):
-    ctx.client("duckdb").expects("SELECT name, type, scope FROM duckdb_secrets()", SECRETS[ctx.values.auth])
+    keys = ctx.credential("fake_key")
+    ctx.client("duckdb").expects("SELECT name, type, scope FROM duckdb_secrets()", [(keys.secret_name, keys.type, keys.scope)])
     ctx.run_paired()  # runs paired_scoped_secret.test
 ```
 
@@ -146,7 +147,9 @@ the binary skips the file that `ctx.run_paired()` runs, the body ends SKIPPED wi
 1. Run your `.test` tree with no `ducktest_conf.py` (1.1): from the top of the repo,
    `ducktest5 run test/sql --suite default` (rung 00).
 2. Extensions the tests need go on the engine: `duckdb_engine("duck", requires=[...])`.
-3. Scripts that export keys become a `CredentialDef` with `from_env` (2.5). CI keeps its secrets.
+3. Scripts that export keys become a typed credential, such as `S3CredentialDef` with `from_env`
+   (2.5). CI keeps its secrets. Keys of the shell's own env no longer reach the engines by
+   themselves: declare `S3CredentialDef.from_aws_env(...)` where a test means to use them.
 4. `docker compose` services become `SERVICES`; one that runs already is `.as_existing(address=...)`.
 5. CI steps that start, wait, run and stop become one `ducktest5 run`.
 6. Helper code outside the test files' directories (`test/py`, `scripts`) goes in the root
@@ -167,7 +170,7 @@ storage's root, an engine's `requires`), **inputs** (the Defs it consumes; a bar
 | Kind | Instance is | Inputs | Attributes |
 | --- | --- | --- | --- |
 | `StorageDef` | a directory, a bucket, a served URL | a service, or none | `TEMP_DIR`, `DATA_DIR`, `LOCAL_*`, `S3_ENDPOINT` |
-| `CredentialDef` | a secret from the first source that resolves | a service that makes it, or none | secrets only |
+| `S3CredentialDef` (a `CredentialDef`) | fields from the first source that resolves | a service that makes it, or none | its fields, as SDK env |
 | `ServiceDef` | a thing that runs at an address | storages, credentials | `<id>.<name>` (`http.url`) |
 | `EngineDef` | a service with a live SQL handle | the test's storages, credentials | its preamble, clients |
 
@@ -228,13 +231,51 @@ name it in `STORAGES`. At run end the run level goes, except the places of faile
 
 ## 2.5 Credentials
 
-A `CredentialDef` has `scopes` (storage ids, or `(id, "ro")`) and `sources`, one ordered list tried at
-acquire: `from_env({src: dst})`, `"env:NAME"`, a callable, and `"1password:NAME"` (planned; refused
-now). A named credential wins; else the one scoped to the storage; several need one `default=True`.
-A test that unsets every name a credential delivers (`process_env={"AWS_ACCESS_KEY_ID": None}`) does
-not get it. Delivery is in the engine's dialect: DuckDB `CREATE SECRET ... SCOPE`; for `unittest` the
-same statement with `{AWS_ACCESS_KEY_ID}`, filled by the binary from variables passed by name; Spark
-per-bucket `fs.s3a` conf. A service can make one: `s3.credential("keys", scopes=["lake"])`.
+A credential's SDK env names are used even where no file names them: an SDK reads
+`AWS_SECRET_ACCESS_KEY` with `getenv()` inside the engine. So the runner never decides delivery,
+pruning, batching or identity from whether a name appears in a `.test` or a body; the conf declares
+the credentials, and holding one is what lets a test run. The runner delivers them by process env to
+every engine process of the test, removes SDK names that come from the shell's env, and lists both in
+`scan --env` and in a failure's made-of.
+
+**Typed.** A credential is declared as a typed `FooDef` (a `CredentialDef`); the run makes a `Foo` (a
+`Credential`) from it. `S3CredentialDef` (or `s3_credential(...)`) has the fields `key_id`, `secret`
+(both required and secret), `session_token` (secret) and `region`, DuckDB's secret options in lower
+case, and their SDK env names (`AWS_ACCESS_KEY_ID`, ..., `region` as `AWS_REGION` and
+`AWS_DEFAULT_REGION`). A bare `CredentialDef` is a scan error.
+
+**Sources.** `sources` is one ordered list, tried at acquire; the first that resolves gives every
+field, and sources never mix. `from_env({"MY_KEY_ID": "key_id", "MY_SECRET": "secret"})` reads each
+variable into a field; `from_env([...])` and `"env:NAME"` read SDK env names of the class;
+`S3CredentialDef.from_aws_env(id, ...)` takes the shell's own `AWS_*`, said so explicitly. A
+callable returns `{field: value}`, or None for the next source. A non-secret field can be a literal
+(`region="eu-west-1"`), which a source overrides. `"1password:NAME"` is planned, refused now. A
+source that misses a required field, an unknown field or env name, or a credential scoped to a
+storage of another scheme is a scan error. `values=` gives a test that holds it plain `{NAME}`s, such
+as the signal an existing file checks with `require-env`.
+
+**Binding.** `scopes` lists storage ids, or `(id, "ro")`. A named credential wins; else the one scoped
+to the storage; several need one `default=True`. A test without a credential is a definition of its
+own that binds no storage in the scope. A test that holds a credential that does not resolve is
+BLOCKED, never SKIPPED. A process has one set of each SDK's names, so a test holds one credential of a
+type, and a booted engine (Spark) one for the whole run; several are a scan error until wiring lands.
+
+**Delivery.** The fields reach every engine process of the test as SDK env: a Python body's DuckDB
+shell, the `unittest` binary (and by name in `env_passthrough`), and the Spark JVM when it boots. That
+env is part of the engine's identity, counted by credential and source, never by value. Every engine
+process starts from the shell's env without the SDK prefixes of every credential type (`AWS_`); the
+root file's `INHERIT_ENV = ["AWS_CA_BUNDLE"]` keeps names, never a key.
+
+**Secrets.** For each credential and the test's storages in its scope, DuckDB gets one secret,
+`ducktest_<credential id>`: the storage's connection options and scope, with each key named by its
+env variable, never its value: `KEY_ID getenv('AWS_ACCESS_KEY_ID')` in the shell, `'{AWS_ACCESS_KEY_ID}'`
+in a `.test` batch's init file, which the binary fills. The keys are in the secret because an
+extension may read them from the secret alone (delta's scan does). No secret is made where no storage
+of the test is in the scope, or where the test says `own_secrets=True` (a rule sets it for a
+directory) because it makes its own; the env is delivered all the same. Spark gets, per scoped bucket,
+the env credentials provider and the bucket's endpoint, never a key. A body reads what it holds with
+`ctx.credential(id)` and `ctx.credentials()`: id, type, `secret_name`, storages, scope, env names,
+fields masked, source. A service can make a credential: `s3.credential("keys", scopes=["lake"])`.
 
 ## 2.6 Services
 
@@ -262,7 +303,7 @@ warm engine.
 ## 2.8 What the repo owns
 
 `ducktest_conf.py`: `ENGINES`, `SERVICES`, `STORAGES`, `CREDENTIALS`, `AXES`, `SUITES`, `RULES`,
-`PYTHONPATH`; kinds of its own beside its tests (a catalog service, `UCTable`). ducktest owns
+`PYTHONPATH`, `INHERIT_ENV`; kinds of its own beside its tests (a catalog service, `UCTable`). ducktest owns
 lifetime, identity, delivery, dialects, and the shared kinds.
 
 `PYTHONPATH`, in the root file only, puts the repo's helper code on `sys.path` for the whole process,
@@ -278,7 +319,7 @@ path itself. `scan --env` prints it first.
 | Word | Here | Elsewhere |
 | --- | --- | --- |
 | scope | a credential's storages; nothing else | DuckDB `CREATE SECRET ... SCOPE`: a path prefix |
-| env | only an engine's process variables (`process_env`); a test's `{NAME}`s are `ctx.values`, never secrets | `require-env`: a `.test` reads `{NAME}` from the process |
+| env | only an engine's process variables (`process_env`, a credential's SDK names); a test's `{NAME}`s are `ctx.values`, never secrets | `require-env`: a `.test` reads `{NAME}` from the process |
 | client | one engine's lease for one test | a DuckDB language binding |
 | bind | give a role an input | a prepared-statement parameter; DuckDB's binder |
 | Variant | one value of an axis | DuckDB and Delta's `VARIANT` type |
@@ -286,7 +327,8 @@ path itself. `scan --env` prints it first.
 ## 2.10 Not built yet
 
 `TableDef` and tables per test; catalog services (UC, Databricks); input slots declared by a kind;
-the `1password:` source; scan checks of `{NAME}` references and of
+the `1password:` source; credential types other than S3 (Azure, GCS); wiring several credentials of
+one type into one test (`wired(...)`); scan checks of `{NAME}` references and of
 `ctx.client("...")` names; `.test` header blocks as rules; the `Run` object.
 
 ---
@@ -300,7 +342,7 @@ the `1password:` source; scan checks of `{NAME}` references and of
 | 00 | an existing repo's `test/` tree: select by path, `--suite default`, SKIPPED | `00_existing/` |
 | 01 | no config: a `.test`, a Python body, and a body paired with a `.test` | `01_solo/` |
 | 02 | storages, an engine, `default`/`match`, `@test(bind=)`, `ctx.skip` | `02_rules/` |
-| 03 | an s3 credential from env, an `auth` axis | `03_credentials/` |
+| 03 | an S3 credential from env; a test that holds none | `03_credentials/` |
 | 04 | an HTTP service under a storage; BLOCKED | `04_service/` |
 | 05 | a local S3 server (RustFS), a storage and a credential on it | `05_s3/` |
 
@@ -351,8 +393,9 @@ def duckdb_creates_then_spark_and_duckdb_interleave(ctx):
 
 # Appendix C. Next
 
-- **Azure**: `.test` only; Azurite, blob and DFS as a `storage` axis, an `auth` axis. Needs an
-  Azurite kind and the `azure` secret dialect.
+- **Azure**: `.test` only; Azurite, blob and DFS as a `storage` axis. Needs an Azurite kind and an
+  `AzureCredentialDef` (and its `AzureCredential`): a class, a DuckDB secret renderer
+  (`duckdb_secret(...)`), its `AZURE_` prefixes, and a service's `credential_type`.
 - **httpfs**: a `storage` axis (http, s3, s3 through a proxy) and two DuckDB engines (curl,
   httplib) named by a Variant's `engines`. Needs a proxy kind.
 - **Unity Catalog**: deployments as an axis binding a catalog service and a storage. Needs
@@ -370,6 +413,9 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-01: typed credentials (`S3CredentialDef`): fields, delivery as SDK env to every engine
+  process, SDK names of the shell's env removed, `INHERIT_ENV`, `own_secrets`, `ctx.credential(s)`;
+  secrets are `ducktest_<credential id>`; the unset-hides rule and the `auth` axis of rung 03 are gone.
 - 2026-10-01: `ctx.run_paired()` of a file the binary skips ends the body SKIPPED, not ERROR.
 - 2026-10-01: `select` counts what it left out in one line; `--explain` lists each.
 - 2026-10-01: `PYTHONPATH` in the root `ducktest_conf.py`.

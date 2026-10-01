@@ -84,11 +84,20 @@ share one label; their binding on `@test` gives them a label other than that of
 The storage is now an S3 bucket that nothing reads. `S3CredentialDef("fake_key", ...)` is scoped to it
 and takes its two fields, `key_id` and `secret`, from `LADDER_FAKE_KEY_ID` and `LADDER_FAKE_SECRET`;
 set both before a run. The rule binds the bucket for the `scoped_*` tests, so they hold the
-credential; `no_secret.test` binds nothing and holds none. Each body asks DuckDB for its secrets: one,
-scoped to the bucket, or none. `paired_scoped_secret.py` asks, then runs the `.test` file beside it
-with `ctx.run_paired()`, which asks again. The keys reach every engine process as `AWS_ACCESS_KEY_ID`
-and `AWS_SECRET_ACCESS_KEY`; `scan --env` shows them masked, with where they came from. The init file
-and the run's own records hold the names of the keys, never their values.
+credential; `no_secret.test` binds nothing, holds none, and finds no secret. A test without a
+credential is a definition of its own, not a variant of one with it.
+
+The keys reach every engine process of a test that holds the credential as `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`: the body's DuckDB shell and the `unittest` binary. `AWS_*` of your own shell
+never do. DuckDB gets one secret, `ducktest_fake_key`, scoped to the bucket, that reads the keys by
+name: `getenv('AWS_ACCESS_KEY_ID')` in the shell, `'{AWS_ACCESS_KEY_ID}'` in a `.test` batch's init
+file, which the binary fills from its env. `scan --env` shows the secret, and the keys masked with
+where they came from. The init file and the run's own records hold the names of the keys, never
+their values.
+
+`scoped_secret_body.py` reads what it holds with `ctx.credentials()` and checks the secret DuckDB
+has against it; `paired_scoped_secret.py` does the same with `ctx.credential("fake_key")`, then runs
+the `.test` file beside it with `ctx.run_paired()`, which checks again.
 
 ## 04_service
 
@@ -108,9 +117,10 @@ green.
 
 The storage is now a prefix in a bucket of a local S3-compatible server, `s3_local()`: the run
 starts one in docker, and a test does not say what backs it. `S3.storage("lake", "lake")` is
-`s3://ducktest/lake` on it, and `S3.credential("keys", scopes=["lake"])` is the server's keys, from
-`DUCKTEST_S3_LOCAL_ACCESS_KEY` and `DUCKTEST_S3_LOCAL_SECRET_KEY` (`admin` and `password` when unset). Both
-bodies find one secret, scoped to the storage, and write and read `{TEMP_DIR}/answer.csv`: a Python
+`s3://ducktest/lake` on it, and `S3.credential("keys", scopes=["lake"])` is an `S3CredentialDef` of
+the server's keys, from `DUCKTEST_S3_LOCAL_ACCESS_KEY` and `DUCKTEST_S3_LOCAL_SECRET_KEY` (`admin` and
+`password` when unset). Both bodies find one secret, `ducktest_keys`, scoped to the storage (the
+Python body checks it against `ctx.credential("keys")`), and write and read `{TEMP_DIR}/answer.csv`: a Python
 body under `s3://ducktest/lake/temp/<run>/<key>`, a `.test` file under the run's prefix, where the
 binary makes its own place. When the run ends, that prefix goes, but the places of the tests that
 failed.
