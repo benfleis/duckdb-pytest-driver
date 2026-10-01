@@ -112,7 +112,7 @@ run   own_inputs.py::own_inputs
         bind={'storage': 'scratch_b'}  <- @test
 skip  excluded.test::excluded  -- not in suite 'default': declared out  <- ducktest_conf.py: match 'excluded.test'
 $ ducktest5 run --no-binary-check
-5 passed in 2.67s
+5 passed, 1 skipped in 2.67s
 run dir: <repo>/examples/ladder/02_rules/duckdb_unittest_tempdir/2026-09-30T12-57-31Z--swift-raven-54
 ```
 
@@ -299,7 +299,7 @@ the `1password:` source; scan checks of `{NAME}` references and of
 | --- | --- | --- |
 | 00 | an existing repo's `test/` tree: select by path, `--suite default`, SKIPPED | `00_existing/` |
 | 01 | no config: a `.test`, a Python body, and a body paired with a `.test` | `01_solo/` |
-| 02 | storages, an engine, `default`/`match`, `@test(bind=)` | `02_rules/` |
+| 02 | storages, an engine, `default`/`match`, `@test(bind=)`, `ctx.skip` | `02_rules/` |
 | 03 | an s3 credential from env, an `auth` axis | `03_credentials/` |
 | 04 | an HTTP service under a storage; BLOCKED | `04_service/` |
 | 05 | a local S3 server (RustFS), a storage and a credential on it | `05_s3/` |

@@ -28,3 +28,9 @@ rule_matched_body.py::rule_matched_body
   bind: storage=scratch_a  <- ducktest_conf.py: default
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
+skipped_body.py::skipped_body
+  client: duck (duckdb)  <- ENGINES duck
+    require: parquet  <- engine duck
+  bind: storage=scratch_a  <- ducktest_conf.py: default
+  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
+  root: data_dir=<tmp>/repo/02_rules/data  <- default storage

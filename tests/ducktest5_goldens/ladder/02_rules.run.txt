@@ -1,11 +1,15 @@
-[1/5] PASSED   default.test::default  (<s>)
-[2/5] PASSED   own_inputs.py::own_inputs  (<s>)
-[3/5] PASSED   paired_own_inputs.py::paired_own_inputs  (<s>)
-[4/5] PASSED   rule_matched.test::rule_matched  (<s>)
-[5/5] PASSED   rule_matched_body.py::rule_matched_body  (<s>)
+[1/6] PASSED   default.test::default  (<s>)
+[2/6] PASSED   own_inputs.py::own_inputs  (<s>)
+[3/6] PASSED   paired_own_inputs.py::paired_own_inputs  (<s>)
+[4/6] PASSED   rule_matched.test::rule_matched  (<s>)
+[5/6] PASSED   rule_matched_body.py::rule_matched_body  (<s>)
+[6/6] SKIPPED  skipped_body.py::skipped_body  (<s>)
 
+1 skipped:
+     1  ducktest-ladder-tool is not installed
+          skipped_body.py::skipped_body
 
-5 passed in <s>
+5 passed, 1 skipped in <s>
 run dir: <run>
 
 02-plan.yaml batches:
@@ -13,3 +17,4 @@ run dir: <run>
   b002  python    key2  own_inputs.py
   b003  python    key2  paired_own_inputs.py
   b004  python    key3  rule_matched_body.py
+  b005  python    key3  skipped_body.py

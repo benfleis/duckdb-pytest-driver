@@ -64,6 +64,10 @@ fills in the test's own place under `scratch_a`. The rule of `excluded.test` dec
 default suite, so a bare run leaves it out and `select --explain` names that rule; `--suite all` runs
 it.
 
+`skipped_body.py` checks for a tool that is not installed and calls `ctx.skip(reason)`: it ends
+SKIPPED, and the report lists the reason under "skipped". A body skips only on a condition it checks
+itself; an input that does not come up makes the test BLOCKED (rung 04).
+
 A run writes its records to `duckdb_unittest_tempdir/<run>/` in the working directory, and what its
 tests write under `<storage>/temp/<run>/`; when the run ends, that prefix goes, but the places of the
 tests that failed.
