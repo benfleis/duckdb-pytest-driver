@@ -87,6 +87,26 @@ class Store(Service):
 StoreDef.instance = Store
 
 
+@dataclass(eq=False)
+class PartsStoreDef(StoreDef):
+    """A store whose parts are its storages, by id; it refuses the part `refuses`."""
+
+    kind = "parts_store"
+    refuses: str = "bad"
+
+    def parts_needed(self, inputs):
+        return [d.id for d in inputs if isinstance(d, StorageDef)]
+
+
+class PartsStore(Store):
+    @property
+    def refused(self):
+        return {self.definition.refuses: "bucket bad: it holds other content"}
+
+
+PartsStoreDef.instance = PartsStore
+
+
 class FakeShell:
     """Stands in for the run's DuckDB shell: keeps the text it was given."""
 
@@ -576,6 +596,22 @@ def test_a_service_that_is_down_blocks_its_tests_and_their_engine_is_not_booted(
     assert "does not answer" in report["not_provisioned"]["store"]
     assert engine.calls == []
     assert "'store' did not come up: 1 test blocked" in text
+
+
+def test_a_part_the_service_refused_blocks_only_the_tests_that_need_it(tmp_path):
+    store = PartsStoreDef()
+    good, bad = (StorageDef(n, str(tmp_path / "parts" / n), inputs=[store]) for n in ("good", "bad"))
+
+    def needs_bad(ctx):
+        pass
+
+    tests = [py_test(passes, inputs=[good]), py_test(needs_bad, path="test/bad.py", inputs=[bad])]
+    _, run_dir, report, _ = go(tmp_path, tests)
+    assert outcomes(report) == {"passes": "passed", "needs_bad": "blocked"}
+    (blocked,) = [c for c in report["tests"] if c["outcome"] == "blocked"]
+    assert blocked["blocked_by"] == ["store/bad"] and "it holds other content" in blocked["note"]
+    record = yaml.safe_load((run_dir / "03-provision.yaml").read_text())["services"]["store"]
+    assert record["refused"] == {"bad": "bucket bad: it holds other content"}
 
 
 def test_an_engine_that_does_not_boot_blocks_its_tests(tmp_path):

@@ -370,22 +370,31 @@ def test_a_bucket_that_is_there_with_other_content_is_refused_and_not_touched(fo
     if what == "content":
         found.buckets["data"]["dat/t1/part-0.parquet"] = b"changed"
     made = Made("r1")
-    with pytest.raises(ServiceNotUp, match="does not change a bucket it did not make"):
-        made.create(s3_local(buckets=[bucket("data", seed=[(dat, "dat")], public=what == "public")]))
-    assert "s3" in made.errors and [c for c in found.calls if c[1] == "data"] == []
+    service = made.create(s3_local(buckets=[bucket("data", seed=[(dat, "dat")], public=what == "public")]))
+    assert "does not change a bucket it did not make" in service.refused["data"]
+    assert made.errors == {} and [c for c in found.calls if c[1] == "data"] == []
 
 
-def test_a_bucket_that_fails_half_way_is_removed_with_the_others_it_made(found, dat):
+def test_a_bucket_that_fails_half_way_is_removed_and_the_others_stay(found, dat):
     found.fail_on = "make_public"
-    with pytest.raises(ServiceNotUp, match="make_public: AccessDenied"):
-        Made("r1").create(s3_local(buckets=[bucket("data", seed=[(dat, "dat")]), bucket("open", public=True)]))
-    assert sorted(found.buckets) == ["ducktest"]
+    service = Made("r1").create(s3_local(buckets=[bucket("data", seed=[(dat, "dat")]), bucket("open", public=True)]))
+    assert "make_public: AccessDenied" in service.refused["open"] and list(service.refused) == ["open"]
+    assert sorted(found.buckets) == ["data", "ducktest"] and service.made_buckets == ["data"]
 
 
 def test_a_seed_directory_that_is_not_there_makes_no_bucket(found, tmp_path):
-    with pytest.raises(ServiceNotUp, match="no directory at"):
-        Made("r1").create(s3_local(buckets=[bucket("data", seed=[(str(tmp_path / "gone"), "dat")])]))
+    service = Made("r1").create(s3_local(buckets=[bucket("data", seed=[(str(tmp_path / "gone"), "dat")])]))
+    assert "no directory at" in service.refused["data"]
     assert [c for c in found.calls if c[0] != "create_bucket" or c[1] != "ducktest"] == []
+
+
+def test_a_test_needs_the_buckets_of_its_storages_or_every_bucket_when_it_binds_none():
+    s3 = s3_local(buckets=[bucket("data"), bucket("open")])
+    data, own = s3.storage("d", "lake", bucket="data"), s3.storage("own", "lake")
+    keys = s3.credential("keys", scopes=["d", "own"])
+    assert s3.parts_needed([data, keys]) == ["data"]
+    assert s3.parts_needed([own, keys]) == []
+    assert s3.parts_needed([keys]) == s3.parts_needed([own, s3]) == ["data", "open"]
 
 
 @pytest.mark.parametrize("retain, kept", [("never", False), ("on_failure", True), ("always", True)])

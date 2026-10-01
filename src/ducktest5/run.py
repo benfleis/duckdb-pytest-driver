@@ -48,7 +48,7 @@ from .provision import KEPT, adopt, attach_argument, bring_up
 from .resources import RO, BootedEngineDef, ServiceNotUp
 from .resources.credential import engine_env
 from .resources.engine import Runtime
-from .resources.made import Made
+from .resources.made import Made, services_in
 from .reports import Report, render, write_files
 from .reports.live import Live
 from .workers import Pool
@@ -416,8 +416,23 @@ def execute(
     stopped = _stop_on_signal()
     unresolved = {}  # credential id -> why none of its sources resolved
 
+    refusals = {}  # "<service id>/<part>" -> why the service refused that part
+
+    def refused(c):
+        """A part of a service that is up, which the service refused and the test needs (a bucket)."""
+        inputs = [d for d, _ in c.inputs]
+        out = []
+        for d in services_in(inputs):
+            service = made.services.get(d.id)
+            for part in d.parts_needed(inputs) if service is not None and service.refused else ():
+                if part in service.refused:
+                    refusals[f"{d.id}/{part}"] = service.refused[part]
+                    out.append(f"{d.id}/{part}")
+        return out
+
     def blocked(c):
         down = [x for x in (*c.services, *c.engines) if x in boot_errors]
+        down += refused(c)
         return down + [f"credential {d.id}" for d, _ in c.inputs if d.kind == "credential" and d.id in unresolved]
 
     code = 1
@@ -477,7 +492,11 @@ def execute(
         for test in tests:
             if by := blocked(test):
                 begin(test, "-")
-                why = unresolved.get(by[0].removeprefix("credential ")) or f"{by[0]} did not come up"
+                why = (
+                    refusals.get(by[0])
+                    or unresolved.get(by[0].removeprefix("credential "))
+                    or f"{by[0]} did not come up"
+                )
                 done(test, BLOCKED, runner="-", blocked_by=by, note=why)
             else:
                 runnable[test.id] = test

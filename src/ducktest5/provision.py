@@ -121,12 +121,13 @@ def _make(made, definition, mode, errors, on):
 
 def record(service, mode, *, owned):
     """What `03` says about one service: what it is, how it was reached, where it answers, its
-    attributes with every secret masked, and `owned`: whether cleanup is the one to end it."""
+    attributes with every secret masked, `owned`: whether cleanup is the one to end it, and the
+    parts it refused (a bucket), each with why."""
     attributes = {
         name: MASK if SECRET_NAME.search(name) else value for name, value in service.attribute_values().items()
     }
     attributes.update({name: MASK for name in service.secrets})
-    return {
+    out = {
         "kind": service.definition.kind,
         "identity": service.identity,
         "mode": mode,
@@ -135,6 +136,9 @@ def record(service, mode, *, owned):
         "address": service.address,
         "attributes": attributes,
     }
+    if service.refused:
+        out["refused"] = dict(service.refused)
+    return out
 
 
 def attach_argument(service):

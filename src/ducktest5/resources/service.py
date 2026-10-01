@@ -58,6 +58,11 @@ class ServiceDef(ResourceDef):
         storage after the run): a kind drops there what it would make of its own."""
         return self.as_existing(address)
 
+    def parts_needed(self, inputs) -> list:
+        """The parts of this service (an S3 server's buckets) a test with `inputs` needs. A part its
+        instance refused (`Service.refused`) blocks only the tests that need it."""
+        return []
+
     def credential(self, id: str, scopes: list, **fields) -> CredentialDef:
         """A credential made of this service's secrets, scoped to `scopes`: the storages it serves."""
         cls = self.credential_type
@@ -96,6 +101,7 @@ class Service(Resource):
     one that already answers there, found running, as it would an existing one."""
 
     found = False  # adopted by create: it answered before the run started anything
+    refused: Mapping[str, str] = {}  # part -> why the run does not use it; see ServiceDef.parts_needed
     _started = False
 
     @property

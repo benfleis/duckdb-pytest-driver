@@ -110,8 +110,8 @@ class S3LocalDef(ServiceDef):
     `buckets` are more buckets, each a `bucket(...)`, made when the server is and filled from local
     directories. The run owns a bucket it made, and removes it at the end. One that is already there
     and holds what it seeds (and is public when asked) is used as it is and never changed; one with
-    other content is refused, and the service is not up. `bucket` itself is made when it is not
-    there, and never removed."""
+    other content is refused, and blocks only the tests that need it (`parts_needed`). `bucket`
+    itself is made when it is not there, and never removed."""
 
     kind = "s3_local"
     detached = True
@@ -131,6 +131,19 @@ class S3LocalDef(ServiceDef):
     def reached_at(self, address: str) -> S3LocalDef:
         # Cleanup after the run reaches the server for its storages; the buckets the run made are gone.
         return dataclasses.replace(self.as_existing(address), buckets=[])
+
+    def parts_needed(self, inputs) -> list:
+        """The names of `buckets` a test with `inputs` needs: the bucket of each storage on this server
+        it binds. One that binds no storage on it, or the server itself, may read any of them."""
+
+        def on_it(d):
+            return isinstance(d, ServiceDef) and d.id == self.id
+
+        names = [b.name for b in self.buckets]
+        storages = [d for d in inputs if isinstance(d, StorageDef) and any(on_it(sub) for _, _, sub in d.edges())]
+        if not storages or any(on_it(d) for d in inputs):
+            return names
+        return [n for n in names if any(d.root == f"s3://{n}" or d.root.startswith(f"s3://{n}/") for d in storages)]
 
     def storage(self, id: str, prefix: str = "", bucket: str | None = None, **fields) -> StorageDef:
         """A storage at `s3://<bucket>/<prefix>` on this server; `bucket` names one of `buckets`, else
@@ -163,6 +176,7 @@ class S3Local(Service):
             overrides["endpoint"] = definition.address
         self.settings = s3_settings(**overrides)
         self.made_buckets = []  # names of the buckets of `buckets` this instance made, in order
+        self.refused = {}  # bucket name -> why the run does not use it
 
     @property
     def handle(self):
@@ -187,18 +201,21 @@ class S3Local(Service):
         super().create()
         api = self.api()
         try:
-            missing = [d for b in self.definition.buckets for d, _ in b.seed if not os.path.isdir(d)]
-            if missing:
-                raise ServiceNotUp(f"service {self.id}: nothing to seed from: no directory at {', '.join(missing)}")
             api.create_bucket(self.settings["bucket"])
-            for b in self.definition.buckets:
-                self._bucket(api, b)
         except Exception as exc:
-            self._remove_buckets(api, lambda b: True)
             self.delete()
-            if isinstance(exc, ServiceNotUp):
-                raise
-            raise ServiceNotUp(f"service {self.id}: its buckets: {type(exc).__name__}: {exc}") from exc
+            raise ServiceNotUp(f"service {self.id}: its bucket: {type(exc).__name__}: {exc}") from exc
+        for b in self.definition.buckets:
+            try:
+                missing = [d for d, _ in b.seed if not os.path.isdir(d)]
+                if missing:
+                    raise ServiceNotUp(f"nothing to seed from: no directory at {', '.join(missing)}")
+                self._bucket(api, b)
+            except Exception as exc:
+                why = str(exc) if isinstance(exc, ServiceNotUp) else f"{type(exc).__name__}: {exc}"
+                self.refused[b.name] = f"service {self.id}: bucket {b.name}: {why}"
+                _log.info("s3: %s", self.refused[b.name])
+                self._remove_buckets(api, lambda x: x.name == b.name)
 
     def _differs(self, api, b):
         """What in bucket `b` is not as declared, or None: it is."""
@@ -214,8 +231,8 @@ class S3Local(Service):
         if b.name not in self.made_buckets and api.bucket_exists(b.name):
             if differs := self._differs(api, b):
                 raise ServiceNotUp(
-                    f"service {self.id}: bucket {b.name} is there and {differs}; the run does not change a "
-                    f"bucket it did not make. Remove it, or declare another bucket"
+                    f"it is there and {differs}; the run does not change a bucket it did not make. Remove it, "
+                    f"or declare another bucket"
                 )
             _log.info("s3: bucket %s is there as declared, used as it is", b.name)
             return

@@ -306,8 +306,10 @@ credential it makes) has them. `S3.storage("lake", "prefix", bucket="data")` is 
 bucket calls are the service's own: create, head, remove (with what is in it), a public-read policy,
 as signed S3 API requests. Per bucket: one the run made is removed at the end unless its `retain`
 (default `never`) keeps it; one already there that holds what it seeds (rclone `check`), public when
-asked, is used as it is and never changed; one there with other content is refused, and the service
-is not up.
+asked, is used as it is and never changed; one there with other content (or that cannot be made) is
+refused, and blocks only the tests that need it: a test needs the bucket of each storage on the server
+it binds, and every bucket when it binds none (only the credential) or the server itself. `03` lists
+what was refused.
 
 **A storage is a URL and a credential.** Its files -- list, remove a prefix, copy and sync a local
 directory in, check one -- go through rclone, whose verbs are the same for S3, Azure blob, GCS and R2;
@@ -438,6 +440,7 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-01: a refused bucket blocks only the tests that need it, not every test on its server.
 - 2026-10-01: `own_secrets` is gone: a test that binds the storage gets the secret, one that binds only
   the credential gets the keys as env and makes its own.
 - 2026-10-01: typed credentials (`S3CredentialDef`): fields, delivery as SDK env to every engine
