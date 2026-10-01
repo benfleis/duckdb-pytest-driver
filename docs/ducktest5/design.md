@@ -148,6 +148,8 @@ skip after statements ran keeps their log; a check that failed before it makes t
 3. Scripts that export keys become a `CredentialDef` with `from_env` (2.5). CI keeps its secrets.
 4. `docker compose` services become `SERVICES`; one that runs already is `.as_existing(address=...)`.
 5. CI steps that start, wait, run and stop become one `ducktest5 run`.
+6. Helper code outside the test files' directories (`test/py`, `scripts`) goes in the root
+   `ducktest_conf.py` as `PYTHONPATH = ["py", "../scripts"]`, relative to that file (2.8).
 
 ---
 
@@ -258,9 +260,17 @@ warm engine.
 
 ## 2.8 What the repo owns
 
-`ducktest_conf.py`: `ENGINES`, `SERVICES`, `STORAGES`, `CREDENTIALS`, `AXES`, `SUITES`, `RULES`; kinds
-of its own beside its tests (a catalog service, `UCTable`). ducktest owns lifetime, identity,
-delivery, dialects, and the shared kinds.
+`ducktest_conf.py`: `ENGINES`, `SERVICES`, `STORAGES`, `CREDENTIALS`, `AXES`, `SUITES`, `RULES`,
+`PYTHONPATH`; kinds of its own beside its tests (a catalog service, `UCTable`). ducktest owns
+lifetime, identity, delivery, dialects, and the shared kinds.
+
+`PYTHONPATH`, in the root file only, puts the repo's helper code on `sys.path` for the whole process,
+in every phase, so a body that imports a helper as it runs finds it too. It is read from the file's
+source before the file runs, so the file itself can import from it; the limit is that it must be one
+top-level literal list of paths, relative to the file and inside the repository. Engine processes
+do not get it: `duckdb` and `unittest` are not Python, the Spark driver runs in this process, and
+their process environment is part of their identity. A body that starts a Python process passes the
+path itself. `scan --env` prints it first.
 
 ## 2.9 Words that mean something else in DuckDB or Spark
 
@@ -359,6 +369,7 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-01: `PYTHONPATH` in the root `ducktest_conf.py`.
 - 2026-10-01: a Python body can skip: `ctx.skip(reason)`, `ducktest5.skip(reason)`.
 - 2026-10-01: `ctx.env` is now `ctx.values` (and `client.values`, `ctx.run_paired(values=)`).
 - 2026-09-30: `S3LocalDef` (RustFS) replaces `MinioDef`; MinIO is gone; S3 cleanup by rclone or boto3; rung 05.

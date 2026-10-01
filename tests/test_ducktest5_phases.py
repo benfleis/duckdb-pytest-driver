@@ -292,3 +292,27 @@ def test_a_run_that_is_stopped_leaves_nothing_running_and_can_be_taken_up_again(
     assert main(["exec", "--run-dir", "apart", "--resume", *binaries()]) == 1
     assert len(outcomes("apart")) == len(phases.ids_of_plan(phases.read_plan("apart")))
     assert outcomes("apart")["a/hang.test::hang"] == "error"  # it is still what it is: it never ends
+
+
+def test_a_body_imports_a_helper_from_pythonpath_at_run_time_in_the_exec_process(tree, monkeypatch):
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    (tree / "test/ducktest_conf.py").write_text("PYTHONPATH = ['py']\n")
+    (tree / "test/py").mkdir()
+    (tree / "test/py/pp_late.py").write_text("ANSWER = 42\n")
+    (tree / "test/b/body.py").write_text(
+        textwrap.dedent("""
+            from ducktest5 import test
+
+            @test()
+            def passes(ctx):
+                from pp_late import ANSWER  # imported in the body, as it runs
+                assert ANSWER == 42
+        """)
+    )
+    assert main(["scan", "--run-dir", "apart", "--id", "b/body.py::passes"]) == 0
+    assert main(["plan", "--run-dir", "apart"]) == 0
+    assert main(["provision", "--run-dir", "apart"]) == 0
+    done = subprocess.run(
+        [sys.executable, "-m", "ducktest5.cli", "exec", "--run-dir", "apart", *binaries()], cwd=str(tree)
+    )
+    assert (done.returncode, outcomes("apart")) == (0, {"b/body.py::passes": "passed"})

@@ -1,6 +1,7 @@
 """ducktest5's scan, configuration files and selection, on a small tree made for each test."""
 
 import re
+import sys
 import textwrap
 
 import pytest
@@ -1147,3 +1148,78 @@ def test_a_non_engine_service_is_declared_among_the_services_not_the_engines(tmp
     service = "from ducktest5.services.http import HttpServerDef\nS = HttpServerDef('fake')\n"
     with pytest.raises(UsageError, match="declare services in SERVICES"):
         tree(tmp_path, {"test/ducktest_conf.py": service + "ENGINES = [S]", "test/a.test": ""})
+
+
+# -----------------------------------------------------------------------------
+# PYTHONPATH: the repo's helper code
+#
+
+
+@pytest.fixture
+def clean_path(monkeypatch):
+    """What a scan puts on sys.path, and the helpers it imports, go with the test."""
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(sys, "modules", dict(sys.modules))
+
+
+HELPER_BODY = """
+    from ducktest5 import test
+    from pp_helper import ANSWER
+
+    @test()
+    def uses_helper(ctx):
+        assert ANSWER == 42
+"""
+
+
+def test_pythonpath_puts_helpers_beside_the_tree_on_the_path_before_the_project_file_runs(tmp_path, clean_path):
+    (tmp_path / ".git").mkdir()
+    files = {
+        "test/ducktest_conf.py": "from pp_kinds import KIND\nPYTHONPATH = ['py', '../scripts']\nKNOWN = KIND",
+        "test/py/pp_helper.py": "ANSWER = 42",
+        "scripts/pp_kinds.py": "KIND = 'catalog'",
+        "test/a/body.py": HELPER_BODY,
+    }
+    tests, project = tree(tmp_path, files)
+    assert ids(tests) == ["a/body.py::uses_helper"]
+    assert project.pythonpath == (str(tmp_path / "test" / "py"), str(tmp_path / "scripts"))
+    assert sys.path[:2] == list(project.pythonpath)
+
+
+def test_without_pythonpath_a_helper_outside_the_body_s_directory_is_not_found(tmp_path, clean_path):
+    with pytest.raises(UsageError, match=r"body\.py could not be imported: ModuleNotFoundError"):
+        tree(
+            tmp_path,
+            {"test/ducktest_conf.py": "", "test/py/pp_helper.py": "ANSWER = 42", "test/a/body.py": HELPER_BODY},
+        )
+
+
+@pytest.mark.parametrize(
+    "conf, text",
+    [
+        ("PYTHONPATH = ['nope']", r"PYTHONPATH entry 'nope' is not a directory"),
+        ("PYTHONPATH = ['../..']", r"PYTHONPATH entry '../..' is outside the repository"),
+        ("import os\nPYTHONPATH = [os.path.join('py')]", r"ducktest_conf\.py:2: PYTHONPATH must be a literal list"),
+        ("PYTHONPATH = 'py'", r"PYTHONPATH must be a literal list"),
+        ("PYTHONPATH = ['py']\nPYTHONPATH.append('a')", r"PYTHONPATH is read from the source before the file runs"),
+    ],
+)
+def test_a_pythonpath_that_cannot_be_read_or_used_is_a_usage_error_naming_the_file(tmp_path, clean_path, conf, text):
+    files = {"test/ducktest_conf.py": conf, "test/py/x.py": "", "test/a/x.test": ""}
+    with pytest.raises(UsageError, match=text):
+        tree(tmp_path, files)
+
+
+def test_pythonpath_belongs_in_the_root_project_file_only(tmp_path, clean_path):
+    files = {"test/ducktest_conf.py": "", "test/a/ducktest_conf.py": "PYTHONPATH = ['.']", "test/a/x.test": ""}
+    with pytest.raises(UsageError, match=r"a/ducktest_conf\.py: PYTHONPATH belongs in the root"):
+        tree(tmp_path, files)
+
+
+def test_scan_env_says_where_helpers_come_from(tmp_path, clean_path, monkeypatch, capsys):
+    from ducktest5.cli import main
+
+    tree(tmp_path, {"test/ducktest_conf.py": "PYTHONPATH = ['py']", "test/py/x.py": "", "test/a.test": ""})
+    monkeypatch.chdir(tmp_path)
+    assert main(["scan", "--env"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "pythonpath: py  <- ducktest_conf.py"

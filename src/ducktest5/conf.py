@@ -1,7 +1,12 @@
 """`ducktest_conf.py`: configuration for a directory and everything below it.
 
 The file at the root of the scanned tree is the project file; it may also declare ENGINES, SERVICES,
-STORAGES, CREDENTIALS, AXES, SUITES and EXCLUDE. Any directory may have its own file with RULES. A rule
+STORAGES, CREDENTIALS, AXES, SUITES, EXCLUDE and PYTHONPATH.
+
+`PYTHONPATH = ["py", "../scripts"]` puts the repo's helper code on `sys.path`, each path relative to
+the project file, before the project file itself runs: it is read from the file's source, so it must
+be a literal list of strings, and the file may then import from it. It holds for the whole process,
+so every body, wherever and whenever it imports a helper, sees it. Engine processes do not get it. Any directory may have its own file with RULES. A rule
 speaks about the whole subtree (`default`) or about a pattern relative to its file (`match`); a
 pattern may name one file.
 
@@ -41,6 +46,7 @@ body's thread cannot be killed, so it is only given up on, not stopped.
 
 from __future__ import annotations
 
+import ast
 import functools
 import importlib.util
 import os
@@ -203,6 +209,7 @@ class Project:
     _used: set = field(default_factory=set)
     unused_rules: list = field(default_factory=list)
     default_storage: DefaultStorage | None = None  # None: `<repo>/data` and the default temp root
+    pythonpath: tuple = ()  # absolute, in the order PYTHONPATH gave them
 
     def __post_init__(self):
         if self.default_storage is None:
@@ -292,9 +299,54 @@ def repo_root(project_root):
     return here
 
 
+def _literal_pythonpath(path, root):
+    """PYTHONPATH of the project file, as absolute directories, read from its source without running it."""
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read(), path)
+    found = None
+    for node in tree.body:
+        targets = (
+            node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        )
+        if any(isinstance(t, ast.Name) and t.id == "PYTHONPATH" for t in targets):
+            found = node
+    if found is None or found.value is None:
+        return ()
+    try:
+        value = ast.literal_eval(found.value)
+    except ValueError:
+        value = None
+    if not isinstance(value, (list, tuple)) or not all(isinstance(p, str) and p for p in value):
+        raise UsageError(
+            f"{path}:{found.lineno}: PYTHONPATH must be a literal list of paths, read before the file runs: "
+            'PYTHONPATH = ["py", "../scripts"]'
+        )
+    top, out = repo_root(root), []
+    for p in value:
+        full = os.path.normpath(os.path.join(root, p))
+        if os.path.isabs(p) or os.path.commonpath([top, full]) != top:
+            raise UsageError(
+                f"{path}: PYTHONPATH entry {p!r} is outside the repository {top}; give a path relative to {root}"
+            )
+        if not os.path.isdir(full):
+            raise UsageError(f"{path}: PYTHONPATH entry {p!r} is not a directory ({full})")
+        out.append(full)
+    return tuple(out)
+
+
+def _apply_pythonpath(paths):
+    for p in reversed(paths):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+
 def load_project(start):
     root = find_root(start)
     project = Project(root, {}, {}, {}, {}, ())
+    root_file = os.path.join(root, CONF_FILE)
+    if os.path.isfile(root_file):
+        project.pythonpath = _literal_pythonpath(root_file, root)
+        _apply_pythonpath(project.pythonpath)
     for dirpath, dirnames, filenames in os.walk(root):  # top-down, so the root file and its EXCLUDE come first
         if CONF_FILE not in filenames:
             _prune(project, root, dirpath, dirnames)
@@ -319,9 +371,17 @@ def load_project(start):
             if "all" in project.suites:
                 raise UsageError(f"{path}: a project may not define a suite named 'all' -- it always exists, built in")
             project.exclude = tuple(getattr(module, "EXCLUDE", ()))
+            if (
+                hasattr(module, "PYTHONPATH")
+                and tuple(os.path.normpath(os.path.join(root, p)) for p in module.PYTHONPATH) != project.pythonpath
+            ):
+                raise UsageError(
+                    f"{path}: PYTHONPATH is read from the source before the file runs, as one top-level literal; "
+                    "it may not be computed or changed as the file runs"
+                )
             _check(path, project)
         else:
-            for name in ("ENGINES", "SERVICES", "STORAGES", "CREDENTIALS", "AXES", "SUITES", "EXCLUDE"):
+            for name in ("ENGINES", "SERVICES", "STORAGES", "CREDENTIALS", "AXES", "SUITES", "EXCLUDE", "PYTHONPATH"):
                 if hasattr(module, name):
                     raise UsageError(f"{path}: {name} belongs in the root {CONF_FILE} only; this file may hold RULES")
         _prune(project, root, dirpath, dirnames)

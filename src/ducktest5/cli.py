@@ -32,6 +32,7 @@ import yaml
 from . import events, logconfig, phases, leases, sqllogic, testenv
 from .binary import UsageError, find_duckdb
 from .conf import load_project, repo_root
+from .declare import CONF_FILE
 from .provision import bring_up
 from .resources.made import Made
 from .resources.storage import DEFAULT_TEMP_ROOT
@@ -297,6 +298,9 @@ def main(argv=None):
                 print(f"{len(selected)} tests -> {path}")
                 return 0
             if args.env:
+                if project.pythonpath:
+                    paths = ", ".join(os.path.relpath(p, project.root) for p in project.pythonpath)
+                    print(f"pythonpath: {paths}  <- {CONF_FILE}")
                 for c in selected:
                     print(c.id)
                     # No service is started here, so what a variant makes out of one is named, not called.
