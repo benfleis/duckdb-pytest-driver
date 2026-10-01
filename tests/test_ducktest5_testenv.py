@@ -258,26 +258,18 @@ def test_the_scoped_secret_of_a_test_file_does_not_change_its_key(monkeypatch):
     assert resolve(sql_file).key() == resolve(python).key()
 
 
-@pytest.mark.parametrize(
-    "own_secrets, scoped, line",
-    [
-        (True, True, "secret: none (own_secrets)  <- credential key"),
-        (False, False, "secret: none (no storage of the test is in its scope)  <- credential key"),
-    ],
-)
-def test_no_secret_is_rendered_for_own_secrets_or_an_unscoped_credential_and_the_env_still_is(
-    monkeypatch, own_secrets, scoped, line
-):
+@pytest.mark.parametrize("held, scoped", [("credential", True), ("both", False)])
+def test_no_secret_is_rendered_without_a_storage_in_the_scope_and_the_env_still_is(monkeypatch, held, scoped):
     monkeypatch.setenv("DT_KEY", "k-value")
     monkeypatch.setenv("DT_SECRET", "s-value")
     storage = StorageDef("bucket", "s3://bucket")
     keys = from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})
     credential = S3CredentialDef("key", sources=[keys], scopes=["bucket"] if scoped else [])
-    test = make_test(own_secrets=own_secrets)
-    test.inputs = ((storage, RW), (credential, RO))
+    test = make_test()
+    test.inputs = ((credential, RO),) if held == "credential" else ((storage, RW), (credential, RO))
     env = resolve(test)
     assert (env.secret_sql, env.secret_requires) == ([], [])
-    assert line in env.lines()
+    assert "secret: none (no storage of the test is in its scope)  <- credential key" in env.lines()
     assert env.environ({})["AWS_ACCESS_KEY_ID"] == "k-value"
 
 

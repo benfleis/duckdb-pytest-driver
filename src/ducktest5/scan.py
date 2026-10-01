@@ -167,7 +167,6 @@ def scan(start, *, working_dir="."):
                     mutex=list(decl.mutex),
                     suites=list(decl.suites),
                     bind=dict(decl.bind),
-                    own_secrets=decl.own_secrets,
                 )
             )
     for path in bodies:
@@ -223,8 +222,6 @@ def scan(start, *, working_dir="."):
 
 def _renderable(test, project):
     """Each engine of the test renders the secret of each credential that has one."""
-    if test.definition.own_secrets:
-        return
     storages = {d.id for d, _ in test.inputs if isinstance(d, StorageDef)}
     engines = [] if test.definition.type == SQLLOGIC else leases.engines_of(test, project)
     dialects = [(d.id, d.dialect) for d in engines if d.dialect is not None]
@@ -303,13 +300,10 @@ def _settle(definition, project, working_dir):
             settled.sources.update({("engines", x): "@test" for x in added})
     if definition.bind:
         settled.apply({"bind": definition.bind}, "@test")
-    if definition.own_secrets is not None:
-        settled.apply({"own_secrets": definition.own_secrets}, "@test")
     check_suites(definition.suites, f"{definition.path}::{definition.name}")
     merge_suites(settled.suites, definition.suites, None, settled.sources)
     definition.suites = settled.suites
     definition.values, definition.settings, definition.bind = settled.values, settled.settings, settled.bind
     definition.requires = settled.requires
     definition.timeout, definition.retries = settled.timeout, settled.retries
-    definition.own_secrets = settled.own_secrets
     definition.why, definition.sources = settled.why, settled.sources

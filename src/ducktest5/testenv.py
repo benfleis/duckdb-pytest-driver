@@ -314,11 +314,11 @@ def resolve(test, made=None, key=None, default=None):
     scoped = {c.id: storages for c, storages in pairs(held)}
     for credential in (i for i in held if i.definition.kind == "credential"):
         storages = scoped.get(credential.id)
-        rendered = bool(storages) and not definition.own_secrets
+        rendered = bool(storages)
         env.credentials.append(_view(credential, storages or [], rendered))
         if not rendered:
-            why = "own_secrets" if definition.own_secrets else "no storage of the test is in its scope"
-            env.unrendered.append(Entry("", f"credential {credential.id}", kind="secret", shown=f"none ({why})"))
+            shown = "none (no storage of the test is in its scope)"
+            env.unrendered.append(Entry("", f"credential {credential.id}", kind="secret", shown=shown))
             continue
         # The same text either way; the init file of a .test body also requires what it needs.
         rendered = render("unittest" if definition.body_file else "duckdb", "secret", storages, credential)

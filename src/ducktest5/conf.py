@@ -47,10 +47,6 @@ place that name was first said. `!all` is an error -- every test is in the suite
 attempt passes, and the report says which attempt. It is for a test that can fail for reasons that are
 not its own, such as one that reaches the public network.
 
-`own_secrets=True` says the tests make their own secrets, so the run renders none for their
-credentials; the keys still reach every engine process as SDK env. A ducktest secret whose scope is
-longer would else win DuckDB's scope match over the test's own.
-
 `timeout=N` bounds one test, in seconds, whichever way it runs -- a `.test` file inside the binary, or a
 Python body in its worker thread -- counted from when it begins. Past it the test ends ERROR; a Python
 body's thread cannot be killed, so it is only given up on, not stopped.
@@ -78,7 +74,7 @@ _log = logging.getLogger(__name__)
 
 _LISTS = ("tags", "engines", "variants", "mutex", "suites", "requires")
 _DICTS = ("values", "settings", "bind")
-_SINGLES = ("timeout", "retries", "own_secrets")
+_SINGLES = ("timeout", "retries")
 
 
 def suite_name(entry):
@@ -183,7 +179,6 @@ class Settled:
     bind: dict = field(default_factory=dict)
     timeout: float | None = None
     retries: int = 0
-    own_secrets: bool = False
     why: list = field(default_factory=list)
     sources: dict = field(default_factory=dict)  # (field, key) -> the rule that gave that one entry
 

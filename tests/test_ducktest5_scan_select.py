@@ -1144,20 +1144,29 @@ CREDENTIAL_CONF = """
 """
 
 
-def test_own_secrets_is_set_by_a_rule_and_by_test(tmp_path):
-    conf = CREDENTIAL_CONF.replace("{scopes_a}", '["lake"]').replace("{bind}", '{"storage": "lake"}')
+def test_binding_the_storage_renders_a_secret_and_binding_only_the_credential_gives_the_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("DT_KEY", "k-value")
+    monkeypatch.setenv("DT_SECRET", "s-value")
+    conf = CREDENTIAL_CONF.replace("{scopes_a}", '["lake"]').replace("{bind}", "{}")
     conf += """
     from ducktest5 import match
-    RULES += [match("ruled.test", own_secrets=True)]
+    RULES += [match("stored.py", bind={"storage": "lake"}), match("keys_only.py", bind={"credential": "keys_a"})]
 """
-    own = "from ducktest5 import test\n@test(own_secrets=True)\ndef own(ctx): pass\n"
+    body = "from ducktest5 import test\n@test()\ndef {name}(ctx): pass\n"
     tests, project = tree(
-        tmp_path, {"test/ducktest_conf.py": conf, "test/ruled.test": "", "test/plain.test": "", "test/own.py": own}
+        tmp_path,
+        {
+            "test/ducktest_conf.py": conf,
+            "test/stored.py": body.format(name="stored"),
+            "test/keys_only.py": body.format(name="keys_only"),
+        },
     )
     by_name = {t.definition.name: t for t in tests}
-    assert {n: t.definition.own_secrets for n, t in by_name.items()} == {"own": True, "plain": False, "ruled": True}
-    (engine,) = leases.bind(by_name["own"], resolve(by_name["own"]), project)
-    assert [d.kind for entry in engine.inputs for d in entry] == ["storage"], "the engine renders no secret"
+    stored, keys_only = resolve(by_name["stored"]), resolve(by_name["keys_only"])
+    assert stored.secret_sql and not keys_only.secret_sql
+    assert keys_only.environ({})["AWS_ACCESS_KEY_ID"] == "k-value"
+    (engine,) = leases.bind(by_name["keys_only"], keys_only, project)
+    assert [d.kind for entry in engine.inputs for d in entry] == ["credential"], "the engine renders no secret"
 
 
 def test_a_credential_an_engine_of_the_test_cannot_render_is_a_scan_error(tmp_path):

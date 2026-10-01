@@ -276,9 +276,11 @@ root file's `INHERIT_ENV = ["AWS_CA_BUNDLE"]` keeps names, never a key.
 `ducktest_<credential id>`: the storage's connection options and scope, with each key named by its
 env variable, never its value: `KEY_ID getenv('AWS_ACCESS_KEY_ID')` in the shell, `'{AWS_ACCESS_KEY_ID}'`
 in a `.test` batch's init file, which the binary fills. The keys are in the secret because an
-extension may read them from the secret alone (delta's scan does). No secret is made where no storage
-of the test is in the scope, or where the test says `own_secrets=True` (a rule sets it for a
-directory) because it makes its own; the env is delivered all the same. Spark gets, per scoped bucket,
+extension may read them from the secret alone (delta's scan does). The rule: **bind the storage**, and
+the run sets DuckDB up for it (the scoped secret, `{TEMP_DIR}` there); **bind only the credential**,
+and the test gets the keys in its process env and nothing else, and sets DuckDB up itself. No secret
+is made where no storage of the test is in the scope; the env is delivered all the same. A test that
+binds the storage but makes its own secret is left to wiring; there is no flag for it. Spark gets, per scoped bucket,
 the env credentials provider and the bucket's endpoint, never a key. A body reads what it holds with
 `ctx.credential(id)` and `ctx.credentials()`: id, type, `secret_name`, storages, scope, env names,
 fields masked, source. A service can make a credential: `s3.credential("keys", scopes=["lake"])`.
@@ -436,6 +438,8 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-01: `own_secrets` is gone: a test that binds the storage gets the secret, one that binds only
+  the credential gets the keys as env and makes its own.
 - 2026-10-01: typed credentials (`S3CredentialDef`): fields, delivery as SDK env to every engine
   process, SDK names of the shell's env removed, `INHERIT_ENV`, `own_secrets`, `ctx.credential(s)`;
   secrets are `ducktest_<credential id>`; the unset-hides rule and the `auth` axis of rung 03 are gone.
