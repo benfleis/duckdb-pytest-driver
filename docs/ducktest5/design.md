@@ -281,7 +281,7 @@ the `1password:` source; scan checks of `{NAME}` references and of
 | Rung | Adds | Path |
 | --- | --- | --- |
 | 00 | an existing repo's `test/` tree: select by path, `--suite default`, SKIPPED | `00_existing/` |
-| 01 | no config: a `.test` and a Python body | `01_solo/` |
+| 01 | no config: a `.test`, a Python body, and a body paired with a `.test` | `01_solo/` |
 | 02 | storages, an engine, `default`/`match`, `@test(bind=)` | `02_rules/` |
 | 03 | an s3 credential from env, an `auth` axis | `03_credentials/` |
 | 04 | an HTTP service under a storage; BLOCKED | `04_service/` |

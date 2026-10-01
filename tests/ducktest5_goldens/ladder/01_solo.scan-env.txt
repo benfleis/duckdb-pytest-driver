@@ -1,3 +1,6 @@
+paired_solo.py::paired_solo
+  root: temp_dir_root=<tmp>/repo/01_solo/duckdb_unittest_tempdir/<run_token>  <- default storage
+  root: data_dir=<tmp>/repo/01_solo/data  <- default storage
 solo_body.py::solo_body
   root: temp_dir_root=<tmp>/repo/01_solo/duckdb_unittest_tempdir/<run_token>  <- default storage
   root: data_dir=<tmp>/repo/01_solo/data  <- default storage

@@ -38,12 +38,16 @@ the binary lists the files, so `--no-binary-check` is not needed.
 
 ## 01_solo
 
-One Python body and one `.test` file, and no `ducktest_conf.py` in this directory or above it. Both
-run on the built-in DuckDB engine, `duckdb`: the `.test` file in a `unittest` process, the body
-through `ctx.client("duckdb")`, a Client on that engine's shell. Each runs one query. A body that
+A Python body and a `.test` file, and no `ducktest_conf.py` in this directory or above it. Both run
+on the built-in DuckDB engine, `duckdb`: the `.test` file in a `unittest` process, the body through
+`ctx.client("duckdb")`, a Client on that engine's shell. Each runs one query. A body that
 needs a second connection, such as a thread that must run beside the first, asks for
 `ctx.client("duckdb", new=True)`: a shell of its own, with the same preamble, closed when the test
 ends.
+
+`paired_solo.py` calls `ctx.run_paired()`, which runs `paired_solo.test`, the file of its stem beside
+it, through the binary with the body's own test environment: its `{TEMP_DIR}` is the body's place.
+A `.test` file with a body of its stem is not a test of its own; only the body runs it. Rungs 02 and 03 pair a body the same way.
 
 ## 02_rules
 

@@ -1,0 +1,12 @@
+# name: paired_solo.test
+# description: Run by paired_solo.py, with the body's own test environment.
+# group: [ladder]
+
+# -----------------------------------------------------------------------------
+# The place of the body, named after it, not a place of its own
+#
+
+query I
+SELECT '{TEMP_DIR}' LIKE '%/paired_solo%'
+----
+true
