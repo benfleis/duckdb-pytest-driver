@@ -305,3 +305,11 @@ def test_binding_the_declared_default_storage_gives_what_binding_none_gives(tmp_
 
     for key in ("k", None):  # a Python body's own place, and the run's temp root a .test body gets
         assert given(by_name["bound"], key) == given(by_name["plain"], key)
+
+
+def test_a_value_read_at_delivery_is_printed_as_its_value_not_its_getter():
+    from ducktest5.testenv import Entry, TestEnv
+
+    env = TestEnv()
+    env.process_env["AWS_REGION"] = Entry(lambda: "eu-west-1", "credential keys", kind="env", name="AWS_REGION")
+    assert env.lines() == ["process env: AWS_REGION=eu-west-1  <- credential keys"]

@@ -184,7 +184,7 @@ class TestEnv:
         ]
 
     def _shown(self, entry):
-        text = MASK if entry.secret else str(entry.value) if entry.shown is None else entry.shown
+        text = MASK if entry.secret else _plain(entry.value) if entry.shown is None else entry.shown
         return f"{entry.name}={text}" if entry.name else text
 
     def lines(self):
@@ -198,6 +198,16 @@ class TestEnv:
     def record(self):
         """The same, for `01-tests.yaml` and the report."""
         return [{"what": _LABELS[e.kind], "is": self._shown(e), "from": e.source} for e in self.entries()]
+
+
+def _plain(value):
+    """A value as printed: one read at delivery (a credential's region) is read here too."""
+    if callable(value):
+        try:
+            value = value()
+        except Exception as exc:
+            return f"<not known: {exc}>"
+    return str(value)
 
 
 def _put_value(values, name, entry):
