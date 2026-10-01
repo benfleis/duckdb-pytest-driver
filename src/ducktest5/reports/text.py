@@ -170,7 +170,7 @@ def summary_lines(report, *, color=False):
         )
     for reason, ids in report.by_reason(SKIPPED).items():
         if not out:
-            out.append(f"{counts[SKIPPED]} skipped inside the binary:")
+            out.append(f"{counts[SKIPPED]} skipped:")
         out.append(f"  {len(ids):4}  {reason}")
         out += [f"          {i}" for i in ids[:3]]
         if len(ids) > 3:

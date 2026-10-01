@@ -8,7 +8,7 @@ testcases by id, so the XML does not depend on which test ended first.
     FAILED      <failure type="FAILED">        what is under test went wrong
     ERROR       <error type="ERROR">           something else did, so the test proved nothing
     BLOCKED     <error type="BLOCKED">         a service or engine did not come up; it never ran
-    SKIPPED     <skipped message="<reason>">   the binary left it out
+    SKIPPED     <skipped message="<reason>">   a `require` not met, or a body's skip(reason)
     PASSED      nothing                        with the run, the runner and the variants as properties
 
 The text of a `<failure>` or an `<error>` is everything the terminal would show for that test, so a

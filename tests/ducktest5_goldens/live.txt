@@ -47,7 +47,7 @@ engine spark -- did not come up: RuntimeError: no JVM (log: /runs/2026-09-21T10-
   service: store (existing)  <- @test
   again: ducktest5 run --id 'py/spark.py::roundtrip[backend=oss]'
 
-1 skipped inside the binary:
+1 skipped:
      1  require-env DAT_PATH
           sql/needs_env.test::needs_env
 

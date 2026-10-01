@@ -15,6 +15,7 @@ from . import asserts, leases, testenv
 from .binary import UsageError
 from .conf import check_suites, is_default, load_project, merge_suites
 from .declare import CONF_FILE
+from .outcomes import Skip
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 from .resources import RO, RW, CredentialDef, DefaultStorageDef, StorageDef, pick_credentials
 
@@ -88,6 +89,11 @@ def _load(path, name):
         spec.loader.exec_module(module)
     except UsageError:
         raise
+    except Skip as exc:
+        raise UsageError(
+            f"{path} called skip({exc.reason!r}) while it was imported; skip inside the body, "
+            "or leave the case out of params="
+        ) from None
     except Exception as exc:
         raise UsageError(f"{path} could not be imported: {type(exc).__name__}: {exc}") from exc
     finally:

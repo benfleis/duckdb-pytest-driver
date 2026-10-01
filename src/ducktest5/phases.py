@@ -38,7 +38,7 @@ import yaml
 from . import events, leases, sqllogic, testenv
 from .binary import UsageError
 from .model import SQLLOGIC
-from .outcomes import BLOCKED, ERROR, FAILED, PASSED
+from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
 from .provision import EXISTING, MANAGED, record
 from .resources import ALWAYS, ON_FAILURE, DefaultStorageDef, ServiceNotUp
 from .resources.made import Made, services_in
@@ -319,11 +319,12 @@ def _paths_by_outcome(event_lines, run_dir):
         if event.get("event") != events.TEST_END:
             continue
         good = event.get("outcome") == PASSED
+        own_dir_goes = event.get("outcome") in (PASSED, SKIPPED)  # a body that skipped left nothing to look at
         if batch := event.get("batch"):
             # What a failed attempt printed stays, also when a later attempt passed.
             batches[batch] = batches.get(batch, True) and good and (event.get("attempts") or 1) == 1
         for test_dir in event.get("dirs") or ():
-            (passed if good else kept).append(os.path.join(run_dir, test_dir))
+            (passed if own_dir_goes else kept).append(os.path.join(run_dir, test_dir))
     for batch, good in batches.items():
         (passed if good else kept).append(os.path.join(run_dir, batch))
     return passed, kept

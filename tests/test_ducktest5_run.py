@@ -1228,3 +1228,99 @@ def test_a_storage_the_test_binds_gives_the_temp_roots_and_the_data_dir_only_whe
     assert seen["data_dir"] == str(tmp_path / (data or "data"))
     assert seen["temp_dir_root"].startswith(f"{tmp_path}/store/temp/")
     assert seen["temp_dir"] == f"{seen['temp_dir_root']}/{test.dir_name}"
+
+
+# -----------------------------------------------------------------------------
+# A Python body that skips
+#
+
+
+def _not_built():
+    """A helper with no ctx, as a repo's own module would hold."""
+    from ducktest5 import skip
+
+    skip("duckdb CLI not built")
+
+
+def test_a_body_that_skips_is_skipped_with_its_reason_and_keeps_its_statement_log(tmp_path):
+    from ducktest5.reports import Report, junit
+
+    def skips(ctx):
+        ctx.client("duckdb").oks("SELECT 1")
+        ctx.skip("this build has no retry")
+
+    code, run_dir, report, text = go(tmp_path, [py_test(skips), py_test(passes, path="test/p.py")])
+    test = result_of(report, "skips")
+    assert (code, test["outcome"], test["reason"]) == (0, "skipped", "this build has no retry")
+    assert "failure" not in test and "kept" not in test
+    assert [s["sql"] for s in test["statements"]] == ["SELECT 1"]
+    assert "1 skipped:\n     1  this build has no retry" in text
+    out = io.StringIO()
+    junit.render(Report.of(read_events(str(run_dir))), out)
+    assert '<skipped message="this build has no retry" />' in out.getvalue()
+
+
+def test_skip_from_a_helper_with_no_ctx_skips_the_body_and_removes_its_dir(tmp_path):
+    def uses_helper(ctx):
+        writes(ctx)
+        _not_built()
+
+    code, run_dir, report, _ = go(tmp_path, [py_test(uses_helper)])
+    assert (code, report["tests"][0]["outcome"], report["tests"][0]["reason"]) == (1, "skipped", "duckdb CLI not built")
+    assert list((run_dir / "tests").iterdir()) == []
+
+
+def test_a_skip_is_not_swallowed_by_a_body_s_own_except_exception(tmp_path):
+    def guarded(ctx):
+        try:
+            ctx.skip("not here")
+        except Exception:
+            pass
+
+    test = py_test(guarded)
+    assert _run_body(test, ctx_for(test, tmp_path))[:2] == ("skipped", ["not here"])
+
+
+def test_a_skip_after_a_failed_check_is_a_failure(tmp_path):
+    def body(ctx):
+        ctx.client("fake").expects("SELECT 1", [2], on_fail="continue")
+        ctx.skip("too late")
+
+    test = py_test(body, engines=["fake"])
+    outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path))
+    assert outcome == "failed" and len(problems) == 1 and "wrong result" in problems[0]
+
+
+@pytest.mark.parametrize("teardown_fails", [False, True])
+def test_teardowns_run_after_a_skip_and_one_that_fails_is_an_error(tmp_path, teardown_fails):
+    engine = FakeEngine()
+
+    def body(ctx):
+        ctx.client("fake").teardown("DROP boom" if teardown_fails else "DROP t")
+        ctx.skip("no feature")
+
+    test = py_test(body, engines=["fake"])
+    outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path, engine=engine))
+    assert outcome == ("error" if teardown_fails else "skipped")
+    assert engine.statements[-1] == ("DROP boom" if teardown_fails else "DROP t")
+    assert problems[-1].startswith("teardown failed") if teardown_fails else problems == ["no feature"]
+
+
+def test_a_skipped_body_is_not_retried(tmp_path):
+    seen = []
+
+    def skips(ctx):
+        seen.append(1)
+        ctx.skip("never")
+
+    _, _, report, _ = go(tmp_path, [py_test(skips, retries=2)])
+    assert (seen, report["tests"][0]["outcome"], "attempts" in report["tests"][0]) == ([1], "skipped", False)
+
+
+def test_a_skip_with_no_reason_is_a_usage_error_of_the_test(tmp_path):
+    def body(ctx):
+        ctx.skip("  ")
+
+    test = py_test(body)
+    outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path))
+    assert outcome == "error" and "give the reason" in problems[0]

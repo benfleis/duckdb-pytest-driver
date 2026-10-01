@@ -134,6 +134,12 @@ A wrong row (in a copy of rung 02), shortened, then rung 04's golden
 A failure also prints the query, `kept:` (what is left to look at) and `again: ducktest5 run --id ...`.
 A name with no value is an ERROR that lists the test's names. BLOCKED: a service did not come up.
 
+A Python body ends SKIPPED with `ctx.skip("duckdb CLI not built")`, or `ducktest5.skip(...)` from a
+helper that has no `ctx`. The report shows the reason, as for a `require` the binary did not meet.
+Skip only on a condition the body checks itself (a binary not built, a feature off in this build); a
+service, an engine or a credential is declared, and when it does not come up the test is BLOCKED. A
+skip after statements ran keeps their log; a check that failed before it makes the test FAILED.
+
 ## 1.6 Moving an existing repo
 
 1. Run your `.test` tree with no `ducktest_conf.py` (1.1): from the top of the repo,
@@ -353,6 +359,7 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-01: a Python body can skip: `ctx.skip(reason)`, `ducktest5.skip(reason)`.
 - 2026-10-01: `ctx.env` is now `ctx.values` (and `client.values`, `ctx.run_paired(values=)`).
 - 2026-09-30: `S3LocalDef` (RustFS) replaces `MinioDef`; MinIO is gone; S3 cleanup by rclone or boto3; rung 05.
 - 2026-09-30: value conflicts are errors; `ctx.env` holds the roots and axis names; `ctx.client(name,

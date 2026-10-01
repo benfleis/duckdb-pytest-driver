@@ -948,6 +948,13 @@ def test_an_excluded_directory_is_not_scanned_and_its_configuration_is_not_loade
     assert project.excluded_bodies(str(tmp_path)) == ["test/old/b.test"]
 
 
+def test_a_skip_while_a_test_file_is_imported_is_a_usage_error_that_says_where_to_skip(tmp_path):
+    with pytest.raises(
+        UsageError, match=r"early\.py called skip\('no CLI'\) while it was imported; skip inside the body"
+    ):
+        tree(tmp_path, {"test/early.py": "from ducktest5 import skip, test\nskip('no CLI')\n@test()\ndef t(ctx): pass"})
+
+
 def test_only_a_file_with_test_bodies_is_imported_and_a_broken_one_says_which(tmp_path):
     tests, _ = tree(
         tmp_path, {"test/a.test": "", "test/helper.py": "raise RuntimeError('a helper must not run at scan')"}

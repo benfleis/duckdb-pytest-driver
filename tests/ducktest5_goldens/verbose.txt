@@ -50,7 +50,7 @@ BLOCKED  py/spark.py::roundtrip[backend=oss]  [spark did not come up]
   service: store (existing)  <- @test
   again: ducktest5 run --id 'py/spark.py::roundtrip[backend=oss]'
 
-1 skipped inside the binary:
+1 skipped:
      1  require-env DAT_PATH
           sql/needs_env.test::needs_env
 

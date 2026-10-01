@@ -5,6 +5,7 @@ import os
 from .binary import UsageError
 from .leases import identity, template_names
 from .resources.client import SetupFailed, SqlError, Values
+from .outcomes import skip
 from .steps import step
 
 
@@ -109,3 +110,4 @@ class Context:
         return os.path.join(self.values.temp_dir, name)
 
     step = staticmethod(step)
+    skip = staticmethod(skip)

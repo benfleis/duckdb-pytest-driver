@@ -42,7 +42,7 @@ from .events import RUN_END, RUN_START, SERVICE, TEST_END, TEST_START
 from .mnemonic import run_id as make_run_id
 from .model import SQLLOGIC
 from .outcomes import ALL as OUTCOMES
-from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
+from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED, Skip
 from .provision import KEPT, adopt, attach_argument, bring_up
 from .resources import BootedEngineDef
 from .resources.engine import Runtime
@@ -83,11 +83,14 @@ def _failure_parts(problems, checks):
 def _run_body(test, ctx):
     """Returns (outcome, [problem descriptions], the first problem in parts). Checks that failed
     under on_fail="continue" are all reported; an abort or a crash is reported after them; teardowns
-    run whatever happened, Ctrl-C too."""
+    run whatever happened, Ctrl-C too. A skip is SKIPPED with its reason as the one problem, unless a
+    check had already failed."""
     body, outcome, problems = test.definition.body, PASSED, []
     try:
         try:
             body(ctx)
+        except Skip as exc:
+            outcome, problems = SKIPPED, [exc.reason]
         except UsageError as exc:
             outcome, problems = (
                 ERROR,
@@ -98,7 +101,9 @@ def _run_body(test, ctx):
         except Exception as exc:
             outcome, problems = FAILED, [_describe_failure(exc, test)]
         if ctx.failed_checks:
-            problems = [_describe_failure(f, test) for f in ctx.failed_checks] + problems
+            problems = [_describe_failure(f, test) for f in ctx.failed_checks] + (
+                [] if outcome == SKIPPED else problems
+            )
             outcome = FAILED  # also over a setup that failed later: the check had already proven a failure
     finally:
         for teardown in reversed(ctx.teardowns):
@@ -106,8 +111,9 @@ def _run_body(test, ctx):
                 teardown()
             except Exception as exc:
                 problems.append(f"teardown failed\n{exc}")
-                outcome = ERROR if outcome == PASSED else outcome
-    return outcome, problems, _failure_parts(problems, ctx.failed_checks)
+                outcome = ERROR if outcome in (PASSED, SKIPPED) else outcome
+    failure = {} if outcome == SKIPPED else _failure_parts(problems, ctx.failed_checks)
+    return outcome, problems, failure
 
 
 def _made_of(test_env, *, batch_dir=None, test_dir=None):
@@ -562,7 +568,7 @@ def execute(
                 if n > 1:
                     _log.warning("test %s: retried (%d of %d attempts), ended %s", test.id, n, allowed, outcome)
                 kept = []
-                if outcome != PASSED or keep:
+                if outcome not in (PASSED, SKIPPED) or keep:
                     places = [place_of(test, os.path.basename(d)) for d, _ in tried]
                     found = dict.fromkeys([d for d, _ in tried] + places)
                     kept = [p for p in found if p and ("://" in p or os.path.isdir(p))]
@@ -576,7 +582,8 @@ def execute(
                     runner=phases.PYTHON_RUNNER,
                     seconds=round(time.perf_counter() - t0, 2),
                     problems=problems,
-                    failure=failure if outcome != PASSED else None,
+                    failure=failure if outcome not in (PASSED, SKIPPED) else None,
+                    reason=problems[0] if outcome == SKIPPED else None,
                     kept=kept,
                     note=note,
                     test_dir=tried[0][0],
@@ -692,7 +699,7 @@ def execute(
         if not debugged:  # the debugger ran the test, so nothing here has an outcome to report
             ended = [e for e in writer.events if e.get("event") == TEST_END]
             counts = {o: sum(e["outcome"] == o for e in ended) for o in OUTCOMES}
-            # Green means it ran: a skip inside the binary does not fail the run, anything else not
+            # Green means it ran: a skip does not fail the run, anything else not
             # passed does, and a run in which nothing passed is not green.
             bad = counts[FAILED] + counts[ERROR] + counts[BLOCKED]
             code = 0 if bad == 0 and counts[PASSED] > 0 else 1

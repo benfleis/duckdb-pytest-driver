@@ -27,8 +27,8 @@ they are not in the suite `default`; with a path, add `--suite default` to leave
 
 A test is SKIPPED when a `require` in it is not met: here, `require-env DUCKTEST_LADDER_NEVER_SET`
 in the middle of `mid_file_skip.test`. The statements above it ran and passed, but ducktest5 reports
-the whole file as SKIPPED; DuckDB's `test/run` counts such a file as passed. Under "skipped inside
-the binary", the report says what each skipped test needed.
+the whole file as SKIPPED; DuckDB's `test/run` counts such a file as passed. Under "skipped", the
+report says what each skipped test needed. A Python body skips the same way with `ctx.skip(reason)`.
 
 `{DATA_DIR}` is `data/` at the top of the git repository, and `{TEMP_DIR}` is the test's own place
 in the run directory, `duckdb_unittest_tempdir/<run>/` in the working directory. For duckdb core,
