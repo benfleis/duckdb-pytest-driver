@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, field
 
 from ..binary import UsageError
-from .credential import S3CredentialDef
+from .credential import AzureCredentialDef, S3CredentialDef
 
 _RENDERERS = {}
 
@@ -207,6 +207,43 @@ def duckdb_secret(cls, options, extensions=()):
 
 
 duckdb_secret(S3CredentialDef, _s3_options, extensions=("httpfs",))
+
+_AZURE_RENDERED = {  # provider -> the fields its secret holds; credential_chain's go to the SDK as env only
+    "config": ("connection_string",),
+    "service_principal": ("tenant_id", "client_id", "client_secret", "client_certificate_path"),
+    "credential_chain": (),
+    "access_token": ("access_token",),
+}
+
+
+def _azure_options(storages, credential, by_name):
+    """TYPE, PROVIDER, the provider's fields by their SDK env names, CHAIN, ACCOUNT_NAME and SCOPE. The
+    account is the storages' own (an abfss root names it), else the credential's."""
+    d = credential.definition
+    accounts = {_facts(s)["account"] for s in _scheme_checked(storages, credential)}
+    if len(accounts) > 1:
+        raise UsageError(
+            f"credential {credential.id!r} is scoped to storages {[s.id for s in storages]} of different "
+            "accounts, so one secret cannot cover them"
+        )
+    env = type(d).env
+    options = {"TYPE": RAW("azure"), "PROVIDER": RAW(d.provider)}
+    options.update(
+        {name.upper(): by_name(env[name][0]) for name in _AZURE_RENDERED[d.provider] if name in credential.fields}
+    )
+    if d.chain is not None:
+        options["CHAIN"] = d.chain
+    (account,) = accounts
+    if account:
+        options["ACCOUNT_NAME"] = account
+    elif "account_name" in credential.fields:
+        options["ACCOUNT_NAME"] = by_name(env["account_name"][0])
+    roots = [_facts(s)["root"] for s in storages]
+    options["SCOPE"] = roots[0] if len(roots) == 1 else roots
+    return options
+
+
+duckdb_secret(AzureCredentialDef, _azure_options, extensions=("azure",))
 
 
 # -----------------------------------------------------------------------------

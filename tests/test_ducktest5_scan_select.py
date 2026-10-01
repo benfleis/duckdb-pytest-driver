@@ -1178,7 +1178,9 @@ def test_a_credential_an_engine_of_the_test_cannot_render_is_a_scan_error(tmp_pa
         RULES = [default(bind={"storage": "lake"})]
     """
     body = "from ducktest5 import test\n@test(engines=['spark'])\ndef t(ctx): pass\n"
-    message = "t.py::t: engine 'duckdb' cannot render TokenDef 'tok' (duckdb renders: S3CredentialDef)"
+    message = (
+        "t.py::t: engine 'duckdb' cannot render TokenDef 'tok' (duckdb renders: S3CredentialDef, AzureCredentialDef)"
+    )
     with pytest.raises(UsageError, match=re.escape(message)):
         tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.py": body})
 
