@@ -63,7 +63,7 @@ _PYPROJECT = """\
 [project]
 name = "CHANGEME-tests"           # any name; this project is never published
 version = "0"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 
 [dependency-groups]
 # Everything pytest imports, in ONE place — uv installs this `dev` group by default under `uv run`.

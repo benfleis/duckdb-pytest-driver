@@ -141,10 +141,8 @@ Behavior exceptions are logged and ignored. Unknown names warn and are skipped.
 
 ## Install
 
-`mitmproxy` ships in the `[mitm]` extra, marked `python_version >= '3.12'`. The marker keeps the driver's
-3.9 floor (it vendors into duckdb core) while satisfying uv's universal lock: modern mitmproxy needs 3.12+,
-so on older interpreters the dep drops out and this service is unavailable (its self-tests skip on a
+`mitmproxy` ships in the `[mitm]` extra; without it this service is unavailable (its self-tests skip on a
 missing `mitmdump`).
 
 `[mitm]` is a superset of `[tls]` — mitm signs with the shared [`ca`](ca.md), which needs `cryptography`.
-`[tls]` alone has no python floor, so the CA and an HTTPS origin still work where the proxy can't install.
+`[tls]` alone gives the CA and an HTTPS origin without the proxy.
