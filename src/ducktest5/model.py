@@ -44,6 +44,7 @@ class TestDef:
     bind: dict = field(default_factory=dict)  # role -> the id of a storage, credential or service
     timeout: float | None = None
     retries: int = 0  # how often a FAILED or ERROR may run again
+    own_secrets: bool | None = None  # it makes its own secrets: none is rendered for its credentials
     why: list = field(default_factory=list)
     sources: dict = field(default_factory=dict)  # (field, key) -> the rule that gave that one entry
 

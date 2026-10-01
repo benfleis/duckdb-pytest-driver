@@ -162,7 +162,8 @@ def lines(test, project) -> list[str]:
 def bind(test, test_env, project) -> list:
     """The engines the test leases, each bound to what the test gets."""
     engines = engines_of(test, project)
-    inputs = [{d: mode} for d, mode in test.inputs]
+    # A test that makes its own secrets gets its credentials as process env only, not as a preamble.
+    inputs = [{d: mode} for d, mode in test.inputs if not (test.definition.own_secrets and d.kind == "credential")]
     out = []
     for d in engines:
         if d.kind == DEFAULT.kind:

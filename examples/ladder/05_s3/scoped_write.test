@@ -9,7 +9,7 @@
 query III
 SELECT name, type, scope FROM duckdb_secrets()
 ----
-ducktest_lake	s3	['s3://ducktest/lake']
+ducktest_keys	s3	['s3://ducktest/lake']
 
 # -----------------------------------------------------------------------------
 # A write and a read under the test's own place

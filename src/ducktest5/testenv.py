@@ -14,10 +14,10 @@ the chosen value of every variant axis; both deliveries read it, under the test'
                 reads them as `ctx.values.temp_dir`, `ctx.values.data_dir` and their `local_` twins
     process_env the process environment of the engine: a value sets a variable, None unsets it
 
-A storage input gives roots and values; a credential gives secrets, which reach the engine only as
-process environment (named to the binary in `env_passthrough`), read when the process starts. For a
-`.test` body, `secret_sql` creates the secret scoped to the storage in the init file, with `{NAME}`
-where a value goes: the binary fills it from that environment.
+A storage input gives roots and values; a credential gives its fields, which reach every engine
+process only as SDK env (named to the binary in `env_passthrough`), read when the process starts.
+`secret_sql` is the secret scoped to the storages of the test: their connection options and the
+scope, never a key. A `.test` body gets it in the init file; a Python body's engine renders the same.
 
 Every entry carries the source that asked for it, so `scan --env` and a failed test can say where
 each part came from. What an input gives is not known before its services are up, nor once they
@@ -82,7 +82,8 @@ def set_statement(name, value):
 class TestEnv:
     requires: list = field(default_factory=list)  # Entry(value=extension name)
     init_sql: list = field(default_factory=list)  # Entry(value=one statement), in delivery order
-    secret_sql: list = field(default_factory=list)  # Entry(value=CREATE SECRET), for a .test body only
+    secret_sql: list = field(default_factory=list)  # Entry(value=CREATE SECRET); the init file of a .test body has it
+    unrendered: list = field(default_factory=list)  # Entry(shown="none (why)"): a credential with no secret
     secret_requires: list = field(default_factory=list)  # Entry(value=extension) that secret_sql needs
     values: dict = field(default_factory=dict)  # name -> Entry
     roots: dict = field(default_factory=dict)  # one of ROOTS -> Entry
@@ -167,6 +168,7 @@ class TestEnv:
             *self.requires,
             *self.secret_requires,
             *self.secret_sql,
+            *self.unrendered,
             *self.init_sql,
             *self.values.values(),
             *self.roots.values(),
@@ -289,14 +291,21 @@ def resolve(test, made=None, key=None, default=None):
         for internal, display in (("temp_dir_root", "TEMP_DIR"), ("local_temp_dir_root", "LOCAL_TEMP_DIR")):
             if internal in env.roots:
                 env.roots[internal] = replace(env.roots[internal], name=display)
-    if definition.body_file:
-        for credential, storages in pairs(i for i in instances if i is not None):
-            rendered = render("unittest", "secret", storages, credential)
-            where = f"credential {credential.id}, storage {', '.join(s.id for s in storages)}"
-            for extension in rendered.requires:
-                if extension not in env.extensions + [e.value for e in env.secret_requires]:
-                    env.secret_requires.append(Entry(extension, where, kind="require"))
-            env.secret_sql += [Entry(sql, where, kind="secret") for sql in rendered.sql]
+    held = [i for i in instances if i is not None]
+    scoped = {c.id: storages for c, storages in pairs(held)}
+    for credential in (i for i in held if i.definition.kind == "credential"):
+        storages = scoped.get(credential.id)
+        if definition.own_secrets or not storages:
+            why = "own_secrets" if definition.own_secrets else "no storage of the test is in its scope"
+            env.unrendered.append(Entry("", f"credential {credential.id}", kind="secret", shown=f"none ({why})"))
+            continue
+        # The same text either way; the init file of a .test body also requires what it needs.
+        rendered = render("unittest" if definition.body_file else "duckdb", "secret", storages, credential)
+        where = f"credential {credential.id}, storage {', '.join(s.id for s in storages)}"
+        for extension in rendered.requires:
+            if extension not in env.extensions + [e.value for e in env.secret_requires]:
+                env.secret_requires.append(Entry(extension, where, kind="require"))
+        env.secret_sql += [Entry(sql, where, kind="secret") for sql in rendered.sql]
     return env
 
 

@@ -615,7 +615,7 @@ def test_scan_env_shows_the_storage_roots_and_the_credential_masked(tree, capsys
         a/x.test::x[storage=local]
           bind: storage=local  <- AXES storage=local
           require: httpfs  <- credential local-key, storage local
-          secret: CREATE SECRET ducktest_local (TYPE 's3', KEY_ID '{AWS_ACCESS_KEY_ID}', SECRET '{AWS_SECRET_ACCESS_KEY}', SCOPE 's3://bucket/store');  <- credential local-key, storage local
+          secret: CREATE SECRET ducktest_local_key (TYPE s3, KEY_ID '{AWS_ACCESS_KEY_ID}', SECRET '{AWS_SECRET_ACCESS_KEY}', SCOPE 's3://bucket/store');  <- credential local-key, storage local
           values: storage=local  <- AXES storage
           root: temp_dir_root=s3://bucket/store/temp/<run_token>  <- storage local
           root: data_dir=ROOT/test/data  <- default storage

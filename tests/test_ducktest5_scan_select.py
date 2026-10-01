@@ -9,6 +9,7 @@ import pytest
 from ducktest5.binary import UsageError
 from ducktest5.scan import scan
 from ducktest5.select import Selection, apply
+from ducktest5 import leases
 from ducktest5.testenv import resolve
 
 ROOT_CONF = """
@@ -1141,6 +1142,45 @@ CREDENTIAL_CONF = """
     CREDENTIALS = [S3CredentialDef("keys_a", sources=[KEYS], scopes={scopes_a}), S3CredentialDef("keys_b", sources=[KEYS], scopes=["other"])]
     RULES = [default(bind={bind})]
 """
+
+
+def test_own_secrets_is_set_by_a_rule_and_by_test(tmp_path):
+    conf = CREDENTIAL_CONF.replace("{scopes_a}", '["lake"]').replace("{bind}", '{"storage": "lake"}')
+    conf += """
+    from ducktest5 import match
+    RULES += [match("ruled.test", own_secrets=True)]
+"""
+    own = "from ducktest5 import test\n@test(own_secrets=True)\ndef own(ctx): pass\n"
+    tests, project = tree(
+        tmp_path, {"test/ducktest_conf.py": conf, "test/ruled.test": "", "test/plain.test": "", "test/own.py": own}
+    )
+    by_name = {t.definition.name: t for t in tests}
+    assert {n: t.definition.own_secrets for n, t in by_name.items()} == {"own": True, "plain": False, "ruled": True}
+    (engine,) = leases.bind(by_name["own"], resolve(by_name["own"]), project)
+    assert [d.kind for entry in engine.inputs for d in entry] == ["storage"], "the engine renders no secret"
+
+
+def test_a_credential_an_engine_of_the_test_cannot_render_is_a_scan_error(tmp_path):
+    conf = """
+        from dataclasses import dataclass
+        from ducktest5 import default
+        from ducktest5.resources import BootedEngineDef, CredentialDef, Field, StorageDef
+
+        @dataclass(eq=False)
+        class TokenDef(CredentialDef):
+            schemes = ("s3",)
+            fields = {"token": Field(required=True, secret=True)}
+            env = {"token": ("DT_TOKEN",)}
+
+        STORAGES = [StorageDef("lake", "s3://lake")]
+        CREDENTIALS = [TokenDef("tok", scopes=["lake"])]
+        ENGINES = [BootedEngineDef("spark", boot=lambda log: None, dialect="spark")]
+        RULES = [default(bind={"storage": "lake"})]
+    """
+    body = "from ducktest5 import test\n@test(engines=['spark'])\ndef t(ctx): pass\n"
+    message = "t.py::t: engine 'duckdb' cannot render TokenDef 'tok' (duckdb renders: S3CredentialDef)"
+    with pytest.raises(UsageError, match=re.escape(message)):
+        tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.py": body})
 
 
 def test_two_credentials_of_one_type_on_one_booted_engine_are_a_scan_error(tmp_path):

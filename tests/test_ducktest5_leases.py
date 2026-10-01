@@ -14,7 +14,7 @@ from ducktest5.cli import main
 from ducktest5.conf import Project
 from ducktest5.declare import Variant
 from ducktest5.engines.duckdb import DuckDBShell, duckdb_engine
-from ducktest5.engines.spark import SparkHandle
+from ducktest5.engines.spark import SparkHandle, env_provider
 from ducktest5.engines.unittest import UnittestEngineDef
 from ducktest5.model import PYTHON, SQLLOGIC, Test, TestDef
 from ducktest5.resources import RO, RW, BootedEngineDef, S3CredentialDef, StorageDef, check_contract, from_env
@@ -165,8 +165,9 @@ def test_a_duckdb_engine_sends_its_scoped_secret_as_sql(remote_inputs):
     assert made[0].calls == [
         "begin_test",
         "LOAD httpfs;\n"
-        "CREATE SECRET ducktest_remote (TYPE 's3', KEY_ID 'admin', SECRET 'password', ENDPOINT '172.18.0.1:9999', "
-        "USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/delta');",
+        "CREATE SECRET ducktest_remote_key (TYPE s3, KEY_ID getenv('AWS_ACCESS_KEY_ID'), "
+        "SECRET getenv('AWS_SECRET_ACCESS_KEY'), ENDPOINT '172.18.0.1:9999', URL_STYLE 'path', USE_SSL false, "
+        "SCOPE 's3://ducktest/delta');",
     ]
 
 
@@ -175,8 +176,9 @@ def test_a_spark_engine_sets_the_buckets_settings_at_runtime(remote_inputs):
     engine, made = opened(BootedEngineDef("spark", dialect="spark", inputs=defs), inputs)
     engine.acquire(RW)
     assert made[0].calls == ["begin_test"]
-    assert made[0].conf["fs.s3a.bucket.ducktest.secret.key"] == "password"
+    assert made[0].conf["fs.s3a.bucket.ducktest.aws.credentials.provider"] == env_provider()
     assert made[0].conf["fs.s3a.bucket.ducktest.endpoint"] == "http://172.18.0.1:9999"
+    assert not any("password" in v for v in made[0].conf.values())
 
 
 # -----------------------------------------------------------------------------
@@ -217,8 +219,9 @@ def test_the_default_duckdb_engine_sends_the_scoped_secret_over_the_shells_stdin
     assert code == 0
     sent = [line for line in record.read_text().splitlines() if not line.startswith(".print")]
     assert sent == [
-        "CREATE SECRET ducktest_remote (TYPE 's3', KEY_ID 'admin', SECRET 'password', ENDPOINT '172.18.0.1:9999', "
-        "USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/delta')",
+        "CREATE SECRET ducktest_remote_key (TYPE s3, KEY_ID getenv('AWS_ACCESS_KEY_ID'), "
+        "SECRET getenv('AWS_SECRET_ACCESS_KEY'), ENDPOINT '172.18.0.1:9999', URL_STYLE 'path', USE_SSL false, "
+        "SCOPE 's3://ducktest/delta')",
         ";",
         "SELECT echo1",
         ";",
@@ -240,7 +243,7 @@ def test_a_spark_client_is_one_per_test_and_its_engine_gets_the_buckets_settings
     assert code == 0
     assert seen == {"first": [(1,)], "same": True}
     assert spark.statements == ["SELECT 1"]
-    assert spark.conf["fs.s3a.bucket.ducktest.access.key"] == "admin"
+    assert spark.conf["fs.s3a.bucket.ducktest.aws.credentials.provider"] == env_provider()
 
 
 def test_a_python_bodys_shell_gets_the_credentials_sdk_env(tmp_path, remote_inputs):

@@ -17,6 +17,7 @@ from .conf import check_suites, is_default, load_project, merge_suites
 from .declare import CONF_FILE
 from .outcomes import Skip
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef
+from .resources.dialect import rendered_classes, secret_renderer
 from .resources import RO, RW, BootedEngineDef, CredentialDef, DefaultStorageDef, StorageDef, pick_credentials
 
 _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
@@ -166,6 +167,7 @@ def scan(start, *, working_dir="."):
                     mutex=list(decl.mutex),
                     suites=list(decl.suites),
                     bind=dict(decl.bind),
+                    own_secrets=decl.own_secrets,
                 )
             )
     for path in bodies:
@@ -214,8 +216,29 @@ def scan(start, *, working_dir="."):
         leases.check(test.definition, [leases.duckdb_of(test, project)])
         testenv.check_values(test)
         _one_set_per_type(test)
+        _renderable(test, project)
     _one_set_per_booted_engine(tests, project)
     return tests, project
+
+
+def _renderable(test, project):
+    """Each engine of the test renders the secret of each credential that has one."""
+    if test.definition.own_secrets:
+        return
+    storages = {d.id for d, _ in test.inputs if isinstance(d, StorageDef)}
+    engines = [] if test.definition.type == SQLLOGIC else leases.engines_of(test, project)
+    dialects = [(d.id, d.dialect) for d in engines if d.dialect is not None]
+    if test.definition.body_file:
+        dialects.append(("unittest", "unittest"))
+    for c, _ in test.inputs:
+        if not isinstance(c, CredentialDef) or not storages & set(c.scope_storages):
+            continue
+        for engine_id, dialect in dialects:
+            if secret_renderer(dialect, type(c)) is None:
+                raise UsageError(
+                    f"{test.id}: engine {engine_id!r} cannot render {type(c).__name__} {c.id!r} "
+                    f"({dialect} renders: {', '.join(rendered_classes(dialect)) or 'none'})"
+                )
 
 
 def _one_set_per_booted_engine(tests, project):
@@ -280,9 +303,12 @@ def _settle(definition, project, working_dir):
             settled.sources.update({("engines", x): "@test" for x in added})
     if definition.bind:
         settled.apply({"bind": definition.bind}, "@test")
+    if definition.own_secrets is not None:
+        settled.apply({"own_secrets": definition.own_secrets}, "@test")
     check_suites(definition.suites, f"{definition.path}::{definition.name}")
     merge_suites(settled.suites, definition.suites, None, settled.sources)
     definition.suites = settled.suites
     definition.values, definition.settings, definition.bind = settled.values, settled.settings, settled.bind
     definition.timeout, definition.retries = settled.timeout, settled.retries
+    definition.own_secrets = settled.own_secrets
     definition.why, definition.sources = settled.why, settled.sources

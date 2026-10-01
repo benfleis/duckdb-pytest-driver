@@ -66,6 +66,7 @@ class TestMark:
     mutex: tuple = ()
     suites: tuple = ()
     bind: dict = field(default_factory=dict)
+    own_secrets: bool | None = None
 
 
 def as_mutex(value):
@@ -82,6 +83,7 @@ def test(
     mutex=(),
     suites=(),
     bind=None,
+    own_secrets=None,
     **unknown,
 ):
     """Mark `body(ctx)` as a test definition. `params` maps a key to the params the body reads as
@@ -101,7 +103,10 @@ def test(
 
     `bind` maps a role to one of the project's STORAGES, CREDENTIALS or SERVICES, by id; it
     replaces what a rule binds to the same role. An axis value that binds that role too is an
-    error."""
+    error.
+
+    `own_secrets=True` says the body makes its own secrets: the run renders none for its credentials,
+    whose keys still reach every engine process as SDK env."""
     if "cases" in unknown:
         raise UsageError("@test(cases=...) is now @test(params=...); the body reads its row as ctx.params")
     for gone in ("sessions", "clients"):
@@ -122,6 +127,7 @@ def test(
             as_mutex(mutex),
             tuple(suites),
             dict(bind or {}),
+            own_secrets,
         )
         return body
 

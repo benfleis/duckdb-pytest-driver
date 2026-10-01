@@ -124,12 +124,13 @@ def test_it_produces_a_credential_scoped_to_its_storage_and_emits_no_aws_names(f
     credential.acquire()
     storage = storage_def.make({"s3": service})
     assert render("duckdb", "secret", [storage], credential).sql == [
-        "CREATE SECRET ducktest_lake (TYPE 's3', KEY_ID 'admin', SECRET 'password', REGION 'us-east-1', "
-        "ENDPOINT '127.0.0.1:9000', USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/lake');"
+        "CREATE SECRET ducktest_s3_keys (TYPE s3, KEY_ID getenv('AWS_ACCESS_KEY_ID'), "
+        "SECRET getenv('AWS_SECRET_ACCESS_KEY'), REGION getenv('AWS_REGION'), ENDPOINT '127.0.0.1:9000', "
+        "URL_STYLE 'path', USE_SSL false, SCOPE 's3://ducktest/lake');"
     ]
 
 
-def test_an_engine_bound_to_its_credential_gets_the_keys_in_its_secret(fake_docker):
+def test_an_engine_bound_to_its_credential_acquires_it(fake_docker):
     definition = s3_local()
     service = definition.make(run_token="r1")
     service.create()
@@ -137,7 +138,8 @@ def test_an_engine_bound_to_its_credential_gets_the_keys_in_its_secret(fake_dock
     credential = definition.credential("s3_keys", scopes=["lake"]).make({"s3": service})
     engine, made = opened(duckdb_engine("duck"), {"lake": storage, "s3_keys": credential})
     engine.acquire(RW)
-    assert "KEY_ID 'admin', SECRET 'password'" in made[0].calls[-1], "the engine's own credential is acquired too"
+    assert "CREATE SECRET ducktest_s3_keys" in made[0].calls[-1]
+    assert credential.secrets["AWS_ACCESS_KEY_ID"].get() == "admin", "the engine's own credential is acquired too"
 
 
 def test_a_storage_with_no_prefix_is_the_whole_bucket(fake_docker):

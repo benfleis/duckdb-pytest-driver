@@ -1,13 +1,15 @@
-"""How resource attributes become an engine's preamble: one renderer per (dialect, action).
+"""How resource attributes become an engine's preamble: one renderer per (dialect, action), and
+one per (dialect, credential class) for a credential's secret.
 
     duckdb     SQL sent to a DuckDB shell over its stdin: LOAD, SET, CREATE SECRET ... SCOPE
-    unittest   the init file of a `.test` batch: `require`, SET, CREATE SECRET ... SCOPE; a secret
-               value is a `{NAME}` the binary fills from a variable passed through to it, never
-               the value in a file
+    unittest   the init file of a `.test` batch: `require`, SET, CREATE SECRET ... SCOPE
     spark      runtime configuration of a Spark session; a secret is a per-bucket s3a setting
 
 The actions are `requires` (a list of extensions), `settings` (name -> value) and `secret` (a
-Credential and the Storages it is scoped to, among a Test's inputs).
+Credential and the Storages it is scoped to, among a Test's inputs). The keys reach every engine
+process as SDK env; a secret names them, never holds their values in its text. An extension that
+reads the keys from the secret alone (delta) needs them in it, so the secret takes them from the
+engine's env when it is made.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import re
 from dataclasses import dataclass, field
 
 from ..binary import UsageError
+from .credential import S3CredentialDef
 
 _RENDERERS = {}
 
@@ -24,14 +27,12 @@ _RENDERERS = {}
 class Preamble:
     sql: list = field(default_factory=list)  # statements, in order
     conf: dict = field(default_factory=dict)  # runtime settings of the engine
-    passthrough: list = field(default_factory=list)  # process variables the engine reads secrets from
     requires: list = field(default_factory=list)  # extensions the statements need loaded first
 
     def __add__(self, other):
         return Preamble(
             self.sql + other.sql,
             {**self.conf, **other.conf},
-            self.passthrough + other.passthrough,
             self.requires + [r for r in other.requires if r not in self.requires],
         )
 
@@ -44,7 +45,25 @@ def renders(dialect, action):
     return register
 
 
+def secret_renderer(dialect, cls):
+    """The secret renderer of `dialect` for a credential class, or None."""
+    return next((_RENDERERS[(dialect, c)] for c in cls.__mro__ if (dialect, c) in _RENDERERS), None)
+
+
+def rendered_classes(dialect) -> list:
+    return [c.__name__ for d, c in _RENDERERS if d == dialect and isinstance(c, type)]
+
+
 def render(dialect, action, *args) -> Preamble:
+    if action == "secret":
+        storages, credential = args
+        renderer = secret_renderer(dialect, type(credential.definition))
+        if renderer is None:
+            raise UsageError(
+                f"the {dialect} dialect cannot render {credential.definition.label} "
+                f"({dialect} renders: {', '.join(rendered_classes(dialect)) or 'none'})"
+            )
+        return renderer(storages, credential)
     try:
         renderer = _RENDERERS[(dialect, action)]
     except KeyError:
@@ -85,16 +104,26 @@ def quote(value) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _secret_name(storages):
-    return "ducktest_" + "_".join(re.sub(r"\W", "_", s.id) for s in storages)
+def secret_name(credential) -> str:
+    return "ducktest_" + re.sub(r"\W", "_", credential.id)
 
 
 def _facts(storage):
     return storage.attribute_values()
 
 
-def _values(credential):
-    return {name: out.get() for name, out in credential.secrets.items()}
+def _scheme_checked(storages, credential):
+    """`storages`, each of a scheme the credential's class is for: a scheme a template gives is
+    known only now."""
+    cls = type(credential.definition)
+    for storage in storages:
+        scheme = _facts(storage)["scheme"]
+        if scheme not in cls.schemes:
+            raise UsageError(
+                f"{credential.definition.label} is scoped to storage {storage.id!r} ({storage.root}): an "
+                f"{cls.__name__} is for {', '.join(cls.schemes)} storages only"
+            )
+    return storages
 
 
 # -----------------------------------------------------------------------------
@@ -114,63 +143,37 @@ def _duckdb_settings(settings):
     return Preamble(sql=[set_statement(name, value) for name, value in settings.items()])
 
 
-_S3_OPTIONS = {
-    "KEY_ID": "AWS_ACCESS_KEY_ID",
-    "SECRET": "AWS_SECRET_ACCESS_KEY",
-    "SESSION_TOKEN": "AWS_SESSION_TOKEN",
-    "REGION": "AWS_REGION",
-}
-_AZURE_SPN = {"TENANT_ID": "AZURE_TENANT_ID", "CLIENT_ID": "AZURE_CLIENT_ID", "CLIENT_SECRET": "AZURE_CLIENT_SECRET"}
+def _s3_options(storages, credential, by_name):
+    """TYPE, the fields of the credential, each by its SDK env name (`by_name`), the connection options
+    and SCOPE. SCOPE is the plain root for one storage, a list of roots for several: both are valid
+    DuckDB syntax."""
+    connections = []
+    for storage in _scheme_checked(storages, credential):
+        endpoint = _facts(storage)["endpoint"]
+        connection = {}
+        if endpoint:
+            connection["ENDPOINT"] = endpoint.split("://", 1)[-1]
+            connection["URL_STYLE"] = "path"
+            connection["USE_SSL"] = endpoint.startswith("https://")
+        connections.append(connection)
+    if any(c != connections[0] for c in connections):
+        raise UsageError(
+            f"credential {credential.id!r} is scoped to storages {[s.id for s in storages]} on different "
+            "endpoints, so one secret cannot cover them"
+        )
+    roots = [_facts(s)["root"] for s in storages]
+    env = type(credential.definition).env
+    fields = {name.upper(): by_name(env[name][0]) for name in env if name in credential.fields}
+    return {"TYPE": RAW("s3"), **fields, **connections[0], "SCOPE": roots[0] if len(roots) == 1 else roots}
 
 
-def _storage_options(storage, value_of):
-    """The type and connection options of `storage`'s secret, without its scope; None for a storage
-    that needs no secret (a local path)."""
-    facts = _facts(storage)
-    if facts["scheme"] == "file":
-        return None
-    if facts["scheme"] == "s3":
-        options = {"TYPE": "s3"}
-        options.update({opt: value_of(name) for opt, name in _S3_OPTIONS.items() if value_of(name)})
-        if facts["endpoint"]:
-            options["ENDPOINT"] = facts["endpoint"].split("://", 1)[-1]
-            options["USE_SSL"] = facts["endpoint"].startswith("https://")
-            options["URL_STYLE"] = "path"
-    elif facts["scheme"] in ("az", "abfss"):
-        options = {"TYPE": "azure"}
-        if value_of("AZURE_STORAGE_CONNECTION_STRING"):
-            options["CONNECTION_STRING"] = value_of("AZURE_STORAGE_CONNECTION_STRING")
-        else:
-            options["PROVIDER"] = "service_principal"
-            options.update({opt: value_of(name) for opt, name in _AZURE_SPN.items() if value_of(name)})
-            options["ACCOUNT_NAME"] = facts["account"]
-    else:
-        raise UsageError(f"storage {storage.id!r}: the duckdb dialect has no secret for {facts['scheme']}")
-    return options
-
-
-def _secret_options(storages, value_of):
-    """The options of one secret covering `storages`, a secret value as `value_of(name)` gives it;
-    None when none of them need one. SCOPE is the plain root when one storage needs a secret, a list
-    of roots when several do -- both are valid DuckDB syntax, and this keeps the common, one-storage
-    case unchanged."""
-    needed = [(s, _storage_options(s, value_of)) for s in storages]
-    needed = [(s, o) for s, o in needed if o is not None]
-    if not needed:
-        return None
-    first, options = needed[0]
-    for storage, other in needed[1:]:
-        if other != options:
-            raise UsageError(
-                f"credential scoped to storages {[s.id for s, _ in needed]}: {first.id!r} and {storage.id!r} "
-                "need different secrets, so one credential cannot cover both"
-            )
-    roots = [_facts(s)["root"] for s, _ in needed]
-    options = dict(options, SCOPE=roots[0] if len(roots) == 1 else roots)
-    return options
+class RAW(str):
+    """An option value written as it is, not quoted: `TYPE s3`."""
 
 
 def _render_value(value) -> str:
+    if isinstance(value, RAW):
+        return str(value)
     if isinstance(value, bool):
         return str(value).lower()
     if isinstance(value, list):
@@ -178,15 +181,32 @@ def _render_value(value) -> str:
     return quote(value)
 
 
-def _create_secret(storages, options):
+def _create_secret(credential, options):
     body = ", ".join(f"{k} {_render_value(v)}" for k, v in options.items())
-    return f"CREATE SECRET {_secret_name(storages)} ({body});"
+    return f"CREATE SECRET {secret_name(credential)} ({body});"
 
 
-@renders("duckdb", "secret")
-def _duckdb_secret(storages, credential):
-    options = _secret_options(storages, _values(credential).get)
-    return Preamble() if options is None else Preamble(sql=[_create_secret(storages, options)])
+def duckdb_secret(cls, options, extensions=()):
+    """Registers the secret of a credential class for both DuckDB dialects. `options(storages,
+    credential, by_name)` gives the options, a field's value as `by_name(its SDK env name)`: the text
+    names the variable and the engine reads its value from its own env. The shell calls `getenv()`;
+    the binary fills a `{NAME}` from the variables passed through to it. The binary loads no
+    extension by itself, so the init file requires `extensions` first."""
+
+    def shell(storages, credential):
+        by_name = lambda name: RAW(f"getenv({quote(name)})")  # noqa: E731
+        return Preamble(sql=[_create_secret(credential, options(storages, credential, by_name))])
+
+    def init_file(storages, credential):
+        by_name = lambda name: f"{{{name}}}"  # noqa: E731
+        sql = _create_secret(credential, options(storages, credential, by_name))
+        return Preamble(sql=[sql], requires=list(extensions))
+
+    renders("duckdb", cls)(shell)
+    renders("unittest", cls)(init_file)
+
+
+duckdb_secret(S3CredentialDef, _s3_options, extensions=("httpfs",))
 
 
 # -----------------------------------------------------------------------------
@@ -200,23 +220,6 @@ def _unittest_requires(names):
 
 
 renders("unittest", "settings")(_duckdb_settings)
-
-
-_EXTENSION_OF = {"s3": "httpfs", "azure": "azure"}
-
-
-@renders("unittest", "secret")
-def _unittest_secret(storages, credential):
-    """The same secret, with `{NAME}` for each value: the binary fills it from the variables passed
-    through to it, so the init file holds no value. The binary loads no extension by itself, so the
-    one of the secret type is required first."""
-    names = sorted(name for name, out in credential.secrets.items() if not out.unset)
-    options = _secret_options(storages, lambda name: f"{{{name}}}" if name in names else None)
-    if options is None:
-        return Preamble(passthrough=names)
-    return Preamble(
-        sql=[_create_secret(storages, options)], passthrough=names, requires=[_EXTENSION_OF[options["TYPE"]]]
-    )
 
 
 # -----------------------------------------------------------------------------
@@ -234,33 +237,27 @@ def _spark_settings(settings):
     return Preamble(conf={name: str(value) for name, value in settings.items()})
 
 
-@renders("spark", "secret")
-def _spark_secret(storages, credential):
-    """Settings of each scoped bucket, so buckets of several stores coexist. They are set on a
-    running session, where the Hadoop configuration takes them without the `spark.hadoop.` prefix
-    that configures a session at boot."""
-    values = _values(credential)
+@renders("spark", S3CredentialDef)
+def _spark_s3(storages, credential):
+    """Settings of each scoped bucket, so buckets of several stores coexist. The keys come from the
+    JVM's env, given at boot, through the env provider. They are set on a running session, where the
+    Hadoop configuration takes them without the `spark.hadoop.` prefix that configures one at boot."""
+    from ..engines.spark import env_provider
+
+    region = credential.fields.get("region")
     conf = {}
-    for storage in storages:
+    for storage in _scheme_checked(storages, credential):
         facts = _facts(storage)
-        if facts["scheme"] == "file":
-            continue
-        if facts["scheme"] != "s3":
-            raise UsageError(f"storage {storage.id!r}: the spark dialect has no secret for {facts['scheme']}")
         bucket = facts["root"].split("://", 1)[1].split("/", 1)[0]
-        per_bucket = {
-            "access.key": values.get("AWS_ACCESS_KEY_ID"),
-            "secret.key": values.get("AWS_SECRET_ACCESS_KEY"),
-            "endpoint.region": values.get("AWS_REGION"),
-            "aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
-        }
+        per_bucket = {"aws.credentials.provider": env_provider()}
+        if region is not None:
+            per_bucket["endpoint.region"] = region.get()
         if facts["endpoint"]:
             per_bucket["endpoint"] = facts["endpoint"]
             per_bucket["path.style.access"] = "true"
             per_bucket["connection.ssl.enabled"] = str(facts["endpoint"].startswith("https://")).lower()
-        conf.update({f"fs.s3a.bucket.{bucket}.{k}": v for k, v in per_bucket.items() if v is not None})
-    if conf:
-        conf["fs.s3.impl"] = (
-            "org.apache.hadoop.fs.s3a.S3AFileSystem"  # so a body gives Spark the `s3://` URI it gives DuckDB
-        )
+        conf.update({f"fs.s3a.bucket.{bucket}.{k}": v for k, v in per_bucket.items()})
+    conf["fs.s3.impl"] = (
+        "org.apache.hadoop.fs.s3a.S3AFileSystem"  # so a body gives Spark the `s3://` URI it gives DuckDB
+    )
     return Preamble(conf=conf)

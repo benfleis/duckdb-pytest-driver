@@ -216,11 +216,9 @@ def test_a_test_file_creates_its_scoped_secret_from_a_template_the_binary_fills(
     resolved = resolve(test)
     text, _ = init_file_text(resolved)
     assert text == (
-        "require httpfs\n"
-        "\n"
-        "statement ok\n"
-        "CREATE SECRET ducktest_bucket (TYPE 's3', KEY_ID '{AWS_ACCESS_KEY_ID}', "
-        "SECRET '{AWS_SECRET_ACCESS_KEY}', SCOPE 's3://bucket');\n"
+        "require httpfs\n\nstatement ok\n"
+        "CREATE SECRET ducktest_key (TYPE s3, KEY_ID '{AWS_ACCESS_KEY_ID}', SECRET '{AWS_SECRET_ACCESS_KEY}', "
+        "SCOPE 's3://bucket');\n"
     )
     assert resolved.passthrough == ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
     assert "k-value" not in "\n".join(resolved.lines()) + text
@@ -237,8 +235,31 @@ def test_the_scoped_secret_of_a_test_file_does_not_change_its_key(monkeypatch):
     python = Test(TestDef(path="t.py", name="t", type="python"), None, {})
     for test in (sql_file, python):
         test.inputs = ((storage, RW), (credential, RO))
-    assert resolve(sql_file).secret_sql and not resolve(python).secret_sql
+    assert resolve(sql_file).secret_requires and not resolve(python).secret_requires
     assert resolve(sql_file).key() == resolve(python).key()
+
+
+@pytest.mark.parametrize(
+    "own_secrets, scoped, line",
+    [
+        (True, True, "secret: none (own_secrets)  <- credential key"),
+        (False, False, "secret: none (no storage of the test is in its scope)  <- credential key"),
+    ],
+)
+def test_no_secret_is_rendered_for_own_secrets_or_an_unscoped_credential_and_the_env_still_is(
+    monkeypatch, own_secrets, scoped, line
+):
+    monkeypatch.setenv("DT_KEY", "k-value")
+    monkeypatch.setenv("DT_SECRET", "s-value")
+    storage = StorageDef("bucket", "s3://bucket")
+    keys = from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})
+    credential = S3CredentialDef("key", sources=[keys], scopes=["bucket"] if scoped else [])
+    test = make_test(own_secrets=own_secrets)
+    test.inputs = ((storage, RW), (credential, RO))
+    env = resolve(test)
+    assert (env.secret_sql, env.secret_requires) == ([], [])
+    assert line in env.lines()
+    assert env.environ({})["AWS_ACCESS_KEY_ID"] == "k-value"
 
 
 # -----------------------------------------------------------------------------

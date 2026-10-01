@@ -1,11 +1,13 @@
 """The dialect registry: resource attributes as each engine's preamble."""
 
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
 
 from ducktest5.binary import UsageError
-from ducktest5.resources import S3CredentialDef, StorageDef, from_env
+from ducktest5.engines.spark import env_provider
+from ducktest5.resources import CredentialDef, Field, S3CredentialDef, StorageDef, from_env
 from ducktest5.resources.dialect import Preamble, pairs, preamble, render
 
 KEYS = {"DT_KEY": "key_id", "DT_SECRET": "secret"}
@@ -55,37 +57,68 @@ def test_a_spark_session_cannot_load_an_extension_at_run_time():
 
 
 def test_an_unknown_dialect_or_action_is_a_usage_error():
-    with pytest.raises(UsageError, match="the dbrx dialect cannot deliver secret"):
-        render("dbrx", "secret", None, None)
+    with pytest.raises(UsageError, match="the dbrx dialect cannot deliver settings"):
+        render("dbrx", "settings", {})
 
 
 # -----------------------------------------------------------------------------
 # secret
 #
 
+CONNECTION = "ENDPOINT '172.18.0.1:9999', URL_STYLE 'path', USE_SSL false, SCOPE 's3://ducktest/delta');"
 
-def test_duckdb_gets_one_secret_scoped_to_the_storage_root(remote):
+
+def test_duckdb_gets_one_secret_scoped_to_the_storage_root_that_reads_the_keys_from_its_env(remote):
     storage, credential = remote
     assert render("duckdb", "secret", [storage], credential).sql == [
-        "CREATE SECRET ducktest_remote (TYPE 's3', KEY_ID 'admin', SECRET 'it''s-secret', "
-        "ENDPOINT '172.18.0.1:9999', USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/delta');"
+        "CREATE SECRET ducktest_remote_key (TYPE s3, KEY_ID getenv('AWS_ACCESS_KEY_ID'), "
+        "SECRET getenv('AWS_SECRET_ACCESS_KEY'), " + CONNECTION
+    ]
+
+
+def test_a_storage_with_no_endpoint_gets_the_type_and_the_scope_only(remote):
+    _, credential = remote
+    storage = StorageDef("aws", "s3://bucket/x").make()
+    assert render("duckdb", "secret", [storage], credential).sql == [
+        "CREATE SECRET ducktest_remote_key (TYPE s3, KEY_ID getenv('AWS_ACCESS_KEY_ID'), "
+        "SECRET getenv('AWS_SECRET_ACCESS_KEY'), SCOPE 's3://bucket/x');"
     ]
 
 
 def test_a_credential_scoped_to_two_storages_gets_one_duckdb_secret_with_both_scopes(two_storages):
     assert render("duckdb", "secret", *two_storages).sql == [
-        "CREATE SECRET ducktest_bucket_a_bucket_b (TYPE 's3', KEY_ID 'admin', SECRET 'it''s-secret', "
-        "ENDPOINT '172.18.0.1:9999', USE_SSL false, URL_STYLE 'path', "
+        "CREATE SECRET ducktest_shared_key (TYPE s3, KEY_ID getenv('AWS_ACCESS_KEY_ID'), "
+        "SECRET getenv('AWS_SECRET_ACCESS_KEY'), ENDPOINT '172.18.0.1:9999', URL_STYLE 'path', USE_SSL false, "
         "SCOPE ['s3://bucket-a', 's3://bucket-b']);"
     ]
 
 
-def test_spark_gets_the_settings_of_the_one_bucket(remote):
+def test_the_unittest_binary_gets_the_names_of_the_keys_never_their_values_and_requires_httpfs_only(remote):
+    storage, credential = remote
+    assert render("unittest", "secret", [storage], credential) == Preamble(
+        sql=[
+            "CREATE SECRET ducktest_remote_key (TYPE s3, KEY_ID '{AWS_ACCESS_KEY_ID}', "
+            "SECRET '{AWS_SECRET_ACCESS_KEY}', " + CONNECTION
+        ],
+        requires=["httpfs"],
+    )
+
+
+def test_a_field_the_source_does_not_give_is_not_in_the_secret(remote, monkeypatch):
+    storage, _ = remote
+    monkeypatch.setenv("DT_REGION", "eu-west-1")
+    keys = from_env({**KEYS, "DT_REGION": "region", "DT_TOKEN": "session_token"})
+    monkeypatch.delenv("DT_TOKEN", raising=False)
+    credential = S3CredentialDef("remote-key", sources=[keys], scopes=["remote"]).make()
+    credential.start()
+    (sql,) = render("duckdb", "secret", [storage], credential).sql
+    assert "REGION getenv('AWS_REGION')" in sql and "SESSION_TOKEN" not in sql
+
+
+def test_spark_gets_the_env_provider_and_the_connection_of_the_one_bucket(remote):
     storage, credential = remote
     assert render("spark", "secret", [storage], credential).conf == {
-        "fs.s3a.bucket.ducktest.access.key": "admin",
-        "fs.s3a.bucket.ducktest.secret.key": "it's-secret",
-        "fs.s3a.bucket.ducktest.aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+        "fs.s3a.bucket.ducktest.aws.credentials.provider": env_provider(),
         "fs.s3a.bucket.ducktest.endpoint": "http://172.18.0.1:9999",
         "fs.s3a.bucket.ducktest.path.style.access": "true",
         "fs.s3a.bucket.ducktest.connection.ssl.enabled": "false",
@@ -95,34 +128,40 @@ def test_spark_gets_the_settings_of_the_one_bucket(remote):
 
 def test_a_credential_scoped_to_two_storages_gets_spark_settings_for_both_buckets(two_storages):
     conf = render("spark", "secret", *two_storages).conf
-    assert conf["fs.s3a.bucket.bucket-a.access.key"] == "admin"
-    assert conf["fs.s3a.bucket.bucket-b.access.key"] == "admin"
-    assert conf["fs.s3a.bucket.bucket-a.secret.key"] == "it's-secret"
-    assert conf["fs.s3a.bucket.bucket-b.secret.key"] == "it's-secret"
-    assert conf["fs.s3.impl"] == "org.apache.hadoop.fs.s3a.S3AFileSystem"
-
-
-def test_the_unittest_binary_gets_the_names_of_the_secrets_never_their_values(remote):
-    storage, credential = remote
-    delivered = render("unittest", "secret", [storage], credential)
-    assert delivered == Preamble(
-        sql=[
-            "CREATE SECRET ducktest_remote (TYPE 's3', KEY_ID '{AWS_ACCESS_KEY_ID}', SECRET '{AWS_SECRET_ACCESS_KEY}', "
-            "ENDPOINT '172.18.0.1:9999', USE_SSL false, URL_STYLE 'path', SCOPE 's3://ducktest/delta');"
-        ],
-        passthrough=["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
-        requires=["httpfs"],
+    assert (
+        conf["fs.s3a.bucket.bucket-a.endpoint"] == conf["fs.s3a.bucket.bucket-b.endpoint"] == "http://172.18.0.1:9999"
     )
+    assert not any("key" in k for k in conf), "keys come from the JVM's env"
 
 
-def test_a_local_storage_needs_no_secret(tmp_path, monkeypatch):
-    monkeypatch.setenv("DT_KEY", "k")
-    monkeypatch.setenv("DT_SECRET", "s")
-    storage = StorageDef("local", str(tmp_path)).make()
-    credential = S3CredentialDef("c", sources=[from_env(KEYS)], scopes=["local"]).make()
-    credential.start()
-    assert render("duckdb", "secret", [storage], credential) == render("spark", "secret", [storage], credential)
-    assert render("duckdb", "secret", [storage], credential) == Preamble()
+@pytest.mark.parametrize(
+    "hadoop, provider",
+    [
+        ("3.3.4", "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"),
+        ("3.5.0", "software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider"),
+    ],
+)
+def test_the_spark_env_provider_follows_the_hadoop_version(hadoop, provider):
+    assert env_provider(hadoop) == provider
+
+
+def test_a_storage_of_another_scheme_is_refused_where_a_template_gave_it(remote):
+    _, credential = remote
+    storage = StorageDef("blobs", "az://c/p").make()
+    with pytest.raises(UsageError, match=r"S3CredentialDef\('remote-key'\) is scoped to storage 'blobs'"):
+        render("duckdb", "secret", [storage], credential)
+
+
+def test_a_credential_class_a_dialect_does_not_render_is_a_usage_error():
+    @dataclass(eq=False)
+    class TokenDef(CredentialDef):
+        fields = {"token": Field(required=True, secret=True)}
+        env = {"token": ("DT_TOKEN",)}
+
+    with pytest.raises(
+        UsageError, match=r"the spark dialect cannot render TokenDef\('t'\) \(spark renders: S3CredentialDef\)"
+    ):
+        render("spark", "secret", [], TokenDef("t").make())
 
 
 # -----------------------------------------------------------------------------

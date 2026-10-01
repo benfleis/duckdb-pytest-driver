@@ -1,9 +1,11 @@
 """An embedded PySpark session with Delta Lake, as an engine booted once per run. pyspark is imported at boot, not here."""
 
 import contextlib
+import functools
 import logging
 import os
 
+from ..binary import UsageError
 from ..resources.client import SqlError
 from ..resources.engine import BootedEngineDef
 
@@ -117,7 +119,7 @@ def _stdio_to(log_path):
             os.close(saved[1])
 
 
-def _boot_delta(log_path, packages=()):
+def _boot_delta(log_path, packages=(), s3a=False):
     import pyspark
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
@@ -137,19 +139,40 @@ def _boot_delta(log_path, packages=()):
         # Its default is spark-warehouse/ in the working directory, which Spark makes at boot.
         .config("spark.sql.warehouse.dir", os.path.join(os.path.dirname(os.path.abspath(log_path)), "spark-warehouse"))
     )
+    if s3a:
+        # A bucket no credential is scoped to then finds no keys in ~/.aws, which the JVM could read.
+        builder = builder.config("spark.hadoop.fs.s3a.aws.credentials.provider", env_provider())
     with _stdio_to(log_path):
         session = configure_spark_with_delta_pip(builder, extra_packages=list(packages)).getOrCreate()
         session.sparkContext.setLogLevel("ERROR")
     return SparkHandle(session), pyspark.__version__
 
 
+@functools.lru_cache(maxsize=None)
 def _hadoop_version():
     import glob
 
-    import pyspark
+    try:
+        import pyspark
+    except ImportError:
+        return None
 
     jars = glob.glob(os.path.join(os.path.dirname(pyspark.__file__), "jars", "hadoop-client-api-*.jar"))
     return os.path.basename(jars[0])[len("hadoop-client-api-") : -len(".jar")] if jars else None
+
+
+V2_ENV_PROVIDER = "software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider"
+V1_ENV_PROVIDER = "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+
+
+def env_provider(hadoop=None):
+    """The s3a credentials provider that reads the JVM's AWS_* env: the AWS SDK v2 class from Hadoop
+    3.4 on, the v1 class before it. An unknown version takes the v2 class."""
+    try:
+        major, minor = (int(p) for p in (hadoop or _hadoop_version()).split(".")[:2])
+    except (AttributeError, ValueError):
+        return V2_ENV_PROVIDER
+    return V2_ENV_PROVIDER if (major, minor) >= (3, 4) else V1_ENV_PROVIDER
 
 
 def delta_spark(id="spark", *, s3a=False, **fields):
@@ -164,8 +187,10 @@ def delta_spark(id="spark", *, s3a=False, **fields):
         except PackageNotFoundError:
             return "missing"
 
+    if s3a and _hadoop_version() is None:
+        raise UsageError(f"delta_spark({id!r}, s3a=True): pyspark is not installed, so its Hadoop is not known")
     packages = (f"org.apache.hadoop:hadoop-aws:{_hadoop_version()}",) if s3a else ()
     booted = f"spark:{v('pyspark')}:delta-{v('delta-spark')}:local" + (":s3a" if s3a else "")
     return BootedEngineDef(
-        id, version=booted, boot=lambda log: _boot_delta(log, packages)[0], dialect="spark", **fields
+        id, version=booted, boot=lambda log: _boot_delta(log, packages, s3a)[0], dialect="spark", **fields
     )

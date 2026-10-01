@@ -25,7 +25,7 @@ import time
 import urllib.request
 
 _SECRET = re.compile(r"CREATE SECRET (\w+) \((.*)\)", re.S)
-_OPTION = re.compile(r"(\w+) '((?:[^']|'')*)'")
+_OPTION = re.compile(r"(\w+) (?:'((?:[^']|'')*)'|(\w+))")
 _COUNT_CSV = re.compile(r"SELECT count\(\*\) FROM read_csv\('(http://[^']+)'\)", re.I)
 _COPY_CSV = re.compile(r"COPY \((SELECT .*)\) TO '([^']+)' \(FORMAT csv\)", re.I | re.S)
 _READ_CSV = re.compile(r"SELECT (\w+) FROM read_csv\('(/[^']+)'\)", re.I)
@@ -33,7 +33,7 @@ _READ_CSV = re.compile(r"SELECT (\w+) FROM read_csv\('(/[^']+)'\)", re.I)
 
 def answer(sql, secrets):
     if m := _SECRET.match(sql):
-        options = {k: v.replace("''", "'") for k, v in _OPTION.findall(m.group(2))}
+        options = {k: (v or word).replace("''", "'") for k, v, word in _OPTION.findall(m.group(2))}
         secrets.append({"name": m.group(1), "type": options["TYPE"], "scope": [options["SCOPE"]]})
     elif m := _COUNT_CSV.match(sql):
         with urllib.request.urlopen(m.group(1), timeout=5) as response:
