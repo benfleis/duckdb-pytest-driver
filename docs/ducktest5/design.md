@@ -291,6 +291,14 @@ reaches services at `DUCKTEST_SERVICE_HOST` and publishes the ones it starts at
 BIND, a machine that only reaches the services sets HOST. A service that does not come up makes its
 tests BLOCKED.
 
+A **seed** is a bucket that must hold data before the tests that bind it run:
+`S3.seed("dat", "test-bucket", copy=[(dat_dir, "dat")], public=False)`, listed in `SERVICES` and bound
+by the tests (`bind={"dat": "dat"}`). It is a service kind for its lifecycle: made once, after its
+service, BLOCKED when it fails. The run owns a bucket it made, and removes it at the end (`retain`
+defaults to `never`). A bucket that is already there and holds what the seed copies (rclone `check`),
+public when the seed says so, is used as it is and never changed; one with other content is refused.
+With no `copy` a seed is an extra empty bucket.
+
 ## 2.7 Phases, identity, batching
 
 `scan` (`01-tests.yaml`) -> `plan` (`02-plan.yaml`) -> `provision` (`03`) -> `exec` (`04-events.jsonl`)

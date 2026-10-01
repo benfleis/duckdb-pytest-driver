@@ -26,6 +26,7 @@ from .credential import (  # noqa: F401
 )
 from .service import Service, ServiceDef, ServiceNotUp  # noqa: F401
 from .engine import BootedEngineDef, Engine, EngineDef  # noqa: F401
+from .seed import Seed, SeedDef, seed  # noqa: F401
 from .storage import (  # noqa: F401
     DefaultStorage,
     DefaultStorageDef,

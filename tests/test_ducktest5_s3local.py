@@ -87,6 +87,7 @@ def test_s3_local_runs_in_a_container_named_for_the_run_and_makes_its_bucket(fak
     assert service.list("r1") == ["ducktest-s3-r1"] and service.list("r2") == []
     assert {k: o.get() for k, o in service.by_ref().items()} == {
         "s3.endpoint": "http://127.0.0.1:9000",
+        "s3.host_port": "127.0.0.1:9000",
         "s3.bucket": "ducktest",
         "s3.region": "us-east-1",
         "s3.access_key": "admin",

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from ..host import docker, has_docker, in_url, service_bind, service_host
 from ..resources import ON_FAILURE, S3CredentialDef, Service, ServiceDef, ServiceNotUp, StorageDef
 from ..resources.remote import S3Access, remote_for
+from ..resources.seed import SeedDef, seed
 
 _log = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ def s3_settings(**overrides):
     endpoint = overrides.get("endpoint", f"http://{in_url(host)}:{port}").rstrip("/")
     return {
         "endpoint": endpoint,
+        "host_port": endpoint.split("://", 1)[-1],  # what an S3 client without a scheme takes as ENDPOINT
         "region": overrides.get("region", os.environ.get("DUCKTEST_S3_LOCAL_REGION", "us-east-1")),
         "access_key": overrides.get("access_key", os.environ.get("DUCKTEST_S3_LOCAL_ACCESS_KEY", "admin")),
         "secret_key": overrides.get("secret_key", os.environ.get("DUCKTEST_S3_LOCAL_SECRET_KEY", "password")),
@@ -79,13 +81,14 @@ class S3LocalDef(ServiceDef):
     """A local S3-compatible server with its bucket made: one that already answers where the run
     reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_S3_LOCAL_PORT), else in a docker container named for the
     run, or the one `.as_existing(address=...)` names. It runs as RustFS. Its attributes are
-    `endpoint`, `bucket` and `region`; its keys come from the environment (DUCKTEST_S3_LOCAL_ACCESS_KEY,
-    DUCKTEST_S3_LOCAL_SECRET_KEY) and reach a test through `credential(id, scopes=[...])`.
-    `storage(id, prefix)` declares a storage in its bucket."""
+    `endpoint`, `host_port` (the endpoint without its scheme), `bucket` and `region`; its keys come
+    from the environment (DUCKTEST_S3_LOCAL_ACCESS_KEY, DUCKTEST_S3_LOCAL_SECRET_KEY) and reach a test
+    through `credential(id, scopes=[...])`. `storage(id, prefix)` declares a storage in its bucket,
+    `seed(id, bucket, copy=...)` another bucket, filled before the tests that bind it run."""
 
     kind = "s3_local"
     detached = True
-    attributes = ("endpoint", "bucket", "region")
+    attributes = ("endpoint", "host_port", "bucket", "region")
     secret_attributes = ("access_key", "secret_key")
     credential_type = S3CredentialDef
     delivers = {"key_id": "access_key", "secret": "secret_key", "region": "region"}
@@ -101,6 +104,11 @@ class S3LocalDef(ServiceDef):
         """A storage at `s3://<bucket>/<prefix>` on this server."""
         root = f"s3://{{{self.id}.bucket}}/{prefix}".rstrip("/")
         return StorageDef(id, root, endpoint=f"{{{self.id}.endpoint}}", inputs=[self], **fields)
+
+    def seed(self, id: str, bucket: str, copy=(), public: bool = False, **fields) -> SeedDef:
+        """A bucket on this server holding each local directory of `copy` under its prefix, made
+        before the tests that bind it run; see SeedDef."""
+        return seed(self, id, bucket, copy, public, **fields)
 
 
 def s3_local(id: str = "s3", **fields) -> S3LocalDef:
