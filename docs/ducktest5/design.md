@@ -296,13 +296,20 @@ reaches services at `DUCKTEST_SERVICE_HOST` and publishes the ones it starts at
 BIND, a machine that only reaches the services sets HOST. A service that does not come up makes its
 tests BLOCKED.
 
-A **seed** is a bucket that must hold data before the tests that bind it run:
-`S3.seed("dat", "test-bucket", copy=[(dat_dir, "dat")], public=False)`, listed in `SERVICES` and bound
-by the tests (`bind={"dat": "dat"}`). It is a service kind for its lifecycle: made once, after its
-service, BLOCKED when it fails. The run owns a bucket it made, and removes it at the end (`retain`
-defaults to `never`). A bucket that is already there and holds what the seed copies (rclone `check`),
-public when the seed says so, is used as it is and never changed; one with other content is refused.
-With no `copy` a seed is an extra empty bucket.
+**Buckets belong to the service.** `s3_local(buckets=[bucket("data", seed=[(dir, "prefix")]),
+bucket("open", public=True)])` declares more buckets beside the server's own (`ducktest`); they are
+made when the server is, before any test, so a test that reaches the server (a storage on it, a
+credential it makes) has them. `S3.storage("lake", "prefix", bucket="data")` is a storage in one. The
+bucket calls are the service's own: create, head, remove (with what is in it), a public-read policy,
+as signed S3 API requests. Per bucket: one the run made is removed at the end unless its `retain`
+(default `never`) keeps it; one already there that holds what it seeds (rclone `check`), public when
+asked, is used as it is and never changed; one there with other content is refused, and the service
+is not up.
+
+**A storage is a URL and a credential.** Its files -- list, remove a prefix, copy and sync a local
+directory in, check one -- go through rclone, whose verbs are the same for S3, Azure blob, GCS and R2;
+the store's access object gives rclone its backend. A seed is copied in with it. A run that needs one
+of these and finds no rclone on PATH says to install it.
 
 ## 2.7 Phases, identity, batching
 
@@ -434,7 +441,7 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 - 2026-10-01: `PYTHONPATH` in the root `ducktest_conf.py`.
 - 2026-10-01: a Python body can skip: `ctx.skip(reason)`, `ducktest5.skip(reason)`.
 - 2026-10-01: `ctx.env` is now `ctx.values` (and `client.values`, `ctx.run_paired(values=)`).
-- 2026-09-30: `S3LocalDef` (RustFS) replaces `MinioDef`; MinIO is gone; S3 cleanup by rclone or boto3; rung 05.
+- 2026-09-30: `S3LocalDef` (RustFS) replaces `MinioDef`; MinIO is gone; S3 cleanup by rclone; rung 05.
 - 2026-09-30: value conflicts are errors; `ctx.env` holds the roots and axis names; `ctx.client(name,
   new=True)` replaces `ctx.duckdb`; `ctx.run_paired()`; logging with `-v`/`-vv` and `ducktest.log`.
 - 2026-09-30: rewritten short, to the code as built: Context and `ctx.env`, `ENGINES`, `lifetime`,

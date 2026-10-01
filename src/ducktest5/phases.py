@@ -395,7 +395,7 @@ def _storages(run_token, project, provisioned):
             address = s.address or (recorded.get(s.id) or {}).get("address")
             if s.id not in made.services and s.id not in made.errors and address is not None:
                 try:
-                    made.create(s.as_existing(address), EXISTING)
+                    made.create(s.reached_at(address), EXISTING)
                 except ServiceNotUp as exc:
                     _log.debug("storage %s: not cleaned, its service %s is not up: %s", d.id, s.id, exc)
         try:

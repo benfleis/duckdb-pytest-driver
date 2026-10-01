@@ -61,7 +61,8 @@ docker and publishes it at `DUCKTEST_SERVICE_BIND:DUCKTEST_S3_LOCAL_PORT`.
 - Other server settings are `DUCKTEST_S3_LOCAL_*`: `ACCESS_KEY`, `SECRET_KEY` (default `admin`,
   `password`), `REGION`, `BUCKET`, `IMAGE`.
 - `--existing-service s3=http://HOST:PORT` names a server at any other address.
-- Cleanup on S3 uses `rclone` if it is on PATH, else boto3 (the `s3` extra).
+- The files of an S3 storage (cleanup, a bucket's seed) need `rclone` on PATH. A server's buckets
+  (`s3_local(buckets=[bucket(...)])`) are made by the server's own S3 API calls.
 - If Spark does not start in a container, try `JAVA_TOOL_OPTIONS=-XX:-UseContainerSupport`.
 
 ## Where to read

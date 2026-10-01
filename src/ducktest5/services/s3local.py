@@ -11,6 +11,7 @@ credential all the same, because an existing instance may be anyone's.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import urllib.error
@@ -18,9 +19,9 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from ..host import docker, has_docker, in_url, service_bind, service_host
-from ..resources import ON_FAILURE, S3CredentialDef, Service, ServiceDef, ServiceNotUp, StorageDef
+from ..resources import ALWAYS, NEVER, ON_FAILURE, S3CredentialDef, Service, ServiceDef, ServiceNotUp, StorageDef
 from ..resources.remote import S3Access, remote_for
-from ..resources.seed import SeedDef, seed
+from .s3api import S3Api
 
 _log = logging.getLogger(__name__)
 
@@ -76,6 +77,27 @@ def _start(settings):
     )  # fmt: skip
 
 
+@dataclass(frozen=True)
+class Bucket:
+    """A bucket the server holds while the run uses it: `seed` copies each local directory to its
+    prefix, `public` opens it to anonymous list and read. A bucket the run made goes at the end,
+    unless `retain` keeps it; it defaults to `never`, as a kept one would be used by the next run with
+    whatever the tests wrote into it."""
+
+    name: str
+    seed: tuple = ()  # ((local directory, prefix in the bucket), ...)
+    public: bool = False
+    retain: str = NEVER
+
+    def content(self):
+        return {"name": self.name, "seed": [list(s) for s in self.seed], "public": self.public, "retain": self.retain}
+
+
+def bucket(name: str, seed=(), public: bool = False, retain: str = NEVER) -> Bucket:
+    """A bucket on a local S3 server: `s3_local(buckets=[bucket("data", seed=[("dir", "prefix")])])`."""
+    return Bucket(name, tuple(tuple(s) for s in seed), public, retain)
+
+
 @dataclass(eq=False)
 class S3LocalDef(ServiceDef):
     """A local S3-compatible server with its bucket made: one that already answers where the run
@@ -83,8 +105,13 @@ class S3LocalDef(ServiceDef):
     run, or the one `.as_existing(address=...)` names. It runs as RustFS. Its attributes are
     `endpoint`, `host_port` (the endpoint without its scheme), `bucket` and `region`; its keys come
     from the environment (DUCKTEST_S3_LOCAL_ACCESS_KEY, DUCKTEST_S3_LOCAL_SECRET_KEY) and reach a test
-    through `credential(id, scopes=[...])`. `storage(id, prefix)` declares a storage in its bucket,
-    `seed(id, bucket, copy=...)` another bucket, filled before the tests that bind it run."""
+    through `credential(id, scopes=[...])`. `storage(id, prefix)` declares a storage in its bucket.
+
+    `buckets` are more buckets, each a `bucket(...)`, made when the server is and filled from local
+    directories. The run owns a bucket it made, and removes it at the end. One that is already there
+    and holds what it seeds (and is public when asked) is used as it is and never changed; one with
+    other content is refused, and the service is not up. `bucket` itself is made when it is not
+    there, and never removed."""
 
     kind = "s3_local"
     detached = True
@@ -95,20 +122,23 @@ class S3LocalDef(ServiceDef):
 
     id: str = "s3"
     bucket: str = "ducktest"
+    buckets: list = field(default_factory=list)
     port: int | None = None
     address: str | None = None
     inputs: list = field(default_factory=list)
     retain: str = ON_FAILURE
 
-    def storage(self, id: str, prefix: str = "", **fields) -> StorageDef:
-        """A storage at `s3://<bucket>/<prefix>` on this server."""
-        root = f"s3://{{{self.id}.bucket}}/{prefix}".rstrip("/")
-        return StorageDef(id, root, endpoint=f"{{{self.id}.endpoint}}", inputs=[self], **fields)
+    def reached_at(self, address: str) -> S3LocalDef:
+        # Cleanup after the run reaches the server for its storages; the buckets the run made are gone.
+        return dataclasses.replace(self.as_existing(address), buckets=[])
 
-    def seed(self, id: str, bucket: str, copy=(), public: bool = False, **fields) -> SeedDef:
-        """A bucket on this server holding each local directory of `copy` under its prefix, made
-        before the tests that bind it run; see SeedDef."""
-        return seed(self, id, bucket, copy, public, **fields)
+    def storage(self, id: str, prefix: str = "", bucket: str | None = None, **fields) -> StorageDef:
+        """A storage at `s3://<bucket>/<prefix>` on this server; `bucket` names one of `buckets`, else
+        it is the server's own."""
+        if bucket is not None and bucket not in [b.name for b in self.buckets]:
+            raise ValueError(f"service {self.id}: {bucket!r} is not one of its buckets")
+        root = f"s3://{bucket or '{' + self.id + '.bucket}'}/{prefix}".rstrip("/")
+        return StorageDef(id, root, endpoint=f"{{{self.id}.endpoint}}", inputs=[self], **fields)
 
 
 def s3_local(id: str = "s3", **fields) -> S3LocalDef:
@@ -132,6 +162,7 @@ class S3Local(Service):
         if definition.address is not None:
             overrides["endpoint"] = definition.address
         self.settings = s3_settings(**overrides)
+        self.made_buckets = []  # names of the buckets of `buckets` this instance made, in order
 
     @property
     def handle(self):
@@ -141,14 +172,80 @@ class S3Local(Service):
     def address(self):
         return self.settings["endpoint"]
 
+    def _keys(self):
+        return self.settings["access_key"], self.settings["secret_key"]
+
     def remote(self):
-        """The operations on this server's store, with its own keys."""
-        s = self.settings
-        return remote_for(S3Access(s["endpoint"], s["region"], lambda: (s["access_key"], s["secret_key"])))
+        """The file operations on this server's store (rclone), with its own keys."""
+        return remote_for(S3Access(self.settings["endpoint"], self.settings["region"], self._keys))
+
+    def api(self):
+        """The server's own bucket calls: signed S3 API requests."""
+        return S3Api(self.settings["endpoint"], self.settings["region"], self._keys)
 
     def create(self):
         super().create()
-        self.remote().make_bucket(self.settings["bucket"])
+        api = self.api()
+        try:
+            missing = [d for b in self.definition.buckets for d, _ in b.seed if not os.path.isdir(d)]
+            if missing:
+                raise ServiceNotUp(f"service {self.id}: nothing to seed from: no directory at {', '.join(missing)}")
+            api.create_bucket(self.settings["bucket"])
+            for b in self.definition.buckets:
+                self._bucket(api, b)
+        except Exception as exc:
+            self._remove_buckets(api, lambda b: True)
+            self.delete()
+            if isinstance(exc, ServiceNotUp):
+                raise
+            raise ServiceNotUp(f"service {self.id}: its buckets: {type(exc).__name__}: {exc}") from exc
+
+    def _differs(self, api, b):
+        """What in bucket `b` is not as declared, or None: it is."""
+        for source, prefix in b.seed:
+            uri = f"s3://{b.name}/{prefix}".rstrip("/")
+            if not self.remote().check(source, uri):
+                return f"{uri} does not hold what is in {source}"
+        if b.public and not api.is_public(b.name):
+            return f"s3://{b.name} is not open to anonymous reads"
+        return None
+
+    def _bucket(self, api, b):
+        if b.name not in self.made_buckets and api.bucket_exists(b.name):
+            if differs := self._differs(api, b):
+                raise ServiceNotUp(
+                    f"service {self.id}: bucket {b.name} is there and {differs}; the run does not change a "
+                    f"bucket it did not make. Remove it, or declare another bucket"
+                )
+            _log.info("s3: bucket %s is there as declared, used as it is", b.name)
+            return
+        if b.name in self.made_buckets and not self._differs(api, b):
+            return
+        _log.info("s3: making bucket %s", b.name)
+        api.create_bucket(b.name)
+        if b.name not in self.made_buckets:
+            self.made_buckets.append(b.name)
+        for source, prefix in b.seed:
+            self.remote().copy(source, f"s3://{b.name}/{prefix}".rstrip("/"))
+        if b.public:
+            api.make_public(b.name)
+
+    def _remove_buckets(self, api, goes):
+        """Remove each bucket this instance made for which `goes(bucket)`, the last made first."""
+        by_name = {b.name: b for b in self.definition.buckets}
+        for name in reversed(list(self.made_buckets)):
+            if goes(by_name[name]):
+                _log.info("s3: removing bucket %s, made by the run", name)
+                api.delete_bucket(name, force=True)
+                self.made_buckets.remove(name)
+
+    def end(self, failed):
+        self._remove_buckets(self.api(), lambda b: not _retained(b.retain, failed))
+        super().end(failed)
+
+    def delete(self):
+        self._remove_buckets(self.api(), lambda b: True)
+        super().delete()
 
     def start(self):
         if self.run_token is None:
@@ -182,6 +279,10 @@ class S3Local(Service):
         name = _container(self.id, run_token)
         found = docker("ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.Names}}", check=False)
         return [n for n in found.stdout.split() if n == name]
+
+
+def _retained(policy, failed):
+    return policy == ALWAYS or (policy == ON_FAILURE and failed)
 
 
 S3LocalDef.instance = S3Local
