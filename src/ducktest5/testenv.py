@@ -61,6 +61,7 @@ _LABELS = {
     "kept": "process env kept",
 }
 _ERRNO = re.compile(r"\[Errno \d+\] ")
+_INPUT_REF = re.compile(r"\{([\w-]+)\.(\w+)\}")  # {s3.host_port}: an attribute of an input
 
 
 @dataclass(frozen=True)
@@ -183,7 +184,7 @@ class TestEnv:
         ]
 
     def _shown(self, entry):
-        text = MASK if entry.secret else str(entry.value) if entry.shown is None else entry.shown
+        text = MASK if entry.secret else _plain(entry.value) if entry.shown is None else entry.shown
         return f"{entry.name}={text}" if entry.name else text
 
     def lines(self):
@@ -197,6 +198,16 @@ class TestEnv:
     def record(self):
         """The same, for `01-tests.yaml` and the report."""
         return [{"what": _LABELS[e.kind], "is": self._shown(e), "from": e.source} for e in self.entries()]
+
+
+def _plain(value):
+    """A value as printed: one read at delivery (a credential's region) is read here too."""
+    if callable(value):
+        try:
+            value = value()
+        except Exception as exc:
+            return f"<not known: {exc}>"
+    return str(value)
 
 
 def _put_value(values, name, entry):
@@ -251,6 +262,8 @@ def resolve(test, made=None, key=None, default=None):
         for name, value in check_names(test.params, f"{test.id}: params {test.params_key!r}").items():
             _put_value(env.values, name, _value_entry(name, value, f"params {test.params_key!r}"))
 
+    for extension in definition.requires:
+        env.requires.append(Entry(extension, definition.source_of("requires", extension), kind="require"))
     for name, value in definition.settings.items():
         env.init_sql.append(set_entry(name, value, definition.source_of("settings", name)))
 
@@ -280,6 +293,7 @@ def resolve(test, made=None, key=None, default=None):
     scanning, made = made is None, made or Made()
     from_axes = dict(env.roots)
     instances = [_deliver(env, d, mode, scanning, _axis_value, made, key) for d, mode in test.inputs]
+    _fill_input_refs(env, instances)
     if key is not None:
         # No storage to mint from: the test's own place under a variant's temp root is named the same way.
         for name in ("temp_dir_root", "local_temp_dir_root"):
@@ -315,6 +329,34 @@ def resolve(test, made=None, key=None, default=None):
         env.secret_sql += [Entry(sql, where, kind="secret") for sql in rendered.sql]
     _shell_env(env)
     return env
+
+
+def _fill_input_refs(env, instances):
+    """Each `{id.name}` in a value, where `id` is an input the test holds or an input of one, becomes
+    that input's attribute. One whose input is not made yet (at scan, or its service is down) stays
+    as written: the test is pending on that input already."""
+    by_id = {}
+
+    def walk(instance):
+        if instance is not None and instance.id not in by_id:
+            by_id[instance.id] = instance
+            for sub in instance.inputs.values():
+                walk(sub)
+
+    for instance in instances:
+        walk(instance)
+
+    def one(m, name):
+        ref, attribute = m.groups()
+        if ref not in by_id:
+            return m.group()
+        if attribute not in by_id[ref].attributes:
+            raise UsageError(f"value {name}: {{{ref}.{attribute}}}: {ref} has no attribute {attribute!r}")
+        return str(by_id[ref].attributes[attribute].get())
+
+    for name, entry in list(env.values.items()):
+        if isinstance(entry.value, str) and _INPUT_REF.search(entry.value):
+            env.values[name] = replace(entry, value=_INPUT_REF.sub(lambda m: one(m, name), entry.value))
 
 
 def _view(credential, storages, rendered):

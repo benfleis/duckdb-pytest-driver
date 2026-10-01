@@ -1,5 +1,5 @@
-"""ducktest5's operations on an S3 store: by a fake rclone on PATH, which records how it was called
-and serves a canned listing, and by boto3 against a fake client."""
+"""ducktest5's file operations on a store: by a fake rclone on PATH, which records how it was called
+and serves a canned listing."""
 
 import json
 import os
@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from ducktest5.resources import remote
-from ducktest5.resources.remote import Boto3Remote, RcloneRemote, S3Access, remote_for
+from ducktest5.resources.remote import S3Access, remote_for
 
 ACCESS = S3Access("http://store:9000", "us-east-1", lambda: ("key-id-5d1", "secret-8e2"))
 
@@ -47,10 +47,11 @@ def _command(call):
     return argv[argv.index("--low-level-retries") + 2 :]
 
 
-def test_rclone_is_picked_when_it_is_on_path(rclone, monkeypatch):
-    assert isinstance(remote_for(ACCESS), RcloneRemote)
+def test_without_rclone_an_operation_says_to_install_it_and_making_the_remote_does_not(monkeypatch):
     monkeypatch.setattr(remote.shutil, "which", lambda name: None)
-    assert isinstance(remote_for(ACCESS), Boto3Remote)
+    store = remote_for(ACCESS)
+    with pytest.raises(RuntimeError, match=r"rclone is not on PATH.*install it"):
+        store.list("s3://ducktest/lake")
 
 
 def test_rclone_gets_its_remote_from_the_environment_and_never_a_file(rclone, monkeypatch):
@@ -71,14 +72,9 @@ def test_rclone_gets_its_remote_from_the_environment_and_never_a_file(rclone, mo
     assert not any("secret-8e2" in a or "key-id-5d1" in a for a in call["argv"])
 
 
-def test_rclone_deletes_a_prefix_and_makes_a_bucket(rclone):
-    store = remote_for(ACCESS)
-    store.delete("s3://ducktest/lake/temp/run1/k1")
-    store.make_bucket("ducktest")
-    assert [_command(c) for c in rclone()] == [
-        ["delete", "ducktest:ducktest/lake/temp/run1/k1"],
-        ["mkdir", "ducktest:ducktest"],
-    ]
+def test_rclone_deletes_a_prefix(rclone):
+    remote_for(ACCESS).delete("s3://ducktest/lake/temp/run1/k1")
+    assert [_command(c) for c in rclone()] == [["delete", "ducktest:ducktest/lake/temp/run1/k1"]]
 
 
 @pytest.mark.parametrize("code", [3, 4])
@@ -96,102 +92,39 @@ def test_an_rclone_failure_says_what_rclone_said(rclone, monkeypatch):
         remote_for(ACCESS).list("s3://ducktest/lake")
 
 
-class FakeClientError(Exception):
-    def __init__(self, code):
-        super().__init__(code)
-        self.response = {"Error": {"Code": code}}
-
-
-class FakeS3Client:
-    """Keys of buckets; pages of `page_size` keys, as list_objects_v2 gives them."""
-
-    def __init__(self, buckets, page_size=2, create_error=None):
-        self.buckets, self.page_size, self.create_error = buckets, page_size, create_error
-        self.deletes = []
-
-    def get_paginator(self, name):
-        assert name == "list_objects_v2"
-        return self
-
-    def paginate(self, Bucket, Prefix="", Delimiter=None):  # noqa: N803
-        if Bucket not in self.buckets:
-            raise FakeClientError("NoSuchBucket")
-        keys = sorted(k for k in self.buckets[Bucket] if k.startswith(Prefix))
-        prefixes = []
-        if Delimiter:
-            rest = [(k, k[len(Prefix) :]) for k in keys]
-            prefixes = sorted({Prefix + r.split(Delimiter, 1)[0] + Delimiter for _, r in rest if Delimiter in r})
-            keys = [k for k, r in rest if Delimiter not in r]
-        for start in range(0, max(len(keys), 1), self.page_size):
-            page = {"Contents": [{"Key": k} for k in keys[start : start + self.page_size]]}
-            if start == 0 and prefixes:
-                page["CommonPrefixes"] = [{"Prefix": p} for p in prefixes]
-            yield page
-
-    def delete_objects(self, Bucket, Delete):  # noqa: N803
-        self.deletes.append(len(Delete["Objects"]))
-        for o in Delete["Objects"]:
-            self.buckets[Bucket].remove(o["Key"])
-
-    def create_bucket(self, Bucket):  # noqa: N803
-        if self.create_error:
-            raise FakeClientError(self.create_error)
-        self.buckets.setdefault(Bucket, set())
+# -----------------------------------------------------------------------------
+# Loading data in, checking it, and whole buckets
+#
 
 
 @pytest.fixture
-def boto3_remote(monkeypatch):
-    client = FakeS3Client(
-        {
-            "ducktest": {
-                "lake/temp/run1/k1/a.csv",
-                "lake/temp/run1/k1/b/c.csv",
-                "lake/temp/run1/k10/a.csv",
-                "lake/temp/run1/stray.csv",
-                "lake/temp/run2/k1/a.csv",
-            }
-        }
-    )
-    store = Boto3Remote(ACCESS)
-    monkeypatch.setattr(store, "_client", lambda: client)
-    return store, client
+def dat(tmp_path):
+    root = tmp_path / "dat"
+    (root / "t1").mkdir(parents=True)
+    (root / "t1" / "a.parquet").write_bytes(b"one")
+    (root / "b.json").write_bytes(b"{}")
+    return str(root)
 
 
-def test_boto3_lists_what_is_directly_under_a_prefix(boto3_remote):
-    store, _ = boto3_remote
-    assert sorted(store.list("s3://ducktest/lake/temp/run1")) == ["k1", "k10", "stray.csv"]
-    assert store.list("s3://ducktest/lake/temp/run9") == []
-    assert store.list("s3://nobucket/lake") == []
-
-
-def test_boto3_deletes_a_prefix_and_no_neighbour_that_shares_its_start(boto3_remote):
-    store, client = boto3_remote
-    store.delete("s3://ducktest/lake/temp/run1/k1")
-    assert sorted(client.buckets["ducktest"]) == [
-        "lake/temp/run1/k10/a.csv",
-        "lake/temp/run1/stray.csv",
-        "lake/temp/run2/k1/a.csv",
+def test_rclone_copies_and_syncs_a_directory_in(rclone, dat):
+    store = remote_for(ACCESS)
+    store.copy(dat, "s3://test-bucket/dat")
+    store.sync(dat, "s3://test-bucket/dat")
+    assert [_command(c) for c in rclone()] == [
+        ["copy", dat, "ducktest:test-bucket/dat"],
+        ["sync", dat, "ducktest:test-bucket/dat"],
     ]
-    store.delete("s3://ducktest/lake/temp/run1/k1")
 
 
-def test_boto3_deletes_in_batches_of_a_thousand(monkeypatch):
-    client = FakeS3Client({"b": {f"p/{n:04}" for n in range(2500)}}, page_size=1000)
-    store = Boto3Remote(ACCESS)
-    monkeypatch.setattr(store, "_client", lambda: client)
-    store.delete("s3://b/p")
-    assert client.deletes == [1000, 1000, 500] and client.buckets["b"] == set()
+@pytest.mark.parametrize("code, same", [(0, True), (1, False), (3, False)])
+def test_rclone_check_says_whether_the_store_holds_the_directory(rclone, monkeypatch, dat, code, same):
+    monkeypatch.setenv("FAKE_RCLONE_EXIT", str(code))
+    assert remote_for(ACCESS).check(dat, "s3://test-bucket/dat") is same
+    (call,) = rclone()
+    assert _command(call) == ["check", "--one-way", dat, "ducktest:test-bucket/dat"]
 
 
-@pytest.mark.parametrize("code", ["BucketAlreadyOwnedByYou", "BucketAlreadyExists"])
-def test_boto3_making_a_bucket_that_is_there_is_fine(monkeypatch, code):
-    store = Boto3Remote(ACCESS)
-    monkeypatch.setattr(store, "_client", lambda: FakeS3Client({}, create_error=code))
-    store.make_bucket("ducktest")
-
-
-def test_boto3_does_not_hide_another_error_of_a_bucket(monkeypatch):
-    store = Boto3Remote(ACCESS)
-    monkeypatch.setattr(store, "_client", lambda: FakeS3Client({}, create_error="AccessDenied"))
-    with pytest.raises(FakeClientError, match="AccessDenied"):
-        store.make_bucket("ducktest")
+def test_an_rclone_check_that_fails_is_not_a_difference(rclone, monkeypatch, dat):
+    monkeypatch.setenv("FAKE_RCLONE_EXIT", "7")
+    with pytest.raises(RuntimeError, match=r"rclone check failed \(exit 7\)"):
+        remote_for(ACCESS).check(dat, "s3://test-bucket/dat")

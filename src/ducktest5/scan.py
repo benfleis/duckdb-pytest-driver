@@ -309,6 +309,7 @@ def _settle(definition, project, working_dir):
     merge_suites(settled.suites, definition.suites, None, settled.sources)
     definition.suites = settled.suites
     definition.values, definition.settings, definition.bind = settled.values, settled.settings, settled.bind
+    definition.requires = settled.requires
     definition.timeout, definition.retries = settled.timeout, settled.retries
     definition.own_secrets = settled.own_secrets
     definition.why, definition.sources = settled.why, settled.sources

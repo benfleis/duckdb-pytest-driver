@@ -53,6 +53,11 @@ class ServiceDef(ResourceDef):
         """The same service found running at `address`: the run never starts it, and never removes it."""
         return dataclasses.replace(self, address=address)
 
+    def reached_at(self, address: str) -> ServiceDef:
+        """The same service found running at `address`, made only to reach what is on it (cleanup of a
+        storage after the run): a kind drops there what it would make of its own."""
+        return self.as_existing(address)
+
     def credential(self, id: str, scopes: list, **fields) -> CredentialDef:
         """A credential made of this service's secrets, scoped to `scopes`: the storages it serves."""
         cls = self.credential_type

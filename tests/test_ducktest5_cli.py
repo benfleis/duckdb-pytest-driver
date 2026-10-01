@@ -132,6 +132,23 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
     )
 
 
+def test_a_rule_loads_an_extension_for_its_setting_and_a_value_from_an_input_shows_as_written(tree, capsys):
+    (tree / "test" / "ducktest_conf.py").write_text(
+        textwrap.dedent("""
+            from ducktest5 import match
+            from ducktest5.services.s3local import s3_local
+            S3 = s3_local()
+            CREDENTIALS = [S3.credential("keys", scopes=[])]
+            RULES = [match("a/**", bind={"credential": "keys"}, requires=["httpfs"],
+                           settings={"s3_url_style": "path"}, values={"AWS_ENDPOINT": "{s3.host_port}"})]
+        """)
+    )
+    assert main(["scan", "test/a/x.test", "--env"]) == 0
+    out = capsys.readouterr().out
+    assert "  require: httpfs  <- ducktest_conf.py: match 'a/**'\n  set: s3_url_style=path" in out
+    assert "  values: AWS_ENDPOINT={s3.host_port}  <- ducktest_conf.py: match 'a/**'" in out
+
+
 @pytest.mark.parametrize(
     "name", ["ducktest_config.py", "ducktestconf.py", "ducktest-conf.py", "Ducktest_Conf.py", "b/ducktest_config.py"]
 )

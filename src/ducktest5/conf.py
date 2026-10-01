@@ -17,9 +17,12 @@ pattern may name one file.
 
 How rules combine, in one order: the root file first, then each file on the way down to the test definition;
 in a file, the rules as listed; then the definition's own `@test(...)`. Along that order, list fields (tags,
-engines, variants, mutex, suites) add up, dict fields (values, settings, bind) update by key, and
+engines, variants, mutex, suites, requires) add up, dict fields (values, settings, bind) update by key, and
 single values (timeout, retries) are replaced. `why` records which rule gave what. All of them are on
 the definition and apply to every test made from it.
+
+`requires=["httpfs"]` loads an extension before anything else, as a Variant's does: a setting of it in
+`settings` does not exist before.
 
 `bind={"storage": "scratch"}` binds a role to one of STORAGES, CREDENTIALS or SERVICES by id. The role
 is the key the merge updates by: a later binding of the same role replaces the earlier one, so a
@@ -73,7 +76,7 @@ from .resources.made import services_in
 
 _log = logging.getLogger(__name__)
 
-_LISTS = ("tags", "engines", "variants", "mutex", "suites")
+_LISTS = ("tags", "engines", "variants", "mutex", "suites", "requires")
 _DICTS = ("values", "settings", "bind")
 _SINGLES = ("timeout", "retries", "own_secrets")
 
@@ -174,6 +177,7 @@ class Settled:
     variants: list = field(default_factory=list)
     mutex: list = field(default_factory=list)
     suites: list = field(default_factory=list)
+    requires: list = field(default_factory=list)
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     bind: dict = field(default_factory=dict)
