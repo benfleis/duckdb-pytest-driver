@@ -41,6 +41,7 @@ class TestDef:
     suites: list = field(default_factory=list)  # a suite it declares itself in, or out of as `!NAME`
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
+    requires: list = field(default_factory=list)  # extensions loaded before its settings
     bind: dict = field(default_factory=dict)  # role -> the id of a storage, credential or service
     timeout: float | None = None
     retries: int = 0  # how often a FAILED or ERROR may run again

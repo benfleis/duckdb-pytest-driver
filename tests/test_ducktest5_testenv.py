@@ -86,6 +86,11 @@ def test_a_setting_is_a_statement_after_the_requires_and_the_init_sql_comes_last
     assert env.sql == "SET threads = '2';\nSET s3_region = 'eu';\nCREATE SECRET s;"
 
 
+def test_a_rule_loads_its_extensions_before_an_axis_value_and_once():
+    env = resolve(make_test({"a": Variant("one", requires=("json", "httpfs"))}, requires=["httpfs"]))
+    assert env.extensions == ["httpfs", "json"]
+
+
 def test_an_extension_asked_for_twice_is_loaded_once_in_the_order_of_the_axes():
     axis_values = {"a": Variant("one", requires=("httpfs",)), "b": Variant("two", requires=("json", "httpfs"))}
     assert resolve(make_test(axis_values)).extensions == ["httpfs", "json"]
@@ -191,6 +196,20 @@ def test_a_service_input_gives_its_attributes_as_values_once_it_is_up_and_never_
     env = resolve(test, made)
     assert env.value_map == {"STORE_ENDPOINT": "http://store"}
     assert "s3cr3t" not in "\n".join(env.lines()) and not env.process_env
+
+
+def test_a_value_names_an_attribute_of_an_input_or_of_its_input_filled_when_the_test_runs():
+    store = StoreDef()
+    on_store = StorageDef("lake", "s3://lake", inputs=[store])
+    test = make_test(inputs=[on_store], values={"EP": "{store.endpoint}/x", "OTHER": "{elsewhere.endpoint}"})
+    assert resolve(test).value_map["EP"] == "{store.endpoint}/x"
+    made = Made("r1")
+    made.create(store)
+    env = resolve(test, made)
+    assert env.value_map["EP"] == "http://store/x"
+    assert env.value_map["OTHER"] == "{elsewhere.endpoint}", "not an input of the test: left as written"
+    with pytest.raises(UsageError, match=r"\{store.token\}: store has no attribute 'token'"):  # a secret is not one
+        resolve(make_test(inputs=[on_store], values={"T": "{store.token}"}), made)
 
 
 def test_a_python_body_adds_values_and_sql_for_the_test_file_beside_it():

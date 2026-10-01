@@ -210,6 +210,11 @@ fields (`engines`, `tags`) add.
 | axis value | a Variant's `inputs`; replaces only `default()` | a Variant's `values`, `{auth}` = its id |
 | at run time | | `ctx.values.set(...)`, then `client.values.set(...)`, then the verb's keywords |
 
+A value may name an attribute of an input the test holds, or of an input of one, as `{id.name}`:
+`values={"AWS_ENDPOINT": "{s3.host_port}"}` in a test that holds a credential the `s3` service makes.
+It is filled when the test runs; `scan --env` shows it as written. A rule's `requires=["httpfs"]`
+loads an extension first, as a Variant's does, so its `settings` can name a setting of it.
+
 An axis value and a rule, `@test` or the params row that give the same role or the same value is a
 scan error naming both; so are two axis values that give one name. Only `default()` gives way. Templates fill in two steps: a value that holds `{NAME}`s is filled
 first from the other values (a cycle is an error), then the SQL in one pass. A secret is never a value.

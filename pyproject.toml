@@ -22,7 +22,8 @@ classifiers = [
 dependencies = ["pytest>=7.4", "pyyaml>=6"]
 
 [project.optional-dependencies]
-# For the local S3 server (S3Local) when rclone is not installed: bucket setup and the cleanup of what a run wrote.
+# For the local S3 server (S3Local): a public bucket's policy, and, when rclone is not installed, bucket setup,
+# seeding and the cleanup of what a run wrote.
 s3 = ["boto3"]
 
 # For CONSUMERS who want `-n` parallelism: `pip install duckdb-pytest-driver[xdist]`.
