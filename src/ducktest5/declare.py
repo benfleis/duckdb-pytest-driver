@@ -26,8 +26,8 @@ class Variant:
                  name, that a rule's `values=`, `@test` or the params row gives too is an error.
     `roots`      the binary's roots, any of `data_dir`, `local_data_dir`, `temp_dir_root`,
                  `local_temp_dir_root`. A remote root and its local mirror are one storage seen two
-                 ways. A Python body reads them as `ctx.env.temp_dir` (its own place under
-                 `temp_dir_root`), `ctx.env.data_dir` and their `local_` twins.
+                 ways. A Python body reads them as `ctx.values.temp_dir` (its own place under
+                 `temp_dir_root`), `ctx.values.data_dir` and their `local_` twins.
     `process_env`  the process environment of the engine that runs the test: a value sets a
                  variable, None unsets it. For what DuckDB or a library inside it reads with getenv
                  (AWS_*, AZURE_*, HTTP_PROXY); the absence of a variable is a fact a literal cannot

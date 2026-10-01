@@ -13,7 +13,7 @@ notes. Code: `src/ducktest5/` in this repo; the delta example is duckdb-delta, b
 
 | Word | What it is | Where you write it |
 | --- | --- | --- |
-| `{NAME}` | a value the test reads: `{TEMP_DIR}`, `{DATA_DIR}`, your own | SQL; `ctx.env.name` in Python |
+| `{NAME}` | a value the test reads: `{TEMP_DIR}`, `{DATA_DIR}`, your own | SQL; `ctx.values.name` in Python |
 | storage | a place for files: a directory, a bucket, a URL | `STORAGES` in `ducktest_conf.py` |
 | engine | a thing that runs SQL: DuckDB, Spark | `ENGINES`; `@test(engines=[...])` |
 | client | the SQL verbs on one engine, for one test | `ctx.client("duck")` |
@@ -63,16 +63,16 @@ def rule_matched_body(ctx):
 | `setup(sql)`, `teardown(sql)` | | not under test; a failure is an ERROR; teardown runs always |
 
 A failure stops the test. SQL is a plain string: an f-string is a scan error that says what to do.
-Names are case-insensitive: `ctx.env.auth` in Python is `{AUTH}` in a `.test`. Give your own with
-`ctx.env.set(name=...)`, a rule's `values=` or a verb's keyword; a params row and axis values are values too.
+Names are case-insensitive: `ctx.values.auth` in Python is `{AUTH}` in a `.test`. Give your own with
+`ctx.values.set(name=...)`, a rule's `values=` or a verb's keyword; a params row and axis values are values too.
 
 A body can also wrap a `.test` of the same name: Python does what SQL cannot, then `ctx.run_paired()`
-runs the file through the binary, with the same env. From `examples/ladder/03_credentials/paired_scoped_secret.py`:
+runs the file through the binary, with the same values. From `examples/ladder/03_credentials/paired_scoped_secret.py`:
 
 ```python
 @test()
 def paired_scoped_secret(ctx):
-    ctx.client("duckdb").expects("SELECT name, type, scope FROM duckdb_secrets()", SECRETS[ctx.env.auth])
+    ctx.client("duckdb").expects("SELECT name, type, scope FROM duckdb_secrets()", SECRETS[ctx.values.auth])
     ctx.run_paired()  # runs paired_scoped_secret.test
 ```
 
@@ -179,12 +179,12 @@ instance and its preamble; Spark: its conf restored); after a failed test it is 
 are part of its identity; `lifetime` and `timeout` are not.
 
 A **client** is one engine's lease for one test: the verbs, the lock, the engine's dialect. The
-**Context** (`ctx`) is the one object a body gets: its clients, `ctx.env`, `ctx.params`, and what
+**Context** (`ctx`) is the one object a body gets: its clients, `ctx.values`, `ctx.params`, and what
 it gathers (failed checks, teardowns, the statement log). It is never declared. `ctx.client("duck",
 new=True)` is an extra client of the same engine with a shell of its own, for threads that must run at
 once. `ctx.run_paired()` hands the body's `.test` twin to the binary.
 
-## 2.3 Binding and env
+## 2.3 Binding and values
 
 Two things reach a test. **Roles** (`storage`, `credential`) bind inputs by id, with `bind=`. That
 is all `bind=` does. **Values** are the `{NAME}`s. Both merge in one order: the root
@@ -196,7 +196,7 @@ fields (`engines`, `tags`) add.
 | rules, then `@test` (later replaces) | `default(bind=)`, `match(bind=)`, `@test(bind=)` | a rule's `values=` |
 | params row | | `@test(params=...)` |
 | axis value | a Variant's `inputs`; replaces only `default()` | a Variant's `values`, `{auth}` = its id |
-| at run time | | `ctx.env.set(...)`, then `client.env.set(...)`, then the verb's keywords |
+| at run time | | `ctx.values.set(...)`, then `client.values.set(...)`, then the verb's keywords |
 
 An axis value and a rule, `@test` or the params row that give the same role or the same value is a
 scan error naming both; so are two axis values that give one name. Only `default()` gives way. Templates fill in two steps: a value that holds `{NAME}`s is filled
@@ -246,7 +246,7 @@ tests BLOCKED.
 `scan` (`01-tests.yaml`) -> `plan` (`02-plan.yaml`) -> `provision` (`03`) -> `exec` (`04-events.jsonl`)
 -> `cleanup` -> `report`; `run` does all. Identity is by content: `sha(kind, properties, input
 identities, mode)`; a child is `sha(parent, key)`; the id is only a label. A test's identity is its
-engine instances plus its env. `.test` files of one identity share one `unittest` batch (an inline
+engine instances plus its test environment. `.test` files of one identity share one `unittest` batch (an inline
 `require` is body, not identity). A Python body is a batch of one; two of one identity may reuse a
 warm engine.
 
@@ -261,7 +261,7 @@ delivery, dialects, and the shared kinds.
 | Word | Here | Elsewhere |
 | --- | --- | --- |
 | scope | a credential's storages; nothing else | DuckDB `CREATE SECRET ... SCOPE`: a path prefix |
-| env | `ctx.env`: the test's `{NAME}` values | process variables: here `process_env` |
+| env | only an engine's process variables (`process_env`); a test's `{NAME}`s are `ctx.values`, never secrets | `require-env`: a `.test` reads `{NAME}` from the process |
 | client | one engine's lease for one test | a DuckDB language binding |
 | bind | give a role an input | a prepared-statement parameter; DuckDB's binder |
 | Variant | one value of an axis | DuckDB and Delta's `VARIANT` type |
@@ -353,6 +353,7 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-01: `ctx.env` is now `ctx.values` (and `client.values`, `ctx.run_paired(values=)`).
 - 2026-09-30: `S3LocalDef` (RustFS) replaces `MinioDef`; MinIO is gone; S3 cleanup by rclone or boto3; rung 05.
 - 2026-09-30: value conflicts are errors; `ctx.env` holds the roots and axis names; `ctx.client(name,
   new=True)` replaces `ctx.duckdb`; `ctx.run_paired()`; logging with `-v`/`-vv` and `ducktest.log`.

@@ -184,7 +184,7 @@ def refuse_fstring_sql(tree, path):
         verb = node.func.attr
         raise UsageError(
             f"{os.path.relpath(path)}:{node.lineno}: SQL given to {verb}() is an f-string; write the name as "
-            f"{{{name}}} and set it with ctx.env.set({name}=...), a rule's values=, or {verb}(..., {name}=...). "
+            f"{{{name}}} and set it with ctx.values.set({name}=...), a rule's values=, or {verb}(..., {name}=...). "
             "Templates are filled per engine."
         )
 

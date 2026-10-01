@@ -314,22 +314,22 @@ def test_an_engine_of_lifetime_run_is_one_instance_for_the_run(tmp_path):
 def test_a_value_set_on_the_context_reaches_every_client_and_one_set_on_a_client_only_that_one(tmp_path):
     fake = FakeEngine()
     ctx = ctx_for(py_test(passes, engines=["fake"]), tmp_path, engine=fake)
-    ctx.env.set(path="/p")
-    ctx.client("fake").env.set(only="x")
+    ctx.values.set(path="/p")
+    ctx.client("fake").values.set(only="x")
     ctx.client("fake").oks("SELECT '{path}', '{only}'")
     ctx.client("duckdb").oks("SELECT '{path}'")
     with pytest.raises(UsageError, match="no value for {only}"):
         ctx.client("duckdb").oks("SELECT '{only}'")
     assert fake.statements == ["SELECT '/p', 'x'"]
     assert ctx.client("duckdb").engine.live.statements == ["SELECT '/p'"]
-    assert (ctx.env.path, ctx.client("fake").env.path, "only" in ctx.env) == ("/p", "/p", False)
+    assert (ctx.values.path, ctx.client("fake").values.path, "only" in ctx.values) == ("/p", "/p", False)
 
 
 def test_a_client_template_sees_the_names_a_test_file_sees_and_no_secret(tmp_path, remote_inputs):
     seen = {}
 
     def body(ctx):
-        seen.update(names=ctx.env, location=ctx.location("t"))
+        seen.update(names=ctx.values, location=ctx.location("t"))
         ctx.client("duckdb").oks("SELECT '{TEMP_DIR}', '{CATALOG}', '{catalog}'")
 
     local = py_test(body, {"k": Variant("local", roots={"data_dir": "/data"})}, values={"catalog": "c"})
@@ -355,7 +355,7 @@ def test_a_python_body_s_own_place_under_a_local_storage_exists_when_it_begins(t
     seen = {}
 
     def body(ctx):
-        seen["exists"] = os.path.isdir(ctx.env.temp_dir)
+        seen["exists"] = os.path.isdir(ctx.values.temp_dir)
 
     storage = StorageDef("scratch", str(tmp_path / "scratch"))
     assert go(tmp_path, [py_test(body, inputs=[storage])])[0] == 0
@@ -365,15 +365,15 @@ def test_a_python_body_s_own_place_under_a_local_storage_exists_when_it_begins(t
 def test_names_are_case_insensitive_and_two_spellings_of_one_are_an_error(tmp_path):
     fake = FakeEngine()
     ctx = ctx_for(py_test(passes, engines=["fake"], values={"Catalog": "c"}), tmp_path, engine=fake)
-    ctx.env.set(path="/p")
+    ctx.values.set(path="/p")
     ctx.client("fake").oks("SELECT '{PATH}', '{path}', '{catalog}', '{CATALOG}'")
     ctx.client("fake").oks("SELECT '{PATH}'", PATH="/own")
     assert fake.statements == ["SELECT '/p', '/p', 'c', 'c'", "SELECT '/own'"]
-    assert ctx.env["catalog"] == ctx.env["CATALOG"] == ctx.env.Catalog == "c"
+    assert ctx.values["catalog"] == ctx.values["CATALOG"] == ctx.values.Catalog == "c"
     with pytest.raises(UsageError, match="'path' and 'PATH' are one name"):
         ctx.client("fake").oks("SELECT 1", params={"path": "a", "PATH": "b"})
     with pytest.raises(UsageError, match="are one name"):
-        ctx.env.set(path="a", PATH="b")
+        ctx.values.set(path="a", PATH="b")
 
 
 def test_a_later_tier_replaces_a_name_in_any_case():

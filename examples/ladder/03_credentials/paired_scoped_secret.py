@@ -20,5 +20,5 @@ SECRETS_BY_AUTH = {
 
 @test()
 def paired_scoped_secret(ctx):
-    ctx.client("duckdb").expects("SELECT name, type, scope FROM duckdb_secrets()", SECRETS_BY_AUTH[ctx.env.auth])
+    ctx.client("duckdb").expects("SELECT name, type, scope FROM duckdb_secrets()", SECRETS_BY_AUTH[ctx.values.auth])
     ctx.run_paired()

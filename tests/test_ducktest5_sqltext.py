@@ -6,7 +6,7 @@ import decimal
 import pytest
 
 from ducktest5.binary import UsageError
-from ducktest5.resources.client import Client, Env, ExpectationFailed, SetupFailed, SqlError
+from ducktest5.resources.client import Client, ExpectationFailed, SetupFailed, SqlError, Values
 from ducktest5.sqltext import L, parse_rows, render_rows, split_statements, sql_values
 
 
@@ -92,7 +92,7 @@ def test_a_struct_literal_is_left_alone_and_a_params_row_cannot_shadow_a_verb_op
 
 
 def test_a_placeholder_with_no_value_is_an_error_that_names_what_is_known():
-    client = Client("fake", lambda statements: ([], []), table="cat.t", env=Env({"catalog": "duck"}))
+    client = Client("fake", lambda statements: ([], []), table="cat.t", values=Values({"catalog": "duck"}))
     with pytest.raises(UsageError, match=r"no value for \{seed_vlaues\}; known: \['catalog', 'seed_values', 't'\]"):
         client.oks("INSERT INTO {t} VALUES {seed_vlaues}", params={"seed_values": [(1,)]})
 
@@ -257,21 +257,23 @@ def test_params_are_given_by_keyword_to_every_verb(verb, args):
 
 def test_a_value_that_names_a_root_is_filled_before_the_sql():
     seen = []
-    client = Client("spark", lambda statements: seen.extend(statements) or ([], []), env=Env({"TEMP_DIR": "/run/x"}))
+    client = Client(
+        "spark", lambda statements: seen.extend(statements) or ([], []), values=Values({"TEMP_DIR": "/run/x"})
+    )
     client.oks("SELECT * FROM {t}", t="delta.`{TEMP_DIR}/t`")
     assert seen == ["SELECT * FROM delta.`/run/x/t`"]
 
 
 def test_a_chain_of_values_is_filled_bottom_up_and_a_filled_value_is_not_read_again():
     seen = []
-    env = Env({"root": "/r", "table_dir": "{root}/tables", "literal": "{{root}}"})
-    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), env=env)
+    values = Values({"root": "/r", "table_dir": "{root}/tables", "literal": "{{root}}"})
+    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), values=values)
     client.oks("SELECT '{t}', '{literal}'", t="{table_dir}/t")
     assert seen == ["SELECT '/r/tables/t', '{root}'"]
 
 
 def test_values_that_refer_to_each_other_in_a_cycle_are_an_error_that_names_the_cycle():
-    client = Client("fake", lambda statements: ([], []), env=Env({"a": "{b}/x", "b": "{A}/y"}))
+    client = Client("fake", lambda statements: ([], []), values=Values({"a": "{b}/x", "b": "{A}/y"}))
     with pytest.raises(UsageError, match=r"a cycle: \{a\} -> \{b\} -> \{a\}"):
         client.oks("SELECT '{a}'")
     with pytest.raises(UsageError, match=r"no value for \{nope\} \(in the value of \{t\}\)"):

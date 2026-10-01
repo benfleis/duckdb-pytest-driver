@@ -20,4 +20,4 @@ SECRETS_BY_AUTH = {
 
 @test()
 def scoped_secret_body(ctx):
-    ctx.client("duckdb").expects("SELECT name, type, scope FROM duckdb_secrets()", SECRETS_BY_AUTH[ctx.env.auth])
+    ctx.client("duckdb").expects("SELECT name, type, scope FROM duckdb_secrets()", SECRETS_BY_AUTH[ctx.values.auth])

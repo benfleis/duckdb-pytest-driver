@@ -13,14 +13,14 @@ records the failure and lets the body go on, for independent checks a reader wan
 `sql` is one statement, a block of them split on `;`, or a list of statements taken as they are (for
 a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
 and `rows` / `text` belong to the last one. `{t}` is this client's spelling of the table under test;
-other `{name}` placeholders come from the test's env (`ctx.env`, what a `.test` file reads as
+other `{name}` placeholders come from the test's values (`ctx.values`, what a `.test` file reads as
 `{NAME}`), from `params=` (a dict: a params row goes there), or from keyword arguments; an
 unknown one is an error, and `{{word}}` is a literal brace pair. A value that is a list of rows goes
 in as a SQL VALUES list, so the values a test inserts and the rows it expects back are one definition
 (`L("...")` puts hand-written SQL in a value; rows can then not be derived and must be given). Braces
 around anything but a name are left alone (struct literals). Write plain strings: an f-string as
 the SQL of a verb is refused when its file is imported, since it fills the template once, in Python,
-where the client fills it per engine; give the name a value (`ctx.env.set`, a rule's `values=`, or
+where the client fills it per engine; give the name a value (`ctx.values.set`, a rule's `values=`, or
 a keyword of the call) instead.
 A value that holds `{name}`s is filled first, from the other values, each once
 (``t="delta.`{TEMP_DIR}/t`"`` works; values that refer to each other in a cycle are an error), and
@@ -28,7 +28,7 @@ the SQL is then filled in one pass, so what a value brings in is never read agai
 
 Names are case-insensitive. Python writes them lower case and a `.test` file upper case, so `{path}`
 and `{PATH}` are one name with one value. Two names given together that differ only in case are an
-error; a later layer (the client's own `env` over the test's, then the call's) replaces a name in any
+error; a later layer (the client's own `values` over the test's, then the call's) replaces a name in any
 case.
 
 Rows compare as TEXT, the way a .test file does: one line per row, TAB between values, `NULL`,
@@ -150,12 +150,12 @@ class Names(dict):
                 super().__setitem__(key, value)
 
 
-class Env(Mapping):
-    """The `{NAME}` values a template sees, by any case of the name: `env.path`, `env["PATH"]`.
-    `set(name=value)` adds or replaces values from now on. An Env made over a `parent` sees what
+class Values(Mapping):
+    """The `{NAME}` values a template sees, by any case of the name: `values.path`, `values["PATH"]`.
+    `set(name=value)` adds or replaces values from now on. A Values made over a `parent` sees what
     the parent has, what is set there later too, and keeps what is set on it to itself.
 
-    A name that is also a method here (`get`, `items`, `set`, ...) is read as `env["name"]`."""
+    A name that is also a method here (`get`, `items`, `set`, ...) is read as `values["name"]`."""
 
     def __init__(self, given=(), parent=None):
         self._own = Names(given)
@@ -184,7 +184,7 @@ class Env(Mapping):
         try:
             return self[name]
         except KeyError:
-            raise AttributeError(f"env has no {name!r}; it has {sorted(self)}") from None
+            raise AttributeError(f"values has no {name!r}; it has {sorted(self)}") from None
 
     def __iter__(self):
         return iter(self.names())
@@ -196,17 +196,17 @@ class Env(Mapping):
         return name in self._own or (self._parent is not None and name in self._parent)
 
     def __repr__(self):
-        return f"Env({dict(self.names())!r})"
+        return f"Values({dict(self.names())!r})"
 
 
 class Client:
     """One engine's lease for one test: the verbs, run on the engine instance the test holds.
     `engine` is that instance, or None for a client of a body's own (a shell nobody else uses)."""
 
-    def __init__(self, name, run, *, table=None, env=None, record=None, defer=None, log=None, engine=None):
+    def __init__(self, name, run, *, table=None, values=None, record=None, defer=None, log=None, engine=None):
         """`run(statements)` runs them in order and returns `(column_names, rows)` of the last,
         rows as tuples; it raises SqlError, with the failed statement's index, on the first error.
-        `env` is the test's: this client's own `env` is over it, so what the test sets later is
+        `values` are the test's: this client's own `values` are over them, so what the test sets later is
         seen too, and what is set on this client stays with it. `record(failure)` takes a failure under `on_fail="continue"`;
         `defer(callable)` takes a teardown. Without them such a failure raises and a teardown runs
         at once. `log(entry)` takes one `{client, sql, seconds}` for every call, which a verbose
@@ -214,7 +214,7 @@ class Client:
         self.name = name
         self.engine = engine
         self._run = run
-        self.env = Env({"t": table} if table else {}, parent=env)
+        self.values = Values({"t": table} if table else {}, parent=values)
         self._record = record
         self._defer = defer
         self._log = log
@@ -237,7 +237,7 @@ class Client:
     def _statements(self, sql, params, more):
         """`params` is a dict of placeholder values (a params row goes here, so its keys cannot collide
         with a verb's own options); `more` are the same as keywords, for the odd single value."""
-        known = self.env.names()
+        known = self.values.names()
         for layer in (params or {}, more):
             known.update(layer)
 

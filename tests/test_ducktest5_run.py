@@ -634,7 +634,7 @@ def test_a_batch_dir_stays_only_when_kept_or_not_all_passed(tmp_path, keep):
 
 def test_a_run_removes_its_prefix_under_a_storage_but_a_failed_test_s_place(tmp_path):
     def writes_to_the_storage(ctx):
-        open(os.path.join(ctx.env.temp_dir, "f"), "w").close()
+        open(os.path.join(ctx.values.temp_dir, "f"), "w").close()
 
     def writes_to_the_storage_and_fails(ctx):
         writes_to_the_storage(ctx)
@@ -866,7 +866,7 @@ def test_an_engine_the_test_did_not_name_is_a_usage_error_that_says_where_to_nam
 
 
 def runs_its_file(ctx):
-    ctx.run_paired(env={"EXTRA": "x"})
+    ctx.run_paired(values={"EXTRA": "x"})
 
 
 @pytest.mark.parametrize(
@@ -973,7 +973,7 @@ def test_a_python_body_reads_the_roots_and_puts_what_it_makes_under_the_temp_roo
     seen = {}
 
     def body(ctx):
-        seen["env"] = {n: ctx.env[n] for n in ("temp_dir", "temp_dir_root", "local_temp_dir", "data_dir", "storage")}
+        seen["env"] = {n: ctx.values[n] for n in ("temp_dir", "temp_dir_root", "local_temp_dir", "data_dir", "storage")}
         seen["location"] = ctx.location("tbl")
 
     variant = Variant("http", roots={"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"})
@@ -1203,7 +1203,7 @@ def test_a_python_body_that_binds_no_storage_is_given_the_roots_a_test_file_is(t
     seen = {}
 
     def body(ctx):
-        seen["names"] = {name: ctx.env[name] for name in ("DATA_DIR", "TEMP_DIR", "TEMP_DIR_ROOT")}
+        seen["names"] = {name: ctx.values[name] for name in ("DATA_DIR", "TEMP_DIR", "TEMP_DIR_ROOT")}
 
     test = py_test(body)
     code, run_dir, _, _ = go(tmp_path, [test, sql_test("x.test")], keep=True)
@@ -1220,7 +1220,7 @@ def test_a_storage_the_test_binds_gives_the_temp_roots_and_the_data_dir_only_whe
     seen = {}
 
     def body(ctx):
-        seen.update({n: ctx.env[n] for n in ("data_dir", "temp_dir", "temp_dir_root")})
+        seen.update({n: ctx.values[n] for n in ("data_dir", "temp_dir", "temp_dir_root")})
 
     storage = StorageDef("scratch", str(tmp_path / "store"), data=data and str(tmp_path / data))
     test = py_test(body, inputs=[storage])

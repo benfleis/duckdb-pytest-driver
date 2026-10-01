@@ -11,7 +11,7 @@ the chosen value of every variant axis; both deliveries read it, under the test'
     init_sql    the statements after them, in order: the settings as `SET`, then the variants' SQL
     values      the names a body writes as `{NAME}`, and each axis name -> the id of its value
     roots       the binary's four roots, where a variant or a storage gives them; a Python body
-                reads them as `ctx.env.temp_dir`, `ctx.env.data_dir` and their `local_` twins
+                reads them as `ctx.values.temp_dir`, `ctx.values.data_dir` and their `local_` twins
     process_env the process environment of the engine: a value sets a variable, None unsets it
 
 A storage input gives roots and values; a credential gives secrets, which reach the engine only as

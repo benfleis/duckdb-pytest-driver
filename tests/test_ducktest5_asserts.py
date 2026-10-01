@@ -209,7 +209,7 @@ def test_an_f_string_as_the_sql_of_a_verb_is_refused_at_import(tmp_path, monkeyp
     with pytest.raises(UsageError) as e:
         scan(str(tmp_path), working_dir=str(tmp_path))
     assert str(e.value) == (
-        "t.py:7: SQL given to oks() is an f-string; write the name as {n} and set it with ctx.env.set(n=...), "
+        "t.py:7: SQL given to oks() is an f-string; write the name as {n} and set it with ctx.values.set(n=...), "
         "a rule's values=, or oks(..., n=...). Templates are filled per engine."
     )
 
