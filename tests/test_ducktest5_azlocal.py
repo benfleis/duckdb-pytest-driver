@@ -165,9 +165,7 @@ def test_it_produces_a_credential_scoped_to_its_storage_and_emits_no_azure_names
     assert storage.root == "az://ducktest/lake"
     assert {k: v.get() for k, v in storage.delivery()[0].items()}["AZ_ACCOUNT"] == "devstoreaccount1"
     assert render("duckdb", "secret", [storage], credential).sql == [
-        "CREATE SECRET ducktest_az_keys (TYPE azure, PROVIDER config, "
-        "CONNECTION_STRING getenv('AZURE_STORAGE_CONNECTION_STRING'), ACCOUNT_NAME 'devstoreaccount1', "
-        "SCOPE 'az://ducktest/lake');"
+        "SET azure_storage_connection_string = getenv('AZURE_STORAGE_CONNECTION_STRING');"
     ]
 
 
@@ -179,7 +177,7 @@ def test_an_engine_bound_to_its_credential_acquires_it(fake_docker):
     credential = definition.credential("az_keys", scopes=["blobs"]).make({"az": service})
     engine, made = opened(duckdb_engine("duck"), {"blobs": storage, "az_keys": credential})
     engine.acquire(RW)
-    assert "CREATE SECRET ducktest_az_keys" in made[0].calls[-1]
+    assert "SET azure_storage_connection_string" in made[0].calls[-1]
     assert credential.secrets["AZURE_STORAGE_CONNECTION_STRING"].get() == CONNECTION
 
 

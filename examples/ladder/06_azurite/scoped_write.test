@@ -1,15 +1,15 @@
 # name: scoped_write.test
-# description: Writes and reads under its own place on the local Azure blob server, with the secret made for it.
+# description: Writes and reads under its own place on the local Azure blob server, with the connection string set for it.
 # group: [ladder]
 
 # -----------------------------------------------------------------------------
-# One secret, scoped to the storage
+# The connection string is a setting, not a secret
 #
 
-query III
-SELECT name, type, scope FROM duckdb_secrets()
+query II
+SELECT current_setting('azure_storage_connection_string') <> '', count(*) FROM duckdb_secrets()
 ----
-ducktest_keys	azure	['az://ducktest/lake']
+true	0
 
 # -----------------------------------------------------------------------------
 # A write and a read under the test's own place

@@ -36,7 +36,7 @@ from .provision import SECRET_NAME as _SECRET_NAME
 from .resources import RO, RW, ServiceDef, ServiceNotUp
 from .resources.client import check_names
 from .resources.credential import CredentialView, credential_types, engine_env, kept_names, removed_names
-from .resources.dialect import pairs, render, secret_name
+from .resources.dialect import makes_secret, pairs, render, secret_name
 from .resources.made import Made, services_in
 
 ROOTS = ("data_dir", "local_data_dir", "temp_dir_root", "local_temp_dir_root")
@@ -366,7 +366,7 @@ def _view(credential, storages, rendered):
     return CredentialView(
         id=d.id,
         type=cls.type,
-        secret_name=secret_name(d) if rendered else None,
+        secret_name=secret_name(d) if rendered and makes_secret(credential) else None,
         storages=tuple(s.id for s in storages),
         scope=[s.attribute_values()["root"] for s in storages],
         env=tuple(credential.secrets),

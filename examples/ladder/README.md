@@ -152,8 +152,9 @@ Rung 05 again, on Azure blob storage: `az_local()` is a local Azure blob server,
 `AzureCredentialDef` of the server's connection string, made of Azurite's own account,
 `devstoreaccount1`, and its well-known key (`DUCKTEST_AZ_LOCAL_ACCOUNT` and `DUCKTEST_AZ_LOCAL_KEY`
 give another). The connection string reaches every engine process of the test as
-`AZURE_STORAGE_CONNECTION_STRING`; DuckDB gets one secret, `ducktest_keys`, `TYPE azure`, that reads
-it by that name and is scoped to the storage. Both tests write and read `{TEMP_DIR}/answer.csv`
+`AZURE_STORAGE_CONNECTION_STRING`; DuckDB gets no secret but the setting
+`azure_storage_connection_string`, read by that name (`getenv(...)` in the shell, `'{...}'` in a
+`.test` init file), as the azure extension's own Azurite tests set it. Both tests write and read `{TEMP_DIR}/answer.csv`
 under it, and the run removes what they wrote with rclone's `azureblob` backend.
 
 With no Azurite to reach, and no docker to start one, both tests end BLOCKED; that is the golden.

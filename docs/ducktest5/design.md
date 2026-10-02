@@ -293,7 +293,11 @@ in a `.test` batch's init file, which the binary fills. The keys are in the secr
 extension may read them from the secret alone (delta's scan does). The rule: **bind the storage**, and
 the run sets DuckDB up for it (the scoped secret, `{TEMP_DIR}` there); **bind only the credential**,
 and the test gets the keys in its process env and nothing else, and sets DuckDB up itself. No secret
-is made where no storage of the test is in the scope; the env is delivered all the same. A test that
+is made where no storage of the test is in the scope; the env is delivered all the same. An Azure credential that carries a connection string (`az_local`'s, or provider `config`) is no
+secret but the setting `azure_storage_connection_string`, read the same way (`SET
+azure_storage_connection_string = getenv('AZURE_STORAGE_CONNECTION_STRING')`), as the azure
+extension's own Azurite tests set it; the setting is not scoped, and `secret_name` is None. Its other
+providers get a scoped `TYPE azure` secret. A test that
 binds the storage but makes its own secret is left to wiring; there is no flag for it. Spark gets, per scoped bucket,
 the env credentials provider and the bucket's endpoint, never a key. A body reads what it holds with
 `ctx.credential(id)` and `ctx.credentials()`: id, type, `secret_name`, storages, scope, env names,
@@ -461,6 +465,7 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-02: an Azure connection string is the setting `azure_storage_connection_string`, not a secret.
 - 2026-10-02: `IMDS_` (managed identity) is removed from engines with `AZURE_`, `IDENTITY_`, `MSI_`.
 - 2026-10-02: the same for a refused Azure container: one module holds the bucket and container rules.
 - 2026-10-01: a refused bucket blocks only the tests that need it, not every test on its server.

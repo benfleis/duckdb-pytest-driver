@@ -12,7 +12,7 @@ from ducktest5.binary import UsageError
 from ducktest5.cli import main
 from ducktest5.resources import AzureCredential, AzureCredentialDef, StorageDef, azure_credential, from_env
 from ducktest5.resources import credential as credential_module
-from ducktest5.resources.dialect import Preamble, render
+from ducktest5.resources.dialect import Preamble, makes_secret, render
 from ducktest5.scan import scan
 from ducktest5.testenv import resolve
 
@@ -120,23 +120,29 @@ def connection(monkeypatch):
     return made(azure_credential("az-keys", sources=[from_env({"DT_CONN": "connection_string"})], scopes=["blobs"]))
 
 
-def test_duckdb_gets_a_secret_that_reads_the_connection_string_from_its_env(connection):
+def test_duckdb_sets_the_connection_string_from_its_env_and_makes_no_secret(connection):
     storage = StorageDef("blobs", "az://data/lake").make()
     assert render("duckdb", "secret", [storage], connection).sql == [
-        "CREATE SECRET ducktest_az_keys (TYPE azure, PROVIDER config, "
-        "CONNECTION_STRING getenv('AZURE_STORAGE_CONNECTION_STRING'), SCOPE 'az://data/lake');"
+        "SET azure_storage_connection_string = getenv('AZURE_STORAGE_CONNECTION_STRING');"
     ]
+    assert not makes_secret(connection)
 
 
 def test_the_unittest_binary_gets_the_name_never_the_value_and_requires_azure(connection):
     storage = StorageDef("blobs", "az://data/lake", account="acct").make()
     assert render("unittest", "secret", [storage], connection) == Preamble(
-        sql=[
-            "CREATE SECRET ducktest_az_keys (TYPE azure, PROVIDER config, "
-            "CONNECTION_STRING '{AZURE_STORAGE_CONNECTION_STRING}', ACCOUNT_NAME 'acct', SCOPE 'az://data/lake');"
-        ],
+        sql=["SET azure_storage_connection_string = '{AZURE_STORAGE_CONNECTION_STRING}';"],
         requires=["azure"],
     )
+
+
+def test_an_account_name_alone_is_a_secret_for_anonymous_reads(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "acct")
+    credential = made(azure_credential("anon", sources=[from_env(["AZURE_STORAGE_ACCOUNT"])]))
+    assert render("duckdb", "secret", [StorageDef("blobs", "az://data/lake").make()], credential).sql == [
+        "CREATE SECRET ducktest_anon (TYPE azure, PROVIDER config, ACCOUNT_NAME getenv('AZURE_STORAGE_ACCOUNT'), "
+        "SCOPE 'az://data/lake');"
+    ]
 
 
 def test_a_service_principal_secret_names_each_of_its_fields_and_the_account_an_abfss_root_names(spn_env):

@@ -423,7 +423,8 @@ class AzureCredentialDef(CredentialDef):
 
     The azure extension reads none of these from the env by itself; a `.test` file reads
     `{AZURE_STORAGE_CONNECTION_STRING}` and the SDK's EnvironmentCredential the service principal's
-    names. The az cli needs its login: keep `AZURE_CONFIG_DIR` with INHERIT_ENV."""
+    names. DuckDB gets a connection string as the setting `azure_storage_connection_string`, the
+    other providers as a scoped secret. The az cli needs its login: keep `AZURE_CONFIG_DIR` with INHERIT_ENV."""
 
     type = "azure"
     schemes = ("az", "abfss")
@@ -507,7 +508,7 @@ def azure_credential(id: str, **fields) -> AzureCredentialDef:
 @dataclass(frozen=True)
 class CredentialView:
     """What a body sees of a credential its test holds: never a secret value. `secret_name` is the
-    secret the run made for it, None where it made none; `scope` is that secret's scope, as
+    secret the run made for it, None where it made none (an Azure connection string is a setting); `scope` is that secret's scope, as
     `duckdb_secrets()` shows it; `env` the process env names it is delivered under."""
 
     id: str

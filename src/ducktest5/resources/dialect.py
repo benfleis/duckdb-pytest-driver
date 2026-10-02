@@ -9,7 +9,8 @@ The actions are `requires` (a list of extensions), `settings` (name -> value) an
 Credential and the Storages it is scoped to, among a Test's inputs). The keys reach every engine
 process as SDK env; a secret names them, never holds their values in its text. An extension that
 reads the keys from the secret alone (delta) needs them in it, so the secret takes them from the
-engine's env when it is made.
+engine's env when it is made. An Azure connection string is a setting, not a secret
+(`makes_secret`), read from the env the same way.
 """
 
 from __future__ import annotations
@@ -186,27 +187,31 @@ def _create_secret(credential, options):
     return f"CREATE SECRET {secret_name(credential)} ({body});"
 
 
-def duckdb_secret(cls, options, extensions=()):
-    """Registers the secret of a credential class for both DuckDB dialects. `options(storages,
-    credential, by_name)` gives the options, a field's value as `by_name(its SDK env name)`: the text
+def _secret_of(options):
+    """The CREATE SECRET statement of `options(storages, credential, by_name)`."""
+    return lambda storages, credential, by_name: _create_secret(credential, options(storages, credential, by_name))
+
+
+def duckdb_secret(cls, statement, extensions=()):
+    """Registers the secret of a credential class for both DuckDB dialects. `statement(storages,
+    credential, by_name)` gives its SQL, a field's value as `by_name(its SDK env name)`: the text
     names the variable and the engine reads its value from its own env. The shell calls `getenv()`;
     the binary fills a `{NAME}` from the variables passed through to it. The binary loads no
     extension by itself, so the init file requires `extensions` first."""
 
     def shell(storages, credential):
         by_name = lambda name: RAW(f"getenv({quote(name)})")  # noqa: E731
-        return Preamble(sql=[_create_secret(credential, options(storages, credential, by_name))])
+        return Preamble(sql=[statement(storages, credential, by_name)])
 
     def init_file(storages, credential):
         by_name = lambda name: f"{{{name}}}"  # noqa: E731
-        sql = _create_secret(credential, options(storages, credential, by_name))
-        return Preamble(sql=[sql], requires=list(extensions))
+        return Preamble(sql=[statement(storages, credential, by_name)], requires=list(extensions))
 
     renders("duckdb", cls)(shell)
     renders("unittest", cls)(init_file)
 
 
-duckdb_secret(S3CredentialDef, _s3_options, extensions=("httpfs",))
+duckdb_secret(S3CredentialDef, _secret_of(_s3_options), extensions=("httpfs",))
 
 _AZURE_RENDERED = {  # provider -> the fields its secret holds; credential_chain's go to the SDK as env only
     "config": ("connection_string",),
@@ -243,7 +248,22 @@ def _azure_options(storages, credential, by_name):
     return options
 
 
-duckdb_secret(AzureCredentialDef, _azure_options, extensions=("azure",))
+def makes_secret(credential) -> bool:
+    """Whether DuckDB gets a secret for `credential`. One that carries a connection string is the
+    setting `azure_storage_connection_string` instead, as the azure extension's own Azurite tests set
+    it; the setting is not scoped, so it serves every az:// path no secret matches."""
+    return not (isinstance(credential.definition, AzureCredentialDef) and "connection_string" in credential.fields)
+
+
+def _azure_statement(storages, credential, by_name):
+    if makes_secret(credential):
+        return _create_secret(credential, _azure_options(storages, credential, by_name))
+    _scheme_checked(storages, credential)
+    name = type(credential.definition).env["connection_string"][0]
+    return f"SET azure_storage_connection_string = {_render_value(by_name(name))};"
+
+
+duckdb_secret(AzureCredentialDef, _azure_statement, extensions=("azure",))
 
 
 # -----------------------------------------------------------------------------
