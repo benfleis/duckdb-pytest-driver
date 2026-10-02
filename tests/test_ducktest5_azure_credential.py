@@ -145,6 +145,22 @@ def test_an_account_name_alone_is_a_secret_for_anonymous_reads(monkeypatch):
     ]
 
 
+def test_an_access_token_is_in_the_secret_by_reference(monkeypatch):
+    monkeypatch.setenv("AZURE_ACCESS_TOKEN", "a-token")
+    credential = made(
+        azure_credential("tok", provider="access_token", sources=[from_env(["AZURE_ACCESS_TOKEN"])], account_name="a")
+    )
+    storage = StorageDef("blobs", "az://data/lake").make()
+    sql = [render(d, "secret", [storage], credential).sql[0] for d in ("duckdb", "unittest")]
+    assert sql == [
+        "CREATE SECRET ducktest_tok (TYPE azure, PROVIDER access_token, ACCESS_TOKEN getenv('AZURE_ACCESS_TOKEN'), "
+        "ACCOUNT_NAME getenv('AZURE_STORAGE_ACCOUNT'), SCOPE 'az://data/lake');",
+        "CREATE SECRET ducktest_tok (TYPE azure, PROVIDER access_token, ACCESS_TOKEN '{AZURE_ACCESS_TOKEN}', "
+        "ACCOUNT_NAME '{AZURE_STORAGE_ACCOUNT}', SCOPE 'az://data/lake');",
+    ]
+    assert "a-token" not in " ".join(sql)
+
+
 def test_a_service_principal_secret_names_each_of_its_fields_and_the_account_an_abfss_root_names(spn_env):
     credential = made(azure_credential("spn", provider="service_principal", sources=[from_env(SPN)]))
     storage = StorageDef("lake", "abfss://data@acct.dfs.core.windows.net/lake").make()

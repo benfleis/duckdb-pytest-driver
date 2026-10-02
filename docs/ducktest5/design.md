@@ -297,7 +297,8 @@ is made where no storage of the test is in the scope; the env is delivered all t
 secret but the setting `azure_storage_connection_string`, read the same way (`SET
 azure_storage_connection_string = getenv('AZURE_STORAGE_CONNECTION_STRING')`), as the azure
 extension's own Azurite tests set it; the setting is not scoped, and `secret_name` is None. Its other
-providers get a scoped `TYPE azure` secret. A test that
+providers get a scoped `TYPE azure` secret; an `access_token` is in it by reference
+(`AZURE_ACCESS_TOKEN`, ducktest's name: the Azure SDK reads no bearer token from env). A test that
 binds the storage but makes its own secret is left to wiring; there is no flag for it. Spark gets, per scoped bucket,
 the env credentials provider and the bucket's endpoint, never a key. A body reads what it holds with
 `ctx.credential(id)` and `ctx.credentials()`: id, type, `secret_name`, storages, scope, env names,

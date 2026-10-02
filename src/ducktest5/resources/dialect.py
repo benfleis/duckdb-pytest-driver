@@ -217,6 +217,7 @@ _AZURE_RENDERED = {  # provider -> the fields its secret holds; credential_chain
     "config": ("connection_string",),
     "service_principal": ("tenant_id", "client_id", "client_secret", "client_certificate_path"),
     "credential_chain": (),
+    # The SDK has no env path for a raw bearer token, so the secret must hold it: by name, as the rest.
     "access_token": ("access_token",),
 }
 

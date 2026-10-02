@@ -419,7 +419,8 @@ class AzureCredentialDef(CredentialDef):
         credential_chain    the Azure SDK finds them; `chain` ('env', 'cli', 'managed_identity',
                             'cli;env', ...) names where. With chain 'env' a source must give the
                             service principal, which reaches the engine as AZURE_TENANT_ID, ...
-        access_token        a bearer token
+        access_token        an OAuth bearer token for storage (`az account get-access-token
+                            --resource https://storage.azure.com`)
 
     The azure extension reads none of these from the env by itself; a `.test` file reads
     `{AZURE_STORAGE_CONNECTION_STRING}` and the SDK's EnvironmentCredential the service principal's
@@ -444,7 +445,7 @@ class AzureCredentialDef(CredentialDef):
         "client_id": ("AZURE_CLIENT_ID",),
         "client_secret": ("AZURE_CLIENT_SECRET",),
         "client_certificate_path": ("AZURE_CLIENT_CERTIFICATE_PATH",),
-        "access_token": ("AZURE_ACCESS_TOKEN",),
+        "access_token": ("AZURE_ACCESS_TOKEN",),  # ducktest's name, not the SDK's: it reads no token from env
     }
     # The Azure SDK's managed identity reads IDENTITY_*, MSI_* and IMDS_ENDPOINT besides AZURE_*.
     sdk_prefixes = ("AZURE_", "IDENTITY_", "MSI_", "IMDS_")
