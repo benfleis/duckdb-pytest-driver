@@ -21,9 +21,10 @@ from dataclasses import dataclass, field
 
 from ..binary import UsageError
 from ..host import docker, has_docker, in_url, service_bind, service_host
-from ..resources import ALWAYS, NEVER, ON_FAILURE, AzureCredentialDef, Service, ServiceDef, ServiceNotUp, StorageDef
+from ..resources import NEVER, ON_FAILURE, AzureCredentialDef, Service, ServiceDef, ServiceNotUp, StorageDef
 from ..resources.remote import AzureBlobAccess, remote_for
 from .azblob import PUBLIC_LEVELS, BlobApi
+from .parts import Part, Parts, parts_needed
 
 _log = logging.getLogger(__name__)
 
@@ -93,19 +94,25 @@ def _start(settings):
 
 
 @dataclass(frozen=True)
-class Container:
-    """A container the server holds while the run uses it: `seed` copies each local directory to its
-    prefix, `public` opens it to anonymous reads (True or 'container': list and read; 'blob': read). A
-    container the run made goes at the end, unless `retain` keeps it; it defaults to `never`, as a
-    kept one would be used by the next run with whatever the tests wrote into it."""
+class Container(Part):
+    """A container the server holds while the run uses it (see Part): `public` opens it to anonymous
+    reads, 'container' (list and read) or 'blob' (read)."""
 
-    name: str
-    seed: tuple = ()  # ((local directory, prefix in the container), ...)
     public: str | None = None
-    retain: str = NEVER
 
-    def content(self):
-        return {"name": self.name, "seed": [list(s) for s in self.seed], "public": self.public, "retain": self.retain}
+
+class _ContainerCalls:
+    noun, scheme = "container", "az"
+
+    def __init__(self, api, remote):
+        self.api, self.copy, self.check = api, remote.copy, remote.check
+        self.exists, self.make, self.remove = api.container_exists, api.create_container, api.delete_container
+
+    def is_public(self, part):
+        return self.api.public_access(part.name) == part.public
+
+    def make_public(self, part):
+        self.api.set_public_access(part.name, part.public)
 
 
 def container(name: str, seed=(), public: bool | str = False, retain: str = NEVER) -> Container:
@@ -130,8 +137,8 @@ class AZLocalDef(ServiceDef):
     `containers` are more containers, each a `container(...)`, made when the server is and filled
     from local directories. The run owns a container it made, and removes it at the end. One that is
     already there and holds what it seeds (and is public as asked) is used as it is and never
-    changed; one with other content is refused, and the service is not up. `container` itself is
-    made when it is not there, and never removed."""
+    changed; one with other content is refused, and blocks only the tests that need it
+    (`parts_needed`). `container` itself is made when it is not there, and never removed."""
 
     kind = "az_local"
     detached = True
@@ -156,6 +163,9 @@ class AZLocalDef(ServiceDef):
     def reached_at(self, address: str) -> AZLocalDef:
         # Cleanup after the run reaches the server for its storages; the containers the run made are gone.
         return dataclasses.replace(self.as_existing(address), containers=[])
+
+    def parts_needed(self, inputs) -> list:
+        return parts_needed(self, inputs, [c.name for c in self.containers], "az")
 
     def check_storage(self, storage) -> None:
         scheme = storage.root.split("://", 1)[0].lower() if "://" in storage.root else "file"
@@ -195,7 +205,12 @@ class AZLocal(Service):
         if definition.address is not None:
             overrides["address"] = definition.address
         self.settings = az_settings(**overrides)
-        self.made_containers = []  # names of the `containers` this instance made, in order
+        self.parts = Parts(definition.id, definition.containers)
+        self.refused = self.parts.refused
+
+    @property
+    def made_containers(self):
+        return self.parts.made
 
     @property
     def handle(self):
@@ -216,68 +231,24 @@ class AZLocal(Service):
         """The server's own container calls: Blob service requests signed with the account key."""
         return BlobApi(self.settings["endpoint"], self.settings["account"], self._key)
 
+    def _calls(self):
+        return _ContainerCalls(self.api(), self.remote())
+
     def create(self):
         super().create()
-        api = self.api()
         try:
-            missing = [d for c in self.definition.containers for d, _ in c.seed if not os.path.isdir(d)]
-            if missing:
-                raise ServiceNotUp(f"service {self.id}: nothing to seed from: no directory at {', '.join(missing)}")
-            api.create_container(self.settings["container"])
-            for c in self.definition.containers:
-                self._container(api, c)
+            self.api().create_container(self.settings["container"])
         except Exception as exc:
-            self._remove_containers(api, lambda c: True)
             self.delete()
-            if isinstance(exc, ServiceNotUp):
-                raise
-            raise ServiceNotUp(f"service {self.id}: its containers: {type(exc).__name__}: {exc}") from exc
-
-    def _differs(self, api, c):
-        """What in container `c` is not as declared, or None: it is."""
-        for source, prefix in c.seed:
-            uri = f"az://{c.name}/{prefix}".rstrip("/")
-            if not self.remote().check(source, uri):
-                return f"{uri} does not hold what is in {source}"
-        if c.public and api.public_access(c.name) != c.public:
-            return f"az://{c.name} is not open to anonymous reads of each {c.public}"
-        return None
-
-    def _container(self, api, c):
-        if c.name not in self.made_containers and api.container_exists(c.name):
-            if differs := self._differs(api, c):
-                raise ServiceNotUp(
-                    f"service {self.id}: container {c.name} is there and {differs}; the run does not change a "
-                    f"container it did not make. Remove it, or declare another container"
-                )
-            _log.info("az: container %s is there as declared, used as it is", c.name)
-            return
-        if c.name in self.made_containers and not self._differs(api, c):
-            return
-        _log.info("az: making container %s", c.name)
-        api.create_container(c.name)
-        if c.name not in self.made_containers:
-            self.made_containers.append(c.name)
-        for source, prefix in c.seed:
-            self.remote().copy(source, f"az://{c.name}/{prefix}".rstrip("/"))
-        if c.public:
-            api.set_public_access(c.name, c.public)
-
-    def _remove_containers(self, api, goes):
-        """Remove each container this instance made for which `goes(container)`, the last made first."""
-        by_name = {c.name: c for c in self.definition.containers}
-        for name in reversed(list(self.made_containers)):
-            if goes(by_name[name]):
-                _log.info("az: removing container %s, made by the run", name)
-                api.delete_container(name)
-                self.made_containers.remove(name)
+            raise ServiceNotUp(f"service {self.id}: its container: {type(exc).__name__}: {exc}") from exc
+        self.parts.create(self._calls())
 
     def end(self, failed):
-        self._remove_containers(self.api(), lambda c: not _retained(c.retain, failed))
+        self.parts.end(self._calls(), failed)
         super().end(failed)
 
     def delete(self):
-        self._remove_containers(self.api(), lambda c: True)
+        self.parts.remove(self._calls(), lambda c: True)
         super().delete()
 
     def start(self):
@@ -312,10 +283,6 @@ class AZLocal(Service):
         name = _docker_name(self.id, run_token)
         found = docker("ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.Names}}", check=False)
         return [n for n in found.stdout.split() if n == name]
-
-
-def _retained(policy, failed):
-    return policy == ALWAYS or (policy == ON_FAILURE and failed)
 
 
 AZLocalDef.instance = AZLocal

@@ -345,22 +345,41 @@ def test_a_container_that_is_there_with_other_content_is_refused_and_not_touched
     if what == "content":
         found.containers["data"]["l.csv"] = b"changed"
     made = Made("r1")
-    with pytest.raises(ServiceNotUp, match="does not change a container it did not make"):
-        made.create(az_local(containers=[container("data", seed=[(data, "")], public=what == "public")]))
-    assert "az" in made.errors and [c for c in found.calls if c[1] == "data"] == []
+    service = made.create(az_local(containers=[container("data", seed=[(data, "")], public=what == "public")]))
+    assert "does not change a container it did not make" in service.refused["data"]
+    assert made.errors == {} and [c for c in found.calls if c[1] == "data"] == []
 
 
-def test_a_container_that_fails_half_way_is_removed_with_the_others_it_made(found, data):
+def test_a_container_that_fails_half_way_is_removed_and_the_others_stay(found, data):
     found.fail_on = "set_public_access"
-    with pytest.raises(ServiceNotUp, match="set_public_access: AuthorizationFailure"):
-        Made("r1").create(az_local(containers=[container("data", seed=[(data, "")]), container("open", public=True)]))
-    assert sorted(found.containers) == ["ducktest"]
+    made = Made("r1")
+    service = made.create(az_local(containers=[container("data", seed=[(data, "")]), container("open", public=True)]))
+    assert "set_public_access: AuthorizationFailure" in service.refused["open"] and list(service.refused) == ["open"]
+    assert sorted(found.containers) == ["data", "ducktest"] and service.made_containers == ["data"]
+    assert made.errors == {}, "the server stays up"
 
 
 def test_a_seed_directory_that_is_not_there_makes_no_container(found, tmp_path):
-    with pytest.raises(ServiceNotUp, match="no directory at"):
-        Made("r1").create(az_local(containers=[container("data", seed=[(str(tmp_path / "gone"), "")])]))
+    service = Made("r1").create(az_local(containers=[container("data", seed=[(str(tmp_path / "gone"), "")])]))
+    assert "no directory at" in service.refused["data"]
     assert [c for c in found.calls if c[0] != "create_container" or c[1] != "ducktest"] == []
+
+
+def test_a_failure_to_make_its_own_container_means_the_server_is_not_up(found):
+    found.fail_on = "create_container"
+    made = Made("r1")
+    with pytest.raises(ServiceNotUp, match="its container: RuntimeError"):
+        made.create(az_local())
+    assert "az" in made.errors
+
+
+def test_a_test_needs_the_containers_of_its_storages_or_every_container_when_it_binds_none():
+    az = az_local(containers=[container("data"), container("open")])
+    data, own = az.storage("d", "lake", container="data"), az.storage("own", "lake")
+    key = az.credential("key", scopes=["d", "own"])
+    assert az.parts_needed([data, key]) == ["data"]
+    assert az.parts_needed([own, key]) == []
+    assert az.parts_needed([key]) == az.parts_needed([own, az]) == ["data", "open"]
 
 
 @pytest.mark.parametrize("retain, kept", [("never", False), ("on_failure", True), ("always", True)])

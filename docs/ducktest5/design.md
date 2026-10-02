@@ -327,7 +327,8 @@ refused, and blocks only the tests that need it: a test needs the bucket of each
 it binds, and every bucket when it binds none (only the credential) or the server itself. `03` lists
 what was refused.
 `az_local(containers=[container("data", seed=[(dir, "")], public="blob")])` is the same for
-Azure, with Blob service calls signed with the account key (SharedKey); `public` is `True` or
+Azure, a container per bucket, with the same rules per container (one module holds them for both), and
+Blob service calls signed with the account key (SharedKey); `public` is `True` or
 `"container"` (list and read), or `"blob"` (read). Azurite serves blob only: a storage on it other than
 `az://`, such as `abfss://`, is a scan error, as it has no DFS endpoint.
 
@@ -460,6 +461,7 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-02: the same for a refused Azure container: one module holds the bucket and container rules.
 - 2026-10-01: a refused bucket blocks only the tests that need it, not every test on its server.
 - 2026-10-01: `own_secrets` is gone: a test that binds the storage gets the secret, one that binds only
   the credential gets the keys as env and makes its own.
