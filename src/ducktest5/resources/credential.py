@@ -445,7 +445,8 @@ class AzureCredentialDef(CredentialDef):
         "client_certificate_path": ("AZURE_CLIENT_CERTIFICATE_PATH",),
         "access_token": ("AZURE_ACCESS_TOKEN",),
     }
-    sdk_prefixes = ("AZURE_", "IDENTITY_", "MSI_")
+    # The Azure SDK's managed identity reads IDENTITY_*, MSI_* and IMDS_ENDPOINT besides AZURE_*.
+    sdk_prefixes = ("AZURE_", "IDENTITY_", "MSI_", "IMDS_")
     providers: ClassVar[dict] = {  # provider -> the fields it takes
         "config": ("connection_string", "account_name"),
         "service_principal": ("tenant_id", "client_id", "client_secret", "client_certificate_path", "account_name"),

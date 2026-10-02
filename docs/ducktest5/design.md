@@ -283,7 +283,7 @@ type, and a booted engine (Spark) one for the whole run; several are a scan erro
 shell, the `unittest` binary (and by name in `env_passthrough`), and the Spark JVM when it boots. That
 env is part of the engine's identity, counted by credential and source, never by value. Every engine
 process starts from the shell's env without the SDK prefixes of every credential type (`AWS_`;
-`AZURE_`, `IDENTITY_`, `MSI_`); the root file's `INHERIT_ENV = ["AWS_CA_BUNDLE"]` keeps names, never a
+`AZURE_`, `IDENTITY_`, `MSI_`, `IMDS_`); the root file's `INHERIT_ENV = ["AWS_CA_BUNDLE"]` keeps names, never a
 key, such as `AZURE_CONFIG_DIR` for an az cli login or `AZURE_LOG_LEVEL`.
 
 **Secrets.** For each credential and the test's storages in its scope, DuckDB gets one secret,
@@ -461,6 +461,7 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-02: `IMDS_` (managed identity) is removed from engines with `AZURE_`, `IDENTITY_`, `MSI_`.
 - 2026-10-02: the same for a refused Azure container: one module holds the bucket and container rules.
 - 2026-10-01: a refused bucket blocks only the tests that need it, not every test on its server.
 - 2026-10-01: `own_secrets` is gone: a test that binds the storage gets the secret, one that binds only

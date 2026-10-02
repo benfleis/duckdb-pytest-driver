@@ -252,11 +252,15 @@ def test_a_conf_that_scopes_it_to_an_s3_storage_is_a_scan_error(tree, capsys):
 
 def test_azure_names_of_the_shells_env_reach_no_engine_but_what_inherit_env_keeps(monkeypatch):
     monkeypatch.setattr(credential_module, "_inherit", ())
-    for name in ("AZURE_CLIENT_SECRET", "AZURE_CONFIG_DIR", "IDENTITY_ENDPOINT", "MSI_SECRET", "AZ_DATA_DIR"):
+    removed = (
+        "AZURE_CLIENT_SECRET", "AZURE_FEDERATED_TOKEN_FILE", "AZURE_AUTHORITY_HOST", "IDENTITY_ENDPOINT",
+        "MSI_SECRET", "IMDS_ENDPOINT",
+    )  # fmt: skip
+    for name in (*removed, "AZURE_CONFIG_DIR", "AZ_DATA_DIR"):
         monkeypatch.setenv(name, "x")
     credential_module.inherit_env(["AZURE_CONFIG_DIR"])
     env = credential_module.engine_env()
-    assert [n for n in ("AZURE_CLIENT_SECRET", "IDENTITY_ENDPOINT", "MSI_SECRET") if n in env] == []
+    assert [n for n in removed if n in env] == []
     assert env["AZURE_CONFIG_DIR"] == env["AZ_DATA_DIR"] == "x"
     with pytest.raises(UsageError, match=r"declare AzureCredentialDef.from_azure_env\(...\) instead"):
         credential_module.inherit_env(["AZURE_CLIENT_SECRET"])

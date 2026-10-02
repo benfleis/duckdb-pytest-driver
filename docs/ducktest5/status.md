@@ -105,7 +105,7 @@ Azure blob, `az_local()`, works the same way: Azurite, reached at
   built.
 - Engines no longer take `AWS_*` from the shell's env. A repo whose tests relied on personal keys
   declares `S3CredentialDef.from_aws_env(...)`, and lists other names it needs (`AWS_CA_BUNDLE`) in
-  `INHERIT_ENV`. The same holds for `AZURE_*`, `IDENTITY_*` and `MSI_*`: declare
+  `INHERIT_ENV`. The same holds for `AZURE_*`, `IDENTITY_*`, `MSI_*` and `IMDS_*`: declare
   `AzureCredentialDef.from_azure_env(...)`; keep `AZURE_CONFIG_DIR` (az cli login) in `INHERIT_ENV`.
 
 ## Not in this release, on purpose
