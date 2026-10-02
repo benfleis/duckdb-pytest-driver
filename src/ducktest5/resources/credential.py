@@ -71,12 +71,11 @@ class EnvSource:
                 out[by_var[var]] += (var,)
             # The class's own order: AWS_REGION before AWS_DEFAULT_REGION, whatever order the list gives.
             out = {name: tuple(v for v in cls.env[name] if v in out[name]) for name in out}
-        for name in cls.required():
-            if name not in out:
-                raise UsageError(
-                    f"{credential.label}: source {self.shown()} gives no {name!r}; a source must give every "
-                    f"required field ({', '.join(cls.required())})"
-                )
+        if gap := credential.missing({*out, *credential.literals()}):
+            raise UsageError(
+                f"{credential.label}: source {self.shown()} gives no {gap}; a source must give every "
+                f"required field ({credential.needs_shown()})"
+            )
         return out
 
     def resolve(self, credential) -> dict | None:
@@ -86,9 +85,7 @@ class EnvSource:
             var = next((v for v in variables if v in os.environ), None)
             if var is not None:
                 out[name] = Attribute(lambda var=var: os.environ.get(var), f"env {var}")
-            elif type(credential).fields[name].required:
-                return None
-        return out
+        return None if credential.missing({*out, *credential.literals()}) else out
 
 
 def from_env(names: Mapping[str, str] | Iterable[str]) -> EnvSource:
@@ -208,6 +205,21 @@ class CredentialDef(ResourceDef):
     def required(cls) -> tuple:
         return tuple(name for name, f in cls.fields.items() if f.required)
 
+    def needs(self) -> tuple:
+        """What every source must give: each entry a field, or a tuple of fields one of which will do."""
+        return type(self).required()
+
+    def missing(self, given) -> str | None:
+        """The first of `needs()` that the field names `given` do not meet, as a message says it."""
+        for need in self.needs():
+            names = need if isinstance(need, tuple) else (need,)
+            if not any(n in given for n in names):
+                return " or ".join(repr(n) for n in names)
+        return None
+
+    def needs_shown(self) -> str:
+        return ", ".join(" or ".join(n) if isinstance(n, tuple) else n for n in self.needs())
+
     @classmethod
     def secret_env(cls) -> tuple:
         """The SDK env names of its secret fields."""
@@ -250,7 +262,8 @@ def inherit_env(names, where="INHERIT_ENV") -> tuple:
     for name in names:
         owner = next((cls for cls in credential_types() if name in cls.secret_env()), None)
         if owner is not None:
-            how = f"{owner.__name__}.from_aws_env(...)" if hasattr(owner, "from_aws_env") else f"an {owner.__name__}"
+            shell = next((m for m in vars(owner) if m.startswith("from_") and m.endswith("_env")), None)
+            how = f"{owner.__name__}.{shell}(...)" if shell else f"an {owner.__name__}"
             raise UsageError(f"{where}: {name} is a credential name; declare {how} instead")
     _inherit = tuple(names)
     return _inherit
@@ -321,9 +334,11 @@ class Credential(Resource):
             if found is not None:
                 self._set(found, str(source))
                 return
-        if d.sources:
-            shown = ", ".join(str(canonical(s)) for s in d.sources)
-            raise UsageError(f"credential {self.id!r}: none of its sources resolved: {shown}")
+        if not d.sources:
+            self._set({}, "its declaration")
+            return
+        shown = ", ".join(str(canonical(s)) for s in d.sources)
+        raise UsageError(f"credential {self.id!r}: none of its sources resolved: {shown}")
 
     def _checked(self, found, label):
         """What a callable gave, as getters: a value never counts toward an identity."""
@@ -332,8 +347,9 @@ class Credential(Resource):
             raise UsageError(
                 f"{self.definition.label}: {label} gave {unknown}, not fields of {cls.__name__} ({', '.join(cls.fields)})"
             )
-        if missing := [name for name in cls.required() if found.get(name) is None]:
-            raise UsageError(f"{self.definition.label}: {label} gave no {missing[0]!r}, a required field")
+        given = {name for name, v in found.items() if v is not None}
+        if gap := self.definition.missing({*given, *self.definition.literals()}):
+            raise UsageError(f"{self.definition.label}: {label} gave no {gap}, a required field")
         return {name: Attribute(_getter(v), label) for name, v in found.items() if v is not None}
 
     def _set(self, found, label):
@@ -389,6 +405,102 @@ S3CredentialDef.instance = S3Credential
 def s3_credential(id: str, **fields) -> S3CredentialDef:
     """An S3 credential; see S3CredentialDef."""
     return S3CredentialDef(id, **fields)
+
+
+_SPN = ("tenant_id", "client_id", ("client_secret", "client_certificate_path"))
+
+
+@dataclass(eq=False)
+class AzureCredentialDef(CredentialDef):
+    """An Azure storage credential, one of DuckDB's azure secret providers:
+
+        config              a connection string, or only `account_name` (anonymous reads)
+        service_principal   tenant_id, client_id and client_secret or client_certificate_path
+        credential_chain    the Azure SDK finds them; `chain` ('env', 'cli', 'managed_identity',
+                            'cli;env', ...) names where. With chain 'env' a source must give the
+                            service principal, which reaches the engine as AZURE_TENANT_ID, ...
+        access_token        a bearer token
+
+    The azure extension reads none of these from the env by itself; a `.test` file reads
+    `{AZURE_STORAGE_CONNECTION_STRING}` and the SDK's EnvironmentCredential the service principal's
+    names. The az cli needs its login: keep `AZURE_CONFIG_DIR` with INHERIT_ENV."""
+
+    type = "azure"
+    schemes = ("az", "abfss")
+    fields = {
+        "connection_string": Field(secret=True),
+        "account_name": Field(),
+        "tenant_id": Field(),
+        "client_id": Field(),
+        "client_secret": Field(secret=True),
+        "client_certificate_path": Field(secret=True),
+        "access_token": Field(secret=True),
+    }
+    env = {
+        "connection_string": ("AZURE_STORAGE_CONNECTION_STRING",),
+        "account_name": ("AZURE_STORAGE_ACCOUNT",),
+        "tenant_id": ("AZURE_TENANT_ID",),
+        "client_id": ("AZURE_CLIENT_ID",),
+        "client_secret": ("AZURE_CLIENT_SECRET",),
+        "client_certificate_path": ("AZURE_CLIENT_CERTIFICATE_PATH",),
+        "access_token": ("AZURE_ACCESS_TOKEN",),
+    }
+    sdk_prefixes = ("AZURE_", "IDENTITY_", "MSI_")
+    providers: ClassVar[dict] = {  # provider -> the fields it takes
+        "config": ("connection_string", "account_name"),
+        "service_principal": ("tenant_id", "client_id", "client_secret", "client_certificate_path", "account_name"),
+        "credential_chain": ("tenant_id", "client_id", "client_secret", "client_certificate_path", "account_name"),
+        "access_token": ("access_token", "account_name"),
+    }
+
+    provider: str = "config"
+    chain: str | None = None
+    account_name: str | None = None
+    tenant_id: str | None = None
+    client_id: str | None = None
+
+    def __post_init__(self):
+        if self.provider not in self.providers:
+            raise UsageError(f"{self.label}: provider {self.provider!r}; it is one of {', '.join(self.providers)}")
+        if self.chain is not None and self.provider != "credential_chain":
+            raise UsageError(f"{self.label}: chain is for provider 'credential_chain', not {self.provider!r}")
+        super().__post_init__()
+        taken = self.providers[self.provider]
+        given = {*self.literals()}
+        for source in self.sources:
+            if isinstance(source, EnvSource):
+                given |= set(source.variables(self))
+        if other := sorted(given - set(taken)):
+            raise UsageError(
+                f"{self.label}: provider {self.provider!r} takes {', '.join(taken)}; not {', '.join(other)}"
+            )
+
+    def needs(self) -> tuple:
+        if self.provider == "config":
+            return (("connection_string", "account_name"),)
+        if self.provider == "service_principal" or self.chain == "env":
+            return _SPN
+        if self.provider == "access_token":
+            return ("access_token",)
+        return ()
+
+    @classmethod
+    def from_azure_env(cls, id: str, provider: str = "credential_chain", **fields) -> AzureCredentialDef:
+        """The shell's own AZURE_* names that `provider` takes, said so explicitly."""
+        names = [n for name in cls.providers[provider] for n in cls.env[name]]
+        return cls(id, sources=[from_env(names)], provider=provider, **fields)
+
+
+class AzureCredential(Credential):
+    """A resolved `AzureCredentialDef`."""
+
+
+AzureCredentialDef.instance = AzureCredential
+
+
+def azure_credential(id: str, **fields) -> AzureCredentialDef:
+    """An Azure credential; see AzureCredentialDef."""
+    return AzureCredentialDef(id, **fields)
 
 
 @dataclass(frozen=True)

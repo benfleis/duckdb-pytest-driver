@@ -68,7 +68,7 @@ class StorageDef(ResourceDef):
     id: str
     root: str  # a URI or a path; `{s3local.bucket}` takes an input's attribute
     endpoint: str | None = None  # http(s)://host:port of an S3-compatible store; may reference an input
-    account: str | None = None  # the Azure account, where the root does not name it
+    account: str | None = None  # the Azure account, where the root does not name it; may reference an input
     temp_prefix: str = "temp"  # where children are minted, under the root
     inputs: list = field(default_factory=list)
     retain: str = "on_failure"
@@ -86,7 +86,7 @@ class Storage(Resource):
         self.scheme = scheme_of(self.root)
         endpoint = fill(definition.endpoint, self.inputs) if definition.endpoint else None
         data = fill(definition.data, self.inputs).rstrip("/") if definition.data else None
-        account = definition.account
+        account = fill(definition.account, self.inputs) if definition.account else None
         if account is None and self.scheme == "abfss" and "@" in self.root:
             account = self.root.split("@", 1)[1].split(".", 1)[0]
         source = f"storage {self.id}"
@@ -126,9 +126,9 @@ class Storage(Resource):
         )
 
     def remote(self):
-        """The operations on the store of an s3 root, from the service it is on; None when it is on
+        """The operations on the store of an s3 or az root, from the service it is on; None when it is on
         none, and so the run cannot remove what it wrote there."""
-        if self.scheme != "s3":
+        if self.scheme not in ("s3", "az"):
             return None
         return next((i.remote() for i in self.inputs.values() if callable(getattr(i, "remote", None))), None)
 

@@ -42,8 +42,23 @@ class S3Access:
         }
 
 
+@dataclass(frozen=True)
+class AzureBlobAccess:
+    """How to reach one Azure blob account: `endpoint` is its blob service URL, which names the account
+    on a local server (`http://host:10000/devstoreaccount1`); `key()` gives the account key."""
+
+    endpoint: str
+    account: str
+    key: Callable[[], str]
+
+    scheme = "az"
+
+    def rclone_config(self) -> dict:
+        return {"TYPE": "azureblob", "ACCOUNT": self.account, "KEY": self.key(), "ENDPOINT": self.endpoint}
+
+
 def split(uri: str) -> tuple[str, str]:
-    """(bucket, key) of `s3://bucket/key`."""
+    """(bucket, key) of `s3://bucket/key`, (container, key) of `az://container/key`."""
     bucket, _, key = uri.split("://", 1)[1].partition("/")
     return bucket, key.strip("/")
 
@@ -96,7 +111,8 @@ class RcloneRemote:
         return f"{self.name}:{bucket}/{key}" if key else f"{self.name}:{bucket}"
 
     def list(self, uri) -> list[str]:
-        """The names directly under `uri` (`s3://bucket/prefix`), objects and prefixes alike."""
+        """The names directly under `uri` (`s3://bucket/prefix`, `az://container/prefix`), objects and
+        prefixes alike."""
         out = self._run("lsf", self._path(uri))
         return [line.rstrip("/") for line in (out or "").splitlines() if line]
 

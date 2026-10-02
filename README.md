@@ -98,7 +98,8 @@ place and run the tests in another, or to report a run again.
 ## Read next
 
 - [examples/ladder/](examples/ladder/README.md): small test trees, from an existing repo with no
-  config (rung 00) to a local S3 server (rung 05). Each rung adds one idea.
+  config (rung 00) to a local S3 server (rung 05) and a local Azure blob server (rung 06). Each rung
+  adds one idea.
 - [docs/ducktest5/design.md](docs/ducktest5/design.md): how to write a test (Part 1), how it works
   (Part 2), and how to move an existing repo (1.6).
 - [docs/ducktest5/status.md](docs/ducktest5/status.md): what works today, and what is open.

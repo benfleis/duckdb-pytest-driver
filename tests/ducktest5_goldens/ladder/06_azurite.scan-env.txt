@@ -1,0 +1,14 @@
+scoped_write.test::scoped_write
+  client: duck (unittest)  <- ENGINES duck (the only DuckDB engine)
+    require: azure  <- engine duck
+  bind: storage=blobs  <- ducktest_conf.py: default
+  root: data_dir=<tmp>/repo/06_azurite/data  <- default storage
+  root: <from service az>  <- storage blobs
+  process env: <from service az>  <- credential keys
+scoped_write_body.py::scoped_write_body
+  client: duck (duckdb)  <- ENGINES duck (the only DuckDB engine)
+    require: azure  <- engine duck
+  bind: storage=blobs  <- ducktest_conf.py: default
+  root: data_dir=<tmp>/repo/06_azurite/data  <- default storage
+  root: <from service az>  <- storage blobs
+  process env: <from service az>  <- credential keys

@@ -63,6 +63,9 @@ class ServiceDef(ResourceDef):
         instance refused (`Service.refused`) blocks only the tests that need it."""
         return []
 
+    def check_storage(self, storage) -> None:
+        """A usage error when `storage`, a StorageDef on this service, is one it cannot serve."""
+
     def credential(self, id: str, scopes: list, **fields) -> CredentialDef:
         """A credential made of this service's secrets, scoped to `scopes`: the storages it serves."""
         cls = self.credential_type

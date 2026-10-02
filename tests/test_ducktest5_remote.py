@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from ducktest5.resources import remote
-from ducktest5.resources.remote import S3Access, remote_for
+from ducktest5.resources.remote import AzureBlobAccess, S3Access, remote_for
 
 ACCESS = S3Access("http://store:9000", "us-east-1", lambda: ("key-id-5d1", "secret-8e2"))
 
@@ -128,3 +128,17 @@ def test_an_rclone_check_that_fails_is_not_a_difference(rclone, monkeypatch, dat
     monkeypatch.setenv("FAKE_RCLONE_EXIT", "7")
     with pytest.raises(RuntimeError, match=r"rclone check failed \(exit 7\)"):
         remote_for(ACCESS).check(dat, "s3://test-bucket/dat")
+
+
+def test_an_azure_blob_account_is_an_azureblob_remote_at_its_endpoint(rclone):
+    access = AzureBlobAccess("http://store:10000/acct", "acct", lambda: "a2V5LTNmMQ==")
+    remote_for(access).delete("az://writes/temp/run1")
+    (call,) = rclone()
+    assert _command(call) == ["delete", "ducktest:writes/temp/run1"]
+    assert call["config"] == {
+        "RCLONE_CONFIG_DUCKTEST_TYPE": "azureblob",
+        "RCLONE_CONFIG_DUCKTEST_ACCOUNT": "acct",
+        "RCLONE_CONFIG_DUCKTEST_KEY": "a2V5LTNmMQ==",
+        "RCLONE_CONFIG_DUCKTEST_ENDPOINT": "http://store:10000/acct",
+    }
+    assert not any("a2V5LTNmMQ==" in a for a in call["argv"])
