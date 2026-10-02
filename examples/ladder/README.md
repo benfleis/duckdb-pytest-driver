@@ -115,8 +115,9 @@ green.
 
 ## 05_s3
 
-The storage is now a prefix in a bucket of a local S3-compatible server, `s3_local()`: the run
-starts one in docker, and a test does not say what backs it. `S3.storage("lake", "lake")` is
+The storage is now a prefix in a bucket of a local S3-compatible server, `s3_local(flavor="rustfs")`:
+the run starts one in docker. `flavor` names what backs it, RustFS (the default, and the only one
+now); the tests do not say it. `S3.storage("lake", "lake")` is
 `s3://ducktest/lake` on it, and `S3.credential("keys", scopes=["lake"])` is an `S3CredentialDef` of
 the server's keys, from `DUCKTEST_S3_LOCAL_ACCESS_KEY` and `DUCKTEST_S3_LOCAL_SECRET_KEY` (`admin` and
 `password` when unset). Both bodies find one secret, `ducktest_keys`, scoped to the storage (the

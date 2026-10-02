@@ -303,8 +303,8 @@ fields masked, source. A service can make a credential: `s3.credential("keys", s
 
 A service runs; a test reaches it through a storage on it (`StorageDef("served", "{http.url}",
 inputs=[HTTP])`), a credential it makes, or `bind=`. Kinds: `HttpServerDef`, `S3LocalDef` (a local S3
-server, RustFS today, the author does not care; `s3.storage("lake", "prefix")` declares
-a storage on it), `AZLocalDef` (a local Azure blob server, `az_local(flavor="azurite")`;
+server, `s3_local(flavor="rustfs")`: the flavor is what backs the protocol, RustFS the default and
+only one today, and the tests do not see it; `s3.storage("lake", "prefix")` declares a storage on it), `AZLocalDef` (a local Azure blob server, `az_local(flavor="azurite")`;
 `az.storage("blobs", "prefix")` is `az://ducktest/prefix`, and `az.credential(...)` an
 `AzureCredentialDef` of its connection string), and the engines. The run starts each needed service once, before any test, and stops it after the last.
 `.as_existing(address=...)` or `--existing-service ID=URL` is the same service found running: adopted

@@ -8,6 +8,7 @@ import pytest
 from test_ducktest5_leases import opened
 
 from ducktest5 import host
+from ducktest5.binary import UsageError
 from ducktest5.engines.duckdb import duckdb_engine
 from ducktest5.resources import RW, ServiceNotUp, check_contract
 from ducktest5.resources.dialect import render
@@ -153,6 +154,12 @@ def test_the_server_is_started_as_rustfs(fake_docker):
         "-e", "RUSTFS_ACCESS_KEY=admin", "-e", "RUSTFS_SECRET_KEY=password", "-e", "RUSTFS_VOLUMES=/data",
         "-e", "RUSTFS_ADDRESS=:9000", "-e", "RUSTFS_CONSOLE_ENABLE=false", "rustfs/rustfs:1.0.0",
     ]  # fmt: skip
+
+
+def test_the_flavor_names_what_backs_it():
+    assert s3_local().flavor == "rustfs"
+    with pytest.raises(UsageError, match="flavor 'minio'; it is one of rustfs"):
+        s3_local(flavor="minio")
 
 
 def test_a_failed_run_leaves_the_container_stopped(fake_docker):

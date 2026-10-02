@@ -1,6 +1,6 @@
 """A local S3-compatible server, as a Service: run in docker, or found running at an address.
 
-It runs as RustFS (`DUCKTEST_S3_LOCAL_IMAGE` overrides the image). A server that already answers where
+`flavor` names what backs it; RustFS is the only one (`DUCKTEST_S3_LOCAL_IMAGE` overrides its image). A server that already answers where
 the run reaches it is used as it is, so a machine with no docker runs against one started elsewhere.
 A test does not see the server directly; it sees the endpoint, the bucket, and the credential the
 service produces.
@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
+from ..binary import UsageError
 from ..host import docker, has_docker, in_url, service_bind, service_host
 from ..resources import NEVER, ON_FAILURE, S3CredentialDef, Service, ServiceDef, ServiceNotUp, StorageDef
 from ..resources.remote import S3Access, remote_for
@@ -30,6 +31,7 @@ _log = logging.getLogger(__name__)
 RUSTFS_IMAGE = "rustfs/rustfs:1.0.0"
 RUSTFS_KEYS = ("RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY")  # the variables the server reads access/secret key from
 RUSTFS_ENV = (("RUSTFS_VOLUMES", "/data"), ("RUSTFS_ADDRESS", ":9000"), ("RUSTFS_CONSOLE_ENABLE", "false"))
+FLAVORS = ("rustfs",)
 
 
 def s3_settings(**overrides):
@@ -112,7 +114,7 @@ def bucket(name: str, seed=(), public: bool = False, retain: str = NEVER) -> Buc
 class S3LocalDef(ServiceDef):
     """A local S3-compatible server with its bucket made: one that already answers where the run
     reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_S3_LOCAL_PORT), else in a docker container named for the
-    run, or the one `.as_existing(address=...)` names. It runs as RustFS. Its attributes are
+    run, or the one `.as_existing(address=...)` names. `flavor` is what backs it: `rustfs`. Its attributes are
     `endpoint`, `host_port` (the endpoint without its scheme), `bucket` and `region`; its keys come
     from the environment (DUCKTEST_S3_LOCAL_ACCESS_KEY, DUCKTEST_S3_LOCAL_SECRET_KEY) and reach a test
     through `credential(id, scopes=[...])`. `storage(id, prefix)` declares a storage in its bucket.
@@ -131,12 +133,17 @@ class S3LocalDef(ServiceDef):
     delivers = {"key_id": "access_key", "secret": "secret_key", "region": "region"}
 
     id: str = "s3"
+    flavor: str = "rustfs"
     bucket: str = "ducktest"
     buckets: list = field(default_factory=list)
     port: int | None = None
     address: str | None = None
     inputs: list = field(default_factory=list)
     retain: str = ON_FAILURE
+
+    def __post_init__(self):
+        if self.flavor not in FLAVORS:
+            raise UsageError(f"service {self.id!r}: flavor {self.flavor!r}; it is one of {', '.join(FLAVORS)}")
 
     def reached_at(self, address: str) -> S3LocalDef:
         # Cleanup after the run reaches the server for its storages; the buckets the run made are gone.

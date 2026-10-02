@@ -3,7 +3,7 @@ from ducktest5.engines.duckdb import duckdb_engine
 from ducktest5.services.s3local import s3_local
 
 # The run uses a server that answers at DUCKTEST_SERVICE_HOST:DUCKTEST_S3_LOCAL_PORT, else starts one in docker.
-S3 = s3_local()
+S3 = s3_local(flavor="rustfs")
 
 ENGINES = [duckdb_engine("duck", requires=["httpfs"])]
 STORAGES = [S3.storage("lake", "lake")]
