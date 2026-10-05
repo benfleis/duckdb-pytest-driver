@@ -2,7 +2,8 @@
 
 The file pins the runner by git URL and rev (or a local checkout, editable) and lists what the tests
 import. A file that is already there is never overwritten without `--write`: init prints the diff
-from it to what it would write, and the user decides.
+from it to what it would write, and the user decides. It also makes sure `.gitignore` ignores the
+runner's default temp root.
 """
 
 import difflib
@@ -15,6 +16,7 @@ from importlib.metadata import PackageNotFoundError, distribution
 
 from .binary import UsageError
 from .declare import CONF_FILE
+from .resources.storage import DEFAULT_TEMP_ROOT
 
 DIST = "duckdb-pytest-driver"
 RUNNER_GIT = "https://github.com/benfleis/duckdb-pytest-driver.git"
@@ -69,6 +71,7 @@ def add_parser(sub):
 
 def run(args):
     repo = _repo(args.dir)
+    _ensure_gitignore(repo)
     source = _runner_source(args.runner)
     name = args.name or f"{_repo_name(repo)}-tests"
     rc = 0
@@ -149,6 +152,29 @@ def _runner_source(spec):
     except PackageNotFoundError:
         raise UsageError(f"cannot tell where {DIST} came from; give --runner git+URL@REV") from None
     return f'{{ git = "{RUNNER_GIT}", tag = "v{version}" }}'
+
+
+def _ensure_gitignore(repo):
+    """Make sure `.gitignore` ignores the runner's default temp root. Additive, so unlike
+    `pyproject.toml` it needs no diff/--write gate."""
+    path = os.path.join(repo, ".gitignore")
+    entry = f"{DEFAULT_TEMP_ROOT}/"
+    ignored = {DEFAULT_TEMP_ROOT, entry, f"/{DEFAULT_TEMP_ROOT}", f"/{entry}"}
+    if not os.path.exists(path):
+        with open(path, "w") as f:
+            f.write(entry + "\n")
+        print(f"{path}: written, ignoring {entry}")
+        return
+    with open(path) as f:
+        have = f.read()
+    if any(line.strip() in ignored for line in have.splitlines()):
+        print(f"{path}: already ignores {DEFAULT_TEMP_ROOT}")
+        return
+    with open(path, "a") as f:
+        if have and not have.endswith("\n"):
+            f.write("\n")
+        f.write(entry + "\n")
+    print(f"{path}: appended {entry}")
 
 
 def _repo(given):

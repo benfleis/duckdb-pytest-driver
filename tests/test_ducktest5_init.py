@@ -9,6 +9,7 @@ import pytest
 
 from ducktest5.cli import main
 from ducktest5.init import STARTER_CONF, render
+from ducktest5.resources.storage import DEFAULT_TEMP_ROOT
 from ducktest5.scan import scan
 
 LOCAL = "path:/src/runner"
@@ -48,6 +49,31 @@ def test_writes_the_test_environment(repo, capsys):
         'duckdb-pytest-driver = { path = "/src/runner", editable = true }\n'
     )
     assert not (repo / "test").exists()
+
+
+def test_gitignore_is_created_when_missing(repo, capsys):
+    assert main(["init", "--runner", LOCAL, "--no-lock"]) == 0
+    assert (repo / ".gitignore").read_text() == f"{DEFAULT_TEMP_ROOT}/\n"
+    assert f"written, ignoring {DEFAULT_TEMP_ROOT}/" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "line", [f"{DEFAULT_TEMP_ROOT}/", DEFAULT_TEMP_ROOT, f"/{DEFAULT_TEMP_ROOT}/", f"/{DEFAULT_TEMP_ROOT}"]
+)
+def test_gitignore_already_ignoring_it_is_left_alone(repo, capsys, line):
+    before = f"*.pyc\n{line}\nbuild/\n"
+    (repo / ".gitignore").write_text(before)
+    assert main(["init", "--runner", LOCAL, "--no-lock"]) == 0
+    assert (repo / ".gitignore").read_text() == before
+    assert f"already ignores {DEFAULT_TEMP_ROOT}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("before", ["*.pyc\n", "*.pyc"], ids=["trailing-newline", "no-trailing-newline"])
+def test_gitignore_gets_the_line_appended(repo, capsys, before):
+    (repo / ".gitignore").write_text(before)
+    assert main(["init", "--runner", LOCAL, "--no-lock"]) == 0
+    assert (repo / ".gitignore").read_text() == f"*.pyc\n{DEFAULT_TEMP_ROOT}/\n"
+    assert f"appended {DEFAULT_TEMP_ROOT}/" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

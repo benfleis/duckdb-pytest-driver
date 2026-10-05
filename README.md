@@ -35,6 +35,8 @@ once the branch is pushed; the default is where this `ducktest5` was installed f
 it runs `uv lock`; check `uv.lock` in. `--conf [DIR]` also writes a starter `ducktest_conf.py` in
 `test/` or DIR; a tree of plain `.test` files needs none. A file that is already there and different
 is not overwritten: init prints the diff and exits 1; merge it by hand, or run again with `--write`.
+It also makes sure `.gitignore` ignores the runner's default temp root (`ducktest_temp/`), creating
+or appending to it as needed.
 
 ## A first run, in duckdb core
 
