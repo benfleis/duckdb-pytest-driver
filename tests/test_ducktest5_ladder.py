@@ -59,12 +59,13 @@ def results_in_id_order(text):
     the order of the two."""
     lines, out, block = text.split("\n"), [], []
     for line in [*lines, None]:
-        if line is not None and re.match(r"^\[\d+/\d+\] ", line):
+        if line is not None and re.match(r"^ *\[\d+/\d+\] ", line):
             block.append(line)
             continue
         if block:
             rest = sorted((line.split("] ", 1)[1] for line in block), key=lambda r: r.split()[1])
-            out += [f"[{n}/{len(rest)}] {r}" for n, r in enumerate(rest, 1)]
+            width = len(f"[{len(rest)}/{len(rest)}]")  # the report pads the counter to the width of the last
+            out += [f"{f'[{n}/{len(rest)}]':>{width}} {r}" for n, r in enumerate(rest, 1)]
             block = []
         if line is not None:
             out.append(line)
