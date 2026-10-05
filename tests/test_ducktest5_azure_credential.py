@@ -210,7 +210,7 @@ from ducktest5.resources import AzureCredentialDef, StorageDef, from_env
 ENGINES = [duckdb_engine("duck")]
 STORAGES = [StorageDef("blobs", "az://data/lake"), StorageDef("tables", "s3://bucket")]
 CREDENTIALS = [AzureCredentialDef("az", sources=[from_env({"DT_CONN": "connection_string"})], scopes=["blobs"])]
-RULES = [match("existing.test", bind={"credential": "az"}, values={"AZ_TEMP_DIR": "writes"})]
+RULES = [match("existing.test", credential="az", values={"AZ_TEMP_DIR": "writes"})]
 """
 
 

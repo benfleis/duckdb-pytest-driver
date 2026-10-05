@@ -17,7 +17,7 @@ ENGINES = [duckdb_engine("duck", requires=["parquet"])]
 
 RULES = [
     # `duck` is the only DuckDB engine, so it is the default already; `engines=` shows how to name one.
-    default(bind={"storage": "scratch_a"}, engines=["duck"]),
+    default(storage="scratch_a", engines=["duck"]),
     match("rule_matched.test", tags=["matched"]),
     match("rule_matched_body.py", tags=["matched"]),
     match("own_inputs.py", tags=["matched"]),

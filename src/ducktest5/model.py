@@ -42,7 +42,7 @@ class TestDef:
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     requires: list = field(default_factory=list)  # extensions loaded before its settings
-    bind: dict = field(default_factory=dict)  # role -> the id of a storage, credential or service
+    bind: dict = field(default_factory=dict)  # storage/credential/service -> the id it binds
     timeout: float | None = None
     retries: int = 0  # how often a FAILED or ERROR may run again
     why: list = field(default_factory=list)
@@ -64,7 +64,7 @@ class Test:
     params_key: str | None  # the row of `definition.params`, or None
     axis_values: dict  # axis name -> Variant
     inputs: tuple = ()  # (ResourceDef, mode): what it binds and its axis values' inputs, with a credential for each storage
-    bind: tuple = ()  # (role, id, source) for each input it binds, by a rule, `@test` or an axis value
+    bind: tuple = ()  # (kind, id, source) for each input it binds, by a rule, `@test` or an axis value
 
     @property
     def id(self):
@@ -94,13 +94,13 @@ class Test:
     def why(self):
         """Which rule gave what, then what an axis value binds."""
         return self.definition.why + [
-            f"bind={ {role: ref}!r}  <- {source}"
-            for role, ref, source in self.bind
-            if source != self.definition.source_of("bind", role)
+            f"{kind}={ref!r}  <- {source}"
+            for kind, ref, source in self.bind
+            if source != self.definition.source_of("bind", kind)
         ]
 
     def bind_lines(self):
-        return [f"bind: {role}={ref}  <- {source}" for role, ref, source in self.bind]
+        return [f"bind: {kind}={ref}  <- {source}" for kind, ref, source in self.bind]
 
     @property
     def services(self):

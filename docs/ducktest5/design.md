@@ -31,7 +31,7 @@ when it declares `data=`. From `examples/ladder/02_rules/`, `ducktest_conf.py` a
 
 ```python
 STORAGES = [StorageDef("scratch_a", f"{SCRATCH}/scratch_a"), StorageDef("scratch_b", f"{SCRATCH}/scratch_b")]
-RULES = [default(bind={"storage": "scratch_a"})]
+RULES = [default(storage="scratch_a")]
 ```
 
 ```
@@ -111,7 +111,7 @@ rule_matched_body.py::rule_matched_body
   root: temp_dir_root=/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
 $ ducktest5 select --explain        # what a run takes, which rule gave what, and why not
 run   own_inputs.py::own_inputs
-        bind={'storage': 'scratch_b'}  <- @test
+        storage='scratch_b'  <- @test
 skip  excluded.test::excluded  -- not in suite 'default': declared out  <- ducktest_conf.py: match 'excluded.test'
 $ ducktest5 run
 5 passed, 1 skipped in 2.67s
@@ -205,16 +205,16 @@ once. `ctx.run_paired()` hands the body's `.test` twin to the binary.
 
 ## 2.3 Binding and values
 
-Two things reach a test. **Roles** (`storage`, `credential`) bind inputs by id, with `bind=`. That
-is all `bind=` does. **Values** are the `{NAME}`s. Both merge in one order: the root
-`ducktest_conf.py`, each file down to the test, then `@test`. Dict fields update by key, list
-fields (`engines`, `tags`) add.
+Two things reach a test. **Bindings** name inputs by id, one keyword per kind: `storage=` (one of
+STORAGES), `credential=` (one of CREDENTIALS), `service=` (one of SERVICES). **Values** are the
+`{NAME}`s. Both merge in one order: the root `ducktest_conf.py`, each file down to the test, then
+`@test`. Dict fields update by key, list fields (`engines`, `tags`) add.
 
-| Source | Roles | Values |
+| Source | Bindings | Values |
 | --- | --- | --- |
-| rules, then `@test` (later replaces) | `default(bind=)`, `match(bind=)`, `@test(bind=)` | a rule's `values=` |
+| rules, then `@test` (later replaces) | `default(storage=)`, `match(credential=)`, `@test(storage=)` | a rule's `values=` |
 | params row | | `@test(params=...)` |
-| axis value | a Variant's `inputs`; replaces only `default()` | a Variant's `values`, `{auth}` = its id |
+| axis value | `Variant(storage=)`; replaces only `default()` | a Variant's `values`, `{auth}` = its id |
 | at run time | | `ctx.values.set(...)`, then `client.values.set(...)`, then the verb's keywords |
 
 A value may name an attribute of an input the test holds, or of an input of one, as `{id.name}`:
@@ -222,8 +222,8 @@ A value may name an attribute of an input the test holds, or of an input of one,
 It is filled when the test runs; `scan --env` shows it as written. A rule's `requires=["httpfs"]`
 loads an extension first, as a Variant's does, so its `settings` can name a setting of it.
 
-An axis value and a rule, `@test` or the params row that give the same role or the same value is a
-scan error naming both; so are two axis values that give one name. Only `default()` gives way. Templates fill in two steps: a value that holds `{NAME}`s is filled
+An axis value and a rule, `@test` or the params row that bind the same kind or give the same value
+is a scan error naming both; so are two axis values that give one name. Only `default()` gives way. Templates fill in two steps: a value that holds `{NAME}`s is filled
 first from the other values (a cycle is an error), then the SQL in one pass. A secret is never a value.
 
 ## 2.4 Storages, temp levels, tokens
@@ -313,7 +313,7 @@ fields masked, source. A service can make a credential: `s3.credential("keys", s
 ## 2.6 Services
 
 A service runs; a test reaches it through a storage on it (`StorageDef("served", "{http.url}",
-inputs=[HTTP])`), a credential it makes, or `bind=`. Kinds: `HttpServerDef`, `S3LocalDef` (a local S3
+inputs=[HTTP])`), a credential it makes, or `service=`. Kinds: `HttpServerDef`, `S3LocalDef` (a local S3
 server, `s3_local(flavor="rustfs")`: the flavor is what backs the protocol, RustFS the default and
 only one today, and the tests do not see it; `s3.storage("lake", "prefix")` declares a storage on it), `AZLocalDef` (a local Azure blob server, `az_local(flavor="azurite")`;
 `az.storage("blobs", "prefix")` is `az://ducktest/prefix`, and `az.credential(...)` an
@@ -380,7 +380,7 @@ path itself. `scan --env` prints it first.
 | scope | a credential's storages; nothing else | DuckDB `CREATE SECRET ... SCOPE`: a path prefix |
 | env | only an engine's process variables (`process_env`, a credential's SDK names); a test's `{NAME}`s are `ctx.values`, never secrets | `require-env`: a `.test` reads `{NAME}` from the process |
 | client | one engine's lease for one test | a DuckDB language binding |
-| bind | give a role an input | a prepared-statement parameter; DuckDB's binder |
+| bind | give a test a storage, credential or service | a prepared-statement parameter; DuckDB's binder |
 | Variant | one value of an axis | DuckDB and Delta's `VARIANT` type |
 
 ## 2.10 Not built yet
@@ -404,7 +404,7 @@ coverage, its minimal-token output, its options -- is phase 2: needed, not dropp
 | --- | --- | --- |
 | 00 | an existing repo's `test/` tree: select by path, `--suite default`, SKIPPED | `00_existing/` |
 | 01 | no config: a `.test`, a Python body, and a body paired with a `.test` | `01_solo/` |
-| 02 | storages, an engine, `default`/`match`, `@test(bind=)`, `ctx.skip` | `02_rules/` |
+| 02 | storages, an engine, `default`/`match`, `@test(storage=)`, `ctx.skip` | `02_rules/` |
 | 03 | an S3 credential from env; a test that holds none | `03_credentials/` |
 | 04 | an HTTP service under a storage; BLOCKED | `04_service/` |
 | 05 | a local S3 server (RustFS), a storage and a credential on it | `05_s3/` |
@@ -433,7 +433,7 @@ S3 = s3_local()
 STORAGES = [default_storage(), S3.storage("s3_lake", "delta")]
 CREDENTIALS = [S3.credential("s3_keys", scopes=["s3_lake"])]
 
-AXES = {"storage": [Variant("local", inputs=["default"]), Variant("s3", inputs=["s3_lake"])]}
+AXES = {"storage": [Variant("local", storage="default"), Variant("s3", storage="s3_lake")]}
 
 # The .test files stay on local storage.
 RULES = [match("cross_engine/**", variants=["storage"])]

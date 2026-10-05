@@ -105,7 +105,7 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
             STORAGES = [StorageDef("served", "{store.url}", inputs=[HttpServerDef("store")])]
             AXES = {"storage": [Variant(
                 "s3",
-                inputs=["served"],
+                storage="served",
                 requires=["httpfs"],
                 settings={"s3_region": "eu"},
                 roots={"data_dir": "s3://bucket/data"},
@@ -139,7 +139,7 @@ def test_a_rule_loads_an_extension_for_its_setting_and_a_value_from_an_input_sho
             from ducktest5.services.s3local import s3_local
             S3 = s3_local()
             CREDENTIALS = [S3.credential("keys", scopes=[])]
-            RULES = [match("a/**", bind={"credential": "keys"}, requires=["httpfs"],
+            RULES = [match("a/**", credential="keys", requires=["httpfs"],
                            settings={"s3_url_style": "path"}, values={"AWS_ENDPOINT": "{s3.host_port}"})]
         """)
     )
@@ -279,7 +279,7 @@ STORAGE_CONF = """
     from ducktest5 import default
     from ducktest5.resources import StorageDef
     STORAGES = [StorageDef("scratch", "/srv/scratch"{data})]
-    RULES = [default(bind={{"storage": "scratch"}})]
+    RULES = [default(storage="scratch")]
 """
 
 

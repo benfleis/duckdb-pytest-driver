@@ -32,11 +32,10 @@ class Variant:
                  (HTTP_PROXY, ...); the absence of a variable is a fact a literal cannot express.
                  Keys come from a credential, never from here.
 
-    `engines` are what the test then needs, and `tags` name it for a selection. `inputs` names
-    STORAGES, CREDENTIALS and SERVICES: a bare id is read-write, `{"id": "ro"}` read-only; a bound
-    storage is where `ctx.location()` puts what the body creates. Each binds the role its kind names
-    (`storage`, `credential`), replacing what a `default()` binds to that role; a `match()` or
-    `@test` binding of the same role is an error."""
+    `engines` are what the test then needs, and `tags` name it for a selection. `storage`,
+    `credential` and `service` bind one of STORAGES, CREDENTIALS and SERVICES by id; a bound storage
+    is where `ctx.location()` puts what the body creates. Each replaces what a `default()` binds
+    to that kind; a `match()` or `@test` binding of the same kind is an error."""
 
     id: str
     engines: tuple = ()
@@ -47,7 +46,9 @@ class Variant:
     requires: tuple = ()
     roots: dict = field(default_factory=dict)
     process_env: dict = field(default_factory=dict)
-    inputs: tuple = ()
+    storage: str | None = None
+    credential: str | None = None
+    service: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,9 @@ def test(
     variants=(),
     mutex=(),
     suites=(),
-    bind=None,
+    storage=None,
+    credential=None,
+    service=None,
     **unknown,
 ):
     """Mark `body(ctx)` as a test definition. `params` maps a key to the params the body reads as
@@ -98,11 +101,13 @@ def test(
     of its own, `ctx.client(name)`; a test that names no DuckDB engine gets a Client on the default
     one: the project's DuckDB engine when it declares exactly one, else the built-in one.
 
-    `bind` maps a role to one of the project's STORAGES, CREDENTIALS or SERVICES, by id; it
-    replaces what a rule binds to the same role. An axis value that binds that role too is an
-    error."""
+    `storage`, `credential` and `service` bind one of the project's STORAGES, CREDENTIALS or
+    SERVICES, by id; each replaces what a rule binds to the same kind. An axis value that binds
+    that kind too is an error."""
     if unknown:
-        raise TypeError(f"test() got unexpected keyword arguments {sorted(unknown)}")
+        known = ["engines", "params", "tags", "variants", "mutex", "suites", "storage", "credential", "service"]
+        raise TypeError(f"test() got unexpected keyword arguments {sorted(unknown)}; it takes {known}")
+    bind = {"storage": storage, "credential": credential, "service": service}
 
     def mark(body):
         body.__ducktest__ = TestMark(
@@ -113,7 +118,7 @@ def test(
             tuple(variants),
             as_mutex(mutex),
             tuple(suites),
-            dict(bind or {}),
+            {kind: ref for kind, ref in bind.items() if ref is not None},
         )
         return body
 

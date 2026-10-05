@@ -8,4 +8,4 @@ AZ = az_local()
 ENGINES = [duckdb_engine("duck", requires=["azure"])]
 STORAGES = [AZ.storage("blobs", "lake")]
 CREDENTIALS = [AZ.credential("keys", scopes=["blobs"])]
-RULES = [default(bind={"storage": "blobs"})]
+RULES = [default(storage="blobs")]

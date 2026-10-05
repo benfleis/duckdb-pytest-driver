@@ -50,7 +50,7 @@ CONF = """
     StoreDef.instance = Store
 
     SERVICES = [StoreDef()]
-    RULES = [match("s/**", bind={"store": "store"})]
+    RULES = [match("s/**", service="store")]
 """
 
 

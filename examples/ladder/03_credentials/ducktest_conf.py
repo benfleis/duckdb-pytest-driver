@@ -13,4 +13,4 @@ CREDENTIALS = [
 ]
 
 # A test that binds the bucket holds its credential; no_secret.test binds nothing, so it holds none.
-RULES = [match("*scoped_*", bind={"storage": "fake_s3"})]
+RULES = [match("*scoped_*", storage="fake_s3")]

@@ -283,7 +283,7 @@ def test_binding_the_declared_default_storage_gives_what_binding_none_gives(tmp_
         "from ducktest5.resources import default_storage\nSTORAGES = [default_storage()]\n"
     )
     (tmp_path / "t.py").write_text(
-        "from ducktest5 import test\n\n\n@test(bind={'storage': 'default'})\ndef bound(ctx):\n    pass\n\n\n"
+        "from ducktest5 import test\n\n\n@test(storage='default')\ndef bound(ctx):\n    pass\n\n\n"
         "@test()\ndef plain(ctx):\n    pass\n"
     )
     tests, project = scan(str(tmp_path), working_dir=str(tmp_path))

@@ -16,6 +16,6 @@ STORAGES = [
 ]
 
 RULES = [
-    default(bind={"storage": "served"}),
-    match("blocked.test", bind={"storage": "unserved"}),
+    default(storage="served"),
+    match("blocked.test", storage="unserved"),
 ]

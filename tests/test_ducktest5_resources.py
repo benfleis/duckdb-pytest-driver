@@ -585,7 +585,7 @@ from ducktest5 import Variant, default, match
 from ducktest5.resources import S3CredentialDef, StorageDef, from_env
 STORAGES = [StorageDef("local", "s3://bucket/store")]
 CREDENTIALS = [S3CredentialDef("local-key", sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})], scopes=["local"])]
-AXES = {"storage": [Variant("local", inputs=["local"])]}
+AXES = {"storage": [Variant("local", storage="local")]}
 RULES = [match("a/**", variants=["storage"])]
 """
 
@@ -661,9 +661,9 @@ def test_the_secret_reaches_the_process_environment_and_no_file_the_run_writes(t
 
 def test_a_variant_naming_an_undeclared_input_is_a_usage_error(tree, capsys):
     conf = tree / "test" / "ducktest_conf.py"
-    conf.write_text(conf.read_text().replace('inputs=["local"]', 'inputs=["nope"]'))
+    conf.write_text(conf.read_text().replace('storage="local"', 'storage="nope"'))
     assert main(["scan", "test/a/x.test", "--env"]) == 2
-    assert "names input 'nope', which is not in STORAGES, CREDENTIALS or SERVICES" in capsys.readouterr().err
+    assert "AXES['storage'] value 'local': storage='nope' is not in STORAGES" in capsys.readouterr().err
 
 
 def test_a_credential_that_does_not_resolve_waits_at_scan(tree, monkeypatch, capsys):

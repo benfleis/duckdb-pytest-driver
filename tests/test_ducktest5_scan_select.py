@@ -1010,25 +1010,25 @@ BIND_CONF = """
     from ducktest5.resources import StorageDef
 
     STORAGES = [StorageDef("a", "/tmp/a"), StorageDef("b", "/tmp/b")]
-    RULES = [default(bind={"storage": "a"})]
+    RULES = [default(storage="a")]
 """
 
 
-def test_a_tests_own_binding_of_a_role_replaces_the_rules(tmp_path):
+def test_a_tests_own_binding_of_a_kind_replaces_the_rules(tmp_path):
     tests, _ = tree(
         tmp_path,
         {
             "test/ducktest_conf.py": BIND_CONF,
             "test/ruled.test": "",
-            "test/own.py": "from ducktest5 import test\n@test(bind={'storage': 'b'})\ndef own(ctx): pass",
+            "test/own.py": "from ducktest5 import test\n@test(storage='b')\ndef own(ctx): pass",
         },
     )
     by_name = {c.definition.name: c for c in tests}
     assert [d.id for d, _ in by_name["ruled"].inputs] == ["a"]
     assert [d.id for d, _ in by_name["own"].inputs] == ["b"]
     assert by_name["own"].definition.why == [
-        "bind={'storage': 'a'}  <- ducktest_conf.py: default",
-        "bind={'storage': 'b'}  <- @test",
+        "storage='a'  <- ducktest_conf.py: default",
+        "storage='b'  <- @test",
     ]
     assert resolve(by_name["own"]).roots["temp_dir_root"].value == "/tmp/b/temp/<run_token>"
     assert by_name["own"].bind_lines() == ["bind: storage=b  <- @test"]
@@ -1039,52 +1039,50 @@ AXIS_BIND_CONF = """
     from ducktest5.resources import StorageDef
 
     STORAGES = [StorageDef("a", "/tmp/a"), StorageDef("b", "/tmp/b")]
-    AXES = {"store": [Variant("b", inputs=["b"])]}
+    AXES = {"store": [Variant("b", storage="b")]}
     RULES = RULES_HERE
 """
 
 
 def test_an_axis_value_replaces_what_a_default_binds_and_says_so(tmp_path):
-    conf = AXIS_BIND_CONF.replace("RULES_HERE", '[default(bind={"storage": "a"}, variants=["store"])]')
+    conf = AXIS_BIND_CONF.replace("RULES_HERE", '[default(storage="a", variants=["store"])]')
     tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
     assert [d.id for d, _ in tests[0].inputs] == ["b"]
     assert tests[0].bind_lines() == ["bind: storage=b  <- AXES store=b"]
     assert tests[0].why == [
-        "bind={'storage': 'a'}  <- ducktest_conf.py: default",
+        "storage='a'  <- ducktest_conf.py: default",
         "variants=['store']  <- ducktest_conf.py: default",
-        "bind={'storage': 'b'}  <- AXES store=b",
+        "storage='b'  <- AXES store=b",
     ]
 
 
 @pytest.mark.parametrize(
     "rules, own, source",
     [
-        ('[default(variants=["store"]), match("t.py", bind={"storage": "a"})]', "", "ducktest_conf.py: match 't.py'"),
-        ('[default(bind={"storage": "a"}, variants=["store"])]', "bind={'storage': 'a'}", "@test"),
+        ('[default(variants=["store"]), match("t.py", storage="a")]', "", "ducktest_conf.py: match 't.py'"),
+        ('[default(storage="a", variants=["store"])]', "storage='a'", "@test"),
     ],
 )
-def test_a_role_an_axis_value_and_a_match_or_test_both_bind_is_an_error(tmp_path, rules, own, source):
+def test_a_kind_an_axis_value_and_a_match_or_test_both_bind_is_an_error(tmp_path, rules, own, source):
     body = f"from ducktest5 import test\n@test({own})\ndef t(ctx): pass"
-    message = f"the role 'storage' is bound to 'a' by {source} and to 'b' by AXES store=b; bind it in one place"
+    message = f"t.py::t: storage= is 'a' by {source} and 'b' by AXES store=b; bind it in one place"
     with pytest.raises(UsageError, match=re.escape(message)):
         tree(tmp_path, {"test/ducktest_conf.py": AXIS_BIND_CONF.replace("RULES_HERE", rules), "test/t.py": body})
 
 
-def test_a_role_two_axis_values_of_one_test_both_bind_is_an_error(tmp_path):
+def test_a_kind_two_axis_values_of_one_test_both_bind_is_an_error(tmp_path):
     conf = """
         from ducktest5 import Variant, default
         from ducktest5.resources import StorageDef
 
         STORAGES = [StorageDef("s3", "s3://b"), StorageDef("proxied", "/tmp/p")]
         AXES = {
-            "storage": [Variant("s3", inputs=["s3"])],
-            "via": [Variant("direct"), Variant("reverse-proxy", inputs=["proxied"])],
+            "storage": [Variant("s3", storage="s3")],
+            "via": [Variant("direct"), Variant("reverse-proxy", storage="proxied")],
         }
         RULES = [default(variants=["storage", "via"])]
     """
-    message = (
-        "t.test::t: the role 'storage' is bound by AXES storage=s3 and by AXES via=reverse-proxy; bind it in one place"
-    )
+    message = "t.test::t: storage= is given by AXES storage=s3 and by AXES via=reverse-proxy; bind it in one place"
     with pytest.raises(UsageError, match=re.escape(message)):
         tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
 
@@ -1106,14 +1104,28 @@ def test_a_value_an_axis_value_and_a_params_row_both_give_is_a_scan_error(tmp_pa
 
 
 def test_a_binding_names_a_declared_storage_credential_or_service(tmp_path):
-    with pytest.raises(UsageError, match="binds 'storage' to 'c', which is not in STORAGES, CREDENTIALS or SERVICES"):
+    with pytest.raises(UsageError, match="own.py::own: storage='c' is not in STORAGES"):
         tree(
             tmp_path,
             {
                 "test/ducktest_conf.py": BIND_CONF,
-                "test/own.py": "from ducktest5 import test\n@test(bind={'storage': 'c'})\ndef own(ctx): pass",
+                "test/own.py": "from ducktest5 import test\n@test(storage='c')\ndef own(ctx): pass",
             },
         )
+
+
+def test_a_binding_names_one_of_its_own_kind(tmp_path):
+    conf = BIND_CONF + '    RULES = [default(credential="a")]\n'
+    with pytest.raises(UsageError, match="t.test::t: credential='a' is not in CREDENTIALS"):
+        tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
+
+
+def test_bind_is_not_a_keyword_any_more_and_the_error_names_the_ones_there_are(tmp_path):
+    with pytest.raises(UsageError, match=r"unknown field\(s\) \['bind'\]; known: .*'storage', 'credential', 'service'"):
+        tree(tmp_path, {"test/ducktest_conf.py": BIND_CONF.replace('storage="a"', 'bind={"storage": "a"}')})
+    body = "from ducktest5 import test\n@test(bind={'storage': 'b'})\ndef own(ctx): pass"
+    with pytest.raises(UsageError, match=r"\['bind'\]; it takes \[.*'storage', 'credential', 'service'\]"):
+        tree(tmp_path / "2", {"test/ducktest_conf.py": BIND_CONF, "test/own.py": body})
 
 
 def test_an_axis_value_that_unsets_a_credentials_names_does_not_hide_it(tmp_path, monkeypatch):
@@ -1124,7 +1136,7 @@ def test_an_axis_value_that_unsets_a_credentials_names_does_not_hide_it(tmp_path
         STORAGES = [StorageDef("bucket", "s3://bucket")]
         CREDENTIALS = [S3CredentialDef.from_aws_env("key", scopes=["bucket"])]
         AXES = {"auth": [Variant("key"), Variant("none", process_env={"AWS_ACCESS_KEY_ID": None})]}
-        RULES = [default(bind={"storage": "bucket"}, variants=["auth"])]
+        RULES = [default(storage="bucket", variants=["auth"])]
     """
     tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
     assert [[d.id for d, _ in c.inputs] for c in tests] == [["bucket", "key"], ["bucket", "key"]]
@@ -1137,17 +1149,17 @@ CREDENTIAL_CONF = """
     STORAGES = [StorageDef("lake", "s3://lake"), StorageDef("blobs", "az://c/p"), StorageDef("other", "s3://other")]
     KEYS = from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})
     CREDENTIALS = [S3CredentialDef("keys_a", sources=[KEYS], scopes={scopes_a}), S3CredentialDef("keys_b", sources=[KEYS], scopes=["other"])]
-    RULES = [default(bind={bind})]
+    RULES = [default({bind})]
 """
 
 
 def test_binding_the_storage_renders_a_secret_and_binding_only_the_credential_gives_the_env(tmp_path, monkeypatch):
     monkeypatch.setenv("DT_KEY", "k-value")
     monkeypatch.setenv("DT_SECRET", "s-value")
-    conf = CREDENTIAL_CONF.replace("{scopes_a}", '["lake"]').replace("{bind}", "{}")
+    conf = CREDENTIAL_CONF.replace("{scopes_a}", '["lake"]').replace("{bind}", "")
     conf += """
     from ducktest5 import match
-    RULES += [match("stored.py", bind={"storage": "lake"}), match("keys_only.py", bind={"credential": "keys_a"})]
+    RULES += [match("stored.py", storage="lake"), match("keys_only.py", credential="keys_a")]
 """
     body = "from ducktest5 import test\n@test()\ndef {name}(ctx): pass\n"
     tests, project = tree(
@@ -1181,7 +1193,7 @@ def test_a_credential_an_engine_of_the_test_cannot_render_is_a_scan_error(tmp_pa
         STORAGES = [StorageDef("lake", "s3://lake")]
         CREDENTIALS = [TokenDef("tok", scopes=["lake"])]
         ENGINES = [BootedEngineDef("spark", boot=lambda log: None, dialect="spark")]
-        RULES = [default(bind={"storage": "lake"})]
+        RULES = [default(storage="lake")]
     """
     body = "from ducktest5 import test\n@test(engines=['spark'])\ndef t(ctx): pass\n"
     message = (
@@ -1193,12 +1205,12 @@ def test_a_credential_an_engine_of_the_test_cannot_render_is_a_scan_error(tmp_pa
 
 def test_two_credentials_of_one_type_on_one_booted_engine_are_a_scan_error(tmp_path):
     conf = (
-        CREDENTIAL_CONF.replace("{scopes_a}", '["lake"]').replace("{bind}", "{}")
+        CREDENTIAL_CONF.replace("{scopes_a}", '["lake"]').replace("{bind}", "")
         + """
     from ducktest5.resources import BootedEngineDef
     from ducktest5 import match
     ENGINES = [BootedEngineDef("spark", boot=lambda log: None, dialect="spark")]
-    RULES = [match("a.py", bind={"storage": "lake"}), match("b.py", bind={"storage": "other"})]
+    RULES = [match("a.py", storage="lake"), match("b.py", storage="other")]
 """
     )
     body = "from ducktest5 import test\n@test(engines=['spark'])\ndef t(ctx): pass\n"
@@ -1212,12 +1224,12 @@ def test_two_credentials_of_one_type_on_one_booted_engine_are_a_scan_error(tmp_p
     [
         (
             '["blobs"]',
-            '{"storage": "blobs"}',
+            'storage="blobs"',
             "S3CredentialDef('keys_a') is scoped to storage 'blobs' (az://c/p): an S3CredentialDef is for s3 storages only",
         ),
         (
             '["lake"]',
-            '{"storage": "lake", "credential": "keys_b"}',
+            'storage="lake", credential="keys_b"',
             "t.test::t: holds S3CredentialDef 'keys_b' and 'keys_a' by AWS_* env; one process has one set. "
             "Several credentials of one type in one test are not supported yet",
         ),

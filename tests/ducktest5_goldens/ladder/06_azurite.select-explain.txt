@@ -1,6 +1,6 @@
 run   scoped_write.test::scoped_write
-        bind={'storage': 'blobs'}  <- ducktest_conf.py: default
+        storage='blobs'  <- ducktest_conf.py: default
 run   scoped_write_body.py::scoped_write_body
-        bind={'storage': 'blobs'}  <- ducktest_conf.py: default
+        storage='blobs'  <- ducktest_conf.py: default
 
 2 of 2 tests

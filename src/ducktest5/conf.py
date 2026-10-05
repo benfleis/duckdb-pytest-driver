@@ -17,18 +17,18 @@ pattern may name one file.
 
 How rules combine, in one order: the root file first, then each file on the way down to the test definition;
 in a file, the rules as listed; then the definition's own `@test(...)`. Along that order, list fields (tags,
-engines, variants, mutex, suites, requires) add up, dict fields (values, settings, bind) update by key, and
-single values (timeout, retries) are replaced. `why` records which rule gave what. All of them are on
+engines, variants, mutex, suites, requires) add up, dict fields (values, settings) update by key, and
+single values (storage, credential, service, timeout, retries) are replaced. `why` records which rule gave what. All of them are on
 the definition and apply to every test made from it.
 
 `requires=["httpfs"]` loads an extension before anything else, as a Variant's does: a setting of it in
 `settings` does not exist before.
 
-`bind={"storage": "scratch"}` binds a role to one of STORAGES, CREDENTIALS or SERVICES by id. The role
-is the key the merge updates by: a later binding of the same role replaces the earlier one, so a
-test's own `@test(bind=...)` wins over its rules. An axis value's inputs bind too, each the role its
-kind names (`storage`, `credential`): one replaces what a `default()` binds, a fallback; a role that
-a `match()` or `@test` binds as well is an error, not a silent winner.
+`storage="scratch"` binds one of STORAGES by id, `credential=` one of CREDENTIALS, `service=` one of
+SERVICES. A later binding of the same kind replaces the earlier one, so a test's own
+`@test(storage=...)` wins over its rules. An axis value binds the same way: it replaces what a
+`default()` binds, a fallback; a kind that a `match()` or `@test` binds as well is an error, not a
+silent winner. A test binds one of each kind; several credentials of one kind are not supported yet.
 
 ENGINES holds `EngineDef`s (`duckdb_engine(...)`, `delta_spark(...)`, ...); `engines=["duck"]` names
 the engines a test drives, each through a Client of its own. SERVICES holds the project's other
@@ -61,11 +61,11 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from .binary import UsageError
 from .declare import CONF_FILE, Variant, as_mutex
-from .resources import CredentialDef, DefaultStorage, EngineDef, ResourceDef, ServiceDef, StorageDef
+from .resources import CredentialDef, DefaultStorage, EngineDef, ServiceDef, StorageDef
 from .resources.client import check_names
 from .resources.credential import inherit_env
 from .resources.made import services_in
@@ -73,8 +73,9 @@ from .resources.made import services_in
 _log = logging.getLogger(__name__)
 
 _LISTS = ("tags", "engines", "variants", "mutex", "suites", "requires")
-_DICTS = ("values", "settings", "bind")
-_SINGLES = ("timeout", "retries")
+_DICTS = ("values", "settings")
+BINDINGS = ("storage", "credential", "service")
+_SINGLES = BINDINGS + ("timeout", "retries")
 
 
 def suite_name(entry):
@@ -135,6 +136,9 @@ def _rule(pattern, fields):
     unknown = sorted(set(fields) - set(_LISTS + _DICTS + _SINGLES))
     if unknown:
         raise UsageError(f"rule {pattern!r}: unknown field(s) {unknown}; known: {_LISTS + _DICTS + _SINGLES}")
+    for kind in BINDINGS:
+        if kind in fields and not isinstance(fields[kind], str):
+            raise UsageError(f"rule {pattern!r}: {kind}={fields[kind]!r}; it is the id of one, a string")
     if "mutex" in fields:
         fields = {**fields, "mutex": as_mutex(fields["mutex"])}
     retries = fields.get("retries", 0)
@@ -173,7 +177,7 @@ class Settled:
     requires: list = field(default_factory=list)
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
-    bind: dict = field(default_factory=dict)
+    bind: dict = field(default_factory=dict)  # storage/credential/service -> the id it binds
     timeout: float | None = None
     retries: int = 0
     why: list = field(default_factory=list)
@@ -200,6 +204,11 @@ class Settled:
             elif name in _DICTS:
                 getattr(self, name).update(value)
                 self.sources.update({(name, k): source for k in value})
+            elif name in BINDINGS:
+                self.bind[name] = value
+                self.sources[("bind", name)] = source
+                self.why.append(f"{name}={value!r}  <- {source}")
+                continue
             else:
                 setattr(self, name, value)
             self.why.append(f"{name}={value!r}  <- {source}")
@@ -225,10 +234,6 @@ class Project:
     def __post_init__(self):
         if self.default_storage is None:
             self.default_storage = DefaultStorage(os.path.join(repo_root(self.root), "data"))
-
-    def inputs(self):
-        """What a test may bind or a variant may name as an input, by id."""
-        return {**self.services, **self.storages, **self.credentials}
 
     def excludes(self, rel_to_root):
         return any(
@@ -462,18 +467,18 @@ def _check(path, project):
             unknown = [x for x in v.engines if x not in project.engines]
             if unknown:
                 raise UsageError(f"{path}: AXES[{axis!r}] value {v.id!r} names engines {unknown} that are not declared")
-            values[v.id] = replace(v, inputs=_bound(path, f"AXES[{axis!r}] value {v.id!r}", v.inputs, project))
+            for kind in BINDINGS:
+                if getattr(v, kind) is not None:
+                    bound_def(project, kind, getattr(v, kind), f"{path}: AXES[{axis!r}] value {v.id!r}")
 
 
-def _bound(path, where, inputs, project):
-    """A variant's inputs with each id replaced by the Def it names, as `({Def: mode}, ...)`."""
-    declared = project.inputs()
-    out = []
-    for entry in inputs:
-        for ref, mode in entry.items() if isinstance(entry, dict) else [(entry, "rw")]:
-            if not isinstance(ref, ResourceDef) and ref not in declared:
-                raise UsageError(
-                    f"{path}: {where} names input {ref!r}, which is not in STORAGES, CREDENTIALS or SERVICES"
-                )
-            out.append({declared[ref] if isinstance(ref, str) else ref: mode})
-    return tuple(out)
+def bound_def(project, kind, ref, where):
+    """The Def that `storage=`, `credential=` or `service=` names, by id."""
+    declared, name = {
+        "storage": (project.storages, "STORAGES"),
+        "credential": (project.credentials, "CREDENTIALS"),
+        "service": (project.services, "SERVICES"),
+    }[kind]
+    if ref not in declared:
+        raise UsageError(f"{where}: {kind}={ref!r} is not in {name}")
+    return declared[ref]

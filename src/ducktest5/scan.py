@@ -13,7 +13,7 @@ import sys
 
 from . import asserts, leases, testenv
 from .binary import UsageError
-from .conf import check_suites, is_default, load_project, merge_suites
+from .conf import BINDINGS, bound_def, check_suites, is_default, load_project, merge_suites
 from .declare import CONF_FILE
 from .outcomes import Skip
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef
@@ -24,53 +24,41 @@ _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 
 
 def _bindings(definition, combo, project):
-    """(role, Def, mode, source) for each input a test binds: what the rules and `@test` bind, then
-    each axis value's inputs, which bind the role their kind names. An axis value replaces what a
-    `default()` binds; where a `match()`, `@test` or another axis value binds that role too, no
-    source wins."""
-    declared = project.inputs()
-    ruled = {}
-    for role, ref in definition.bind.items():
-        if ref not in declared:
-            raise UsageError(
-                f"{definition.path}::{definition.name} binds {role!r} to {ref!r}, "
-                "which is not in STORAGES, CREDENTIALS or SERVICES"
-            )
-        ruled[role] = (declared[ref], definition.source_of("bind", role))
+    """(kind, Def, source) for each input a test binds: what the rules and `@test` bind, then what
+    each axis value binds. An axis value replaces what a `default()` binds; where a `match()`,
+    `@test` or another axis value binds that kind too, no source wins."""
+    test = f"{definition.path}::{definition.name}"
+    ruled = {
+        kind: (bound_def(project, kind, ref, test), definition.source_of("bind", kind))
+        for kind, ref in definition.bind.items()
+    }
     from_axes, by_axis = [], {}
     for axis, variant in combo:
         where = f"AXES {axis}={variant.id}"
-        for entry in variant.inputs:
-            for d, mode in entry.items():
-                if by_axis.setdefault(d.kind, where) != where:
+        for kind in BINDINGS:
+            ref = getattr(variant, kind)
+            if ref is None:
+                continue
+            d = bound_def(project, kind, ref, where)
+            if by_axis.setdefault(kind, where) != where:
+                raise UsageError(f"{test}: {kind}= is given by {by_axis[kind]} and by {where}; bind it in one place")
+            if kind in ruled:
+                old, source = ruled.pop(kind)
+                if not is_default(source):
                     raise UsageError(
-                        f"{definition.path}::{definition.name}: the role {d.kind!r} is bound by "
-                        f"{by_axis[d.kind]} and by {where}; bind it in one place"
+                        f"{test}: {kind}= is {old.id!r} by {source} and {d.id!r} by {where}; bind it in one place"
                     )
-                if d.kind in ruled:
-                    ref, source = ruled.pop(d.kind)
-                    if not is_default(source):
-                        raise UsageError(
-                            f"{definition.path}::{definition.name}: the role {d.kind!r} is bound to {ref.id!r} "
-                            f"by {source} and to {d.id!r} by {where}; bind it in one place"
-                        )
-                from_axes.append((d.kind, d, mode, where))
-    return [(role, d, RW, source) for role, (d, source) in ruled.items()] + from_axes
+            from_axes.append((kind, d, where))
+    return [(kind, d, source) for kind, (d, source) in ruled.items()] + from_axes
 
 
 def _inputs(bindings, project):
-    """What a test binds, a writer's mode winning, and a credential for each storage by scope unless
-    one is named."""
-    modes = {}
-    for _, d, mode, _ in bindings:
-        if not isinstance(d, DefaultStorageDef):  # binding the default storage is binding none
-            modes[d] = RW if RW in (mode, modes.get(d)) else mode
-    storages = {d.id: mode for d, mode in modes.items() if isinstance(d, StorageDef)}
-    named = [d for d in modes if isinstance(d, CredentialDef)]
+    """What a test binds, and a credential for each storage by scope unless one is named."""
+    bound = [d for _, d, _ in bindings if not isinstance(d, DefaultStorageDef)]  # the default storage is none
+    storages = {d.id: RW for d in bound if isinstance(d, StorageDef)}
+    named = [d for d in bound if isinstance(d, CredentialDef)]
     credentials = pick_credentials(storages, project.credentials.values(), named)
-    return tuple((d, m) for d, m in modes.items() if not isinstance(d, CredentialDef)) + tuple(
-        (c, RO) for c in credentials
-    )
+    return tuple((d, RW) for d in bound if not isinstance(d, CredentialDef)) + tuple((c, RO) for c in credentials)
 
 
 def _load(path, name):
@@ -200,7 +188,7 @@ def scan(start, *, working_dir="."):
         for params_key in definition.params or [None]:
             for combo in itertools.product(*axes):
                 bindings = _bindings(definition, combo, project)
-                bind = tuple((role, d.id, source) for role, d, _, source in bindings)
+                bind = tuple((kind, d.id, source) for kind, d, source in bindings)
                 tests.append(Test(definition, params_key, dict(combo), _inputs(bindings, project), bind))
     project.note_unused_rules()
     if project.unused_rules:
@@ -299,7 +287,7 @@ def _settle(definition, project, working_dir):
             settled.why.append(f"engines={added!r}  <- @test")
             settled.sources.update({("engines", x): "@test" for x in added})
     if definition.bind:
-        settled.apply({"bind": definition.bind}, "@test")
+        settled.apply(definition.bind, "@test")
     check_suites(definition.suites, f"{definition.path}::{definition.name}")
     merge_suites(settled.suites, definition.suites, None, settled.sources)
     definition.suites = settled.suites

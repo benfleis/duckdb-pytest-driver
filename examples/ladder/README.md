@@ -51,9 +51,9 @@ A `.test` file with a body of its stem is not a test of its own; only the body r
 ## 02_rules
 
 `ducktest_conf.py` declares two local storages and, among its engines, a DuckDB engine, `duck`, that
-loads `parquet`. `default()` binds the role `storage` to `scratch_a` for every test and names `duck`
+loads `parquet`. `default(storage="scratch_a")` binds that storage for every test and names `duck`
 in `engines=`: every test drives that engine, through a Client made for it. Each `match()` rule names
-one file. `own_inputs.py` and `paired_own_inputs.py` bind `storage` to `scratch_b` on `@test(...)`,
+one file. `own_inputs.py` and `paired_own_inputs.py` bind `scratch_b` with `@test(storage=...)`,
 and that wins over the rule; `select --explain` shows both bindings. `paired_own_inputs.py` calls
 `ctx.run_paired()`, which runs `paired_own_inputs.test`, the file of its stem beside it, through the
 binary with the body's own test environment, so the file sees `scratch_b` too. `default.test` is named by no

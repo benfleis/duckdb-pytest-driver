@@ -8,4 +8,4 @@ S3 = s3_local(flavor="rustfs")
 ENGINES = [duckdb_engine("duck", requires=["httpfs"])]
 STORAGES = [S3.storage("lake", "lake")]
 CREDENTIALS = [S3.credential("keys", scopes=["lake"])]
-RULES = [default(bind={"storage": "lake"})]
+RULES = [default(storage="lake")]
