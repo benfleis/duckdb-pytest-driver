@@ -2,14 +2,13 @@
 
 `Report.of(events)` is the one reading of the stream: it merges the runs that were given, keeps the
 last `test_end` for a test id, and answers the questions a reader asks (counts, the slowest tests,
-what was retried). The renderers turn that into text, JSON, JUnit XML or DuckDB tables. A fact no
+what was retried). The renderers turn that into text, JSON or JUnit XML. A fact no
 renderer can find here belongs in an event, not in a renderer.
 
     live       one line per test as it ends, failures in full at the end, then a summary
     text       the same without cursor control, at three levels (terse, normal, verbose)
     json       the event lines as they are, and one document as `05-report.json`/`.yaml`
     junit      JUnit XML for CI annotations: one testsuite per test file
-    duckdb     the events as tables in a DuckDB file, so a history is a query
 """
 
 from __future__ import annotations
@@ -132,9 +131,9 @@ def render(report, out, *, format="text", level="normal", color=False):
         raise ValueError(f"format={format!r}; it is one of {FORMATS}")
 
 
-def write_files(report, events_paths, *, run_dir=None, report_json=None, junit_file=None, duckdb=None, duckdb_bin=None):
+def write_files(report, *, run_dir=None, report_json=None, junit_file=None):
     """The side outputs, which may be asked for beside any live output. Returns what was written."""
-    from . import document, duck, junit
+    from . import document, junit
 
     written = []
     for path in [os.path.join(run_dir, REPORT_YAML)] if run_dir else []:
@@ -147,15 +146,4 @@ def write_files(report, events_paths, *, run_dir=None, report_json=None, junit_f
         with open(junit_file, "w") as f:
             junit.render(report, f)
         written.append(junit_file)
-    if duckdb:
-        duck.load(duckdb, events_paths, duckdb_bin=duckdb_bin or _duckdb_of(report))
-        written.append(duckdb)
     return written
-
-
-def _duckdb_of(report):
-    """The run's own duckdb shell, as the run recorded it."""
-    for run in reversed(report.runs):
-        if path := (run.get("binaries") or {}).get("duckdb"):
-            return path
-    return None

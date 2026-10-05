@@ -9,14 +9,12 @@ what a run looks like. Re-make them with `UPDATE_GOLDENS=1 pytest tests/test_duc
 import io
 import json
 import os
-import shutil
-import subprocess
 import xml.etree.ElementTree as ET
 
 import pytest
 
 from ducktest5 import events
-from ducktest5.reports import Report, document, duck, junit, render
+from ducktest5.reports import Report, document, junit, render
 from ducktest5.reports.live import Live
 
 GOLDENS = os.path.join(os.path.dirname(__file__), "ducktest5_goldens")
@@ -296,70 +294,6 @@ def test_the_yaml_json_and_junit_files_do_not_depend_on_which_test_ended_first(t
 
 
 # -----------------------------------------------------------------------------
-# duckdb tables
-#
-
-
-def shell():
-    return os.environ.get("DUCKDB_SHELL") or shutil.which("duckdb")
-
-
-needs_duckdb = pytest.mark.skipif(shell() is None, reason="no duckdb shell (set $DUCKDB_SHELL or PATH)")
-
-
-def query(db, sql):
-    done = subprocess.run(
-        [shell(), "-batch", "-noheader", "-list", db, "-c", sql], capture_output=True, text=True, timeout=120
-    )
-    assert done.returncode == 0, done.stderr
-    return [line.split("|") for line in done.stdout.strip().splitlines() if line]
-
-
-def test_the_example_queries_are_the_ones_the_docstring_shows():
-    for sql in duck.EXAMPLES.values():
-        assert sql in duck.__doc__
-
-
-@needs_duckdb
-def test_the_events_load_into_tables_that_answer_the_example_questions(tmp_path):
-    db = str(tmp_path / "results.duckdb")
-    duck.load(db, [EVENTS], duckdb_bin=shell())
-    assert query(db, "SELECT count(*) FROM tests") == [["6"]]
-    assert query(db, "SELECT count(*) FROM runs") == [["1"]]
-    assert sorted(query(db, "SELECT service_id, state FROM services")) == [
-        ["spark", "failed"],
-        ["spark", "starting"],
-        ["store", "starting"],
-        ["store", "up"],
-    ]
-    assert query(db, "SELECT client, seconds FROM clients") == [["duckdb", "0.72"]]
-    assert query(db, "SELECT test_id FROM failures ORDER BY test_id") == [
-        ["py/spark.py::roundtrip[backend=oss]"],
-        ["py/write.py::write_then_read"],
-        ["sql/needs_env.test::needs_env"],
-        ["sql/rows.test::rows"],
-    ]
-    slowest = query(db, duck.EXAMPLES["slowest"])
-    assert slowest[0] == ["sql/flaky.test::flaky", "2.6"]
-    assert query(db, duck.EXAMPLES["flaky"]) == [["sql/flaky.test::flaky", "1", "2"]]
-    assert query(db, duck.EXAMPLES["changed"]) == []  # only one run so far
-
-
-@needs_duckdb
-def test_runs_append_and_a_run_loaded_twice_is_not_counted_twice(tmp_path):
-    db = str(tmp_path / "results.duckdb")
-    second = tmp_path / "second.jsonl"
-    later = open(EVENTS).read().replace("amber-koala-01", "brass-otter-02").replace("T10:00:0", "T11:00:0")
-    second.write_text(later.replace('"failed", ', '"passed", '))
-    duck.load(db, [EVENTS], duckdb_bin=shell())
-    duck.load(db, [EVENTS], duckdb_bin=shell())  # again: it replaces its own rows
-    assert query(db, "SELECT count(*) FROM tests") == [["6"]]
-    duck.load(db, [str(second)], duckdb_bin=shell())
-    assert query(db, "SELECT count(*) FROM runs") == [["2"]]
-    assert query(db, duck.EXAMPLES["changed"]) == [["sql/rows.test::rows", "failed", "passed"]]
-
-
-# -----------------------------------------------------------------------------
 # `ducktest5 report`: an old run, and several merged
 #
 
@@ -410,11 +344,3 @@ def test_report_writes_the_files_it_is_asked_for(tmp_path, capsys):
     report_command(["--run-dir", EVENTS, "--report-json", out_json, "--junit", out_xml, "--format", "junit"], capsys)
     assert json.loads(open(out_json).read())["counts"]["failed"] == 1
     assert ET.parse(out_xml).getroot().tag == "testsuites"
-
-
-@needs_duckdb
-def test_report_loads_the_events_with_the_shell_the_run_recorded(tmp_path, capsys, monkeypatch):
-    db = str(tmp_path / "history.duckdb")
-    monkeypatch.setattr(duck, "load", lambda path, files, *, duckdb_bin: open(path, "w").write(duckdb_bin or ""))
-    report_command(["--run-dir", EVENTS, "--duckdb", db], capsys)
-    assert open(db).read() == "/repo/build/debug/duckdb"  # the `binaries` of run_start

@@ -52,9 +52,6 @@ def _report_options(parser):
     parser.add_argument("--level", default="normal", choices=LEVELS, help="how much text says (default: normal)")
     parser.add_argument("--junit", metavar="FILE", help="also write JUnit XML there, for CI annotations")
     parser.add_argument("--report-json", metavar="FILE", help="also write the run as one JSON document there")
-    parser.add_argument(
-        "--duckdb", metavar="FILE", help="also load the events into that DuckDB file; runs append to it"
-    )
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
 
 
@@ -265,9 +262,6 @@ def main(argv=None):
         metavar="DIR",
         help="a run directory or an event file; repeats merge, a later one winning a shared test id",
     )
-    report_options.add_argument(
-        "--duckdb-bin", help="the duckdb shell for --duckdb (default: the one the run recorded)"
-    )
     _report_options(report_options)
 
     for p in (*commands.values(), report_options):
@@ -356,7 +350,6 @@ def main(argv=None):
             color=_color(args.color, sys.stdout),
             report_json=args.report_json,
             junit_file=args.junit,
-            duckdb_file=args.duckdb,
         )
     except UsageError as exc:
         print(f"ducktest5: {exc}", file=sys.stderr)
@@ -492,7 +485,6 @@ def _exec(args):
         color=_color(args.color, sys.stdout),
         report_json=args.report_json,
         junit_file=args.junit,
-        duckdb_file=args.duckdb,
     )
 
 
@@ -518,16 +510,8 @@ def _report(args):
         if not events.files_in(path) or not any(os.path.isfile(p) for p in events.files_in(path)):
             raise UsageError(f"no {events.EVENTS_FILE} in {path}")
     report = Report.of(events.load(args.run_dir))
-    files = [f for p in args.run_dir for f in events.files_in(p)]
     render(report, sys.stdout, format=args.format, level=args.level, color=_color(args.color, sys.stdout))
-    write_files(
-        report,
-        files,
-        report_json=args.report_json,
-        junit_file=args.junit,
-        duckdb=args.duckdb,
-        duckdb_bin=args.duckdb_bin,
-    )
+    write_files(report, report_json=args.report_json, junit_file=args.junit)
     return report.exit_code
 
 

@@ -388,7 +388,8 @@ path itself. `scan --env` prints it first.
 `TableDef` and tables per test; catalog services (UC, Databricks); input slots declared by a kind;
 the `1password:` source; credential types other than S3 and Azure (GCS, R2); Spark with an Azure
 credential; several credentials of one type in one test; scan checks of `{NAME}` references and of
-`ctx.client("...")` names; `.test` header blocks as rules; the `Run` object.
+`ctx.client("...")` names; `.test` header blocks as rules; the `Run` object; the events of runs loaded into
+a DuckDB file, so a history is a query.
 
 ---
 

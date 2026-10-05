@@ -212,7 +212,6 @@ def run(
     color=None,
     report_json=None,
     junit_file=None,
-    duckdb_file=None,
 ):
     """Every phase, in one process and one run directory."""
     if debugger is not None:
@@ -249,7 +248,6 @@ def run(
         color=color,
         report_json=report_json,
         junit_file=junit_file,
-        duckdb_file=duckdb_file,
     )
 
 
@@ -281,7 +279,6 @@ def execute(
     color=None,
     report_json=None,
     junit_file=None,
-    duckdb_file=None,
 ):
     """The exec phase: the batches of `plan`, run, as events in `04-events.jsonl`.
 
@@ -774,15 +771,7 @@ def execute(
                 live.finish(report)
             else:
                 render(report, out, format=format, level=level, color=bool(color))
-            write_files(
-                report,
-                sources,
-                run_dir=run_dir,
-                report_json=report_json,
-                junit_file=junit_file,
-                duckdb=duckdb_file,
-                duckdb_bin=duckdb_bin,
-            )
+            write_files(report, run_dir=run_dir, report_json=report_json, junit_file=junit_file)
     return code
 
 
