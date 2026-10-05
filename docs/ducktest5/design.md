@@ -550,7 +550,7 @@ def duckdb_creates_then_spark_and_duckdb_interleave(ctx):
 
 - **Azure**: the azure extension's `.test` files on `AZLocalDef` and `AzureCredentialDef` (built,
   not yet run live); blob and DFS on real Azure as more values of a `storage` parameter.
-- **httpfs**: a `storage` parameter (http, s3, s3 through a proxy) and a `client` parameter (curl,
+- **httpfs**: a `storage` parameter (http, s3, s3 through a proxy) and an `http_client` parameter (curl,
   httplib; `examples/httpfs/`). Needs a proxy kind.
 - **Unity Catalog**: deployments as a parameter binding a catalog service and a storage. Needs
   `TableDef`, catalog services and UC CREATE.

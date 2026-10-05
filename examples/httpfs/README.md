@@ -13,9 +13,9 @@ change. The file goes to `test/ducktest_conf.py` in an httpfs checkout.
   `match("**", requires_env="S3_TEST_SERVER_AVAILABLE", credential="minio")` gives the S3 keys only
   to the files that ask for them. The keys reach the engine as `AWS_*` env. Without an S3 server,
   only these files are BLOCKED; the other files run.
-- **A matrix.** The parameter `client` in `MATRIX` runs each test once with curl and once with
-  httplib, as two of the CI configs in `test/configs/` do. Ids end in `[client=curl]` or
-  `[client=httplib]`; `--select client=curl` takes one.
+- **A matrix.** The parameter `http_client` in `MATRIX` runs each test once with curl and once with
+  httplib, as two of the CI configs in `test/configs/` do. Ids end in `[http_client=curl]` or
+  `[http_client=httplib]`; `--select http_client=curl` takes one.
 - **A service bound by `service=`.** The Python HTTP server of CI, which the run uses but does not
   start. `{pyhttp.url}` becomes its address. `mutex=` stops the two clients from writing the same
   file at the same time.
