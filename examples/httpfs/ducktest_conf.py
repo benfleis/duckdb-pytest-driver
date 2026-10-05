@@ -23,7 +23,7 @@ SERVICES = [HttpServerDef("pyhttp").as_existing(address="http://127.0.0.1:8008")
 
 # Two CI configs (test/configs/httpfs_*.json) as one parameter: each test runs once per client.
 MATRIX = {
-    "http_client": {
+    "httpfs_client": {
         "curl": {"settings": {"httpfs_client_implementation": "curl"}},
         "httplib": {"settings": {"httpfs_client_implementation": "httplib"}},
     }
@@ -36,7 +36,7 @@ S3_HOST_PORT = (
 
 RULES = [
     # Path style: CI gives each bucket a host name in /etc/hosts; there is no such name here.
-    default(requires=["httpfs"], settings={"s3_url_style": "path"}, matrix=["http_client"]),
+    default(requires=["httpfs"], settings={"s3_url_style": "path"}, matrix=["httpfs_client"]),
     # A file with `require-env S3_TEST_SERVER_AVAILABLE` gets the S3 keys and the names it requires.
     match(
         "**",

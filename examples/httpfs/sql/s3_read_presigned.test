@@ -1,0 +1,19 @@
+# name: test/sql/s3_read_presigned.test
+# description: Reads a file the run uploaded to test-bucket (s3_seed/). The rule for
+#              S3_TEST_SERVER_AVAILABLE gives this file the S3 keys and the server's address.
+# group: [sql]
+
+require httpfs
+
+require-env S3_TEST_SERVER_AVAILABLE 1
+
+# -----------------------------------------------------------------------------
+# A seeded file, read over S3
+#
+
+query I
+SELECT phone FROM read_csv('s3://test-bucket/presigned/phonenumbers.csv', columns={'phone': 'VARCHAR'}, header=true) ORDER BY phone;
+----
++12233445567
++318855443322
++552244331122

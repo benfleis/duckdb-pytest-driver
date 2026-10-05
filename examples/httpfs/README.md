@@ -4,6 +4,26 @@
 [duckdb-httpfs](https://github.com/duckdb/duckdb-httpfs) with ducktest5. The test files do not
 change. The file goes to `test/ducktest_conf.py` in an httpfs checkout.
 
+## Try it here
+
+This directory is also a small project of its own: `ducktest_conf.py` sits where httpfs's `test/`
+would be, with three short tests in `sql/`, one for each kind of file the conf handles:
+
+| File | Needs | Gets it from |
+| --- | --- | --- |
+| `sql/client_setting.test` | nothing; runs once per `httpfs_client` | the matrix |
+| `sql/s3_read_presigned.test` | `require-env S3_TEST_SERVER_AVAILABLE`; reads a seeded file | the S3 rule: keys, address, bucket |
+| `sql/http_server_roundtrip.test` | `require-env PYTHON_HTTP_SERVER_URL` | the HTTP-server rule: the service |
+
+```sh
+cd examples/httpfs
+(mkdir -p /tmp/python_test_server && cd /tmp/python_test_server && python3 -m http.server 8008 &)
+BUILD_DIR=<duckdb v2.0 build with httpfs> ducktest5 run --root .
+```
+
+With both servers up, all 6 cells pass (3 files x 2 clients; 2026-10-05). With neither, the two
+`client_setting` cells pass and the other four are BLOCKED, each with the server it waited for.
+
 ## What it shows
 
 - **A service with buckets.** `s3_local(buckets=[...])` is a local S3 server (RustFS) with the
@@ -13,9 +33,9 @@ change. The file goes to `test/ducktest_conf.py` in an httpfs checkout.
   `match("**", requires_env="S3_TEST_SERVER_AVAILABLE", credential="s3_keys")` gives the S3 keys only
   to the files that ask for them. The keys reach the engine as `AWS_*` env. Without an S3 server,
   only these files are BLOCKED; the other files run.
-- **A matrix.** The parameter `http_client` in `MATRIX` runs each test once with curl and once with
-  httplib, as two of the CI configs in `test/configs/` do. Ids end in `[http_client=curl]` or
-  `[http_client=httplib]`; `--select http_client=curl` takes one.
+- **A matrix.** The parameter `httpfs_client` in `MATRIX` runs each test once with curl and once with
+  httplib, as two of the CI configs in `test/configs/` do. Ids end in `[httpfs_client=curl]` or
+  `[httpfs_client=httplib]`; `--select httpfs_client=curl` takes one.
 - **A service bound by `service=`.** The Python HTTP server of CI, which the run uses but does not
   start. `{pyhttp.url}` becomes its address. `mutex=` stops the two clients from writing the same
   file at the same time.
