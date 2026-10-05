@@ -20,10 +20,10 @@ from ..resources import ON_FAILURE, Service, ServiceDef
 class HttpServerDef(ServiceDef):
     """Serves a copy of the directory `source` (or an empty one) on a free port of `host`
     (DUCKTEST_SERVICE_BIND by default), under a directory of the system temp dir named for the run.
-    Its attribute is `url`."""
+    Its attributes are `url` and `dir`, the directory it serves, where a test may write files to serve."""
 
     kind = "http"
-    attributes = ("url",)
+    attributes = ("url", "dir")
     ready_timeout_s = 10
 
     id: str
@@ -96,7 +96,7 @@ class HttpServer(Service):
     def read(self):
         if not self.existing and not os.path.isdir(self.handle):
             return None
-        return {"url": self.url}
+        return {"url": self.url, "dir": None if self.existing else self.handle}
 
     def ready(self):
         if self.url is None:

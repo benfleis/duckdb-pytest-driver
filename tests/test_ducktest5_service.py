@@ -216,6 +216,18 @@ def test_the_http_server_serves_a_copy_of_its_source_at_its_url(served):
         service.delete()
 
 
+def test_a_file_written_to_the_http_servers_dir_is_served_at_its_url(served):
+    service = HttpServerDef("http").make(run_token="r1")
+    service.create()
+    try:
+        attrs = service.by_ref()
+        with open(os.path.join(attrs["http.dir"].get(), "new.csv"), "w") as f:
+            f.write("x\n1\n")
+        assert get(f"{attrs['http.url'].get()}/new.csv") == "x\n1\n"
+    finally:
+        service.delete()
+
+
 def test_list_finds_the_http_servers_directory_by_the_run_token_in_its_name(served):
     service = HttpServerDef("http", source=served).make(run_token="r1")
     service.create()
