@@ -51,7 +51,9 @@ another build, use `--build release`, or set `BUILD_DIR` to the directory that h
   example above takes more than ten minutes.
 - **Test ids.** A test id is relative to `test/`, for example
   `sql/aggregate/qualify/test_qualify.test::test_qualify`. A path is relative to where you are, so
-  it starts with `test/`. `--id <test id>` runs one test.
+  it starts with `test/`. `--id <test id>` runs one test. A test that runs once per cell of a
+  matrix has one id for each, with the value of every parameter: `create.py::t[storage=s3,case=varchar]`;
+  `--select storage=s3` takes the cells with that value.
 - **Results.** Each test gets one line: PASSED, FAILED, ERROR, SKIPPED or BLOCKED (a service it
   needs did not start). A failure prints what is different, what was kept, and the command that
   runs it again.
@@ -100,7 +102,7 @@ place and run the tests in another, or to report a run again.
   config (rung 00) to a local S3 server (rung 05) and a local Azure blob server (rung 06). Each rung
   adds one idea.
 - [docs/ducktest5/design.md](docs/ducktest5/design.md): how to write a test (Part 1), how it works
-  (Part 2), and how to move an existing repo (1.6).
+  (Part 2), how to move an existing repo (1.6), and how to run a test over a matrix (1.7).
 - [docs/ducktest5/status.md](docs/ducktest5/status.md): what works today, and what is open.
 - `ducktest5 <command> --help`.
 

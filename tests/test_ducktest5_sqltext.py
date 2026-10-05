@@ -83,20 +83,20 @@ def test_a_list_of_statements_is_not_split():
     assert seen == ["BEGIN SELECT 1; SELECT 2; END", "SELECT * FROM cat.t"]
 
 
-def test_a_struct_literal_is_left_alone_and_a_params_row_cannot_shadow_a_verb_option():
+def test_a_struct_literal_is_left_alone_and_a_value_cannot_shadow_a_verb_option():
     seen = []
+    row = {"x": 3, "sort": "this is a field of a matrix value, not the option", "on_fail": "nor this"}
     client = Client(
-        "fake", lambda statements: seen.extend(statements) or (["x"], [(3,)]), values=Values({"t": "cat.t"})
+        "fake", lambda statements: seen.extend(statements) or (["x"], [(3,)]), values=Values({"t": "cat.t", **row})
     )
-    row = {"x": 3, "sort": "this is a column of the params row, not the option", "on_fail": "nor this"}
-    client.expects("SELECT {'a': 1}, {{literal}} FROM {t} WHERE x = {x}", [3], params=row)
+    client.expects("SELECT {'a': 1}, {{literal}} FROM {t} WHERE x = {x}", [3])
     assert seen == ["SELECT {'a': 1}, {literal} FROM cat.t WHERE x = 3"]
 
 
 def test_a_placeholder_with_no_value_is_an_error_that_names_what_is_known():
     client = Client("fake", lambda statements: ([], []), values=Values({"catalog": "duck", "t": "cat.t"}))
     with pytest.raises(UsageError, match=r"no value for \{seed_vlaues\}; known: \['catalog', 'seed_values', 't'\]"):
-        client.oks("INSERT INTO {t} VALUES {seed_vlaues}", params={"seed_values": [(1,)]})
+        client.oks("INSERT INTO {t} VALUES {seed_vlaues}", seed_values=[(1,)])
 
 
 def test_a_failure_in_a_block_names_the_statement():
@@ -156,7 +156,7 @@ def test_a_teardown_is_deferred():
 def test_braces_that_a_value_or_a_nested_struct_brings_are_not_touched():
     seen = []
     client = Client("fake", lambda statements: seen.extend(statements) or ([], []), values=Values({"t": "cat.t"}))
-    client.oks("SELECT {'a': {'b': 1}} AS s, {n} AS n, '{j}' AS j", params={"n": 3, "j": '{"a":{"b":1}}'})
+    client.oks("SELECT {'a': {'b': 1}} AS s, {n} AS n, '{j}' AS j", n=3, j='{"a":{"b":1}}')
     assert seen == ["SELECT {'a': {'b': 1}} AS s, 3 AS n, '{\"a\":{\"b\":1}}' AS j"]
 
 

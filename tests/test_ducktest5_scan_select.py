@@ -13,12 +13,12 @@ from ducktest5 import leases
 from ducktest5.testenv import resolve
 
 ROOT_CONF = """
-    from ducktest5 import Variant, default, match
+    from ducktest5 import default, match
 
-    AXES = {"backend": [Variant("oss", values={"catalog": "duck"}), Variant("dbx", tags=["needs-credentials"])]}
+    MATRIX = {"backend": {"oss": {"values": {"catalog": "duck"}}, "dbx": {"tags": ["needs-credentials"]}}}
     SUITES = {
         "smoke": {"paths": ["test/a", "test/b/one.test"]},
-        "cmt": {"select": ["params=cmt"]},
+        "cmt": {"select": ["case=cmt"]},
         "combo": {"select": ["tag=mine", "backend=oss"]},
         "trimmed": {"paths": ["test/a", "test/b"], "skip": ["backend=oss;tag=a"]},
     }
@@ -42,7 +42,7 @@ def project(tmp_path):
             "test/ducktest_conf.py": ROOT_CONF,
             "test/a/ducktest_conf.py": """
                 from ducktest5 import default, match
-                RULES = [default(values={"region": "us"}), match("x.test", axes=["backend"], timeout=5)]
+                RULES = [default(values={"region": "us"}), match("x.test", matrix=["backend"], timeout=5)]
             """,
             "test/a/x.test": "",
             "test/a/y.test_slow": "",
@@ -50,7 +50,7 @@ def project(tmp_path):
             "test/b/paired.test": "",
             "test/b/paired.py": """
                 from ducktest5 import test
-                @test(params={"cmt": {}, "plain": {}}, tags=["mine"])
+                @test(matrix=[{"case": {"cmt": {}, "plain": {}}}], tags=["mine"])
                 def body(ctx): ctx.run_paired()
             """,
             "test/b/solo.py": """
@@ -64,15 +64,15 @@ def project(tmp_path):
 
 @pytest.fixture
 def dnf_project(tmp_path):
-    """A tree with two axes, a python test and a tagged one -- for the disjunctive-normal-form and
-    `path=` selection rules, which need more shape than `project`'s single axis gives."""
+    """A tree with two parameters, a python test and a tagged one -- for the disjunctive-normal-form and
+    `path=` selection rules, which need more shape than `project`'s single parameter gives."""
     return tree(
         tmp_path,
         {
             "test/ducktest_conf.py": """
-                from ducktest5 import Variant, default, match
-                AXES = {"backend": [Variant("oss"), Variant("dbx")], "storage": [Variant("s3"), Variant("gcs")]}
-                RULES = [default(axes=["backend", "storage"]), match("spark/**", tags=["spark"])]
+                from ducktest5 import default, match
+                MATRIX = {"backend": {"oss": {}, "dbx": {}}, "storage": {"s3": {}, "gcs": {}}}
+                RULES = [default(matrix=["backend", "storage"]), match("spark/**", tags=["spark"])]
             """,
             "test/sql/cloud/a.test": "",
             "test/sql/cloud/sub/b.test": "",
@@ -98,13 +98,13 @@ def test_files_become_tests_by_name_only_and_tests_multiply(project):
         "a/x.test::x[backend=dbx]",
         "a/y.test_slow::y",
         "b/one.test::one",
-        "b/paired.py::body[cmt]",
-        "b/paired.py::body[plain]",
+        "b/paired.py::body[case=cmt]",
+        "b/paired.py::body[case=plain]",
         "b/solo.py::solo",
     ]
     by_id = {c.id: c for c in tests}
-    assert by_id["b/paired.py::body[cmt]"].definition.type == "paired"
-    assert by_id["b/paired.py::body[cmt]"].definition.body_file == "test/b/paired.test"
+    assert by_id["b/paired.py::body[case=cmt]"].definition.type == "paired"
+    assert by_id["b/paired.py::body[case=cmt]"].definition.body_file == "test/b/paired.test"
     assert by_id["b/solo.py::solo"].definition.type == "python"
 
 
@@ -115,19 +115,26 @@ def test_an_id_is_the_same_from_every_working_directory(tmp_path, project):
     assert [c.definition.path for c in from_below][:2] == ["x.test", "x.test"]
 
 
-def test_the_axis_parts_of_an_id_come_in_the_order_of_axes(tmp_path):
+def test_the_parts_of_an_id_come_in_the_order_the_rules_then_the_test_name_the_parameters(tmp_path):
     tests, _ = tree(
         tmp_path,
         {
             "test/ducktest_conf.py": """
-                from ducktest5 import Variant, default
-                AXES = {"backend": [Variant("oss")], "storage": [Variant("s3")]}
-                RULES = [default(axes=["storage", "backend"])]
+                from ducktest5 import default, match
+                MATRIX = {"backend": {"oss": {}}, "storage": {"s3": {}}}
+                RULES = [default(matrix=["storage"]), match("a.py", matrix=["backend", "storage"])]
             """,
-            "test/a.test": "",
+            "test/a.py": """
+                from ducktest5 import test
+                @test(matrix=[{"case": {"one": 1, "two": 2}}, "backend"])
+                def body(ctx): pass
+            """,
         },
     )
-    assert ids(tests) == ["a.test::a[backend=oss,storage=s3]"]
+    assert ids(tests) == [
+        "a.py::body[storage=s3,backend=oss,case=one]",
+        "a.py::body[storage=s3,backend=oss,case=two]",
+    ]
 
 
 def test_a_test_directory_name_has_no_glob_or_hive_partition_characters(tmp_path):
@@ -135,30 +142,30 @@ def test_a_test_directory_name_has_no_glob_or_hive_partition_characters(tmp_path
         tmp_path,
         {
             "test/ducktest_conf.py": """
-                from ducktest5 import Variant, default
-                AXES = {"storage": [Variant("s3")]}
-                RULES = [default(axes=["storage"])]
+                from ducktest5 import default
+                MATRIX = {"storage": {"s3": {}}}
+                RULES = [default(matrix=["storage"])]
             """,
             "test/a.py": """
                 from ducktest5 import test
-                @test(params={"plain": {}})
+                @test(matrix=[{"case": {"plain": {}}}])
                 def body(ctx): pass
             """,
         },
     )
-    assert re.fullmatch(r"body_plain,storage_s3_a\.py-[0-9a-f]{6}", tests[0].dir_name)
+    assert re.fullmatch(r"body_storage_s3,case_plain_a\.py-[0-9a-f]{6}", tests[0].dir_name)
 
 
 def test_rules_apply_from_the_root_down_and_the_test_itself_last(project):
     x = next(c for c in project[0] if c.id == "a/x.test::x[backend=oss]")
     assert x.definition.tags == ["all", "a"]
-    # the deeper file replaced `region`, the variant added `catalog`, and the axis brings its own id
+    # the deeper file replaced `region`, the MATRIX value added `catalog`, and the parameter brings its name
     assert resolve(x).value_map == {"backend": "oss", "region": "us", "catalog": "duck"}
     assert resolve(x).values["region"].source == "a/ducktest_conf.py: default"
-    assert resolve(x).values["catalog"].source == "AXES backend=oss"
+    assert resolve(x).values["catalog"].source == "MATRIX backend=oss"
     assert x.definition.timeout == 5  # a single value: the last rule that set it
     assert any("a/ducktest_conf.py: match 'x.test'" in line for line in x.definition.why)
-    paired = next(c for c in project[0] if c.id == "b/paired.py::body[cmt]")
+    paired = next(c for c in project[0] if c.id == "b/paired.py::body[case=cmt]")
     assert paired.definition.tags == ["all", "mine"]
     assert "needs-credentials" in next(c for c in project[0] if c.id.endswith("[backend=dbx]")).tags
 
@@ -174,7 +181,7 @@ def test_a_rule_that_matches_nothing_is_an_error(tmp_path):
         )
 
 
-def test_an_unknown_rule_field_or_axis_is_an_error(tmp_path):
+def test_an_unknown_rule_field_or_parameter_is_an_error(tmp_path):
     with pytest.raises(UsageError, match=r"unknown option\(s\) \['needs_env'\]"):
         tree(
             tmp_path,
@@ -183,11 +190,11 @@ def test_an_unknown_rule_field_or_axis_is_an_error(tmp_path):
                 "test/a.test": "",
             },
         )
-    with pytest.raises(UsageError, match="takes part in axis 'nope'"):
+    with pytest.raises(UsageError, match="runs over parameter 'nope'; the project's MATRIX has"):
         tree(
             tmp_path / "2",
             {
-                "test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(axes=['nope'])]",
+                "test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(matrix=['nope'])]",
                 "test/a.test": "",
             },
         )
@@ -210,11 +217,11 @@ def test_paths_are_a_union_and_a_clauses_terms_must_all_hold(project):
     assert len(select(project, paths=["a/x.test", "b/one.test"])[0]) == 3
     # scope (PATHs) narrows first, the select clause filters within it
     assert ids(select(project, paths=["a"], select=["backend=oss"])[0]) == ["a/x.test::x[backend=oss]"]
-    # ';' inside one --select is and: type sqllogic and params cmt/plain both hold for nothing here
-    assert ids(select(project, select=["type=paired;params=cmt"])[0]) == ["b/paired.py::body[cmt]"]
-    assert ids(select(project, select=["params=cmt,plain"])[0]) == [
-        "b/paired.py::body[cmt]",
-        "b/paired.py::body[plain]",
+    # ';' inside one --select is and: type paired and case cmt
+    assert ids(select(project, select=["type=paired;case=cmt"])[0]) == ["b/paired.py::body[case=cmt]"]
+    assert ids(select(project, select=["case=cmt,plain"])[0]) == [
+        "b/paired.py::body[case=cmt]",
+        "b/paired.py::body[case=plain]",
     ]
 
 
@@ -222,8 +229,8 @@ def test_repeated_select_ors_its_clauses(project):
     # under the old AND-across-options rule this pair would be empty: no test is both backend=oss and tag=mine
     assert ids(select(project, select=["backend=oss", "tag=mine"])[0]) == [
         "a/x.test::x[backend=oss]",
-        "b/paired.py::body[cmt]",
-        "b/paired.py::body[plain]",
+        "b/paired.py::body[case=cmt]",
+        "b/paired.py::body[case=plain]",
     ]
 
 
@@ -235,21 +242,21 @@ def test_a_suite_is_paths_and_selects_with_a_name(project):
         "a/y.test_slow::y",
         "b/one.test::one",
     ]
-    assert ids(select(project, suites=["cmt"])[0]) == ["b/paired.py::body[cmt]"]
+    assert ids(select(project, suites=["cmt"])[0]) == ["b/paired.py::body[case=cmt]"]
 
 
 def test_an_id_is_taken_verbatim(project):
-    assert ids(select(project, ids=["b/paired.py::body[plain]"])[0]) == ["b/paired.py::body[plain]"]
+    assert ids(select(project, ids=["b/paired.py::body[case=plain]"])[0]) == ["b/paired.py::body[case=plain]"]
 
 
 def test_an_id_is_added_to_what_paths_and_selects_give(project):
-    slow, plain = "a/y.test_slow::y", "b/paired.py::body[plain]"
+    slow, plain = "a/y.test_slow::y", "b/paired.py::body[case=plain]"
     selected, why_not = select(project, paths=["b/one.test"], ids=[plain])
     assert ids(selected) == ["b/one.test::one", plain]
     assert why_not["b/solo.py::solo"] == "outside the given paths"
     # no select, path or tag takes out a test that is named by id
     assert ids(select(project, select=["type=python"], ids=[slow])[0]) == [slow, "b/solo.py::solo"]
-    assert ids(select(project, suites=["cmt"], ids=[slow])[0]) == [slow, "b/paired.py::body[cmt]"]
+    assert ids(select(project, suites=["cmt"], ids=[slow])[0]) == [slow, "b/paired.py::body[case=cmt]"]
     # a --select clause still narrows within the given paths for the tests that are not named
     assert ids(select(project, paths=["a"], select=["backend=oss"], ids=[plain])[0]) == [
         "a/x.test::x[backend=oss]",
@@ -263,7 +270,7 @@ def test_an_id_is_added_to_what_paths_and_selects_give(project):
     "kwargs, message",
     [
         ({"select": ["tag=smok"]}, "no scanned test has tag"),
-        ({"select": ["backend=gcs"]}, "axis 'backend' has no value"),
+        ({"select": ["backend=gcs"]}, "parameter 'backend' has no value"),
         ({"select": ["backnd=oss"]}, "unknown key 'backnd'"),
         ({"select": ["tag="]}, "write key=value"),
         ({"paths": ["test/nowhere"]}, "holds no test"),
@@ -329,12 +336,12 @@ def test_why_line_says_matches_no_select_clause_once(project):
     assert why_not["b/solo.py::solo"] == "matches no --select clause"
 
 
-@pytest.mark.parametrize("expr", ["tag=a", "type=sqllogic", "params=cmt,plain", "backend=oss", "tag=mine"])
+@pytest.mark.parametrize("expr", ["tag=a", "type=sqllogic", "case=cmt,plain", "backend=oss", "tag=mine"])
 def test_a_negated_select_and_the_equivalent_skip_choose_the_same_tests(project, expr):
     assert ids(select(project, select=[f"!{expr}"])[0]) == ids(select(project, skip=[expr])[0])
 
 
-@pytest.mark.parametrize("expr", ["tag=a", "backend=oss", "params=cmt"])
+@pytest.mark.parametrize("expr", ["tag=a", "backend=oss", "case=cmt"])
 def test_a_negated_select_and_skip_agree_on_top_of_a_positive_selection(project, expr):
     with_negation = select(project, paths=["a", "b"], select=[f"!{expr}"])[0]
     with_skip = select(project, paths=["a", "b"], skip=[expr])[0]
@@ -349,7 +356,7 @@ def test_a_two_term_negation_only_clause_becomes_two_skips_by_de_morgan(project)
     assert ids(negation) == ids(two_skips) == ["b/one.test::one", "b/solo.py::solo"]
     assert why_not["a/y.test_slow::y"] == "--skip tag=a (from --select !tag=a;!tag=mine)"
     assert why_not["a/x.test::x[backend=oss]"] == "--skip tag=a (from --select !tag=a;!tag=mine)"
-    assert why_not["b/paired.py::body[cmt]"] == "--skip tag=mine (from --select !tag=a;!tag=mine)"
+    assert why_not["b/paired.py::body[case=cmt]"] == "--skip tag=mine (from --select !tag=a;!tag=mine)"
 
 
 def test_a_mixed_clause_is_an_ordinary_positive_selection(project):
@@ -362,10 +369,10 @@ def test_a_mixed_clause_is_an_ordinary_positive_selection(project):
         ids(lone_skip)
         == [
             "a/x.test::x[backend=dbx]",
-            "a/y.test_slow::y",  # a --skip given: the base is `all`; y has no `backend` axis, so the clause never holds for it
+            "a/y.test_slow::y",  # a --skip given: the base is `all`; y has no `backend` parameter, so the clause never holds for it
             "b/one.test::one",
-            "b/paired.py::body[cmt]",
-            "b/paired.py::body[plain]",
+            "b/paired.py::body[case=cmt]",
+            "b/paired.py::body[case=plain]",
             "b/solo.py::solo",
         ]
     )
@@ -469,20 +476,20 @@ def test_a_negation_only_select_alone_replaces_the_default_entirely(tmp_path):
 def test_a_suites_select_entries_are_ord(project):
     assert ids(select(project, suites=["combo"])[0]) == [
         "a/x.test::x[backend=oss]",
-        "b/paired.py::body[cmt]",
-        "b/paired.py::body[plain]",
+        "b/paired.py::body[case=cmt]",
+        "b/paired.py::body[case=plain]",
     ]
 
 
 def test_a_suites_skip_entry_may_be_a_clause(project):
     # trimmed scopes to test/a + test/b (directories, so the slow test under a is in scope), then drops
-    # only tests that are both backend=oss and tag=a -- y has no backend axis, so it is not dropped
+    # only tests that are both backend=oss and tag=a -- y has no backend parameter, so it is not dropped
     assert ids(select(project, suites=["trimmed"])[0]) == [
         "a/x.test::x[backend=dbx]",
         "a/y.test_slow::y",
         "b/one.test::one",
-        "b/paired.py::body[cmt]",
-        "b/paired.py::body[plain]",
+        "b/paired.py::body[case=cmt]",
+        "b/paired.py::body[case=plain]",
         "b/solo.py::solo",
     ]
 
@@ -882,14 +889,14 @@ def test_two_tests_of_one_file_name_get_their_own_directory(tmp_path):
 
 def test_a_path_names_its_paired_file_and_nothing_wider(project):
     assert ids(select(project, paths=["b/paired.test"])[0]) == [
-        "b/paired.py::body[cmt]",
-        "b/paired.py::body[plain]",
+        "b/paired.py::body[case=cmt]",
+        "b/paired.py::body[case=plain]",
     ]
     assert ids(select(project, paths=["a/y.test_slow"])[0]) == ["a/y.test_slow::y"]  # named exactly: asked for
-    with pytest.raises(UsageError, match="no test definition has a params row"):
-        select(project, select=["params=cmtt"])
-    with pytest.raises(UsageError, match="unknown key 'case'"):
-        select(project, select=["case=cmt"])
+    with pytest.raises(UsageError, match=r"parameter 'case' has no value \['cmtt'\]"):
+        select(project, select=["case=cmtt"])
+    with pytest.raises(UsageError, match="unknown key 'cse'; keys are tag, type, path, suite, backend, case"):
+        select(project, select=["cse=cmt"])
 
 
 def test_retries_is_a_rule_field_and_a_whole_number(tmp_path):
@@ -929,74 +936,71 @@ def test_a_tests_own_binding_of_a_kind_replaces_the_rules(tmp_path):
     assert by_name["own"].bind_lines() == ["bind: storage=b  <- @test"]
 
 
-AXIS_BIND_CONF = """
-    from ducktest5 import Variant, default, match
+MATRIX_BIND_CONF = """
+    from ducktest5 import default, match
     from ducktest5.resources import StorageDef
 
     STORAGES = [StorageDef("a", "/tmp/a"), StorageDef("b", "/tmp/b")]
-    AXES = {"store": [Variant("b", storage="b")]}
+    MATRIX = {"store": {"b": {"storage": "b"}}}
     RULES = RULES_HERE
 """
 
 
-def test_an_axis_value_replaces_what_a_default_binds_and_says_so(tmp_path):
-    conf = AXIS_BIND_CONF.replace("RULES_HERE", '[default(storage="a", axes=["store"])]')
+def test_a_matrix_value_replaces_what_a_default_binds_and_says_so(tmp_path):
+    conf = MATRIX_BIND_CONF.replace("RULES_HERE", '[default(storage="a", matrix=["store"])]')
     tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
     assert [d.id for d, _ in tests[0].inputs] == ["b"]
-    assert tests[0].bind_lines() == ["bind: storage=b  <- AXES store=b"]
+    assert tests[0].bind_lines() == ["bind: storage=b  <- MATRIX store=b"]
     assert tests[0].why == [
         "storage='a'  <- ducktest_conf.py: default",
-        "axes=['store']  <- ducktest_conf.py: default",
-        "storage='b'  <- AXES store=b",
+        "matrix=['store']  <- ducktest_conf.py: default",
+        "storage='b'  <- MATRIX store=b",
     ]
 
 
 @pytest.mark.parametrize(
     "rules, own, source",
     [
-        ('[default(axes=["store"]), match("t.py", storage="a")]', "", "ducktest_conf.py: match 't.py'"),
-        ('[default(storage="a", axes=["store"])]', "storage='a'", "@test"),
+        ('[default(matrix=["store"]), match("t.py", storage="a")]', "", "ducktest_conf.py: match 't.py'"),
+        ('[default(storage="a", matrix=["store"])]', "storage='a'", "@test"),
     ],
 )
-def test_a_kind_an_axis_value_and_a_match_or_test_both_bind_is_an_error(tmp_path, rules, own, source):
+def test_a_kind_a_matrix_value_and_a_match_or_test_both_bind_is_an_error(tmp_path, rules, own, source):
     body = f"from ducktest5 import test\n@test({own})\ndef t(ctx): pass"
-    message = f"t.py::t[store=b]: storage= is 'a' by {source} and 'b' by AXES store=b; bind it in one place"
+    message = f"t.py::t[store=b]: storage= is 'a' by {source} and 'b' by MATRIX store=b; bind it in one place"
     with pytest.raises(UsageError, match=re.escape(message)):
-        tree(tmp_path, {"test/ducktest_conf.py": AXIS_BIND_CONF.replace("RULES_HERE", rules), "test/t.py": body})
+        tree(tmp_path, {"test/ducktest_conf.py": MATRIX_BIND_CONF.replace("RULES_HERE", rules), "test/t.py": body})
 
 
-def test_a_kind_two_axis_values_of_one_test_both_bind_is_an_error(tmp_path):
+def test_a_kind_two_matrix_values_of_one_test_both_bind_is_an_error(tmp_path):
     conf = """
-        from ducktest5 import Variant, default
+        from ducktest5 import default
         from ducktest5.resources import StorageDef
 
         STORAGES = [StorageDef("s3", "s3://b"), StorageDef("proxied", "/tmp/p")]
-        AXES = {
-            "storage": [Variant("s3", storage="s3")],
-            "via": [Variant("direct"), Variant("reverse-proxy", storage="proxied")],
+        MATRIX = {
+            "storage": {"s3": "s3"},
+            "via": {"direct": {}, "reverse-proxy": {"storage": "proxied"}},
         }
-        RULES = [default(axes=["storage", "via"])]
+        RULES = [default(matrix=["storage", "via"])]
     """
     message = (
-        "t.test::t[storage=s3,via=reverse-proxy]: storage= is given by AXES storage=s3 and by AXES via=reverse-proxy; "
-        "bind it in one place"
+        "t.test::t[storage=s3,via=reverse-proxy]: storage= is given by MATRIX storage=s3 and by MATRIX "
+        "via=reverse-proxy; bind it in one place"
     )
     with pytest.raises(UsageError, match=re.escape(message)):
         tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
 
 
-def test_a_value_an_axis_value_and_a_params_row_both_give_is_a_scan_error(tmp_path):
+def test_a_value_a_matrix_value_and_a_local_value_both_give_is_a_scan_error(tmp_path):
     conf = """
-        from ducktest5 import Variant, default
+        from ducktest5 import default
 
-        AXES = {"storage": [Variant("s3")]}
-        RULES = [default(axes=["storage"])]
+        MATRIX = {"storage": {"s3": {}}}
+        RULES = [default(matrix=["storage"])]
     """
-    body = "from ducktest5 import test\n@test(params={'wide': {'storage': 'x'}})\ndef t(ctx): pass"
-    message = (
-        "t.py::t[wide,storage=s3]: the value 'storage' is given by AXES storage=s3 and by the params row 'wide'; "
-        "give it in one place"
-    )
+    body = "from ducktest5 import test\n@test(matrix=[{'case': {'wide': {'storage': 'x'}}}])\ndef t(ctx): pass"
+    message = "t.py::t[storage=s3,case=wide]: 'storage' is given by both MATRIX storage=s3 and matrix case=wide"
     with pytest.raises(UsageError, match=re.escape(message)):
         tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.py": body})
 
@@ -1030,15 +1034,15 @@ def test_bind_is_not_a_keyword_any_more_and_the_error_names_the_ones_there_are(t
         tree(tmp_path / "2", {"test/ducktest_conf.py": BIND_CONF, "test/own.py": body})
 
 
-def test_an_axis_value_that_unsets_a_credentials_names_does_not_hide_it(tmp_path, monkeypatch):
+def test_a_matrix_value_that_unsets_a_credentials_names_does_not_hide_it(tmp_path, monkeypatch):
     conf = """
-        from ducktest5 import Variant, default
+        from ducktest5 import default
         from ducktest5.resources import S3CredentialDef, StorageDef
 
         STORAGES = [StorageDef("bucket", "s3://bucket")]
         CREDENTIALS = [S3CredentialDef.from_aws_env("key", scopes=["bucket"])]
-        AXES = {"auth": [Variant("key"), Variant("none", process_env={"AWS_ACCESS_KEY_ID": None})]}
-        RULES = [default(storage="bucket", axes=["auth"])]
+        MATRIX = {"auth": {"key": {}, "none": {"process_env": {"AWS_ACCESS_KEY_ID": None}}}}
+        RULES = [default(storage="bucket", matrix=["auth"])]
     """
     tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
     assert [[d.id for d, _ in c.inputs] for c in tests] == [["bucket", "key"], ["bucket", "key"]]
@@ -1233,7 +1237,7 @@ def test_scan_env_says_where_helpers_come_from(tmp_path, clean_path, monkeypatch
 
 
 # -----------------------------------------------------------------------------
-# One option set: a rule, @test and an axis value take the same names
+# One option set: a rule, @test and a MATRIX value take the same names
 #
 
 OPTIONS = (
@@ -1247,12 +1251,12 @@ OPTIONS = (
     [
         (f"RULES = [default({OPTIONS})]", "@test()"),
         ("RULES = []", f"@test({OPTIONS})"),
-        (f'AXES = {{"k": [Variant("v", {OPTIONS})]}}\nRULES = [default(axes=["k"])]', "@test()"),
+        (f'MATRIX = {{"k": {{"v": dict({OPTIONS})}}}}\nRULES = [default(matrix=["k"])]', "@test()"),
     ],
-    ids=["rule", "@test", "axis value"],
+    ids=["rule", "@test", "matrix value"],
 )
-def test_every_option_works_on_a_rule_on_test_and_on_an_axis_value(tmp_path, conf, body):
-    head = "from ducktest5 import Variant, default\n"
+def test_every_option_works_on_a_rule_on_test_and_on_a_matrix_value(tmp_path, conf, body):
+    head = "from ducktest5 import default\n"
     (test,) = tree(
         tmp_path,
         {
@@ -1269,15 +1273,76 @@ def test_every_option_works_on_a_rule_on_test_and_on_an_axis_value(tmp_path, con
     assert "t" in test.tags
 
 
-def test_an_axis_value_takes_no_axes_and_an_unknown_option_names_the_ones_there_are(tmp_path):
+def test_a_matrix_value_takes_no_matrix_and_an_unknown_slot_names_the_ones_there_are(tmp_path):
+    where = r"MATRIX\['k'\]\['v'\]"
     for option, message in (
-        ('axes=["k"]', r"Variant 'v': unknown option\(s\) \['axes'\]; it takes \['tags', 'engines', 'mutex'"),
-        ('roots={"data_dir": "/d"}', r"Variant 'v': unknown option\(s\) \['roots'\]"),
-        ('inputs=["a"]', r"Variant 'v': unknown option\(s\) \['inputs'\]"),
+        ('{"matrix": ["k"]}', where + r": unknown option\(s\) \['matrix'\]; it takes \['tags', 'engines', 'mutex'"),
+        ('{"roots": {"data_dir": "/d"}}', where + r": unknown option\(s\) \['roots'\]"),
+        (
+            '"default"',
+            where + r" = 'default': a string fills the slot the parameter is named after, and 'k' is no slot",
+        ),
+        ("7", where + r" = 7; a value is a dict of slots"),
     ):
-        conf = f'from ducktest5 import Variant\nAXES = {{"k": [Variant("v", {option})]}}\n'
+        conf = f'MATRIX = {{"k": {{"v": {option}}}}}\n'
         with pytest.raises(UsageError, match=message):
             tree(tmp_path, {"test/ducktest_conf.py": conf, "test/a.test": ""})
+
+
+def test_a_string_value_fills_the_slot_the_parameter_is_named_after(tmp_path):
+    conf = """
+        from ducktest5 import default
+        from ducktest5.resources import StorageDef
+
+        STORAGES = [StorageDef("a", "/tmp/a"), StorageDef("b", "/tmp/b")]
+        MATRIX = {"storage": {"here": "a", "there": "b"}}
+        RULES = [default(matrix=["storage"])]
+    """
+    tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
+    assert [(c.id, [d.id for d, _ in c.inputs]) for c in tests] == [
+        ("t.test::t[storage=here]", ["a"]),
+        ("t.test::t[storage=there]", ["b"]),
+    ]
+
+
+@pytest.mark.parametrize(
+    "conf, body, message",
+    [
+        ("", "matrix='storage'", r"matrix='storage'; it is a list"),
+        ("", "matrix=[{'tag': {'a': 1}}]", r"parameter 'tag'; a parameter name is a Python identifier and not one of"),
+        ("", "matrix=[{'case': {}}]", r"parameter 'case' must be a non-empty dict of value name -> value"),
+        ("", "matrix=[{'case': {'a b': 1}}]", r"value name 'a b'; a value name is a non-empty string without"),
+        (
+            "",
+            "matrix=[{'case': {'a': 1}}, {'case': {'b': 2}}]",
+            r"@test: matrix parameter 'case' is given by @test too; a parameter has one name",
+        ),
+        (
+            'MATRIX = {"storage": {"s3": {}}}',
+            "matrix=[{'storage': {'a': 1}}]",
+            r"t.py::t: @test defines parameter 'storage', which the project's MATRIX has; give it another name",
+        ),
+        (
+            'MATRIX = {"backend": {"oss": {}}}\nRULES = [default(matrix=["backend"])]',
+            "matrix=[{'backend': {'a': 1}}]",
+            r"@test: matrix parameter 'backend' is given by ducktest_conf.py: default too",
+        ),
+    ],
+)
+def test_a_matrix_that_cannot_make_cells_is_a_scan_error(tmp_path, conf, body, message):
+    files = {
+        "test/ducktest_conf.py": "from ducktest5 import default\n" + conf,
+        "test/t.py": f"from ducktest5 import test\n@test({body})\ndef t(ctx): pass\n",
+    }
+    with pytest.raises(UsageError, match=message):
+        tree(tmp_path, files)
+
+
+def test_a_local_parameter_on_a_rule_runs_every_test_it_matches_over_its_values(tmp_path):
+    conf = 'from ducktest5 import match\nRULES = [match("*.test", matrix=[{"size": {"small": 1, "big": 1000}}])]'
+    tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
+    assert ids(tests) == ["t.test::t[size=small]", "t.test::t[size=big]"]
+    assert resolve(tests[1]).value_map == {"size": 1000}
 
 
 def test_init_sql_adds_up_from_the_rules_down_and_names_only_its_source(tmp_path):

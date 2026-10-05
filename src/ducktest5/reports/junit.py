@@ -9,7 +9,7 @@ testcases by id, so the XML does not depend on which test ended first.
     ERROR       <error type="ERROR">           something else did, so the test proved nothing
     BLOCKED     <error type="BLOCKED">         a service or engine did not come up; it never ran
     SKIPPED     <skipped message="<reason>">   a `require` not met, or a body's skip(reason)
-    PASSED      nothing                        with the run, the runner and the variants as properties
+    PASSED      nothing                        with the run, the runner and the cell's values as properties
 
 The text of a `<failure>` or an `<error>` is everything the terminal would show for that test, so a
 CI annotation needs no second place to look.
@@ -29,7 +29,7 @@ def _file_of(test):
 
 def _properties(test):
     out = {"run": test.get("run"), "runner": test.get("runner"), "type": test.get("type")}
-    out.update({f"variant.{axis}": value for axis, value in (test.get("variants") or {}).items()})
+    out.update({f"matrix.{p}": value for p, value in (test.get("matrix") or {}).items()})
     if (test.get("attempts") or 1) > 1:
         out["attempts"] = test["attempts"]
     if test.get("note"):

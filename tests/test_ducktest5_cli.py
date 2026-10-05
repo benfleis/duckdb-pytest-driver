@@ -97,32 +97,31 @@ def test_scan_prints_the_record_of_each_selected_test(tree, capsys):
 def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, capsys):
     (tree / "test" / "ducktest_conf.py").write_text(
         textwrap.dedent("""
-            from ducktest5 import Variant, default, match
+            from ducktest5 import default, match
             from ducktest5.resources import StorageDef
             from ducktest5.services.http import HttpServerDef
             STORAGES = [StorageDef("served", "{store.url}", inputs=[HttpServerDef("store")])]
-            AXES = {"storage": [Variant(
-                "s3",
-                storage="served",
-                requires=["httpfs"],
-                settings={"s3_region": "eu"},
-                process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None},
-            )]}
-            RULES = [default(tags=["all"], values={"region": "eu"}), match("a/**", axes=["storage"])]
+            MATRIX = {"storage": {"s3": {
+                "storage": "served",
+                "requires": ["httpfs"],
+                "settings": {"s3_region": "eu"},
+                "process_env": {"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None},
+            }}}
+            RULES = [default(tags=["all"], values={"region": "eu"}), match("a/**", matrix=["storage"])]
         """)
     )
     assert main(["scan", "test/a/x.test", "--env"]) == 0
     assert capsys.readouterr().out == textwrap.dedent(
         f"""\
         a/x.test::x[storage=s3]
-          bind: storage=served  <- AXES storage=s3
-          require: httpfs  <- AXES storage=s3
-          set: s3_region=eu  <- AXES storage=s3
+          bind: storage=served  <- MATRIX storage=s3
+          require: httpfs  <- MATRIX storage=s3
+          set: s3_region=eu  <- MATRIX storage=s3
           values: region=eu  <- ducktest_conf.py: default
-          values: storage=s3  <- AXES storage
+          values: storage=s3  <- MATRIX storage
           root: data_dir={tree}/test/data  <- default storage
-          process env: AWS_PROFILE=ducktest  <- AXES storage=s3
-          process env unset: AWS_ACCESS_KEY_ID  <- AXES storage=s3
+          process env: AWS_PROFILE=ducktest  <- MATRIX storage=s3
+          process env unset: AWS_ACCESS_KEY_ID  <- MATRIX storage=s3
           root: <from service store>  <- storage served
         """
     )

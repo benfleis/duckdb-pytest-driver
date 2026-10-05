@@ -27,13 +27,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 CONF = """
-    from ducktest5 import Variant, default
+    from ducktest5 import default
 
-    AXES = {"client": [
-        Variant("httplib", requires=["httpfs"], settings={"httpfs_client_implementation": "httplib"}),
-        Variant("curl", requires=["httpfs"], settings={"httpfs_client_implementation": "curl"}),
-    ]}
-    RULES = [default(axes=["client"])]
+    MATRIX = {"client": {
+        "httplib": {"requires": ["httpfs"], "settings": {"httpfs_client_implementation": "httplib"}},
+        "curl": {"requires": ["httpfs"], "settings": {"httpfs_client_implementation": "curl"}},
+    }}
+    RULES = [default(matrix=["client"])]
 """
 
 BODY = """

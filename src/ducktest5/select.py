@@ -7,9 +7,10 @@
    term: it holds when the test has none of those values. `!` starts a term and nowhere else --
    `key=!v1` and `key=v1,!v2` are errors that name the right spelling (`!key=v1`). A term with no
    `key=` is a `path` term (below):
-   `sql/cloud` is `path=sql/cloud`, `!sql/cloud` is `!path=sql/cloud`. Keys: `tag`, `type`, `params`,
-   `path`, `suite`, and the name of any variant axis. An unknown key is an error, and so is a tag, axis
-   value or path that no scanned test has -- a term that can never match is a typo.
+   `sql/cloud` is `path=sql/cloud`, `!sql/cloud` is `!path=sql/cloud`. Keys: `tag`, `type`, `path`,
+   `suite`, and the name of any matrix parameter (`storage=s3`, `case=varchar`). An unknown key is an
+   error, and so is a tag, parameter value or path that no scanned test has -- a term that can never
+   match is a typo.
 2. CLAUSE. The argument of one `--select` or one `--skip` is a CLAUSE: one or more TERMs separated by
    `;`. A clause holds for a test when ALL its terms do (AND). Whitespace around `;`, `=` and `,` is
    ignored. An empty term (`a=1;;b=2`, a trailing `;`) is an error.
@@ -139,9 +140,8 @@ def _looks_like_path(s):
 
 @dataclass
 class _Ctx:
-    axes: dict
+    params: dict  # parameter -> the names of its values
     known_tags: set
-    known_params: set
     tests: list
     project_root: str
     working_dir: str
@@ -200,22 +200,21 @@ def _parse_term(term, flag, origin, ctx):
         unknown = [v for v in values if v not in known and v not in ("all", "default")]
         if unknown:
             raise UsageError(f"{flag} {term!r}: no suite {unknown}; known suites: {sorted(known)}")
-    elif key in ctx.axes:
-        unknown = [v for v in values if v not in ctx.axes[key]]
+    elif key in ctx.params:
+        unknown = [v for v in values if v not in ctx.params[key]]
         if unknown:
-            raise UsageError(f"{flag} {term!r}: axis {key!r} has no value {unknown}; it has {sorted(ctx.axes[key])}")
+            raise UsageError(
+                f"{flag} {term!r}: parameter {key!r} has no value {unknown}; it has {sorted(ctx.params[key])}"
+            )
     elif key == "type":
         if unknown := [v for v in values if v not in ("sqllogic", "paired", "python")]:
             raise UsageError(f"{flag} {term!r}: no type {unknown}; types are sqllogic, paired, python")
-    elif key == "params":
-        if unknown := [v for v in values if v not in ctx.known_params]:
-            raise UsageError(f"{flag} {term!r}: no test definition has a params row {unknown}")
     elif _looks_like_path(term):
         raise UsageError(f"{flag} {term!r}: a bare path cannot contain '='; write path={key}")
     else:
         raise UsageError(
-            f"{flag} {term!r}: unknown key {key!r}; keys are tag, type, params, path, suite"
-            + "".join(f", {a}" for a in ctx.axes)
+            f"{flag} {term!r}: unknown key {key!r}; keys are tag, type, path, suite"
+            + "".join(f", {p}" for p in ctx.params)
         )
     return negated, key, values
 
@@ -230,13 +229,11 @@ def _matches(test, key, values, ctx):
         return any(v in test.tags for v in values)
     if key == "type":
         return test.definition.type in values
-    if key == "params":
-        return test.params_key in values
     if key == "path":
         return any(_path_term_matches(test.definition.root_path, v) for v in values)
     if key == "suite":
         return any(_in_suite(test, v, ctx) for v in values)
-    return key in test.axis_values and test.axis_values[key].id in values
+    return key in test.cell and test.cell[key].name in values
 
 
 def _in_suite(test, name, ctx):
@@ -350,10 +347,12 @@ def _not_in_positive_reason(test, positive_clauses, ctx):
 def apply(tests, selection, project, working_dir=None):
     """Returns (selected, why_not) where why_not maps a test id to the reason it was left out.
     `working_dir` anchors command-line `path=`/bare-path terms; it defaults to the project root."""
-    axes = {axis: set(values) for axis, values in project.axes.items()}
+    params = {p: set(values) for p, values in project.matrix.items()}
+    for c in tests:
+        for p, v in c.cell.items():
+            params.setdefault(p, set()).add(v.name)
     known_tags = {t for c in tests for t in c.tags}
-    known_params = {c.params_key for c in tests if c.params_key is not None}
-    ctx = _Ctx(axes, known_tags, known_params, tests, project.root, working_dir or project.root, project.suites)
+    ctx = _Ctx(params, known_tags, tests, project.root, working_dir or project.root, project.suites)
 
     if selection.is_bare():
         paths = {}

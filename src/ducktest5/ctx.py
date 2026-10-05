@@ -11,13 +11,14 @@ from .steps import step
 
 class Context:
     """What a test body receives: the Test's own binder. A Client on each engine the test holds
-    (`client(name)`), its `values`, its `params` row, and what it gathers as it runs -- the checks that
+    (`client(name)`), its `values`, its `params` (every parameter of its cell, by name), and what it gathers as it runs -- the checks that
     failed, the teardowns, the log of its statements. Its identity is the Test's: the engine
     instances it holds and its test environment.
 
     `values` holds the `{NAME}` values its templates see, by the names a `.test` sees them: `temp_dir`
     (the test's own place), `temp_dir_root` (the run level above it), `data_dir`, `local_temp_dir`,
-    `local_data_dir`, each axis name (the id of the test's value on it), and the test's values."""
+    `local_data_dir`, each MATRIX parameter's name (the name of the cell's value of it), and the
+    test's values -- a local parameter's fields among them."""
 
     def __init__(
         self,

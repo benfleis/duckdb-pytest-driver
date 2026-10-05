@@ -19,6 +19,7 @@ notes. Code: `src/ducktest5/` in this repo; the delta example is duckdb-delta, b
 | engine | a thing that runs SQL: DuckDB, Spark | `ENGINES`; `@test(engines=[...])` |
 | client | the SQL verbs on one engine, for one test | `ctx.client("duck")` |
 | rule | gives tests what they need, all or by file | `RULES`: `default(...)`, `match(...)` |
+| matrix | parameters, each with named values; a test runs once per cell | `MATRIX`; `matrix=[...]` on a rule or `@test` |
 | Context | the one object a Python body gets | `def body(ctx)` |
 
 ## 1.1 A `.test`, with no configuration and on a storage
@@ -65,7 +66,7 @@ def rule_matched_body(ctx):
 
 A failure stops the test. SQL is a plain string: an f-string is a scan error that says what to do.
 Names are case-insensitive: `ctx.values.auth` in Python is `{AUTH}` in a `.test`. Give your own with
-`ctx.values.set(name=...)`, a rule's `values=` or a verb's keyword; a params row and axis values are values too.
+`ctx.values.set(name=...)`, a rule's `values=` or a verb's keyword; the values of a cell are values too (1.7).
 
 A body can also wrap a `.test` of the same name: Python does what SQL cannot, then `ctx.run_paired()`
 runs the file through the binary, with the same values. From `examples/ladder/03_credentials/paired_scoped_secret.py`:
@@ -114,7 +115,7 @@ run   own_inputs.py::own_inputs
         storage='scratch_b'  <- @test
 skip  excluded.test::excluded  -- not in suite 'default': tag opt-in
 $ ducktest5 run
-5 passed, 1 skipped in 2.67s
+9 passed, 1 skipped in 2.67s
 run dir: <repo>/examples/ladder/02_rules/duckdb_unittest_tempdir/2026-09-30T12-57-31Z--swift-raven-54
 ```
 
@@ -129,7 +130,8 @@ SUITES = {"smoke": {"paths": ["sql/core"], "select": ["tag=fast"], "skip": ["tag
 ```
 
 `--select`, `--skip` and a suite's `select`/`skip` take `key=value` terms (`tag`, `type`, `path`,
-`suite`, an axis name); `!` negates a term: `--select '!tag=spark'`, `--select 'suite=smoke;!tag=s3'`.
+`suite`, a parameter's name: `storage=s3`); `!` negates a term: `--select '!tag=spark'`,
+`--select 'suite=smoke;!tag=s3'`.
 
 ## 1.5 A failure, and a BLOCKED
 
@@ -175,11 +177,56 @@ the binary skips the file that `ctx.run_paired()` runs, the body ends SKIPPED wi
    value, among those the pattern matches. Deprecated from the start: it is a way in, not a way to
    stay; move the files to a directory or give them tags. The scan says so once, at `-v`.
 
-## 1.7 Options
+## 1.7 A matrix
 
-A rule (`default(...)`, `match(pattern, ...)`), `@test(...)` and an axis value (`Variant(id, ...)`)
-take one set of options. They merge from the root `ducktest_conf.py` down, then `@test`, then each
-axis value of the test. An unknown name is a scan error that lists the ones there are.
+A test can run more than once: once per **cell** of its **matrix**. A matrix is **parameters** (one
+dimension each: `storage`, or a test's own `case`), and each parameter has named **values** (`s3`,
+`varchar`). A cell is one value of every parameter: what runs, and what other tools call a variant.
+Its id names each value, `key=value`:
+`duckdb_creates_partitioned_spark_reads_and_writes[storage=s3,case=varchar]`.
+
+Parameters that several tests share are declared in the root `ducktest_conf.py`, as `MATRIX`. A
+value is a dict of slots, the options of 1.8; a string is the short form for a parameter named after
+a slot (`storage`, `credential`, `service`), and fills that slot. A rule or `@test` names the
+parameters a test runs over with `matrix=[...]`. From delta's `test/ducktest_conf.py`:
+
+```python
+MATRIX = {"storage": {"local": "default", "s3": "s3_lake"}}   # {"local": {"storage": "default"}, ...}
+RULES = [match("cross_engine/**", matrix=["storage"])]
+```
+
+A test can define parameters of its own in the same list, as a dict: `{"case": CASES}`. Their values
+are free data for the body, not slots. From delta's `test/cross_engine/partitioned.py`, shortened:
+
+```python
+CASES = {
+    "varchar": {"columns": "i INTEGER, p VARCHAR", "partition_by": "p", "filter": "p = 'a'", ...},
+    "integer": {...},
+}
+
+@test(engines=["duck", "spark"], matrix=[{"case": CASES}])
+def duckdb_creates_partitioned_spark_reads_and_writes(ctx):
+    case = ctx.params.case                    # this cell's value of `case`: one row of CASES
+    ctx.client("duck").oks("CREATE TABLE t.t ({columns}) PARTITIONED BY ({partition_by})")
+    ctx.client("spark").expects("SELECT i FROM delta.`{TEMP_DIR}/t` WHERE {filter} ORDER BY i", rows=case["filter_ids"])
+```
+
+The rule gives `storage` (2 values), the test `case` (6): 12 cells. `ctx.params` holds every
+parameter of the cell by name, `ctx.params.case` or `ctx.params["case"]`: the data of a test's own
+value, the name of a `MATRIX` value (`ctx.params.storage` is `"s3"`). The values of a cell are
+`{NAME}`s: a `MATRIX` parameter's name is its value's name (`{storage}`); the fields of a test's own
+value are values (`{columns}`), and a value that is no dict is `{case}` itself.
+
+An id names the parameters in the order the matrix gives them: the rules' from the root
+`ducktest_conf.py` down, then `@test`'s, each where it is first named. A rule can define a parameter
+of its own too. Two parameters of one name are a scan error, and so are a parameter of a test's own
+named as one of `MATRIX`, and two parameters (or a parameter and a rule) that give one `{NAME}`.
+
+## 1.8 Options
+
+A rule (`default(...)`, `match(pattern, ...)`), `@test(...)` and a `MATRIX` value take one set of
+options, the slots. They merge from the root `ducktest_conf.py` down, then `@test`, then the `MATRIX`
+values of the cell. An unknown name is a scan error that lists the ones there are.
 
 | Option | What it gives | Merge |
 | --- | --- | --- |
@@ -190,15 +237,14 @@ axis value of the test. An unknown name is a scan error that lists the ones ther
 | `init_sql="..."` | statements after the settings; never printed, only its source | add up |
 | `process_env={...}` | the engine process's variables; `None` unsets one | by name |
 | `engines=[...]` | the engines the test drives | add up |
-| `axes=[...]` | the axes of AXES the test takes part in (not on an axis value) | add up |
+| `matrix=[...]` | the parameters the test runs over (1.7; not on a `MATRIX` value) | add up |
 | `tags=[...]` | what selects it; `opt-in` keeps it out of a bare run | add up |
 | `mutex="name"` | what the test must have to itself while it runs | add up |
 | `timeout=N` | seconds for the whole test; past it, ERROR | a later one replaces |
 | `retries=N` | runs again, alone, after a FAILED or ERROR | a later one replaces |
 
-`@test` also takes `params={key: {...}}`: one test per row. An axis value gives way to nothing: a
-value or binding it gives that a rule, `@test`, the params row or another axis value gives too is a
-scan error; only what `default()` binds gives way to it.
+A value of a cell gives way to nothing: a value or binding it gives that a rule, `@test` or another
+parameter of the cell gives too is a scan error; only what `default()` binds gives way to it.
 
 ---
 
@@ -223,8 +269,8 @@ The handler contract, for a kind author: `create` (adopts what exists), `read`, 
 absent thing succeeds), `list(run_token)`, `ready`; optional `start`/`stop`, `alloc`/`dealloc`,
 `expires_at`/`renew`. `acquire(mode, key)` shares the instance, locks it, or mints a child for `key`.
 `retain` is `never | on_failure | always`. `check_contract` in `resources/contract.py` tests a kind.
-A Test is a consumer, not a resource: its params row and axis values are its properties, its
-bindings its inputs, and it has no handlers.
+A Test is a consumer, not a resource: the values of its cell are its properties, its bindings its
+inputs, and it has no handlers.
 
 ## 2.2 Engines, clients, Context
 
@@ -251,22 +297,23 @@ once. `ctx.run_paired()` hands the body's `.test` twin to the binary.
 Two things reach a test. **Bindings** name inputs by id, one keyword per kind: `storage=` (one of
 STORAGES), `credential=` (one of CREDENTIALS), `service=` (one of SERVICES). **Values** are the
 `{NAME}`s. Both merge in one order: the root `ducktest_conf.py`, each file down to the test, then
-`@test`. Dict fields update by key, list fields (`engines`, `tags`) add.
+`@test`, then the values of the test's cell. Dict fields update by key, list fields (`engines`,
+`tags`) add.
 
 | Source | Bindings | Values |
 | --- | --- | --- |
 | rules, then `@test` (later replaces) | `default(storage=)`, `match(credential=)`, `@test(storage=)` | a rule's `values=` |
-| params row | | `@test(params=...)` |
-| axis value | `Variant(storage=)`; replaces only `default()` | a Variant's `values`, `{auth}` = its id |
+| a `MATRIX` value | `{"storage": ...}`; replaces only `default()` | its `values`; `{storage}` = its name |
+| a value of a test's own parameter | | its fields, or `{case}` = the value |
 | at run time | | `ctx.values.set(...)`, then `client.values.set(...)`, then the verb's keywords |
 
 A value may name an attribute of an input the test holds, or of an input of one, as `{id.name}`:
 `values={"AWS_ENDPOINT": "{s3.host_port}"}` in a test that holds a credential the `s3` service makes.
 It is filled when the test runs; `scan --env` shows it as written. A rule's `requires=["httpfs"]`
-loads an extension first, as a Variant's does, so its `settings` can name a setting of it.
+loads an extension first, as a `MATRIX` value's does, so its `settings` can name a setting of it.
 
-An axis value and a rule, `@test` or the params row that bind the same kind or give the same value
-is a scan error naming both; so are two axis values that give one name. Only `default()` gives way. Templates fill in two steps: a value that holds `{NAME}`s is filled
+A value of a cell and a rule or `@test` that bind the same kind or give the same value is a scan
+error naming both; so are two values of a cell that give one name. Only `default()` gives way. Templates fill in two steps: a value that holds `{NAME}`s is filled
 first from the other values (a cycle is an error), then the SQL in one pass. A secret is never a value.
 
 ## 2.4 Storages, temp levels, tokens
@@ -402,7 +449,7 @@ warm engine.
 
 ## 2.8 What the repo owns
 
-`ducktest_conf.py`: `ENGINES`, `SERVICES`, `STORAGES`, `CREDENTIALS`, `AXES`, `SUITES`, `RULES`,
+`ducktest_conf.py`: `ENGINES`, `SERVICES`, `STORAGES`, `CREDENTIALS`, `MATRIX`, `SUITES`, `RULES`,
 `PYTHONPATH`, `INHERIT_ENV`; kinds of its own beside its tests (a catalog service, `UCTable`). ducktest owns
 lifetime, identity, delivery, dialects, and the shared kinds.
 The name is exact: a `ducktest_config.py`, `ducktestconf.py` or `Ducktest_Conf.py` is not read,
@@ -424,7 +471,7 @@ path itself. `scan --env` prints it first.
 | env | only an engine's process variables (`process_env`, a credential's SDK names); a test's `{NAME}`s are `ctx.values`, never secrets | `require-env`: a `.test` reads `{NAME}` from the process |
 | client | one engine's lease for one test | a DuckDB language binding |
 | bind | give a test a storage, credential or service | a prepared-statement parameter; DuckDB's binder |
-| Variant | one value of an axis | DuckDB and Delta's `VARIANT` type |
+| parameter | one dimension of a matrix (1.7) | a prepared-statement parameter |
 
 ## 2.10 Not built yet
 
@@ -447,7 +494,7 @@ coverage, its minimal-token output, its options -- is phase 2: needed, not dropp
 | --- | --- | --- |
 | 00 | an existing repo's `test/` tree: select by path, `--suite default`, SKIPPED | `00_existing/` |
 | 01 | no config: a `.test`, a Python body, and a body paired with a `.test` | `01_solo/` |
-| 02 | storages, an engine, `default`/`match`, `@test(storage=)`, `ctx.skip` | `02_rules/` |
+| 02 | storages, an engine, `default`/`match`, `@test(storage=)`, a matrix, `ctx.skip` | `02_rules/` |
 | 03 | an S3 credential from env; a test that holds none | `03_credentials/` |
 | 04 | an HTTP service under a storage; BLOCKED | `04_service/` |
 | 05 | a local S3 server (RustFS), a storage and a credential on it | `05_s3/` |
@@ -460,7 +507,7 @@ Spark on one Delta table, each test on local storage and on S3 (`[storage=local]
 `test/ducktest_conf.py`, verbatim:
 
 ```python
-from ducktest5 import Variant, match
+from ducktest5 import match
 from ducktest5.engines.duckdb import duckdb_engine
 from ducktest5.engines.spark import delta_spark
 from ducktest5.resources import default_storage
@@ -476,16 +523,17 @@ S3 = s3_local()
 STORAGES = [default_storage(), S3.storage("s3_lake", "delta")]
 CREDENTIALS = [S3.credential("s3_keys", scopes=["s3_lake"])]
 
-AXES = {"storage": [Variant("local", storage="default"), Variant("s3", storage="s3_lake")]}
+# A value given as a string fills the slot the parameter is named after: here, `storage`.
+MATRIX = {"storage": {"local": "default", "s3": "s3_lake"}}
 
 # The .test files stay on local storage.
-RULES = [match("cross_engine/**", axes=["storage"])]
+RULES = [match("cross_engine/**", matrix=["storage"])]
 ```
 
-A params row and a keyword value, from `test/cross_engine/create_table.py`, shortened:
+A parameter of the test's own and a keyword value, from `test/cross_engine/create_table.py`, shortened:
 
 ```python
-@test(engines=["duck", "spark"], params=PROPERTY_SETS)
+@test(engines=["duck", "spark"], matrix=[{"properties": PROPERTY_SETS}])
 def duckdb_creates_then_spark_and_duckdb_interleave(ctx):
     duck = ctx.client("duck")
     duck.setup("ATTACH '{TEMP_DIR}/t' AS t (TYPE delta)")
@@ -494,17 +542,17 @@ def duckdb_creates_then_spark_and_duckdb_interleave(ctx):
         CREATE TABLE t.t (i INTEGER, s VARCHAR) {with_properties};
         INSERT INTO t.t VALUES (1, 'duck'), (2, 'duck'), (3, 'duck');
         """,
-        with_properties=with_clause(ctx.params),
+        with_properties=with_clause(ctx.params.properties),
     )
 ```
 
 # Appendix C. Next
 
 - **Azure**: the azure extension's `.test` files on `AZLocalDef` and `AzureCredentialDef` (built,
-  not yet run live); blob and DFS on real Azure as more values of a `storage` axis.
-- **httpfs**: a `storage` axis (http, s3, s3 through a proxy) and two DuckDB engines (curl,
-  httplib) named by a Variant's `engines`. Needs a proxy kind.
-- **Unity Catalog**: deployments as an axis binding a catalog service and a storage. Needs
+  not yet run live); blob and DFS on real Azure as more values of a `storage` parameter.
+- **httpfs**: a `storage` parameter (http, s3, s3 through a proxy) and a `client` parameter (curl,
+  httplib; `examples/httpfs/`). Needs a proxy kind.
+- **Unity Catalog**: deployments as a parameter binding a catalog service and a storage. Needs
   `TableDef`, catalog services and UC CREATE.
 
 # Appendix D. Open decisions
@@ -519,6 +567,9 @@ binary's `--temp-dir-root` keeps its name (the root is where the temp dirs go) a
 
 # Appendix E. History
 
+- 2026-10-05: `MATRIX` and `matrix=` replace `AXES`, `Variant`, `axes=` and `@test(params=)`; ids
+  print `key=value` for every parameter; `ctx.params` holds every parameter by name; the verbs take
+  no `params=`.
 - 2026-10-02: an Azure connection string is the setting `azure_storage_connection_string`, not a secret.
 - 2026-10-02: `IMDS_` (managed identity) is removed from engines with `AZURE_`, `IDENTITY_`, `MSI_`.
 - 2026-10-02: the same for a refused Azure container: one module holds the bucket and container rules.

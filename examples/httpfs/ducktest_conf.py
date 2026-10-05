@@ -1,6 +1,6 @@
 import os
 
-from ducktest5 import Variant, default, match
+from ducktest5 import default, match
 from ducktest5.services.http import HttpServerDef
 from ducktest5.services.s3local import bucket, s3_local
 
@@ -20,12 +20,12 @@ CREDENTIALS = [S3.credential("minio", scopes=[])]
 # CI starts `python3 -m http.server 8008` in PYHTTP_DIR; the run uses it and does not start it.
 SERVICES = [HttpServerDef("pyhttp").as_existing(address="http://127.0.0.1:8008")]
 
-# Two CI configs (test/configs/httpfs_*.json) as one axis: each test runs once per client.
-AXES = {
-    "client": [
-        Variant("curl", settings={"httpfs_client_implementation": "curl"}),
-        Variant("httplib", settings={"httpfs_client_implementation": "httplib"}),
-    ]
+# Two CI configs (test/configs/httpfs_*.json) as one parameter: each test runs once per client.
+MATRIX = {
+    "client": {
+        "curl": {"settings": {"httpfs_client_implementation": "curl"}},
+        "httplib": {"settings": {"httpfs_client_implementation": "httplib"}},
+    }
 }
 
 # Known gap: process_env does not fill {s3.host_port} as values do, so this repeats the run's address.
@@ -35,7 +35,7 @@ S3_HOST_PORT = (
 
 RULES = [
     # Path style: CI gives each bucket a host name in /etc/hosts; there is no such name here.
-    default(requires=["httpfs"], settings={"s3_url_style": "path"}, axes=["client"]),
+    default(requires=["httpfs"], settings={"s3_url_style": "path"}, matrix=["client"]),
     # A file with `require-env S3_TEST_SERVER_AVAILABLE` gets the S3 keys and the names it requires.
     match(
         "**",

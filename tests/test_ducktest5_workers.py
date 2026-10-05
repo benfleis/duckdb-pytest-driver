@@ -13,7 +13,7 @@ import pytest
 
 from ducktest5 import events, phases, sqllogic
 from ducktest5.engines.duckdb import DuckDBShell, duckdb_engine
-from test_ducktest5_run import FAKE, FakeShell, go, outcomes, py_test, sql_test
+from test_ducktest5_run import FAKE, FakeShell, go, matrix_value, outcomes, py_test, sql_test
 
 SLEEP_S = 0.3  # long enough that tests overlap, short enough for a self-test
 FAKE_SHELL = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_shell.py")
@@ -133,7 +133,6 @@ def test_every_worker_has_a_shell_of_its_own_and_keeps_it_warm(tmp_path):
 
 
 def test_a_test_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_path):
-    from ducktest5.declare import Variant
 
     made = []
 
@@ -146,7 +145,7 @@ def test_a_test_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_p
         ctx.client("duckdb").oks("SELECT 1")
 
     tests = [
-        py_test(body, {"auth": Variant("profile", process_env={"AWS_PROFILE": "ducktest"})}, path="test/env.py"),
+        py_test(body, {"auth": matrix_value("profile", process_env={"AWS_PROFILE": "ducktest"})}, path="test/env.py"),
         py_test(body, path="test/plain.py"),
     ]
     assert go(tmp_path, tests, workers=2, shell_factory=Counted)[0] == 0
@@ -216,7 +215,7 @@ TREE = {
 
         from ducktest5 import test
 
-        @test(params={"a": {}, "b": {}, "c": {}, "d": {}})
+        @test(matrix=[{"n": {"a": 1, "b": 2, "c": 3, "d": 4}}])
         def waits(ctx):
             time.sleep(5)
     """,

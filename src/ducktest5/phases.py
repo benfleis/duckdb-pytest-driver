@@ -91,7 +91,7 @@ def write_tests(run_dir, tests, project, *, working_dir=".", selection=None, for
     """`01-tests.yaml`: every selected test with its test environment as far as it is known with no
     service running. Fields: `schema`, `made_at`, `project` (the root's name), `working_dir` (where
     the paths were read from, relative to the project root), `selection` (what was asked for), and
-    `tests`, one record for each test: `identity` (id, test, type, file, params, variants),
+    `tests`, one record for each test: `identity` (id, test, type, file, matrix),
     `selection` (tags), `preconditions`
     (services, engines, mutex), `runtime` (params, environment,
     timeout, retries) and `why` (the rules that gave the test what it has)."""

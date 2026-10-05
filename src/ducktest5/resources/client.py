@@ -13,7 +13,7 @@ records the failure and lets the body go on, for independent checks a reader wan
 `sql` is one statement, a block of them split on `;`, or a list of statements taken as they are (for
 a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
 and `rows` / `text` belong to the last one. `{name}` placeholders come from the test's values (`ctx.values`, what a `.test` file reads as
-`{NAME}`), from `params=` (a dict: a params row goes there), or from keyword arguments; an
+`{NAME}`; a local matrix parameter's fields are among them), or from keyword arguments; an
 unknown one is an error, and `{{word}}` is a literal brace pair. A value that is a list of rows goes
 in as a SQL VALUES list, so the values a test inserts and the rows it expects back are one definition
 (`L("...")` puts hand-written SQL in a value; rows can then not be derived and must be given). Braces
@@ -223,22 +223,20 @@ class Client:
     def dialect(self):
         return self.engine.dialect if self.engine is not None else None
 
-    def _check(self, on_fail, assertion, *args, **params):
+    def _check(self, on_fail, assertion, *args, **kwargs):
         if on_fail not in ON_FAIL:
             raise ValueError(f"on_fail={on_fail!r}; it is one of {ON_FAIL}")
         try:
-            assertion(*args, **params)
+            assertion(*args, **kwargs)
         except ExpectationFailed as failure:
             if on_fail == "abort_test" or self._record is None:
                 raise
             self._record(failure)
 
-    def _statements(self, sql, params, more):
-        """`params` is a dict of placeholder values (a params row goes here, so its keys cannot collide
-        with a verb's own options); `more` are the same as keywords, for the odd single value."""
+    def _statements(self, sql, more):
+        """`more` are placeholder values given as keywords, over the test's values."""
         known = self.values.names()
-        for layer in (params or {}, more):
-            known.update(layer)
+        known.update(more)
 
         filled = {}  # lower-case name -> its value with the names inside it filled
 
@@ -297,45 +295,45 @@ class Client:
         failed = statements[exc.statement] if exc.statement is not None else "(not a statement of this call)"
         raise ExpectationFailed(self.name, failed, f"statement failed: {exc}") from None
 
-    def rows(self, sql, *, params=None, **more):
-        return self._must_run(self._statements(sql, params, more), "query")[1]
+    def rows(self, sql, **more):
+        return self._must_run(self._statements(sql, more), "query")[1]
 
-    def record(self, sql, *, params=None, **more):
+    def record(self, sql, **more):
         """The single row of `sql` as a dict, for DESCRIBE-like statements with many columns."""
-        statements = self._statements(sql, params, more)
+        statements = self._statements(sql, more)
         columns, rows = self._must_run(statements, "query")
         assert len(rows) == 1, f"[{self.name}] expected one row, got {len(rows)}\n{_indent(statements[-1])}"
         return dict(zip(columns, rows[0]))
 
-    def setup(self, sql, *, params=None, **more):
+    def setup(self, sql, **more):
         try:
-            self._assert_ok(sql, params, **more)
+            self._assert_ok(sql, **more)
         except ExpectationFailed as failure:
             raise SetupFailed(str(failure)) from None
 
-    def teardown(self, sql, *, params=None, **more):
+    def teardown(self, sql, **more):
         def run():
             try:
-                self._assert_ok(sql, params, **more)
+                self._assert_ok(sql, **more)
             except ExpectationFailed as failure:
                 raise SetupFailed(str(failure)) from None
 
         self._defer(run) if self._defer else run()
 
-    def oks(self, sql, *, params=None, on_fail="abort_test", **more):
-        self._check(on_fail, self._assert_ok, sql, params, **more)
+    def oks(self, sql, *, on_fail="abort_test", **more):
+        self._check(on_fail, self._assert_ok, sql, **more)
 
-    def errs(self, sql, text, *, params=None, on_fail="abort_test", **more):
-        self._check(on_fail, self._assert_error, sql, text, params, **more)
+    def errs(self, sql, text, *, on_fail="abort_test", **more):
+        self._check(on_fail, self._assert_error, sql, text, **more)
 
-    def expects(self, sql, rows, *, params=None, sort=False, on_fail="abort_test", **more):
-        self._check(on_fail, self._assert_rows, sql, rows, params, sort=sort, **more)
+    def expects(self, sql, rows, *, sort=False, on_fail="abort_test", **more):
+        self._check(on_fail, self._assert_rows, sql, rows, sort=sort, **more)
 
-    def exec(self, sql, *, params=None, **more):
+    def exec(self, sql, **more):
         """Run the statements and give back what happened, instead of judging it: for a body that has
         to branch, such as a retry loop around a commit that can conflict. A statement that failed is
         not a failed check, and does not abort the test."""
-        statements = self._statements(sql, params, more)
+        statements = self._statements(sql, more)
         try:
             columns, rows = self._timed_run(statements)
         except SqlError as exc:
@@ -343,15 +341,15 @@ class Client:
             return Executed(self.name, statements[-1], error=str(exc))
         return Executed(self.name, statements[-1], columns=columns, rows=rows)
 
-    def expects_contains(self, sql, rows, *, params=None, on_fail="abort_test", **more):
+    def expects_contains(self, sql, rows, *, on_fail="abort_test", **more):
         """Every row of `rows` is in the result, as often as it is in `rows`; the result may hold more."""
-        self._check(on_fail, self._assert_contains, sql, rows, params, **more)
+        self._check(on_fail, self._assert_contains, sql, rows, **more)
 
-    def _assert_ok(self, sql, params=None, **more):
-        self._must_run(self._statements(sql, params, more), "statement")
+    def _assert_ok(self, sql, **more):
+        self._must_run(self._statements(sql, more), "statement")
 
-    def _assert_rows(self, sql, rows, params=None, *, sort=False, **more):
-        statements = self._statements(sql, params, more)
+    def _assert_rows(self, sql, rows, *, sort=False, **more):
+        statements = self._statements(sql, more)
         expected, actual = _as_text(rows), render_rows(self._must_run(statements, "query")[1])
         if sort:
             expected, actual = sorted(expected), sorted(actual)
@@ -369,8 +367,8 @@ class Client:
             actual=format_rows(actual),
         )
 
-    def _assert_contains(self, sql, rows, params=None, **more):
-        statements = self._statements(sql, params, more)
+    def _assert_contains(self, sql, rows, **more):
+        statements = self._statements(sql, more)
         actual = render_rows(self._must_run(statements, "query")[1])
         missing = list((Counter(_as_text(rows)) - Counter(actual)).elements())
         if missing:
@@ -382,8 +380,8 @@ class Client:
                 actual=format_rows(actual),
             )
 
-    def _assert_error(self, sql, text, params=None, **more):
-        statements = self._statements(sql, params, more)
+    def _assert_error(self, sql, text, **more):
+        statements = self._statements(sql, more)
         try:
             self._timed_run(statements)
         except SqlError as exc:

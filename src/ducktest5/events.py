@@ -30,7 +30,7 @@ test's own line, so no renderer has to open another file.
                   error          why it did not come up
                   log            the engine's log file
 
-    test_start    id             the test id, `path::name[params,axis=value]`; written when the batch
+    test_start    id             the test id, `path::name[parameter=value,...]`; written when the batch
                                  of the test starts, so what has no `test_end` is what was under way
                   test           `path::name`, the test definition it comes from
                   type           sqllogic | paired | python
@@ -39,8 +39,7 @@ test's own line, so no renderer has to open another file.
                   at             seconds since run_start
 
     test_end      id, test, type, file, runner    the same identity as test_start
-                  params         the row of the definition's `params=` table, or null
-                  variants       axis -> the id of the chosen value
+                  matrix         parameter -> the name of the cell's value
                   tags           the test's tags
                   outcome        passed | failed | error | blocked | skipped
                   seconds        the whole test, retries included

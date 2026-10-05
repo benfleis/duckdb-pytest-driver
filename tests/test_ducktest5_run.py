@@ -19,10 +19,10 @@ from ducktest5.binary import UsageError
 from ducktest5.resources.client import SqlError
 from ducktest5.conf import Project
 from ducktest5.ctx import Context
-from ducktest5.declare import Variant
 from ducktest5.events import TEST_END
 from ducktest5.events import read as read_events
-from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef
+from ducktest5.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef, Value
+from ducktest5.options import Options
 from ducktest5.provision import EXISTING
 from ducktest5.engines.duckdb import duckdb_engine
 from ducktest5.resources import ON_FAILURE, RW, BootedEngineDef, Service, ServiceDef, StorageDef
@@ -131,17 +131,26 @@ class FakeShell:
         pass
 
 
-def sql_test(path, axis_values=None, *, inputs=(), **fields):
+def matrix_value(name, **options):
+    """A value of a MATRIX parameter; the key it is given under in a cell names the parameter."""
+    return name, Options.of(options, f"MATRIX value {name!r}", leave_out=("matrix",))
+
+
+def cell(given):
+    return {p: Value(p, name, options) for p, (name, options) in (given or {}).items()}
+
+
+def sql_test(path, given=None, *, inputs=(), **fields):
     name = os.path.splitext(os.path.basename(path))[0]
     definition = TestDef(path=path, name=name, type=SQLLOGIC, body_file=path, **fields)
-    return Test(definition, None, axis_values or {}, tuple((d, RW) for d in inputs))
+    return Test(definition, cell(given), tuple((d, RW) for d in inputs))
 
 
-def py_test(body, axis_values=None, *, path="test/body.py", body_file=None, inputs=(), **fields):
+def py_test(body, given=None, *, path="test/body.py", body_file=None, inputs=(), **fields):
     definition = TestDef(
         path=path, name=body.__name__, type=PAIRED if body_file else PYTHON, body=body, body_file=body_file, **fields
     )
-    return Test(definition, None, axis_values or {}, tuple((d, RW) for d in inputs))
+    return Test(definition, cell(given), tuple((d, RW) for d in inputs))
 
 
 def go(tmp_path, tests, *, engines=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
@@ -229,11 +238,11 @@ def batch_of(report):
 
 
 def test_tests_of_one_file_never_share_a_batch(tmp_path):
-    axis = {"a": Variant("a", tags=("x",)), "b": Variant("b", tags=("y",))}
+    values = {"a": matrix_value("a", tags=("x",)), "b": matrix_value("b", tags=("y",))}
     tests = [
-        sql_test("t.test", {"k": axis["a"]}),
-        sql_test("t.test", {"k": axis["b"]}),
-        sql_test("u.test", {"k": axis["a"]}),
+        sql_test("t.test", {"k": values["a"]}),
+        sql_test("t.test", {"k": values["b"]}),
+        sql_test("u.test", {"k": values["a"]}),
     ]
     code, run_dir, report, _ = go(tmp_path, tests, keep=True)
     assert code == 0
@@ -280,21 +289,21 @@ def test_a_test_with_a_service_runs_alone_and_its_failure_is_not_run_a_second_ti
     assert (tmp_path / "state" / "c_flaky2.test.runs").read_text() == "1"
 
 
-def test_a_variant_init_sql_is_the_batch_init_file(tmp_path):
-    variant = Variant("s3", init_sql="ATTACH 'http://store'")
-    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"k": variant})], keep=True)
+def test_a_matrix_value_init_sql_is_the_batch_init_file(tmp_path):
+    value = matrix_value("s3", init_sql="ATTACH 'http://store'")
+    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"k": value})], keep=True)
     init = run_dir / report["tests"][0]["batch"] / "init.sqllogic"
     assert init.read_text() == "statement ok\nATTACH 'http://store';\n"
 
 
 def test_requires_settings_and_init_sql_reach_the_init_file_in_that_order(tmp_path):
-    variant = Variant(
+    value = matrix_value(
         "curl",
         requires=("httpfs", "json"),
         settings={"httpfs_client_implementation": "curl"},
         init_sql="CREATE SECRET s (TYPE S3)",
     )
-    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"client": variant})], keep=True)
+    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"client": value})], keep=True)
     init = run_dir / report["tests"][0]["batch"] / "init.sqllogic"
     assert init.read_text() == (
         "require httpfs\n\nrequire json\n\n"
@@ -303,30 +312,30 @@ def test_requires_settings_and_init_sql_reach_the_init_file_in_that_order(tmp_pa
     )
 
 
-def test_a_variant_sets_and_unsets_variables_in_the_environment_of_the_unittest_process(tmp_path, monkeypatch):
+def test_a_matrix_value_sets_and_unsets_variables_in_the_environment_of_the_unittest_process(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "LEAKED-FROM-THE-CALLER")
-    variant = Variant("env", process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None})
-    _, run_dir, report, _ = go(tmp_path, [sql_test("a_showenv.test", {"auth": variant})], keep=True)
+    value = matrix_value("env", process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None})
+    _, run_dir, report, _ = go(tmp_path, [sql_test("a_showenv.test", {"auth": value})], keep=True)
     output = (run_dir / report["tests"][0]["batch"] / "output.txt").read_text()
     printed = json.loads(output.split("PROCESS_ENV ")[1].splitlines()[0])
     assert printed == {"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None}
 
 
 def test_tests_with_other_environments_never_share_a_unittest_process(tmp_path):
-    axis = {
-        "plain": Variant("plain"),
-        "loaded": Variant("loaded", requires=("httpfs",)),
-        "set": Variant("set", settings={"threads": 1}),
-        "noisy": Variant("noisy", process_env={"AWS_PROFILE": "p"}),
+    values = {
+        "plain": matrix_value("plain"),
+        "loaded": matrix_value("loaded", requires=("httpfs",)),
+        "set": matrix_value("set", settings={"threads": 1}),
+        "noisy": matrix_value("noisy", process_env={"AWS_PROFILE": "p"}),
     }
-    tests = [sql_test(f"t{n}.test", {"k": v}) for n, v in enumerate(axis.values())]
-    _, _, report, _ = go(tmp_path, tests + [sql_test("t9.test", {"k": axis["plain"]})], keep=True)
+    tests = [sql_test(f"t{n}.test", {"k": v}) for n, v in enumerate(values.values())]
+    _, _, report, _ = go(tmp_path, tests + [sql_test("t9.test", {"k": values["plain"]})], keep=True)
     batches = batch_of(report)
     assert len(set(batches.values())) == 4  # one for each environment; the two plain ones ride along
     assert batches["t0[k=plain]"] == batches["t9[k=plain]"]
 
 
-SECRET = Variant("s3", init_sql="CREATE SECRET (SECRET 'hunter2')")
+SECRET = matrix_value("s3", init_sql="CREATE SECRET (SECRET 'hunter2')")
 
 
 def files_with_the_secret(run_dir):
@@ -441,7 +450,7 @@ def test_a_debugger_needs_one_test_and_says_what_was_selected(tmp_path, debugger
 #
 
 
-MADE_OF = Variant(
+MADE_OF = matrix_value(
     "s3",
     values={"root": "s3://bucket"},
     settings={"s3_region": "eu"},
@@ -454,10 +463,10 @@ def test_a_failed_test_says_what_it_was_made_of(tmp_path):
     _, run_dir, report, text = go(tmp_path, [test])
     facts = report["tests"][0]["made_of"]
     assert facts["environment"] == [
-        {"what": "set", "is": "s3_region=eu", "from": "AXES storage=s3"},
-        {"what": "init sql", "is": "", "from": "AXES storage=s3"},
-        {"what": "values", "is": "storage=s3", "from": "AXES storage"},
-        {"what": "values", "is": "root=s3://bucket", "from": "AXES storage=s3"},
+        {"what": "set", "is": "s3_region=eu", "from": "MATRIX storage=s3"},
+        {"what": "init sql", "is": "", "from": "MATRIX storage=s3"},
+        {"what": "values", "is": "storage=s3", "from": "MATRIX storage"},
+        {"what": "values", "is": "root=s3://bucket", "from": "MATRIX storage=s3"},
         {"what": "values", "is": "STORE_ENDPOINT=http://store", "from": "service store"},
         {"what": "root", "is": f"temp_dir_root={run_dir}", "from": "default storage"},
         {"what": "root", "is": f"data_dir={tmp_path}/data", "from": "default storage"},
@@ -470,9 +479,9 @@ def test_a_failed_test_says_what_it_was_made_of(tmp_path):
     }
     assert all(os.path.isfile(p) for p in facts["files"].values())
     block = text.split("--- " + test.id)[1]
-    assert "\n  values: root=s3://bucket  <- AXES storage=s3\n" in block
-    assert "\n  set: s3_region=eu  <- AXES storage=s3\n" in block
-    assert "\n  init sql  <- AXES storage=s3\n" in block
+    assert "\n  values: root=s3://bucket  <- MATRIX storage=s3\n" in block
+    assert "\n  set: s3_region=eu  <- MATRIX storage=s3\n" in block
+    assert "\n  init sql  <- MATRIX storage=s3\n" in block
     assert "\n  values: STORE_ENDPOINT=http://store  <- service store\n" in block
     assert f"\n  init: {facts['files']['init']}\n" in block
     assert "\n  again: ducktest5 run --id " in block
@@ -480,18 +489,18 @@ def test_a_failed_test_says_what_it_was_made_of(tmp_path):
 
 
 def test_a_failure_says_what_the_environment_of_the_process_was(tmp_path):
-    variant = Variant(
+    value = matrix_value(
         "env",
         requires=("httpfs",),
         process_env={"AWS_PROFILE": "ducktest", "AWS_SECRET_ACCESS_KEY": "hunter2", "AZURE_CLIENT_SECRET": None},
     )
-    test = sql_test("b_fail.test", {"auth": variant})
+    test = sql_test("b_fail.test", {"auth": value})
     _, _, _, text = go(tmp_path, [test])
     block = text.split("--- " + test.id)[1]
-    assert "\n  require: httpfs  <- AXES auth=env\n" in block
-    assert "\n  process env: AWS_PROFILE=ducktest  <- AXES auth=env\n" in block
-    assert "\n  process env: AWS_SECRET_ACCESS_KEY=***  <- AXES auth=env\n" in block  # the name says it is one
-    assert "\n  process env unset: AZURE_CLIENT_SECRET  <- AXES auth=env\n" in block
+    assert "\n  require: httpfs  <- MATRIX auth=env\n" in block
+    assert "\n  process env: AWS_PROFILE=ducktest  <- MATRIX auth=env\n" in block
+    assert "\n  process env: AWS_SECRET_ACCESS_KEY=***  <- MATRIX auth=env\n" in block  # the name says it is one
+    assert "\n  process env unset: AZURE_CLIENT_SECRET  <- MATRIX auth=env\n" in block
     assert "hunter2" not in text
 
 
@@ -539,12 +548,12 @@ def test_the_event_line_of_a_failure_holds_the_same_facts(tmp_path):
 #
 
 
-def test_a_failure_in_the_init_sql_is_an_error_that_names_the_variant_and_the_file(tmp_path):
-    test = sql_test("a_initfail.test", {"storage": Variant("s3", init_sql="ATTACH 'nowhere'")})
+def test_a_failure_in_the_init_sql_is_an_error_that_names_the_matrix_value_and_the_file(tmp_path):
+    test = sql_test("a_initfail.test", {"storage": matrix_value("s3", init_sql="ATTACH 'nowhere'")})
     code, run_dir, report, text = go(tmp_path, [test], keep=True)
     assert (code, report["tests"][0]["outcome"]) == (1, "error")
     first_line = report["tests"][0]["problems"][0].splitlines()[0]
-    assert first_line == f"in the init SQL of AXES storage=s3 ({run_dir / 'batches' / 'b001' / 'init.sqllogic'}:1)"
+    assert first_line == f"in the init SQL of MATRIX storage=s3 ({run_dir / 'batches' / 'b001' / 'init.sqllogic'}:1)"
     assert "a_initfail.test:1" not in first_line  # not the body file, where the reader would find nothing
     assert first_line in text
 
@@ -556,9 +565,12 @@ def test_a_failed_statement_shows_duckdbs_error_under_the_sql(tmp_path):
 
 
 def test_the_failing_statement_of_the_init_sql_names_its_own_source(tmp_path):
-    axis_values = {"backend": Variant("oss", init_sql="SET a = 1"), "storage": Variant("s3", init_sql="SET b = 2")}
-    _, _, report, _ = go(tmp_path, [sql_test("a_initfail2.test", axis_values)], keep=True)
-    assert "in the init SQL of AXES storage=s3 (" in report["tests"][0]["problems"][0]
+    given = {
+        "backend": matrix_value("oss", init_sql="SET a = 1"),
+        "storage": matrix_value("s3", init_sql="SET b = 2"),
+    }
+    _, _, report, _ = go(tmp_path, [sql_test("a_initfail2.test", given)], keep=True)
+    assert "in the init SQL of MATRIX storage=s3 (" in report["tests"][0]["problems"][0]
 
 
 def test_a_setting_that_fails_in_the_init_sql_names_the_rule_that_asked_for_it(tmp_path):
@@ -569,7 +581,7 @@ def test_a_setting_that_fails_in_the_init_sql_names_the_rule_that_asked_for_it(t
 
 
 def test_a_failure_in_the_body_stays_a_failure_when_the_batch_has_init_sql(tmp_path):
-    test = sql_test("b_fail.test", {"storage": Variant("s3", init_sql="ATTACH 'nowhere'")})
+    test = sql_test("b_fail.test", {"storage": matrix_value("s3", init_sql="ATTACH 'nowhere'")})
     _, _, report, _ = go(tmp_path, [test])
     assert report["tests"][0]["outcome"] == "failed"
 
@@ -741,12 +753,11 @@ def test_the_report_is_written_and_services_are_released_when_the_run_raises(tmp
 
 
 def test_each_test_has_one_event_line(tmp_path):
-    variant = Variant("oss")
-    _, run_dir, _, _ = go(tmp_path, [sql_test("a.test", {"backend": variant}), py_test(fails)])
+    _, run_dir, _, _ = go(tmp_path, [sql_test("a.test", {"backend": matrix_value("oss")}), py_test(fails)])
     ended = end_events(run_dir)
     assert all(isinstance(e["seconds"], float) for e in ended)
-    # a test with no variant carries no `variants`: what is not there was not known, never empty
-    assert {e["id"]: (e["outcome"], e["runner"], e.get("variants", {})) for e in ended} == {
+    # a test with no parameters carries no `matrix`: what is not there was not known, never empty
+    assert {e["id"]: (e["outcome"], e["runner"], e.get("matrix", {})) for e in ended} == {
         "a.test::a[backend=oss]": ("passed", "unittest", {"backend": "oss"}),
         "test/body.py::fails": ("failed", "python", {}),
     }
@@ -970,7 +981,7 @@ def test_ctx_service_is_the_runs_instance_of_a_service_behind_the_inputs(tmp_pat
 
 
 # -----------------------------------------------------------------------------
-# What a variant brings reaches DuckDB as preamble text
+# What a value brings reaches DuckDB as preamble text
 #
 
 
@@ -980,13 +991,13 @@ def test_the_test_environment_reaches_the_preamble_in_the_order_of_the_init_file
     def body(ctx):
         seen.extend(ctx.client("duckdb").engine.live.preambles)
 
-    variant = Variant(
+    value = matrix_value(
         "s3",
         requires=("httpfs",),
         settings={"threads": 2, "s3_region": "it's"},
         init_sql="CREATE SECRET (ENDPOINT 'http://store')",
     )
-    code, _, _, _ = go(tmp_path, [py_test(body, {"k": variant})])
+    code, _, _, _ = go(tmp_path, [py_test(body, {"k": value})])
     assert code == 0
     assert seen == [
         "LOAD httpfs;\nSET threads = '2';\nSET s3_region = 'it''s';\nCREATE SECRET (ENDPOINT 'http://store');",
@@ -1027,8 +1038,8 @@ def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(
     def body(ctx):
         ctx.client("duckdb").oks("SELECT 1")
 
-    variant = Variant("no-key", process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None})
-    tests = [py_test(body, path="test/plain.py"), py_test(body, {"auth": variant}, path="test/env.py")]
+    value = matrix_value("no-key", process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None})
+    tests = [py_test(body, path="test/plain.py"), py_test(body, {"auth": value}, path="test/env.py")]
     assert go(tmp_path, tests, shell_factory=factory, workers=1)[0] == 0
     plain, own = sorted(made, key=lambda s: "AWS_PROFILE" in s.env)
     assert ("AWS_PROFILE" in plain.env, own.env["AWS_PROFILE"]) == (False, "ducktest")
@@ -1045,8 +1056,8 @@ def test_a_new_client_whose_preamble_fails_is_a_setup_error(tmp_path):
     def body(ctx):
         ctx.client("duckdb", new=True)
 
-    variant = Variant("s3", init_sql="CREATE SECRET s")
-    _, _, report, _ = go(tmp_path, [py_test(body, {"k": variant})], shell_factory=factory)
+    value = matrix_value("s3", init_sql="CREATE SECRET s")
+    _, _, report, _ = go(tmp_path, [py_test(body, {"k": value})], shell_factory=factory)
     assert report["tests"][0]["outcome"] == "error"
     assert "[duckdb] the preamble failed: Catalog Error" in report["tests"][0]["problems"][0]
 
@@ -1070,8 +1081,8 @@ def test_a_new_client_is_a_warm_shell_of_its_own_closed_when_the_test_ends(tmp_p
         second.oks("SELECT 2")
         shared.oks("SELECT 3")
 
-    variant = Variant("s3", requires=("httpfs",), process_env={"AWS_PROFILE": "ducktest"})
-    code, _, _, _ = go(tmp_path, [py_test(body, {"k": variant})], shell_factory=factory)
+    value = matrix_value("s3", requires=("httpfs",), process_env={"AWS_PROFILE": "ducktest"})
+    code, _, _, _ = go(tmp_path, [py_test(body, {"k": value})], shell_factory=factory)
     assert code == 0
     run_shell, first, second = made  # the run's shell, then one for each new client
     assert [first.statements, second.statements, run_shell.statements] == [["SELECT 1"], ["SELECT 2"], ["SELECT 3"]]

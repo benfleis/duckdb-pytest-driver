@@ -1,8 +1,8 @@
 """The test model: a `TestDef` is a definition, a `Test` is what runs.
 
-A test is a definition with one set of parameters applied: one row of the definition's own `params=`
-table and one value of every variant axis it takes part in. A definition with no parameters makes
-exactly one test. Groups, tags and selection work on tests.
+A test is one cell of its definition's matrix: one value of every parameter the definition runs
+over, from the project's MATRIX or its own `matrix=`. A definition with no parameters makes exactly
+one test. Groups, tags and selection work on tests.
 """
 
 from __future__ import annotations
@@ -13,8 +13,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
-from .binary import UsageError
-from .options import Settled
+from .options import Options, Settled
 from .resources.client import check_names
 from .resources.made import services_in
 from .testenv import resolve
@@ -26,7 +25,7 @@ BODY_SUFFIXES = (".test", ".test_slow", ".test_coverage")
 @dataclass(kw_only=True)
 class TestDef(Settled):
     """A `@test` body or a `.test` file, with the options the rules and its own `@test(...)` gave it
-    (`options.py`); its tests add their axis values' on top."""
+    (`options.py`); its tests add the MATRIX values of their cell on top."""
 
     __test__ = False  # not a pytest class
     path: str  # relative to the working directory; for a .test body also its name in the unittest binary
@@ -37,10 +36,39 @@ class TestDef(Settled):
     root_path: str | None = None
     body: object = None  # the Python callable, for python and paired tests
     body_file: str | None = None  # the .test file, for sqllogic and paired tests
-    params: dict = field(default_factory=dict)
 
     def __post_init__(self):
         self.root_path = self.root_path or self.path
+
+
+@dataclass(frozen=True)
+class Value:
+    """The value `name` of one parameter. A MATRIX parameter's value holds slots (`options`); a
+    parameter a rule or `@test` defines holds free data for the body (`data`)."""
+
+    parameter: str
+    name: str
+    options: Options | None = None
+    data: object = None
+
+    @property
+    def where(self):
+        return f"{'MATRIX' if self.options is not None else 'matrix'} {self.parameter}={self.name}"
+
+    @property
+    def param(self):
+        """What `ctx.params.<parameter>` is: the data of a local value, the name of a MATRIX one."""
+        return self.name if self.options is not None else self.data
+
+
+class Params(dict):
+    """Every parameter of a cell by name, `params.case` or `params["case"]`."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"no parameter {name!r}; this cell has {sorted(self)}") from None
 
 
 @dataclass
@@ -48,40 +76,34 @@ class Test:
     __test__ = False  # not a pytest class
 
     definition: TestDef
-    params_key: str | None  # the row of `definition.params`, or None
-    axis_values: dict  # axis name -> Variant
+    cell: dict = field(default_factory=dict)  # parameter name -> Value, in the order of `definition.matrix`
     inputs: tuple = ()  # (ResourceDef, mode): what it binds, with a credential for each storage
-    bind: tuple = ()  # (kind, id, source) for each input it binds, by a rule, `@test` or an axis value
+    bind: tuple = ()  # (kind, id, source) for each input it binds, by a rule, `@test` or a MATRIX value
 
     @property
     def id(self):
-        parts = ([self.params_key] if self.params_key is not None else []) + [
-            f"{a}={v.id}" for a, v in self.axis_values.items()
-        ]
+        parts = [f"{p}={v.name}" for p, v in self.cell.items()]
         return f"{self.definition.root_path}::{self.definition.name}" + (f"[{','.join(parts)}]" if parts else "")
 
     @property
     def params(self):
-        return self.definition.params.get(self.params_key, {})
+        return Params({p: v.param for p, v in self.cell.items()})
 
     @functools.cached_property
     def options(self):
-        """The definition's options with each axis value's on top, in AXES order. An axis value
-        gives way to nothing (`Settled.apply`); the axis name is a value too, `{storage}` the id of
-        its value."""
+        """The definition's options with the cell's values on top, in the order of its parameters.
+        They give way to nothing (`Settled.apply`). A MATRIX parameter's name is a value, `{storage}`
+        the name of its value; a local value's fields are values, or, if it is no dict, the value
+        itself under the parameter's name."""
         out = self.definition.settled()
-        for axis, v in self.axis_values.items():
-            where = f"AXES {axis}={v.id}"
-            out.give_value(axis, v.id, f"AXES {axis}", axis=self.id, where=where)
-            out.apply(v.options, where, axis=self.id)
-        if self.params_key is not None:
-            for name in check_names(self.params, f"{self.id}: params {self.params_key!r}"):
-                where = out.sources.get(("axis_value", name.lower()))
-                if where is not None:
-                    raise UsageError(
-                        f"{self.id}: the value {name!r} is given by {where} and by the params row "
-                        f"{self.params_key!r}; give it in one place"
-                    )
+        for p, v in self.cell.items():
+            if v.options is not None:
+                out.give_value(p, v.name, f"MATRIX {p}", cell=self.id, where=v.where)
+                out.apply(v.options, v.where, cell=self.id)
+                continue
+            fields = v.data if isinstance(v.data, dict) else {p: v.data}
+            for name, value in check_names(fields, f"{self.id}: {v.where}").items():
+                out.give_value(name, value, v.where, cell=self.id)
         return out
 
     @property
@@ -91,7 +113,7 @@ class Test:
 
     @property
     def why(self):
-        """Which place gave what: the rules, `@test`, then the axis values."""
+        """Which place gave what: the rules, `@test`, then the cell's MATRIX values."""
         return self.options.why
 
     def bind_lines(self):
@@ -137,8 +159,7 @@ class Test:
                 "id": self.id,
                 "test": f"{self.definition.root_path}::{self.definition.name}",
                 "type": self.definition.type,
-                "params": self.params_key,
-                "variants": {a: v.id for a, v in self.axis_values.items()},
+                "matrix": {p: v.name for p, v in self.cell.items()},
             },
             "selection": {"tags": self.tags},
             "preconditions": {
@@ -147,7 +168,7 @@ class Test:
                 **({"mutex": self.mutex} if self.mutex else {}),
             },
             "runtime": {
-                "params": _plain(self.params),
+                "params": _plain(dict(self.params)),
                 # Before provisioning, so what an input gets from a service is not in it.
                 "environment": resolve(self).record(),
                 "timeout": self.timeout,

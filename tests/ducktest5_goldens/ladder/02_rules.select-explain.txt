@@ -1,6 +1,34 @@
 run   default.test::default
         storage='scratch_a'  <- ducktest_conf.py: default
         engines=['duck']  <- ducktest_conf.py: default
+run   matrix_body.py::matrix_body[storage=a,case=small]
+        storage='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        matrix=['storage']  <- ducktest_conf.py: match 'matrix_body.py'
+        tags=['matched']  <- ducktest_conf.py: match 'matrix_body.py'
+        matrix=[{'case': ['small', 'large']}]  <- @test
+        storage='scratch_a'  <- MATRIX storage=a
+run   matrix_body.py::matrix_body[storage=a,case=large]
+        storage='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        matrix=['storage']  <- ducktest_conf.py: match 'matrix_body.py'
+        tags=['matched']  <- ducktest_conf.py: match 'matrix_body.py'
+        matrix=[{'case': ['small', 'large']}]  <- @test
+        storage='scratch_a'  <- MATRIX storage=a
+run   matrix_body.py::matrix_body[storage=b,case=small]
+        storage='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        matrix=['storage']  <- ducktest_conf.py: match 'matrix_body.py'
+        tags=['matched']  <- ducktest_conf.py: match 'matrix_body.py'
+        matrix=[{'case': ['small', 'large']}]  <- @test
+        storage='scratch_b'  <- MATRIX storage=b
+run   matrix_body.py::matrix_body[storage=b,case=large]
+        storage='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        matrix=['storage']  <- ducktest_conf.py: match 'matrix_body.py'
+        tags=['matched']  <- ducktest_conf.py: match 'matrix_body.py'
+        matrix=[{'case': ['small', 'large']}]  <- @test
+        storage='scratch_b'  <- MATRIX storage=b
 run   own_inputs.py::own_inputs
         storage='scratch_a'  <- ducktest_conf.py: default
         engines=['duck']  <- ducktest_conf.py: default
@@ -24,4 +52,4 @@ run   skipped_body.py::skipped_body
         engines=['duck']  <- ducktest_conf.py: default
 skip  excluded.test::excluded  -- not in suite 'default': tag opt-in
 
-6 of 7 tests; left out: 1 not in suite 'default'
+10 of 11 tests; left out: 1 not in suite 'default'

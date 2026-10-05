@@ -576,17 +576,17 @@ def test_storage_contract(tmp_path):
 
 
 # -----------------------------------------------------------------------------
-# A variant names a storage; its credential comes by scope
+# A MATRIX value names a storage; its credential comes by scope
 #
 
 SECRET = "s3cr3t-value-never-written"
 CONF = """
-from ducktest5 import Variant, default, match
+from ducktest5 import default, match
 from ducktest5.resources import S3CredentialDef, StorageDef, from_env
 STORAGES = [StorageDef("local", "s3://bucket/store")]
 CREDENTIALS = [S3CredentialDef("local-key", sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})], scopes=["local"])]
-AXES = {"storage": [Variant("local", storage="local")]}
-RULES = [match("a/**", axes=["storage"])]
+MATRIX = {"storage": {"local": "local"}}
+RULES = [match("a/**", matrix=["storage"])]
 """
 
 
@@ -606,10 +606,10 @@ def test_scan_env_shows_the_storage_roots_and_the_credential_masked(tree, capsys
     assert capsys.readouterr().out.replace(str(tree), "ROOT") == textwrap.dedent(
         """\
         a/x.test::x[storage=local]
-          bind: storage=local  <- AXES storage=local
+          bind: storage=local  <- MATRIX storage=local
           require: httpfs  <- credential local-key, storage local
           secret: CREATE SECRET ducktest_local_key (TYPE s3, KEY_ID '{AWS_ACCESS_KEY_ID}', SECRET '{AWS_SECRET_ACCESS_KEY}', SCOPE 's3://bucket/store');  <- credential local-key, storage local
-          values: storage=local  <- AXES storage
+          values: storage=local  <- MATRIX storage
           root: temp_dir_root=s3://bucket/store/temp/<run_token>  <- storage local
           root: data_dir=ROOT/test/data  <- default storage
           process env: AWS_ACCESS_KEY_ID=***  <- credential local-key (S3CredentialDef, from env DT_KEY)
@@ -659,11 +659,11 @@ def test_the_secret_reaches_the_process_environment_and_no_file_the_run_writes(t
     assert resolve(test, {}).environ({})["AWS_SECRET_ACCESS_KEY"] == SECRET
 
 
-def test_a_variant_naming_an_undeclared_input_is_a_usage_error(tree, capsys):
+def test_a_matrix_value_naming_an_undeclared_input_is_a_usage_error(tree, capsys):
     conf = tree / "test" / "ducktest_conf.py"
-    conf.write_text(conf.read_text().replace('storage="local"', 'storage="nope"'))
+    conf.write_text(conf.read_text().replace('{"local": "local"}', '{"local": "nope"}'))
     assert main(["scan", "test/a/x.test", "--env"]) == 2
-    assert "AXES['storage'] value 'local': storage='nope' is not in STORAGES" in capsys.readouterr().err
+    assert "MATRIX['storage']['local']: storage='nope' is not in STORAGES" in capsys.readouterr().err
 
 
 def test_a_credential_that_does_not_resolve_waits_at_scan(tree, monkeypatch, capsys):

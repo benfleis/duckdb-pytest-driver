@@ -166,7 +166,7 @@ class Batch:
         text, self.init_sources = init_file_text(self.test_env)
         if text:
             init = os.path.join(self.dir, INIT_FILE)
-            # For the owner only: the init SQL of a variant may hold the secret of a service.
+            # For the owner only: the init SQL of a MATRIX value may hold the secret of a service.
             with open(os.open(init, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
                 f.write(text)
             config["init_sqllogic"] = init

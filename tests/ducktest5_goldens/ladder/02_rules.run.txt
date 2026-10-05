@@ -1,20 +1,28 @@
-[1/6] PASSED   default.test::default  (<s>)
-[2/6] PASSED   own_inputs.py::own_inputs  (<s>)
-[3/6] PASSED   paired_own_inputs.py::paired_own_inputs  (<s>)
-[4/6] PASSED   rule_matched.test::rule_matched  (<s>)
-[5/6] PASSED   rule_matched_body.py::rule_matched_body  (<s>)
-[6/6] SKIPPED  skipped_body.py::skipped_body  (<s>)
+ [1/10] PASSED   default.test::default  (<s>)
+ [2/10] PASSED   matrix_body.py::matrix_body[storage=a,case=large]  (<s>)
+ [3/10] PASSED   matrix_body.py::matrix_body[storage=a,case=small]  (<s>)
+ [4/10] PASSED   matrix_body.py::matrix_body[storage=b,case=large]  (<s>)
+ [5/10] PASSED   matrix_body.py::matrix_body[storage=b,case=small]  (<s>)
+ [6/10] PASSED   own_inputs.py::own_inputs  (<s>)
+ [7/10] PASSED   paired_own_inputs.py::paired_own_inputs  (<s>)
+ [8/10] PASSED   rule_matched.test::rule_matched  (<s>)
+ [9/10] PASSED   rule_matched_body.py::rule_matched_body  (<s>)
+[10/10] SKIPPED  skipped_body.py::skipped_body  (<s>)
 
 1 skipped:
      1  ducktest-ladder-tool is not installed
           skipped_body.py::skipped_body
 
-5 passed, 1 skipped in <s>
+9 passed, 1 skipped in <s>
 run dir: <run>
 
 02-plan.yaml batches:
   b001  unittest  key1  default.test, rule_matched.test
-  b002  python    key2  own_inputs.py
-  b003  python    key2  paired_own_inputs.py
-  b004  python    key3  rule_matched_body.py
-  b005  python    key3  skipped_body.py
+  b002  python    key2  matrix_body.py
+  b003  python    key3  matrix_body.py
+  b004  python    key4  matrix_body.py
+  b005  python    key5  matrix_body.py
+  b006  python    key6  own_inputs.py
+  b007  python    key6  paired_own_inputs.py
+  b008  python    key7  rule_matched_body.py
+  b009  python    key7  skipped_body.py

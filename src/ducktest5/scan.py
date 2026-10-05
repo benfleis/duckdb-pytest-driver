@@ -18,7 +18,7 @@ from .conf import bound_def, load_project
 from .declare import CONF_FILE
 from .outcomes import Skip
 from .options import Settled
-from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef
+from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef, Value
 from .resources.dialect import rendered_classes, secret_renderer
 from .resources import RO, RW, BootedEngineDef, CredentialDef, DefaultStorageDef, StorageDef, pick_credentials
 
@@ -54,7 +54,7 @@ def _load(path, name):
     except Skip as exc:
         raise UsageError(
             f"{path} called skip({exc.reason!r}) while it was imported; skip inside the body, "
-            "or leave the case out of params="
+            "or leave the value out of matrix="
         ) from None
     except Exception as exc:
         raise UsageError(f"{path} could not be imported: {type(exc).__name__}: {exc}") from exc
@@ -125,7 +125,6 @@ def scan(start, *, working_dir="."):
                         root_path=_root_path(path, project.root),
                         body=decl.body,
                         body_file=os.path.relpath(body_file, working_dir) if body_file else None,
-                        params=dict(decl.params),
                         tags=_suffix_tags(body_file) if body_file else [],
                     ),
                     decl.options,
@@ -149,22 +148,12 @@ def scan(start, *, working_dir="."):
     for definition, own in sorted(definitions, key=lambda d: (d[0].root_path, d[0].name)):
         _settle(definition, own, project, working_dir)
         _engines(definition, project)
-        for axis in definition.axes:
-            if axis not in project.axes:
-                raise UsageError(
-                    f"{definition.path}::{definition.name} takes part in axis {axis!r}; the project has {sorted(project.axes)}"
-                )
-        # AXES decides the order of the axis parts in an id, not the order in which rules name them.
-        axes = [
-            [(axis, v) for v in values.values()] for axis, values in project.axes.items() if axis in definition.axes
-        ]
-        for params_key in definition.params or [None]:
-            for combo in itertools.product(*axes):
-                test = Test(definition, params_key, dict(combo))
-                bindings = _bindings(test, project)
-                test.bind = tuple((kind, d.id, source) for kind, d, source in bindings)
-                test.inputs = _inputs(bindings, project)
-                tests.append(test)
+        for cell in itertools.product(*_parameters(definition, project)):
+            test = Test(definition, {v.parameter: v for v in cell})
+            bindings = _bindings(test, project)
+            test.bind = tuple((kind, d.id, source) for kind, d, source in bindings)
+            test.inputs = _inputs(bindings, project)
+            tests.append(test)
     project.note_unused_rules()
     if project.unused_rules:
         raise UsageError(
@@ -180,6 +169,28 @@ def scan(start, *, working_dir="."):
         _renderable(test, project)
     _one_set_per_booted_engine(tests, project)
     return tests, project
+
+
+def _parameters(definition, project):
+    """The values of each parameter a definition runs over, in the order its `matrix` names them:
+    the rules' from the root down, then `@test`'s. That order is the order of the parts of an id."""
+    out = []
+    for item in definition.matrix:
+        if isinstance(item, str):
+            if item not in project.matrix:
+                raise UsageError(
+                    f"{definition.path}::{definition.name} runs over parameter {item!r}; the project's MATRIX "
+                    f"has {sorted(project.matrix)}"
+                )
+            out.append([Value(item, name, options) for name, options in project.matrix[item].items()])
+            continue
+        if item.name in project.matrix:
+            raise UsageError(
+                f"{definition.path}::{definition.name}: {definition.source_of('matrix', item.name)} defines "
+                f"parameter {item.name!r}, which the project's MATRIX has; give it another name"
+            )
+        out.append([Value(item.name, name, data=data) for name, data in item.values.items()])
+    return out
 
 
 def _renderable(test, project):

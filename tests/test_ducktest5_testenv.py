@@ -3,12 +3,11 @@
 import re
 
 import pytest
-from test_ducktest5_run import StoreDef
+from test_ducktest5_run import StoreDef, cell, matrix_value
 
 from ducktest5 import leases
 from ducktest5.binary import UsageError
-from ducktest5.declare import Variant
-from ducktest5.model import SQLLOGIC, Test, TestDef
+from ducktest5.model import SQLLOGIC, Test, TestDef, Value
 from ducktest5.resources import RO, RW, S3CredentialDef, StorageDef
 from ducktest5.resources import credential as cred_mod
 from ducktest5.resources import from_env
@@ -18,37 +17,43 @@ from ducktest5.scan import scan
 from ducktest5.testenv import resolve
 
 
-def make_test(axis_values=None, *, params_key=None, sources=None, inputs=(), **fields):
+def make_test(given=None, *, local=None, sources=None, inputs=(), **fields):
+    """`given`: parameter -> a MATRIX value; `local`: parameter -> (value name, data), after them."""
     definition = TestDef(path="t.test", name="t", type=SQLLOGIC, body_file="t.test", **fields)
     definition.sources = sources or {}
-    return Test(definition, params_key, axis_values or {}, tuple((d, RW) for d in inputs))
+    values = cell(given) | {p: Value(p, name, data=data) for p, (name, data) in (local or {}).items()}
+    return Test(definition, values, tuple((d, RW) for d in inputs))
 
 
-def test_the_axis_value_reaches_the_body_as_a_value_without_the_author_repeating_it():
-    env = resolve(make_test({"storage": Variant("s3")}))
+def test_a_matrix_value_reaches_the_body_as_a_value_without_the_author_repeating_it():
+    env = resolve(make_test({"storage": matrix_value("s3")}))
     assert env.value_map == {"storage": "s3"}
     assert env.names == {"STORAGE": "s3"}
-    assert env.values["storage"].source == "AXES storage"
+    assert env.values["storage"].source == "MATRIX storage"
 
 
-def test_values_merge_rules_then_the_definition_then_the_params_and_the_variant_adds_its_own():
+def test_values_merge_rules_then_the_definition_then_the_cell_adds_its_own():
     c = make_test(
-        {"storage": Variant("s3", values={"where": "variant"})},
-        params_key="wide",
-        params={"wide": {"who": "row", "width": 9}},
-        values={"who": "rule", "region": "eu"},
+        {"storage": matrix_value("s3", values={"where": "matrix"})},
+        local={"case": ("wide", {"who": "row", "width": 9})},
+        values={"region": "eu"},
         sources={("values", "region"): "ducktest_conf.py: default"},
     )
     env = resolve(c)
-    assert env.value_map == {"storage": "s3", "who": "row", "region": "eu", "width": 9, "where": "variant"}
+    assert env.value_map == {"region": "eu", "storage": "s3", "where": "matrix", "who": "row", "width": 9}
     assert env.values["region"].source == "ducktest_conf.py: default"
-    assert env.values["width"].source == "params 'wide'"
+    assert env.values["width"].source == "matrix case=wide"
+
+
+def test_a_local_value_that_is_no_dict_is_the_value_of_the_parameter_name():
+    env = resolve(make_test(local={"n": ("two", 2)}))
+    assert env.value_map == {"n": 2}
 
 
 @pytest.mark.parametrize(
     "fields, other",
     [
-        ({"params_key": "wide", "params": {"wide": {"storage": "x"}}}, "the params row 'wide'"),
+        ({"local": {"case": ("wide", {"storage": "x"})}}, "matrix case=wide"),
         (
             {"values": {"STORAGE": "x"}, "sources": {("values", "STORAGE"): "ducktest_conf.py: default"}},
             "ducktest_conf.py: default",
@@ -56,49 +61,59 @@ def test_values_merge_rules_then_the_definition_then_the_params_and_the_variant_
         ({"values": {"storage": "x"}}, "@test"),
     ],
 )
-def test_a_value_given_by_an_axis_value_and_by_a_rule_or_the_params_row_is_an_error_naming_both(fields, other):
-    for axis_values in ({"storage": Variant("s3")}, {"auth": Variant("s3", values={"storage": "y"})}):
-        where = "AXES storage=s3" if "storage" in axis_values else "AXES auth=s3"
+def test_a_value_given_by_a_matrix_value_and_by_a_rule_or_a_local_value_is_an_error_naming_both(fields, other):
+    for given in ({"storage": matrix_value("s3")}, {"auth": matrix_value("s3", values={"storage": "y"})}):
+        where = "MATRIX storage=s3" if "storage" in given else "MATRIX auth=s3"
         with pytest.raises(UsageError) as caught:
-            resolve(make_test(axis_values, **fields))
-        assert str(caught.value).endswith(
-            f": the value 'storage' is given by {where} and by {other}; give it in one place"
-        )
+            resolve(make_test(given, **fields))
+        message = str(caught.value)
+        if other.startswith("matrix "):  # the later one is the one that finds the conflict
+            assert message.endswith(f": 'storage' is given by both {where} and {other}")
+        else:
+            assert message.endswith(f": the value 'storage' is given by {where} and by {other}; give it in one place")
 
 
-def test_two_axis_values_giving_one_name_is_a_scan_error():
-    axis_values = {"a": Variant("one", values={"ROOT": "/a"}), "b": Variant("two", values={"ROOT": "/b"})}
-    with pytest.raises(UsageError, match=r"'ROOT' is given by both AXES a=one and AXES b=two"):
-        resolve(make_test(axis_values))
+def test_two_matrix_values_giving_one_name_is_a_scan_error():
+    given = {"a": matrix_value("one", values={"ROOT": "/a"}), "b": matrix_value("two", values={"ROOT": "/b"})}
+    with pytest.raises(UsageError, match=r"'ROOT' is given by both MATRIX a=one and MATRIX b=two"):
+        resolve(make_test(given))
 
 
-def test_a_rule_and_the_params_row_giving_one_name_is_fine_the_row_wins():
-    c = make_test(params_key="wide", params={"wide": {"who": "row"}}, values={"who": "rule"})
-    env = resolve(c)
-    assert env.value_map == {"who": "row"}
-    assert env.values["who"].source == "params 'wide'"
+def test_two_local_parameters_giving_one_field_is_a_scan_error():
+    local = {"case": ("wide", {"who": "a"}), "more": ("x", {"WHO": "b"})}
+    with pytest.raises(UsageError, match=r"'WHO' is given by both matrix case=wide and matrix more=x"):
+        resolve(make_test(local=local))
+
+
+def test_a_rule_and_a_local_value_giving_one_name_is_an_error():
+    c = make_test(local={"case": ("wide", {"who": "row"})}, values={"who": "rule"})
+    with pytest.raises(UsageError, match=r"the value 'who' is given by matrix case=wide and by @test"):
+        resolve(c)
 
 
 def test_a_setting_is_a_statement_after_the_requires_and_the_init_sql_comes_last():
-    variant = Variant("s3", requires=("httpfs", "json"), settings={"s3_region": "eu"}, init_sql="CREATE SECRET s")
-    env = resolve(make_test({"storage": variant}, settings={"threads": 2}))
+    value = matrix_value("s3", requires=("httpfs", "json"), settings={"s3_region": "eu"}, init_sql="CREATE SECRET s")
+    env = resolve(make_test({"storage": value}, settings={"threads": 2}))
     assert env.extensions == ["httpfs", "json"]
     assert env.sql == "SET threads = '2';\nSET s3_region = 'eu';\nCREATE SECRET s;"
 
 
-def test_a_rule_loads_its_extensions_before_an_axis_value_and_once():
-    env = resolve(make_test({"a": Variant("one", requires=("json", "httpfs"))}, requires=["httpfs"]))
+def test_a_rule_loads_its_extensions_before_a_matrix_value_and_once():
+    env = resolve(make_test({"a": matrix_value("one", requires=("json", "httpfs"))}, requires=["httpfs"]))
     assert env.extensions == ["httpfs", "json"]
 
 
-def test_an_extension_asked_for_twice_is_loaded_once_in_the_order_of_the_axes():
-    axis_values = {"a": Variant("one", requires=("httpfs",)), "b": Variant("two", requires=("json", "httpfs"))}
-    assert resolve(make_test(axis_values)).extensions == ["httpfs", "json"]
+def test_an_extension_asked_for_twice_is_loaded_once_in_the_order_of_the_parameters():
+    given = {
+        "a": matrix_value("one", requires=("httpfs",)),
+        "b": matrix_value("two", requires=("json", "httpfs")),
+    }
+    assert resolve(make_test(given)).extensions == ["httpfs", "json"]
 
 
-def test_the_environment_of_the_engine_process_is_this_process_with_the_variant_on_top():
-    variant = Variant("no-key", process_env={"AWS_PROFILE": "ducktest", "PATH": None})
-    env = resolve(make_test({"auth": variant}))
+def test_the_environment_of_the_engine_process_is_this_process_with_the_matrix_value_on_top():
+    value = matrix_value("no-key", process_env={"AWS_PROFILE": "ducktest", "PATH": None})
+    env = resolve(make_test({"auth": value}))
     assert env.environ({"PATH": "/bin", "HOME": "/home/me"}) == {"HOME": "/home/me", "AWS_PROFILE": "ducktest"}
 
 
@@ -121,9 +136,9 @@ def test_a_key_in_inherit_env_is_a_usage_error():
         cred_mod.inherit_env(["AWS_SECRET_ACCESS_KEY"])
 
 
-def test_an_unset_removes_what_an_earlier_axis_set():
-    sets_x = Variant("sets", process_env={"X": "1"})
-    unsets_x = Variant("unsets", process_env={"X": None})
+def test_an_unset_removes_what_an_earlier_parameter_set():
+    sets_x = matrix_value("sets", process_env={"X": "1"})
+    unsets_x = matrix_value("unsets", process_env={"X": None})
 
     later_wins = resolve(make_test({"a": sets_x, "b": unsets_x}))
     assert "X" not in later_wins.environ({"HOME": "/home"})
@@ -133,8 +148,8 @@ def test_an_unset_removes_what_an_earlier_axis_set():
 
 
 def test_a_name_that_says_credential_is_masked():
-    variant = Variant("s3", process_env={"AWS_SECRET_ACCESS_KEY": "hunter2"})
-    env = resolve(make_test({"storage": variant}, values={"token": "s3cr3t"}))
+    value = matrix_value("s3", process_env={"AWS_SECRET_ACCESS_KEY": "hunter2"})
+    env = resolve(make_test({"storage": value}, values={"token": "s3cr3t"}))
     printed = "\n".join(env.lines())
     assert "values: token=***" in printed and "process env: AWS_SECRET_ACCESS_KEY=***" in printed
     assert "s3cr3t" not in printed and "hunter2" not in printed
@@ -142,9 +157,9 @@ def test_a_name_that_says_credential_is_masked():
 
 
 def test_a_secret_named_value_is_masked_however_it_was_given():
-    via_values = resolve(make_test({"a": Variant("v", values={"AWS_SECRET_ACCESS_KEY": "s3cr3t-1"})}))
-    via_env = resolve(make_test({"a": Variant("v", process_env={"AWS_SECRET_ACCESS_KEY": "s3cr3t-2"})}))
-    via_settings = resolve(make_test({"a": Variant("v", settings={"AWS_SECRET_ACCESS_KEY": "s3cr3t-3"})}))
+    via_values = resolve(make_test({"a": matrix_value("v", values={"AWS_SECRET_ACCESS_KEY": "s3cr3t-1"})}))
+    via_env = resolve(make_test({"a": matrix_value("v", process_env={"AWS_SECRET_ACCESS_KEY": "s3cr3t-2"})}))
+    via_settings = resolve(make_test({"a": matrix_value("v", settings={"AWS_SECRET_ACCESS_KEY": "s3cr3t-3"})}))
     for env, secret in ((via_values, "s3cr3t-1"), (via_env, "s3cr3t-2"), (via_settings, "s3cr3t-3")):
         printed = "\n".join(env.lines())
         assert "AWS_SECRET_ACCESS_KEY=***" in printed
@@ -153,24 +168,24 @@ def test_a_secret_named_value_is_masked_however_it_was_given():
 
 
 def test_an_unset_is_never_masked():
-    env = resolve(make_test({"a": Variant("v", process_env={"AWS_SECRET_ACCESS_KEY": None})}))
-    assert "process env unset: AWS_SECRET_ACCESS_KEY  <- AXES a=v" in env.lines()
+    env = resolve(make_test({"a": matrix_value("v", process_env={"AWS_SECRET_ACCESS_KEY": None})}))
+    assert "process env unset: AWS_SECRET_ACCESS_KEY  <- MATRIX a=v" in env.lines()
 
 
 def test_init_sql_is_named_by_its_source_and_never_printed():
-    env = resolve(make_test({"storage": Variant("s3", init_sql="CREATE SECRET (SECRET 'hunter2')")}))
-    assert env.lines() == ["init sql  <- AXES storage=s3", "values: storage=s3  <- AXES storage"]
+    env = resolve(make_test({"storage": matrix_value("s3", init_sql="CREATE SECRET (SECRET 'hunter2')")}))
+    assert env.lines() == ["init sql  <- MATRIX storage=s3", "values: storage=s3  <- MATRIX storage"]
 
 
 def test_two_tests_share_a_key_only_when_everything_the_process_gets_is_the_same():
-    plain = Variant("plain")
+    plain = matrix_value("plain")
     same = resolve(make_test({"k": plain}, values={"region": "eu"})).key()
     assert resolve(make_test({"k": plain}, values={"region": "eu"})).key() == same
     for other in (
         make_test({"k": plain}, values={"region": "us"}),
-        make_test({"k": Variant("plain", requires=("httpfs",))}, values={"region": "eu"}),
-        make_test({"k": Variant("plain", process_env={"AWS_PROFILE": "p"})}, values={"region": "eu"}),
-        make_test({"k": Variant("plain", process_env={"AWS_PROFILE": None})}, values={"region": "eu"}),
+        make_test({"k": matrix_value("plain", requires=("httpfs",))}, values={"region": "eu"}),
+        make_test({"k": matrix_value("plain", process_env={"AWS_PROFILE": "p"})}, values={"region": "eu"}),
+        make_test({"k": matrix_value("plain", process_env={"AWS_PROFILE": None})}, values={"region": "eu"}),
         make_test({"k": plain}, values={"region": "eu"}, inputs=[StoreDef()]),
     ):
         assert resolve(other).key() != same
@@ -207,7 +222,7 @@ def test_a_value_names_an_attribute_of_an_input_or_of_its_input_filled_when_the_
 
 
 def test_a_python_body_adds_values_and_sql_for_the_test_file_beside_it():
-    env = resolve(make_test({"storage": Variant("s3", init_sql="SET a = 1")}))
+    env = resolve(make_test({"storage": matrix_value("s3", init_sql="SET a = 1")}))
     more = env.plus(values={"TABLE": "id_name"}, init_sql="CREATE SECRET s")
     assert more.sql == "SET a = 1;\nCREATE SECRET s;"
     assert more.names["TABLE"] == "id_name"
@@ -245,7 +260,7 @@ def test_the_scoped_secret_of_a_test_file_does_not_change_its_key(monkeypatch):
         "key", sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})], scopes=["bucket"]
     )
     sql_file = make_test()
-    python = Test(TestDef(path="t.py", name="t", type="python"), None, {})
+    python = Test(TestDef(path="t.py", name="t", type="python"))
     for test in (sql_file, python):
         test.inputs = ((storage, RW), (credential, RO))
     assert resolve(sql_file).secret_requires and not resolve(python).secret_requires

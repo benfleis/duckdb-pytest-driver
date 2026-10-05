@@ -874,8 +874,7 @@ def _identity(test):
         "test": f"{test.definition.root_path}::{test.definition.name}",
         "type": test.definition.type,
         "file": test.definition.path,
-        "params": test.params_key,
-        "variants": {a: v.id for a, v in test.axis_values.items()},
+        "matrix": {p: v.name for p, v in test.cell.items()},
         "tags": test.tags,
     }
 

@@ -17,7 +17,7 @@ Code: `src/ducktest5/` in this repo, branch `feat/resources`. It will be squashe
 | The ladder, rungs 00-06 | pass; the self-tests compare them with goldens |
 | Rung 05 (S3) with a live RustFS server | passes; its golden is the BLOCKED case (no server) |
 | Rung 06 (Azure blob) with a live Azurite | not run yet: no Azurite or docker where it was built; its golden is the BLOCKED case |
-| duckdb-delta, `storage` axis `local` and `s3`, live RustFS | 121 passed, 1 failed (gcs.test), 41 skipped |
+| duckdb-delta, `storage` parameter `local` and `s3`, live RustFS | 121 passed, 1 failed (gcs.test), 41 skipped |
 
 The one delta failure is `sql/cloud/gcs.test`. It needs the network. The 44 skips are `.test`
 files that need an environment variable that is not set. Without an S3 server, the `s3` cases are
@@ -91,12 +91,12 @@ Azure blob, `az_local()`, works the same way: Azurite, reached at
   directory.
 - Cleanup does not remove files under an s3 storage that is not on the local S3 server.
 - After a killed run, cleanup does not sweep a storage or service that takes inputs.
-- A `.test` batch under a variant's own temp root is not under the run token, so cleanup cannot
+- A `.test` batch under the own temp root of a MATRIX value is not under the run token, so cleanup cannot
   find it.
 - A `ducktest_conf.py` with declarations below the project root is an error, but the error does
   not say which directory to run from.
 - A remote storage has no local twin (`LOCAL_TEMP_DIR`, `LOCAL_DATA_DIR`).
-- The ladder has no two-engine rung and no example of `setup`, `teardown` or `params`.
+- The ladder has no two-engine rung and no example of `setup` or `teardown`.
 - Rung 05's golden is the BLOCKED case. A live S3 run is checked by hand, not by the self-tests.
 - Azure (`AzureCredentialDef`, `AZLocalDef`, rung 06) is checked offline only: the SharedKey signer
   against the Azure SDK's signatures, everything else against fakes. No Azurite run yet.

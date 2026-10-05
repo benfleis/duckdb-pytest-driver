@@ -4,6 +4,46 @@ default.test::default
   bind: storage=scratch_a  <- ducktest_conf.py: default
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
+matrix_body.py::matrix_body[storage=a,case=small]
+  client: duck (duckdb)  <- ENGINES duck
+    require: parquet  <- engine duck
+  bind: storage=scratch_a  <- MATRIX storage=a
+  values: storage=a  <- MATRIX storage
+  values: a=2  <- matrix case=small
+  values: b=3  <- matrix case=small
+  values: product=6  <- matrix case=small
+  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
+  root: data_dir=<tmp>/repo/02_rules/data  <- default storage
+matrix_body.py::matrix_body[storage=a,case=large]
+  client: duck (duckdb)  <- ENGINES duck
+    require: parquet  <- engine duck
+  bind: storage=scratch_a  <- MATRIX storage=a
+  values: storage=a  <- MATRIX storage
+  values: a=1000  <- matrix case=large
+  values: b=1000  <- matrix case=large
+  values: product=1000000  <- matrix case=large
+  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
+  root: data_dir=<tmp>/repo/02_rules/data  <- default storage
+matrix_body.py::matrix_body[storage=b,case=small]
+  client: duck (duckdb)  <- ENGINES duck
+    require: parquet  <- engine duck
+  bind: storage=scratch_b  <- MATRIX storage=b
+  values: storage=b  <- MATRIX storage
+  values: a=2  <- matrix case=small
+  values: b=3  <- matrix case=small
+  values: product=6  <- matrix case=small
+  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp/<run_token>  <- storage scratch_b
+  root: data_dir=<tmp>/repo/02_rules/data  <- default storage
+matrix_body.py::matrix_body[storage=b,case=large]
+  client: duck (duckdb)  <- ENGINES duck
+    require: parquet  <- engine duck
+  bind: storage=scratch_b  <- MATRIX storage=b
+  values: storage=b  <- MATRIX storage
+  values: a=1000  <- matrix case=large
+  values: b=1000  <- matrix case=large
+  values: product=1000000  <- matrix case=large
+  root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp/<run_token>  <- storage scratch_b
+  root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 own_inputs.py::own_inputs
   client: duck (duckdb)  <- ENGINES duck
     require: parquet  <- engine duck

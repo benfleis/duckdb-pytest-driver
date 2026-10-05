@@ -6,17 +6,17 @@ import re
 from types import SimpleNamespace
 
 import pytest
-from test_ducktest5_run import FakeEngine, FakeShell, ctx_for, go, passes, py_test, sql_test
+from test_ducktest5_run import FakeEngine, FakeShell, ctx_for, go, matrix_value, passes, py_test, sql_test
 
 from ducktest5 import leases, phases
 from ducktest5.binary import UsageError
 from ducktest5.cli import main
 from ducktest5.conf import Project
-from ducktest5.declare import Variant
 from ducktest5.engines.duckdb import DuckDBShell, duckdb_engine
 from ducktest5.engines.spark import SparkHandle, env_provider
 from ducktest5.engines.unittest import UnittestEngineDef
-from ducktest5.model import PYTHON, SQLLOGIC, Test, TestDef
+from ducktest5.model import PYTHON, SQLLOGIC, Test, TestDef, Value
+from ducktest5.options import Options
 from ducktest5.resources import RO, RW, BootedEngineDef, S3CredentialDef, StorageDef, check_contract, from_env
 from ducktest5.resources.engine import Runtime
 from ducktest5.resources.made import planned_identity
@@ -204,7 +204,7 @@ class SparkRecorder(FakeEngine):
 
 def with_remote(test, remote_inputs):
     defs, _ = remote_inputs
-    return Test(test.definition, None, {}, ((defs[0], RW), (defs[1], RO)))
+    return Test(test.definition, {}, ((defs[0], RW), (defs[1], RO)))
 
 
 def test_the_default_duckdb_engine_sends_the_scoped_secret_over_the_shells_stdin(tmp_path, monkeypatch, remote_inputs):
@@ -308,7 +308,7 @@ def test_a_credentials_env_counts_toward_the_engines_identity_by_source_never_by
 
     def identity(keys):
         credential = S3CredentialDef("key", sources=[from_env(keys)], scopes=["bucket"])
-        test = Test(TestDef(path="t.py", name="t", type=PYTHON), None, {}, ((storage, RW), (credential, RO)))
+        test = Test(TestDef(path="t.py", name="t", type=PYTHON), {}, ((storage, RW), (credential, RO)))
         (engine,) = leases.bind(test, resolve(test), project)
         return planned_identity(engine)
 
@@ -471,15 +471,30 @@ def test_names_are_case_insensitive_and_two_spellings_of_one_are_an_error(tmp_pa
     assert fake.statements == ["SELECT '/p', '/p', 'c', 'c'", "SELECT '/own'"]
     assert ctx.values["catalog"] == ctx.values["CATALOG"] == ctx.values.Catalog == "c"
     with pytest.raises(UsageError, match="'path' and 'PATH' are one name"):
-        ctx.client("fake").oks("SELECT 1", params={"path": "a", "PATH": "b"})
+        ctx.client("fake").oks("SELECT 1", path="a", PATH="b")
     with pytest.raises(UsageError, match="are one name"):
         ctx.values.set(path="a", PATH="b")
 
 
 def test_a_later_tier_replaces_a_name_in_any_case():
-    definition = TestDef(path="t.py", name="t", type=PYTHON, values={"path": "rule"}, params={"row": {"PATH": "row"}})
-    env = resolve(Test(definition, "row", {}))
-    assert (env.value_map, env.names) == ({"PATH": "row"}, {"PATH": "row"})
+    definition = TestDef(path="t.py", name="t", type=PYTHON)
+    definition.apply(Options.of({"values": {"path": "rule"}}, "rule"), "ducktest_conf.py: default")
+    definition.apply(Options.of({"values": {"PATH": "own"}}, "@test"), "@test")
+    env = resolve(Test(definition))
+    assert (env.value_map, env.names) == ({"PATH": "own"}, {"PATH": "own"})
+
+
+def test_a_body_reads_each_parameter_of_its_cell_by_name_and_a_local_values_fields_are_template_values(tmp_path):
+    fake = FakeEngine()
+    test = py_test(passes, {"storage": matrix_value("s3")}, engines=["fake"])
+    test.cell["case"] = Value("case", "wide", data={"width": 9})
+    ctx = ctx_for(test, tmp_path, engine=fake)
+    assert (ctx.params.storage, ctx.params["case"], ctx.params.case["width"]) == ("s3", {"width": 9}, 9)
+    with pytest.raises(AttributeError, match=r"no parameter 'cse'; this cell has \['case', 'storage'\]"):
+        ctx.params.cse
+    ctx.client("fake").oks("SELECT {width}, '{storage}'")
+    assert fake.statements == ["SELECT 9, 's3'"]
+    assert test.id == "test/body.py::passes[storage=s3,case=wide]"
 
 
 def test_a_context_holds_one_client_per_engine_and_its_identity_is_theirs_and_the_environment(tmp_path):
@@ -590,7 +605,7 @@ def test_the_engine_comes_first_in_the_init_file_and_nothing_is_given_twice():
     duck = duckdb_engine("duck", requires=["httpfs", "json"], settings={"threads": 2, "memory_limit": "1GB"})
     project = Project("/p", {"duck": duck}, {}, {}, {})
     test = sql_test(
-        "a.test", {"storage": Variant("s3", requires=["httpfs"])}, engines=["duck"], settings={"threads": 4}
+        "a.test", {"storage": matrix_value("s3", requires=["httpfs"])}, engines=["duck"], settings={"threads": 4}
     )
     env = leases.environment(test, resolve(test), project)
     text, _ = init_file_text(env)

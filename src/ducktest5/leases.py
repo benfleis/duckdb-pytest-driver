@@ -1,6 +1,6 @@
 """The engines a test leases, and its identity.
 
-A test names engines on `@test(engines=...)`, by a rule or by a variant; each gets a Client, and one
+A test names engines on `@test(engines=...)`, by a rule or by a MATRIX value; each gets a Client, and one
 that names no DuckDB engine gets a Client on the default one: the project's DuckDB engine when it
 declares exactly one, the built-in bare one when it declares none. With several, a test that names
 none is a scan error. Each engine is bound to what the test gets:
@@ -36,7 +36,7 @@ DEFAULT = duckdb_engine("duckdb")
 
 
 def named(test, project) -> list:
-    """The project's engines the test names, on `@test`, by a rule or by a variant."""
+    """The project's engines the test names, on `@test`, by a rule or by a MATRIX value."""
     return [project.engines[name] for name in test.engines] if project else []
 
 

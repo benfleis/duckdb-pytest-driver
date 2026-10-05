@@ -1,7 +1,7 @@
 """`ducktest_conf.py`: configuration for a directory and everything below it.
 
 The file at the root of the scanned tree is the project file; it may also declare ENGINES, SERVICES,
-STORAGES, CREDENTIALS, AXES, SUITES, PYTHONPATH and INHERIT_ENV.
+STORAGES, CREDENTIALS, MATRIX, SUITES, PYTHONPATH and INHERIT_ENV.
 
 `INHERIT_ENV = ["AWS_CA_BUNDLE"]` names variables engine processes keep from the shell's env. Every
 other name under an SDK prefix (`AWS_`) is left out of them: an SDK reads it with getenv(), so a test
@@ -15,10 +15,15 @@ so every body, wherever and whenever it imports a helper, sees it. Engine proces
 speaks about the whole subtree (`default`) or about a pattern relative to its file (`match`); a
 pattern may name one file.
 
-A rule takes the options `options.py` lists, as `@test(...)` and an axis value do, and they merge in
-one order: the root file first, then each file on the way down to the test definition; in a file,
-the rules as listed; then the definition's own `@test(...)`, then its axis values. `why` records
-which place gave what.
+A rule takes the options `options.py` lists (the slots), as `@test(...)` and a MATRIX value do, and
+they merge in one order: the root file first, then each file on the way down to the test definition;
+in a file, the rules as listed; then the definition's own `@test(...)`, then the MATRIX values of
+its cell. `why` records which place gave what.
+
+`MATRIX = {"storage": {"local": "default", "s3": "s3_lake"}}` declares the project's parameters:
+each maps a value name to a dict of slots, or to a string that fills the slot the parameter is named
+after (`storage`, `credential`, `service`). `matrix=["storage"]` on a rule or `@test` runs a test once
+per value; `matrix=[{"case": CASES}]` defines a parameter of that place's own.
 
 ENGINES holds `EngineDef`s (`duckdb_engine(...)`, `delta_spark(...)`, ...); `engines=["duck"]` names
 the engines a test drives, each through a Client of its own. SERVICES holds the project's other
@@ -29,7 +34,7 @@ of the project's services too, whether SERVICES names it or not.
 `mutex="name"`, or several names, says what a test must have to itself: no two tests that name one of
 them run at the same time, however many workers the run has.
 
-A test is in a suite by what it carries: its path, its tags, its axis values. `SUITES` names
+A test is in a suite by what it carries: its path, its tags, the values of its cell. `SUITES` names
 selections over those (`select.py`); `tags=["opt-in"]` keeps a test out of a bare run.
 
 `retries=N` lets a test that ended FAILED or ERROR run again, alone, up to N times; it is PASSED when an
@@ -53,8 +58,8 @@ import sys
 from dataclasses import dataclass, field, replace
 
 from .binary import UsageError
-from .declare import CONF_FILE, Variant
-from .options import BINDINGS, Options, Settled
+from .declare import CONF_FILE
+from .options import BINDINGS, Options, Settled, check_parameter
 from .resources import CredentialDef, DefaultStorage, EngineDef, ServiceDef, StorageDef
 from .resources.credential import inherit_env
 from .resources.made import services_in
@@ -136,7 +141,7 @@ class Project:
     root: str
     engines: dict
     services: dict
-    axes: dict
+    matrix: dict  # parameter -> value name -> Options
     suites: dict
     storages: dict = field(default_factory=dict)
     credentials: dict = field(default_factory=dict)
@@ -292,7 +297,7 @@ def load_project(start):
             project.services = {s.id: s for s in getattr(module, "SERVICES", ())}
             project.storages = {s.id: s for s in getattr(module, "STORAGES", ())}
             project.credentials = {c.id: c for c in getattr(module, "CREDENTIALS", ())}
-            project.axes = {axis: {v.id: v for v in values} for axis, values in getattr(module, "AXES", {}).items()}
+            project.matrix = _matrix(getattr(module, "MATRIX", {}), path)
             project.suites = dict(getattr(module, "SUITES", {}))
             if "all" in project.suites:
                 raise UsageError(f"{path}: a project may not define a suite named 'all' -- it always exists, built in")
@@ -312,7 +317,7 @@ def load_project(start):
                 "SERVICES",
                 "STORAGES",
                 "CREDENTIALS",
-                "AXES",
+                "MATRIX",
                 "SUITES",
                 "PYTHONPATH",
                 "INHERIT_ENV",
@@ -371,16 +376,39 @@ def _check(path, project):
     for s in services_in([*project.storages.values(), *project.credentials.values(), *project.engines.values()]):
         if project.services.setdefault(s.id, s) is not s:
             raise UsageError(f"{path}: two services are named {s.id!r}; a service is one declaration")
-    for axis, values in project.axes.items():
-        if not values or not all(isinstance(v, Variant) for v in values.values()):
-            raise UsageError(f"{path}: AXES[{axis!r}] must be a non-empty list of Variant")
-        for v in values.values():
-            unknown = [x for x in v.options.given.get("engines", ()) if x not in project.engines]
+    for parameter, values in project.matrix.items():
+        for name, options in values.items():
+            where = f"{path}: MATRIX[{parameter!r}][{name!r}]"
+            unknown = [x for x in options.given.get("engines", ()) if x not in project.engines]
             if unknown:
-                raise UsageError(f"{path}: AXES[{axis!r}] value {v.id!r} names engines {unknown} that are not declared")
+                raise UsageError(f"{where} names engines {unknown} that are not declared")
             for kind in BINDINGS:
-                if kind in v.options.given:
-                    bound_def(project, kind, v.options.given[kind], f"{path}: AXES[{axis!r}] value {v.id!r}")
+                if kind in options.given:
+                    bound_def(project, kind, options.given[kind], where)
+
+
+def _matrix(given, path):
+    """MATRIX: parameter -> value name -> a dict of slots, or a string that fills the slot the
+    parameter is named after."""
+    if not isinstance(given, dict):
+        raise UsageError(f"{path}: MATRIX must be a dict of parameter -> {{value name: value}}")
+    out = {}
+    for parameter, values in given.items():
+        check_parameter(parameter, values, f"{path}: MATRIX")
+        out[parameter] = {}
+        for name, value in values.items():
+            where = f"{path}: MATRIX[{parameter!r}][{name!r}]"
+            if isinstance(value, str):
+                if parameter not in BINDINGS:
+                    raise UsageError(
+                        f"{where} = {value!r}: a string fills the slot the parameter is named after, and "
+                        f"{parameter!r} is no slot ({', '.join(BINDINGS)}); give a dict of slots"
+                    )
+                value = {parameter: value}
+            elif not isinstance(value, dict):
+                raise UsageError(f"{where} = {value!r}; a value is a dict of slots")
+            out[parameter][name] = Options.of(value, where, leave_out=("matrix",))
+    return out
 
 
 def bound_def(project, kind, ref, where):

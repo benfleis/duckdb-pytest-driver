@@ -66,6 +66,15 @@ fills in the test's own place under `scratch_a`. The rule of `excluded.test` tag
 the default suite, and a bare run, leave it out, and `select --explain` says which tag did; `--suite all`
 runs it.
 
+`matrix_body.py` runs once per cell of its matrix. `MATRIX` in `ducktest_conf.py` declares the
+parameter `storage`, with the values `a` and `b`; as strings, they fill the slot the parameter is
+named after, so they bind `scratch_a` and `scratch_b`, and replace what `default()` binds. The rule
+of `matrix_body.py` names `storage` with `matrix=["storage"]`, and the body defines a parameter of
+its own, `case`, with `@test(matrix=[{"case": CASES}])`: 2 values times 2, four cells, such as
+`matrix_body.py::matrix_body[storage=a,case=small]`. The fields of a `case` value are template
+values (`{a}`, `{b}`), `ctx.params.case` is the whole value, and `{storage}` is the name of the
+cell's `storage` value. `--select storage=b` or `--select case=small` takes some of them.
+
 `skipped_body.py` checks for a tool that is not installed and calls `ctx.skip(reason)`: it ends
 SKIPPED, and the report lists the reason under "skipped". A body skips only on a condition it checks
 itself; an input that does not come up makes the test BLOCKED (rung 04).
@@ -79,7 +88,8 @@ The two `.test` files run in one `unittest` process, although `rule_matched.test
 `require json`: that is part of its body. A Python body leases the `duck` engine, not a `unittest`
 process, so its label is never that of a `.test` batch. `own_inputs.py` and `paired_own_inputs.py`
 share one label; their binding on `@test` gives them a label other than that of
-`rule_matched_body.py`.
+`rule_matched_body.py`. Each cell of `matrix_body.py` has a label of its own: its values are part
+of its identity.
 
 ## 03_credentials
 
@@ -87,7 +97,7 @@ The storage is now an S3 bucket that nothing reads. `S3CredentialDef("fake_key",
 and takes its two fields, `key_id` and `secret`, from `LADDER_FAKE_KEY_ID` and `LADDER_FAKE_SECRET`;
 set both before a run. The rule binds the bucket for the `scoped_*` tests, so they hold the
 credential; `no_secret.test` binds nothing, holds none, and finds no secret. A test without a
-credential is a definition of its own, not a variant of one with it.
+credential is a definition of its own, not a cell of one with it.
 
 The keys reach every engine process of a test that holds the credential as `AWS_ACCESS_KEY_ID` and
 `AWS_SECRET_ACCESS_KEY`: the body's DuckDB shell and the `unittest` binary. `AWS_*` of your own shell

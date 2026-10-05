@@ -1,15 +1,15 @@
 """The test environment: everything the engine process of one test is given, in one record.
 
-A test is a definition with one set of parameters. A `.test` body (the batch's config and init
+A test is one cell of a definition's matrix. A `.test` body (the batch's config and init
 file) and a Python body (its engines' preamble) read this one record, so they cannot disagree.
 `resolve()` builds it once, after
-provisioning and before exec, out of the rules, the definition's own declaration, the test's params and
-the chosen value of every variant axis; both deliveries read it, under the test's DuckDB engine
+provisioning and before exec, out of the rules, the definition's own declaration and the values of
+its cell; both deliveries read it, under the test's DuckDB engine
 (`leases.py`), and nothing else, and the batch key of a test of a `.test` file is made of that.
 
     requires    extensions to load first: `require` in the init file, `LOAD` in the preamble
     init_sql    the statements after them, in order: the settings as `SET`, then the `init_sql`
-    values      the names a body writes as `{NAME}`, and each axis name -> the id of its value
+    values      the names a body writes as `{NAME}`, and each MATRIX parameter -> the name of its value
     roots       the binary's four roots, where a storage gives them; a Python body
                 reads them as `ctx.values.temp_dir`, `ctx.values.data_dir` and their `local_` twins
     process_env the process environment of the engine: a value sets a variable, None unsets it
@@ -124,7 +124,7 @@ class TestEnv:
         """The process environment for the engine of this test: `base`, by default the shell's without
         the names an SDK reads (`engine_env`), then what the test sets and unsets."""
         out = engine_env() if base is None else dict(base)
-        # Replay in axis order so an unset after a set from an earlier axis wins, and vice versa.
+        # Replay in parameter order so an unset after a set from an earlier parameter wins, and vice versa.
         for name, action in self.process_state.items():
             value = self.process_env[name].value if action == "set" else None
             value = value() if callable(value) else value
@@ -242,9 +242,6 @@ def resolve(test, made=None, key=None, default=None):
 
     for name, value in options.values.items():
         _put_value(env.values, name, _value_entry(name, value, options.source_of("values", name)))
-    if test.params_key is not None:
-        for name, value in check_names(test.params, f"{test.id}: params {test.params_key!r}").items():
-            _put_value(env.values, name, _value_entry(name, value, f"params {test.params_key!r}"))
     given = {name.lower(): e.source for name, e in env.values.items()}
 
     def _input_value(name, value, source):

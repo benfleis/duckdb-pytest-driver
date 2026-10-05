@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(_shell() is None, reason="no duckdb shell (set $
 
 @pytest.fixture
 def ctx(tmp_path):
-    test = Test(TestDef(path="t.py", name="t", type=PYTHON, body=lambda ctx: None), None, {})
+    test = Test(TestDef(path="t.py", name="t", type=PYTHON, body=lambda ctx: None))
     home = str(tmp_path / "home")
     engine = duckdb_engine().make()
     engine.runtime = Runtime(shell=lambda env: DuckDBShell(_shell(), home=home, env=env))

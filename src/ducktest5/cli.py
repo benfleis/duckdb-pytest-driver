@@ -289,7 +289,7 @@ def main(argv=None):
                     print(f"pythonpath: {paths}  <- {CONF_FILE}")
                 for c in selected:
                     print(c.id)
-                    # No service is started here, so what a variant makes out of one is named, not called.
+                    # No service is started here, so what a test makes out of one is named, not called.
                     for line in (
                         leases.lines(c, project)
                         + c.bind_lines()
