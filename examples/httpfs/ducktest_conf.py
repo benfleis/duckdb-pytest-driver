@@ -4,6 +4,7 @@ from ducktest5 import default, match
 from ducktest5.services.http import HttpServerDef
 from ducktest5.services.s3local import bucket, s3_local
 
+# Files the run uploads to test-bucket, as httpfs CI does; see s3_seed/README.md.
 SEED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "s3_seed")
 PYHTTP_DIR = os.environ.get("PYTHON_HTTP_SERVER_DIR", "/tmp/python_test_server")
 
@@ -16,7 +17,7 @@ S3 = s3_local(
         bucket("test-bucket-public", public=True),
     ]
 )
-CREDENTIALS = [S3.credential("minio", scopes=[])]
+CREDENTIALS = [S3.credential("s3_keys", scopes=[])]
 # CI starts `python3 -m http.server 8008` in PYHTTP_DIR; the run uses it and does not start it.
 SERVICES = [HttpServerDef("pyhttp").as_existing(address="http://127.0.0.1:8008")]
 
@@ -40,7 +41,7 @@ RULES = [
     match(
         "**",
         requires_env="S3_TEST_SERVER_AVAILABLE",
-        credential="minio",
+        credential="s3_keys",
         values={"S3_TEST_SERVER_AVAILABLE": "1", "S3_ATTACH_DB": "s3://test-bucket/presigned/attach.db"},
         process_env={"DUCKDB_S3_ENDPOINT": S3_HOST_PORT, "DUCKDB_S3_USE_SSL": "false"},  # httpfs reads them
     ),
