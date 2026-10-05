@@ -15,20 +15,10 @@ so every body, wherever and whenever it imports a helper, sees it. Engine proces
 speaks about the whole subtree (`default`) or about a pattern relative to its file (`match`); a
 pattern may name one file.
 
-How rules combine, in one order: the root file first, then each file on the way down to the test definition;
-in a file, the rules as listed; then the definition's own `@test(...)`. Along that order, list fields (tags,
-engines, variants, mutex, suites, requires) add up, dict fields (values, settings) update by key, and
-single values (storage, credential, service, timeout, retries) are replaced. `why` records which rule gave what. All of them are on
-the definition and apply to every test made from it.
-
-`requires=["httpfs"]` loads an extension before anything else, as a Variant's does: a setting of it in
-`settings` does not exist before.
-
-`storage="scratch"` binds one of STORAGES by id, `credential=` one of CREDENTIALS, `service=` one of
-SERVICES. A later binding of the same kind replaces the earlier one, so a test's own
-`@test(storage=...)` wins over its rules. An axis value binds the same way: it replaces what a
-`default()` binds, a fallback; a kind that a `match()` or `@test` binds as well is an error, not a
-silent winner. A test binds one of each kind; several credentials of one kind are not supported yet.
+A rule takes the options `options.py` lists, as `@test(...)` and an axis value do, and they merge in
+one order: the root file first, then each file on the way down to the test definition; in a file,
+the rules as listed; then the definition's own `@test(...)`, then its axis values. `why` records
+which place gave what.
 
 ENGINES holds `EngineDef`s (`duckdb_engine(...)`, `delta_spark(...)`, ...); `engines=["duck"]` names
 the engines a test drives, each through a Client of its own. SERVICES holds the project's other
@@ -64,50 +54,19 @@ import sys
 from dataclasses import dataclass, field
 
 from .binary import UsageError
-from .declare import CONF_FILE, Variant, as_mutex
+from .declare import CONF_FILE, Variant
+from .options import BINDINGS, Options, Settled
 from .resources import CredentialDef, DefaultStorage, EngineDef, ServiceDef, StorageDef
-from .resources.client import check_names
 from .resources.credential import inherit_env
 from .resources.made import services_in
 
 _log = logging.getLogger(__name__)
 
-_LISTS = ("tags", "engines", "variants", "mutex", "suites", "requires")
-_DICTS = ("values", "settings")
-BINDINGS = ("storage", "credential", "service")
-_SINGLES = BINDINGS + ("timeout", "retries")
-
-
-def suite_name(entry):
-    """The suite a `suites` entry speaks about: `!smoke` and `smoke` both name `smoke`."""
-    return entry[1:] if entry.startswith("!") else entry
-
-
-def merge_suites(target, entries, source, sources):
-    """Adds `entries` to `target`, the last word on a name winning where the name was first said.
-    `source` is what said them, or None for the definition's own `@test(...)`."""
-    for entry in entries:
-        at = next((i for i, e in enumerate(target) if suite_name(e) == suite_name(entry)), None)
-        if at is None:
-            target.append(entry)
-        else:
-            sources.pop(("suites", target[at]), None)
-            target[at] = entry
-        sources.pop(("suites", entry), None)
-        if source is not None:
-            sources[("suites", entry)] = source
-
-
-def check_suites(entries, where):
-    for entry in entries:
-        if suite_name(entry) == "all" and entry.startswith("!"):
-            raise UsageError(f"{where}: '!all' -- every test is in the suite 'all'")
-
 
 @dataclass(frozen=True)
 class Rule:
     pattern: str
-    fields: dict
+    options: Options
 
     def matches(self, rel_to_conf):
         return _glob(self.pattern).fullmatch(rel_to_conf) is not None
@@ -133,24 +92,7 @@ def _glob(pattern):
 
 
 def _rule(pattern, fields):
-    unknown = sorted(set(fields) - set(_LISTS + _DICTS + _SINGLES))
-    if unknown:
-        raise UsageError(f"rule {pattern!r}: unknown field(s) {unknown}; known: {_LISTS + _DICTS + _SINGLES}")
-    for kind in BINDINGS:
-        if kind in fields and not isinstance(fields[kind], str):
-            raise UsageError(f"rule {pattern!r}: {kind}={fields[kind]!r}; it is the id of one, a string")
-    if "mutex" in fields:
-        fields = {**fields, "mutex": as_mutex(fields["mutex"])}
-    retries = fields.get("retries", 0)
-    if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
-        raise UsageError(f"rule {pattern!r}: retries={retries!r}; it is a whole number, 0 or more")
-    check_suites(fields.get("suites", ()), f"rule {pattern!r}")
-    return Rule(pattern, fields)
-
-
-def is_default(source):
-    """Whether a rule's source, as `Settled` records it, is a `default()`."""
-    return source.endswith(": default")
+    return Rule(pattern, Options.of(fields, f"rule {pattern!r}"))
 
 
 def default(**fields):
@@ -163,55 +105,6 @@ def match(pattern, **fields):
     directory level, `**` crosses levels, `dir/**` is everything below `dir`, and a pattern with no
     wildcard names one file."""
     return _rule(pattern, fields)
-
-
-@dataclass
-class Settled:
-    """What the rules gave one test definition, and where each part came from."""
-
-    tags: list = field(default_factory=list)
-    engines: list = field(default_factory=list)
-    variants: list = field(default_factory=list)
-    mutex: list = field(default_factory=list)
-    suites: list = field(default_factory=list)
-    requires: list = field(default_factory=list)
-    values: dict = field(default_factory=dict)
-    settings: dict = field(default_factory=dict)
-    bind: dict = field(default_factory=dict)  # storage/credential/service -> the id it binds
-    timeout: float | None = None
-    retries: int = 0
-    why: list = field(default_factory=list)
-    sources: dict = field(default_factory=dict)  # (field, key) -> the rule that gave that one entry
-
-    def apply(self, fields, source):
-        for name, value in fields.items():
-            if name == "suites":
-                merge_suites(self.suites, value, source, self.sources)
-            elif name in _LISTS:
-                target = getattr(self, name)
-                for v in value:
-                    if v not in target:
-                        target.append(v)
-                        self.sources[(name, v)] = source
-            elif name == "values":
-                # Names are case-insensitive: a later rule's `PATH` replaces an earlier one's `path`.
-                given = {k.lower() for k in check_names(value, source or "@test")}
-                for k in [k for k in self.values if k.lower() in given]:
-                    del self.values[k]
-                    self.sources.pop((name, k), None)
-                self.values.update(value)
-                self.sources.update({(name, k): source for k in value})
-            elif name in _DICTS:
-                getattr(self, name).update(value)
-                self.sources.update({(name, k): source for k in value})
-            elif name in BINDINGS:
-                self.bind[name] = value
-                self.sources[("bind", name)] = source
-                self.why.append(f"{name}={value!r}  <- {source}")
-                continue
-            else:
-                setattr(self, name, value)
-            self.why.append(f"{name}={value!r}  <- {source}")
 
 
 @dataclass
@@ -258,7 +151,7 @@ class Project:
                     self._used.add((conf_dir, n))
                     where = os.path.relpath(os.path.join(conf_dir, CONF_FILE), self.root)
                     settled.apply(
-                        rule.fields, f"{where}: {'default' if rule.pattern == '**' else 'match ' + repr(rule.pattern)}"
+                        rule.options, f"{where}: {'default' if rule.pattern == '**' else 'match ' + repr(rule.pattern)}"
                     )
         return settled
 
@@ -464,12 +357,12 @@ def _check(path, project):
         if not values or not all(isinstance(v, Variant) for v in values.values()):
             raise UsageError(f"{path}: AXES[{axis!r}] must be a non-empty list of Variant")
         for v in values.values():
-            unknown = [x for x in v.engines if x not in project.engines]
+            unknown = [x for x in v.options.given.get("engines", ()) if x not in project.engines]
             if unknown:
                 raise UsageError(f"{path}: AXES[{axis!r}] value {v.id!r} names engines {unknown} that are not declared")
             for kind in BINDINGS:
-                if getattr(v, kind) is not None:
-                    bound_def(project, kind, getattr(v, kind), f"{path}: AXES[{axis!r}] value {v.id!r}")
+                if kind in v.options.given:
+                    bound_def(project, kind, v.options.given[kind], f"{path}: AXES[{axis!r}] value {v.id!r}")
 
 
 def bound_def(project, kind, ref, where):

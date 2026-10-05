@@ -303,19 +303,6 @@ def test_requires_settings_and_init_sql_reach_the_init_file_in_that_order(tmp_pa
     )
 
 
-def test_a_variant_gives_the_binary_its_roots(tmp_path):
-    variant = Variant("http", roots={"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"})
-    _, run_dir, report, _ = go(tmp_path, [sql_test("a.test", {"storage": variant})], keep=True)
-    config = json.loads((run_dir / report["tests"][0]["batch"] / "config.json").read_text())
-    assert config["temp_dir_root"] == "http://origin/temp"
-    assert config["local_temp_dir_root"] == "/www/temp"
-
-
-def test_a_root_the_binary_does_not_have_is_a_usage_error(tmp_path):
-    with pytest.raises(UsageError, match="root 'tmp' is not one of"):
-        go(tmp_path, [sql_test("a.test", {"storage": Variant("http", roots={"tmp": "/x"})})])
-
-
 def test_a_variant_sets_and_unsets_variables_in_the_environment_of_the_unittest_process(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "LEAKED-FROM-THE-CALLER")
     variant = Variant("env", process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None})
@@ -329,7 +316,7 @@ def test_tests_with_other_environments_never_share_a_unittest_process(tmp_path):
     axis = {
         "plain": Variant("plain"),
         "loaded": Variant("loaded", requires=("httpfs",)),
-        "rooted": Variant("rooted", roots={"data_dir": "/d"}),
+        "set": Variant("set", settings={"threads": 1}),
         "noisy": Variant("noisy", process_env={"AWS_PROFILE": "p"}),
     }
     tests = [sql_test(f"t{n}.test", {"k": v}) for n, v in enumerate(axis.values())]
@@ -496,14 +483,12 @@ def test_a_failure_says_what_the_environment_of_the_process_was(tmp_path):
     variant = Variant(
         "env",
         requires=("httpfs",),
-        roots={"data_dir": "s3://bucket/data"},
         process_env={"AWS_PROFILE": "ducktest", "AWS_SECRET_ACCESS_KEY": "hunter2", "AZURE_CLIENT_SECRET": None},
     )
     test = sql_test("b_fail.test", {"auth": variant})
     _, _, _, text = go(tmp_path, [test])
     block = text.split("--- " + test.id)[1]
     assert "\n  require: httpfs  <- AXES auth=env\n" in block
-    assert "\n  root: data_dir=s3://bucket/data  <- AXES auth=env\n" in block
     assert "\n  process env: AWS_PROFILE=ducktest  <- AXES auth=env\n" in block
     assert "\n  process env: AWS_SECRET_ACCESS_KEY=***  <- AXES auth=env\n" in block  # the name says it is one
     assert "\n  process env unset: AZURE_CLIENT_SECRET  <- AXES auth=env\n" in block
@@ -967,13 +952,9 @@ def test_run_paired_in_a_body_with_no_test_file_beside_it_says_so(tmp_path):
 #
 
 
-def test_a_location_is_under_the_temp_dir_unless_a_temp_root_is_given(tmp_path):
+def test_a_location_is_under_the_temp_dir(tmp_path):
     ctx = ctx_for(py_test(passes), tmp_path, test_env=resolve(py_test(passes), Made("r"), key="c"))
     assert ctx.location("tbl") == str(tmp_path / "tbl")
-    variant = Variant("s3", roots={"temp_dir_root": "s3://bucket/temp"})
-    test = py_test(passes, {"k": variant})
-    ctx = ctx_for(test, tmp_path, test_env=resolve(test, Made("r"), key="c"))
-    assert ctx.location("tbl") == "s3://bucket/temp/r/c/tbl"
 
 
 def test_ctx_service_is_the_runs_instance_of_a_service_behind_the_inputs(tmp_path):
@@ -1010,27 +991,6 @@ def test_the_test_environment_reaches_the_preamble_in_the_order_of_the_init_file
     assert seen == [
         "LOAD httpfs;\nSET threads = '2';\nSET s3_region = 'it''s';\nCREATE SECRET (ENDPOINT 'http://store');",
     ]
-
-
-def test_a_python_body_reads_the_roots_and_puts_what_it_makes_under_the_temp_root(tmp_path):
-    seen = {}
-
-    def body(ctx):
-        seen["env"] = {n: ctx.values[n] for n in ("temp_dir", "temp_dir_root", "local_temp_dir", "data_dir", "storage")}
-        seen["location"] = ctx.location("tbl")
-
-    variant = Variant("http", roots={"temp_dir_root": "http://origin/temp", "local_temp_dir_root": "/www/temp"})
-    test = py_test(body, {"storage": variant})
-    assert go(tmp_path, [test])[0] == 0
-    run_token = seen["location"].split("/")[4]
-    assert seen["env"] == {
-        "temp_dir": f"http://origin/temp/{run_token}/{test.dir_name}",
-        "temp_dir_root": f"http://origin/temp/{run_token}",
-        "local_temp_dir": f"/www/temp/{run_token}/{test.dir_name}",
-        "data_dir": f"{tmp_path}/data",  # the default storage gives what the variant does not
-        "storage": "http",
-    }
-    assert seen["location"] == f"http://origin/temp/{run_token}/{test.dir_name}/tbl"
 
 
 def test_what_a_run_writes_under_a_storage_is_under_its_run_token_and_a_killed_run_is_swept(tmp_path):
@@ -1188,7 +1148,7 @@ def test_the_timeout_of_the_engine_reaches_each_statement_of_a_new_client_too(tm
         new.oks("SELECT 2")
         seen.extend(ctx.client("duckdb").engine.live.timeouts + new.engine.live.timeouts)
 
-    assert go(tmp_path, [py_test(body)], engines=[duckdb_engine("duckdb", timeout=7)])[0] == 0
+    assert go(tmp_path, [py_test(body)], engines=[duckdb_engine("duckdb", statement_timeout=7)])[0] == 0
     assert seen == [7, 7]
 
 

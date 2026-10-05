@@ -39,10 +39,10 @@ class Runtime:
 
 @dataclass(eq=False)
 class EngineDef(ServiceDef):
-    """An engine. `requires` and `settings` are loaded and set before every test; `init` are
+    """An engine. `requires` and `settings` are loaded and set before every test; `init_sql` are
     statements that follow them, and `process_env` sets (a value) or unsets (None) process variables
-    of the engine. They are part of its identity; `lifetime` and `timeout` (for one statement, in
-    seconds) are not.
+    of the engine. They are part of its identity; `lifetime` and `statement_timeout` (for one
+    statement, in seconds) are not.
 
     A kind is a dataclass with these fields, then its own; it has a `dialect`, the way its preamble
     and the storages and credentials among its inputs are written for it (`resources/dialect.py`;
@@ -57,15 +57,15 @@ class EngineDef(ServiceDef):
     id: str
     requires: list = field(default_factory=list)
     settings: dict = field(default_factory=dict)
-    init: list = field(default_factory=list)
+    init_sql: list = field(default_factory=list)
     process_env: dict = field(default_factory=dict)
     lifetime: str = WORKER
-    timeout: float | None = None
+    statement_timeout: float | None = None
     address: str | None = None
     inputs: list = field(default_factory=list)
     retain: str = NEVER
 
-    not_content = ServiceDef.not_content + ("lifetime", "timeout")
+    not_content = ServiceDef.not_content + ("lifetime", "statement_timeout")
 
     def __post_init__(self):
         if self.lifetime not in LIFETIMES:

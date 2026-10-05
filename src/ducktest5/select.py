@@ -91,7 +91,8 @@ import os
 from dataclasses import dataclass, field
 
 from .binary import UsageError
-from .conf import _glob, suite_name
+from .conf import _glob
+from .options import suite_name
 
 
 @dataclass

@@ -8,9 +8,9 @@ the chosen value of every variant axis; both deliveries read it, under the test'
 (`leases.py`), and nothing else, and the batch key of a test of a `.test` file is made of that.
 
     requires    extensions to load first: `require` in the init file, `LOAD` in the preamble
-    init_sql    the statements after them, in order: the settings as `SET`, then the variants' SQL
+    init_sql    the statements after them, in order: the settings as `SET`, then the `init_sql`
     values      the names a body writes as `{NAME}`, and each axis name -> the id of its value
-    roots       the binary's four roots, where a variant or a storage gives them; a Python body
+    roots       the binary's four roots, where a storage gives them; a Python body
                 reads them as `ctx.values.temp_dir`, `ctx.values.data_dir` and their `local_` twins
     process_env the process environment of the engine: a value sets a variable, None unsets it
 
@@ -39,7 +39,6 @@ from .resources.credential import CredentialView, credential_types, engine_env, 
 from .resources.dialect import makes_secret, pairs, render, secret_name
 from .resources.made import Made, services_in
 
-ROOTS = ("data_dir", "local_data_dir", "temp_dir_root", "local_temp_dir_root")
 _ROOT_OF = {
     "DATA_DIR": "data_dir",
     "LOCAL_DATA_DIR": "local_data_dir",
@@ -91,7 +90,7 @@ class TestEnv:
     credentials: list = field(default_factory=list)  # CredentialView of each credential it holds, in order
     secret_requires: list = field(default_factory=list)  # Entry(value=extension) that secret_sql needs
     values: dict = field(default_factory=dict)  # name -> Entry
-    roots: dict = field(default_factory=dict)  # one of ROOTS -> Entry
+    roots: dict = field(default_factory=dict)  # data_dir, temp_dir_root or a local_ twin -> Entry
     process_env: dict = field(default_factory=dict)  # name -> Entry
     process_unset: dict = field(default_factory=dict)  # name -> Entry(value=name)
     process_state: dict = field(default_factory=dict)  # name -> "set"/"unset", whichever last touched it
@@ -237,71 +236,43 @@ def resolve(test, made=None, key=None, default=None):
     before provisioning, as `scan` sees it. An input that needs a service that is not up is listed
     in `pending`. With `key` (a Python body's), a storage gives the child it mints for `key`, so the
     temp roots are the test's own; without it they are the run's, and the binary adds the rest.
-    `default`, the run's DefaultStorage, gives the roots that neither a variant nor a bound storage
-    gives."""
-    definition = test.definition
+    `default`, the run's DefaultStorage, gives the roots that no bound storage gives."""
+    definition, options = test.definition, test.options
     env = TestEnv()
 
-    ruled = _ruled_values(test)
-    axis_given = {}
-
-    def _axis_value(name, value, source, shown=None):
-        seen = axis_given.get(name.lower())
-        if seen is not None and seen != source:
-            raise UsageError(f"{test.id}: {name!r} is given by both {seen} and {source}")
-        _check_not_ruled(test, name, shown or source, ruled)
-        axis_given[name.lower()] = source
-        _put_value(env.values, name, _value_entry(name, value, source))
-
-    # An axis value's id is a name the body can use without the author repeating it.
-    for axis, v in test.axis_values.items():
-        _axis_value(axis, v.id, f"AXES {axis}", shown=f"AXES {axis}={v.id}")
-    for name, value in definition.values.items():
-        _put_value(env.values, name, _value_entry(name, value, definition.source_of("values", name)))
+    for name, value in options.values.items():
+        _put_value(env.values, name, _value_entry(name, value, options.source_of("values", name)))
     if test.params_key is not None:
         for name, value in check_names(test.params, f"{test.id}: params {test.params_key!r}").items():
             _put_value(env.values, name, _value_entry(name, value, f"params {test.params_key!r}"))
+    given = {name.lower(): e.source for name, e in env.values.items()}
 
-    for extension in definition.requires:
-        env.requires.append(Entry(extension, definition.source_of("requires", extension), kind="require"))
-    for name, value in definition.settings.items():
-        env.init_sql.append(set_entry(name, value, definition.source_of("settings", name)))
+    def _input_value(name, value, source):
+        seen = given.get(name.lower())
+        if seen is not None and seen != source:
+            raise UsageError(f"{test.id}: {name!r} is given by both {seen} and {source}")
+        given[name.lower()] = source
+        _put_value(env.values, name, _value_entry(name, value, source))
 
-    for axis, v in test.axis_values.items():
-        where = f"AXES {axis}={v.id}"
-        for extension in v.requires:
-            if extension not in env.extensions:
-                env.requires.append(Entry(extension, where, kind="require"))
-        for name, value in v.settings.items():
-            env.init_sql.append(set_entry(name, value, where))
-        for name, value in check_names(v.values, where).items():
-            _axis_value(name, value, where)
-        for name, value in v.roots.items():
-            if name not in ROOTS:
-                raise UsageError(f"AXES {axis}={v.id}: root {name!r} is not one of {ROOTS}")
-            env.roots[name] = Entry(value, where, kind="root", name=name)
-        # In axis order: the last axis to set or unset a name wins (see environ()).
-        for name, value in v.process_env.items():
-            if value is None:
-                env.process_unset[name] = Entry(name, where, kind="unset")
-                env.process_state[name] = "unset"
-                continue
-            env.process_env[name] = Entry(value, where, kind="env", name=name, secret=bool(_SECRET_NAME.search(name)))
+    for extension in options.requires:
+        env.requires.append(Entry(extension, options.source_of("requires", extension), kind="require"))
+    for name, value in options.settings.items():
+        env.init_sql.append(set_entry(name, value, options.source_of("settings", name)))
+    for n, sql in enumerate(options.init_sql):
+        env.init_sql.append(
+            Entry(sql.strip().rstrip(";") + ";", options.source_of("init_sql", n), kind="sql", shown="")
+        )
+    for name, value in options.process_env.items():
+        source = options.source_of("process_env", name)
+        if value is None:
+            env.process_unset[name] = Entry(name, source, kind="unset")
+            env.process_state[name] = "unset"
+        else:
+            env.process_env[name] = Entry(value, source, kind="env", name=name, secret=bool(_SECRET_NAME.search(name)))
             env.process_state[name] = "set"
-        if v.init_sql:
-            env.init_sql.append(Entry(v.init_sql.strip().rstrip(";") + ";", where, kind="sql", shown=""))
     scanning, made = made is None, made or Made()
-    from_axes = dict(env.roots)
-    instances = [_deliver(env, d, mode, scanning, _axis_value, made, key) for d, mode in test.inputs]
+    instances = [_deliver(env, d, mode, scanning, _input_value, made, key) for d, mode in test.inputs]
     _fill_input_refs(env, instances)
-    if key is not None:
-        # No storage to mint from: the test's own place under a variant's temp root is named the same way.
-        for name in ("temp_dir_root", "local_temp_dir_root"):
-            e = env.roots.get(name)
-            if e is not None and e is from_axes.get(name):
-                env.roots[name] = replace(e, value=f"{e.value}/{made.run_token}/{key}")
-                if name == "temp_dir_root":
-                    env.run_temp_root = f"{e.value}/{made.run_token}"
     if default is not None:
         _default_roots(env, default, made.run_token, key, test.inputs)
     if key is not None:
@@ -389,33 +360,9 @@ def _shell_env(env):
         env.shell_env.append(Entry(", ".join(kept), "INHERIT_ENV", kind="kept"))
 
 
-def _ruled_values(test):
-    """Lower-cased name -> where a rule, `@test` or the params row gives it."""
-    ruled = {name.lower(): test.definition.source_of("values", name) for name in test.definition.values}
-    if test.params_key is not None:
-        ruled.update({name.lower(): f"the params row {test.params_key!r}" for name in test.params})
-    return ruled
-
-
-def _check_not_ruled(test, name, axis_source, ruled):
-    if name.lower() in ruled:
-        raise UsageError(
-            f"{test.id}: the value {name!r} is given by {axis_source} and by {ruled[name.lower()]}; give it in one place"
-        )
-
-
-def check_values(test):
-    """At scan: a name given by an axis value is given nowhere else. What an input gives is known
-    only once it is made; `resolve()` checks that."""
-    ruled = _ruled_values(test)
-    for axis, v in test.axis_values.items():
-        for name in (axis, *v.values):
-            _check_not_ruled(test, name, f"AXES {axis}={v.id}", ruled)
-
-
 def _default_roots(env, default, run_token, key, inputs):
-    """What the default storage gives: the roots no variant gives, and none a bound storage gives,
-    also one whose service is not up yet; a bound storage always gives the temp roots."""
+    """What the default storage gives: the roots no bound storage gives, also one whose service is
+    not up yet; a bound storage always gives the temp roots."""
     storages = [d for d, _ in inputs if d.kind == "storage"]
     temp = default.run_root(run_token) if key is None else default.test_dir(run_token, key)
     for name, local, value, bound in (

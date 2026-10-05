@@ -7,11 +7,15 @@ exactly one test. Groups, tags and selection work on tests.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import re
 from dataclasses import dataclass, field
 
+from .binary import UsageError
+from .options import Settled
+from .resources.client import check_names
 from .resources.made import services_in
 from .testenv import resolve
 
@@ -19,10 +23,10 @@ SQLLOGIC, PAIRED, PYTHON = "sqllogic", "paired", "python"
 BODY_SUFFIXES = (".test", ".test_slow", ".test_coverage")
 
 
-@dataclass
-class TestDef:
-    """A `@test` body or a `.test` file, after the rules. Its timeout, retries, mutex and suites
-    apply to every test made from it."""
+@dataclass(kw_only=True)
+class TestDef(Settled):
+    """A `@test` body or a `.test` file, with the options the rules and its own `@test(...)` gave it
+    (`options.py`); its tests add their axis values' on top."""
 
     __test__ = False  # not a pytest class
     path: str  # relative to the working directory; for a .test body also its name in the unittest binary
@@ -34,26 +38,9 @@ class TestDef:
     body: object = None  # the Python callable, for python and paired tests
     body_file: str | None = None  # the .test file, for sqllogic and paired tests
     params: dict = field(default_factory=dict)
-    tags: list = field(default_factory=list)
-    engines: list = field(default_factory=list)  # ids of the engines it drives, among the project's ENGINES
-    variants: list = field(default_factory=list)
-    mutex: list = field(default_factory=list)  # what each of its tests must have to itself while it runs
-    suites: list = field(default_factory=list)  # a suite it declares itself in, or out of as `!NAME`
-    values: dict = field(default_factory=dict)
-    settings: dict = field(default_factory=dict)
-    requires: list = field(default_factory=list)  # extensions loaded before its settings
-    bind: dict = field(default_factory=dict)  # storage/credential/service -> the id it binds
-    timeout: float | None = None
-    retries: int = 0  # how often a FAILED or ERROR may run again
-    why: list = field(default_factory=list)
-    sources: dict = field(default_factory=dict)  # (field, key) -> the rule that gave that one entry
 
     def __post_init__(self):
         self.root_path = self.root_path or self.path
-
-    def source_of(self, field_name, key):
-        """Which rule gave one entry; what no rule gave, the definition declared itself."""
-        return self.sources.get((field_name, key), "@test")
 
 
 @dataclass
@@ -63,7 +50,7 @@ class Test:
     definition: TestDef
     params_key: str | None  # the row of `definition.params`, or None
     axis_values: dict  # axis name -> Variant
-    inputs: tuple = ()  # (ResourceDef, mode): what it binds and its axis values' inputs, with a credential for each storage
+    inputs: tuple = ()  # (ResourceDef, mode): what it binds, with a credential for each storage
     bind: tuple = ()  # (kind, id, source) for each input it binds, by a rule, `@test` or an axis value
 
     @property
@@ -77,27 +64,35 @@ class Test:
     def params(self):
         return self.definition.params.get(self.params_key, {})
 
-    @property
-    def tags(self):
-        tags = list(self.definition.tags) + [f"type={self.definition.type}"]
-        for v in self.axis_values.values():
-            tags += [t for t in v.tags if t not in tags]
-        return tags
-
-    def _with_variants(self, own, kind):
-        out = list(own)
-        for v in self.axis_values.values():
-            out += [x for x in getattr(v, kind) if x not in out]
+    @functools.cached_property
+    def options(self):
+        """The definition's options with each axis value's on top, in AXES order. An axis value
+        gives way to nothing (`Settled.apply`); the axis name is a value too, `{storage}` the id of
+        its value."""
+        out = self.definition.settled()
+        for axis, v in self.axis_values.items():
+            where = f"AXES {axis}={v.id}"
+            out.give_value(axis, v.id, f"AXES {axis}", axis=self.id, where=where)
+            out.apply(v.options, where, axis=self.id)
+        if self.params_key is not None:
+            for name in check_names(self.params, f"{self.id}: params {self.params_key!r}"):
+                where = out.sources.get(("axis_value", name.lower()))
+                if where is not None:
+                    raise UsageError(
+                        f"{self.id}: the value {name!r} is given by {where} and by the params row "
+                        f"{self.params_key!r}; give it in one place"
+                    )
         return out
 
     @property
+    def tags(self):
+        own = list(self.definition.tags)
+        return own + [f"type={self.definition.type}"] + [t for t in self.options.tags if t not in own]
+
+    @property
     def why(self):
-        """Which rule gave what, then what an axis value binds."""
-        return self.definition.why + [
-            f"{kind}={ref!r}  <- {source}"
-            for kind, ref, source in self.bind
-            if source != self.definition.source_of("bind", kind)
-        ]
+        """Which place gave what: the rules, `@test`, then the axis values."""
+        return self.options.why
 
     def bind_lines(self):
         return [f"bind: {kind}={ref}  <- {source}" for kind, ref, source in self.bind]
@@ -109,12 +104,20 @@ class Test:
 
     @property
     def engines(self):
-        return self._with_variants(self.definition.engines, "engines")
+        return list(self.options.engines)
 
     @property
     def mutex(self):
         """The names this test must have to itself; no test that names one of them runs beside it."""
-        return list(self.definition.mutex)
+        return list(self.options.mutex)
+
+    @property
+    def timeout(self):
+        return self.options.timeout
+
+    @property
+    def retries(self):
+        return self.options.retries
 
     @property
     def dir_name(self):
@@ -150,8 +153,8 @@ class Test:
                 "params": _plain(self.params),
                 # Before provisioning, so what an input gets from a service is not in it.
                 "environment": resolve(self).record(),
-                "timeout": self.definition.timeout,
-                "retries": self.definition.retries,
+                "timeout": self.timeout,
+                "retries": self.retries,
             },
             "why": self.why,
         }

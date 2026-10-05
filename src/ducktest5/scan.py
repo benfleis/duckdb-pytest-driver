@@ -10,12 +10,14 @@ import importlib.util
 import itertools
 import os
 import sys
+from dataclasses import fields
 
-from . import asserts, leases, testenv
+from . import asserts, leases
 from .binary import UsageError
-from .conf import BINDINGS, bound_def, check_suites, is_default, load_project, merge_suites
+from .conf import bound_def, load_project
 from .declare import CONF_FILE
 from .outcomes import Skip
+from .options import Settled
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef
 from .resources.dialect import rendered_classes, secret_renderer
 from .resources import RO, RW, BootedEngineDef, CredentialDef, DefaultStorageDef, StorageDef, pick_credentials
@@ -23,33 +25,10 @@ from .resources import RO, RW, BootedEngineDef, CredentialDef, DefaultStorageDef
 _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 
 
-def _bindings(definition, combo, project):
-    """(kind, Def, source) for each input a test binds: what the rules and `@test` bind, then what
-    each axis value binds. An axis value replaces what a `default()` binds; where a `match()`,
-    `@test` or another axis value binds that kind too, no source wins."""
-    test = f"{definition.path}::{definition.name}"
-    ruled = {
-        kind: (bound_def(project, kind, ref, test), definition.source_of("bind", kind))
-        for kind, ref in definition.bind.items()
-    }
-    from_axes, by_axis = [], {}
-    for axis, variant in combo:
-        where = f"AXES {axis}={variant.id}"
-        for kind in BINDINGS:
-            ref = getattr(variant, kind)
-            if ref is None:
-                continue
-            d = bound_def(project, kind, ref, where)
-            if by_axis.setdefault(kind, where) != where:
-                raise UsageError(f"{test}: {kind}= is given by {by_axis[kind]} and by {where}; bind it in one place")
-            if kind in ruled:
-                old, source = ruled.pop(kind)
-                if not is_default(source):
-                    raise UsageError(
-                        f"{test}: {kind}= is {old.id!r} by {source} and {d.id!r} by {where}; bind it in one place"
-                    )
-            from_axes.append((kind, d, where))
-    return [(kind, d, source) for kind, (d, source) in ruled.items()] + from_axes
+def _bindings(test, project):
+    """(kind, Def, source) for each input a test binds, after its options merged (`options.py`)."""
+    o = test.options
+    return [(kind, bound_def(project, kind, ref, test.id), o.source_of("bind", kind)) for kind, ref in o.bind.items()]
 
 
 def _inputs(bindings, project):
@@ -124,7 +103,7 @@ def scan(start, *, working_dir="."):
     for b in bodies:
         body_by_stem.setdefault(os.path.splitext(b)[0], b)  # .test wins over .test_slow of one stem
 
-    definitions = []
+    definitions = []  # (TestDef, what its @test(...) gives)
     paired_bodies = set()
     for path in scripts:
         rel = os.path.relpath(path, working_dir)
@@ -141,55 +120,54 @@ def scan(start, *, working_dir="."):
             paired_bodies.add(body_file)
         for name, decl in marked:
             definitions.append(
-                TestDef(
-                    path=rel,
-                    name=name,
-                    type=PAIRED if body_file else PYTHON,
-                    root_path=_root_path(path, project.root),
-                    body=decl.body,
-                    body_file=os.path.relpath(body_file, working_dir) if body_file else None,
-                    params=dict(decl.params),
-                    tags=list(decl.tags) + (_suffix_tags(body_file) if body_file else []),
-                    engines=list(decl.engines),
-                    variants=list(decl.variants),
-                    mutex=list(decl.mutex),
-                    suites=list(decl.suites),
-                    bind=dict(decl.bind),
+                (
+                    TestDef(
+                        path=rel,
+                        name=name,
+                        type=PAIRED if body_file else PYTHON,
+                        root_path=_root_path(path, project.root),
+                        body=decl.body,
+                        body_file=os.path.relpath(body_file, working_dir) if body_file else None,
+                        params=dict(decl.params),
+                        tags=_suffix_tags(body_file) if body_file else [],
+                    ),
+                    decl.options,
                 )
             )
     for path in bodies:
         if path in paired_bodies:
             continue
         rel = os.path.relpath(path, working_dir)
-        definitions.append(
-            TestDef(
-                path=rel,
-                name=os.path.splitext(os.path.basename(path))[0],
-                type=SQLLOGIC,
-                root_path=_root_path(path, project.root),
-                body_file=rel,
-                tags=_suffix_tags(path),
-            )
+        definition = TestDef(
+            path=rel,
+            name=os.path.splitext(os.path.basename(path))[0],
+            type=SQLLOGIC,
+            root_path=_root_path(path, project.root),
+            body_file=rel,
+            tags=_suffix_tags(path),
         )
+        definitions.append((definition, None))
 
     tests = []
-    for definition in sorted(definitions, key=lambda d: (d.root_path, d.name)):
-        _settle(definition, project, working_dir)
+    for definition, own in sorted(definitions, key=lambda d: (d[0].root_path, d[0].name)):
+        _settle(definition, own, project, working_dir)
         _engines(definition, project)
-        for axis in definition.variants:
+        for axis in definition.axes:
             if axis not in project.axes:
                 raise UsageError(
                     f"{definition.path}::{definition.name} takes part in axis {axis!r}; the project has {sorted(project.axes)}"
                 )
         # AXES decides the order of the axis parts in an id, not the order in which rules name them.
         axes = [
-            [(axis, v) for v in values.values()] for axis, values in project.axes.items() if axis in definition.variants
+            [(axis, v) for v in values.values()] for axis, values in project.axes.items() if axis in definition.axes
         ]
         for params_key in definition.params or [None]:
             for combo in itertools.product(*axes):
-                bindings = _bindings(definition, combo, project)
-                bind = tuple((kind, d.id, source) for kind, d, source in bindings)
-                tests.append(Test(definition, params_key, dict(combo), _inputs(bindings, project), bind))
+                test = Test(definition, params_key, dict(combo))
+                bindings = _bindings(test, project)
+                test.bind = tuple((kind, d.id, source) for kind, d, source in bindings)
+                test.inputs = _inputs(bindings, project)
+                tests.append(test)
     project.note_unused_rules()
     if project.unused_rules:
         raise UsageError(
@@ -201,7 +179,6 @@ def scan(start, *, working_dir="."):
             raise UsageError(f"{test.id} needs engines {unknown}, not declared in the root {CONF_FILE}")
         # A test's DuckDB engine may come from the project, not the test: settle it before the run.
         leases.check(test.definition, [leases.duckdb_of(test, project)])
-        testenv.check_values(test)
         _one_set_per_type(test)
         _renderable(test, project)
     _one_set_per_booted_engine(tests, project)
@@ -271,27 +248,12 @@ def _engines(definition, project):
     leases.check(definition, [project.engines[name] for name in definition.engines])
 
 
-def _settle(definition, project, working_dir):
-    """Rules first, from the root down; then the definition's own declaration on top."""
+def _settle(definition, own, project, working_dir):
+    """Rules first, from the root down; then the definition's own `@test(...)` on top."""
     settled = project.settle(os.path.abspath(os.path.join(working_dir, definition.path)))
-    own = {
-        "tags": definition.tags,
-        "engines": definition.engines,
-        "variants": definition.variants,
-        "mutex": definition.mutex,
-    }
-    for name in own:
-        added = [x for x in own[name] if x not in getattr(settled, name)]
-        setattr(definition, name, getattr(settled, name) + added)
-        if name == "engines" and added:
-            settled.why.append(f"engines={added!r}  <- @test")
-            settled.sources.update({("engines", x): "@test" for x in added})
-    if definition.bind:
-        settled.apply(definition.bind, "@test")
-    check_suites(definition.suites, f"{definition.path}::{definition.name}")
-    merge_suites(settled.suites, definition.suites, None, settled.sources)
-    definition.suites = settled.suites
-    definition.values, definition.settings, definition.bind = settled.values, settled.settings, settled.bind
-    definition.requires = settled.requires
-    definition.timeout, definition.retries = settled.timeout, settled.retries
-    definition.why, definition.sources = settled.why, settled.sources
+    if own is not None:
+        settled.apply(own, "@test")
+    suffix = [t for t in definition.tags if t not in settled.tags]
+    for f in fields(Settled):
+        setattr(definition, f.name, getattr(settled, f.name))
+    definition.tags += suffix

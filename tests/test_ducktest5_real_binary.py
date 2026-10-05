@@ -33,7 +33,7 @@ CONF = """
         Variant("httplib", requires=["httpfs"], settings={"httpfs_client_implementation": "httplib"}),
         Variant("curl", requires=["httpfs"], settings={"httpfs_client_implementation": "curl"}),
     ]}
-    RULES = [default(variants=["client"])]
+    RULES = [default(axes=["client"])]
 """
 
 BODY = """

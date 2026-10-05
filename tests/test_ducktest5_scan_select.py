@@ -42,7 +42,7 @@ def project(tmp_path):
             "test/ducktest_conf.py": ROOT_CONF,
             "test/a/ducktest_conf.py": """
                 from ducktest5 import default, match
-                RULES = [default(values={"region": "us"}), match("x.test", variants=["backend"], timeout=5)]
+                RULES = [default(values={"region": "us"}), match("x.test", axes=["backend"], timeout=5)]
             """,
             "test/a/x.test": "",
             "test/a/y.test_slow": "",
@@ -72,7 +72,7 @@ def dnf_project(tmp_path):
             "test/ducktest_conf.py": """
                 from ducktest5 import Variant, default, match
                 AXES = {"backend": [Variant("oss"), Variant("dbx")], "storage": [Variant("s3"), Variant("gcs")]}
-                RULES = [default(variants=["backend", "storage"]), match("spark/**", tags=["spark"])]
+                RULES = [default(axes=["backend", "storage"]), match("spark/**", tags=["spark"])]
             """,
             "test/sql/cloud/a.test": "",
             "test/sql/cloud/sub/b.test": "",
@@ -122,7 +122,7 @@ def test_the_axis_parts_of_an_id_come_in_the_order_of_axes(tmp_path):
             "test/ducktest_conf.py": """
                 from ducktest5 import Variant, default
                 AXES = {"backend": [Variant("oss")], "storage": [Variant("s3")]}
-                RULES = [default(variants=["storage", "backend"])]
+                RULES = [default(axes=["storage", "backend"])]
             """,
             "test/a.test": "",
         },
@@ -137,7 +137,7 @@ def test_a_test_directory_name_has_no_glob_or_hive_partition_characters(tmp_path
             "test/ducktest_conf.py": """
                 from ducktest5 import Variant, default
                 AXES = {"storage": [Variant("s3")]}
-                RULES = [default(variants=["storage"])]
+                RULES = [default(axes=["storage"])]
             """,
             "test/a.py": """
                 from ducktest5 import test
@@ -175,7 +175,7 @@ def test_a_rule_that_matches_nothing_is_an_error(tmp_path):
 
 
 def test_an_unknown_rule_field_or_axis_is_an_error(tmp_path):
-    with pytest.raises(UsageError, match="unknown field"):
+    with pytest.raises(UsageError, match=r"unknown option\(s\) \['needs_env'\]"):
         tree(
             tmp_path,
             {
@@ -187,7 +187,7 @@ def test_an_unknown_rule_field_or_axis_is_an_error(tmp_path):
         tree(
             tmp_path / "2",
             {
-                "test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(variants=['nope'])]",
+                "test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(axes=['nope'])]",
                 "test/a.test": "",
             },
         )
@@ -803,7 +803,7 @@ def test_the_scan_record_carries_the_declared_suites(tmp_path):
         ),
         (
             {"test/a.py": "from ducktest5 import test\n@test(suites=['!all'])\ndef a(ctx): pass"},
-            r"a\.py::a: '!all'",
+            r"a\.py::a: @test\(\.\.\.\): '!all'",
         ),
     ],
 )
@@ -964,7 +964,7 @@ def test_only_a_file_with_test_bodies_is_imported_and_a_broken_one_says_which(tm
             tmp_path / "2",
             {"test/broken.py": "import no_such_module\nfrom ducktest5 import test\n@test()\ndef t(ctx): pass"},
         )
-    with pytest.raises(UsageError, match=r"unexpected keyword arguments \['cases'\]"):
+    with pytest.raises(UsageError, match=r"unknown option\(s\) \['cases'\]"):
         tree(tmp_path / "3", {"test/old.py": "from ducktest5 import test\n@test(cases={'a': {}})\ndef t(ctx): pass"})
 
 
@@ -1045,13 +1045,13 @@ AXIS_BIND_CONF = """
 
 
 def test_an_axis_value_replaces_what_a_default_binds_and_says_so(tmp_path):
-    conf = AXIS_BIND_CONF.replace("RULES_HERE", '[default(storage="a", variants=["store"])]')
+    conf = AXIS_BIND_CONF.replace("RULES_HERE", '[default(storage="a", axes=["store"])]')
     tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
     assert [d.id for d, _ in tests[0].inputs] == ["b"]
     assert tests[0].bind_lines() == ["bind: storage=b  <- AXES store=b"]
     assert tests[0].why == [
         "storage='a'  <- ducktest_conf.py: default",
-        "variants=['store']  <- ducktest_conf.py: default",
+        "axes=['store']  <- ducktest_conf.py: default",
         "storage='b'  <- AXES store=b",
     ]
 
@@ -1059,13 +1059,13 @@ def test_an_axis_value_replaces_what_a_default_binds_and_says_so(tmp_path):
 @pytest.mark.parametrize(
     "rules, own, source",
     [
-        ('[default(variants=["store"]), match("t.py", storage="a")]', "", "ducktest_conf.py: match 't.py'"),
-        ('[default(storage="a", variants=["store"])]', "storage='a'", "@test"),
+        ('[default(axes=["store"]), match("t.py", storage="a")]', "", "ducktest_conf.py: match 't.py'"),
+        ('[default(storage="a", axes=["store"])]', "storage='a'", "@test"),
     ],
 )
 def test_a_kind_an_axis_value_and_a_match_or_test_both_bind_is_an_error(tmp_path, rules, own, source):
     body = f"from ducktest5 import test\n@test({own})\ndef t(ctx): pass"
-    message = f"t.py::t: storage= is 'a' by {source} and 'b' by AXES store=b; bind it in one place"
+    message = f"t.py::t[store=b]: storage= is 'a' by {source} and 'b' by AXES store=b; bind it in one place"
     with pytest.raises(UsageError, match=re.escape(message)):
         tree(tmp_path, {"test/ducktest_conf.py": AXIS_BIND_CONF.replace("RULES_HERE", rules), "test/t.py": body})
 
@@ -1080,9 +1080,12 @@ def test_a_kind_two_axis_values_of_one_test_both_bind_is_an_error(tmp_path):
             "storage": [Variant("s3", storage="s3")],
             "via": [Variant("direct"), Variant("reverse-proxy", storage="proxied")],
         }
-        RULES = [default(variants=["storage", "via"])]
+        RULES = [default(axes=["storage", "via"])]
     """
-    message = "t.test::t: storage= is given by AXES storage=s3 and by AXES via=reverse-proxy; bind it in one place"
+    message = (
+        "t.test::t[storage=s3,via=reverse-proxy]: storage= is given by AXES storage=s3 and by AXES via=reverse-proxy; "
+        "bind it in one place"
+    )
     with pytest.raises(UsageError, match=re.escape(message)):
         tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
 
@@ -1092,7 +1095,7 @@ def test_a_value_an_axis_value_and_a_params_row_both_give_is_a_scan_error(tmp_pa
         from ducktest5 import Variant, default
 
         AXES = {"storage": [Variant("s3")]}
-        RULES = [default(variants=["storage"])]
+        RULES = [default(axes=["storage"])]
     """
     body = "from ducktest5 import test\n@test(params={'wide': {'storage': 'x'}})\ndef t(ctx): pass"
     message = (
@@ -1121,10 +1124,14 @@ def test_a_binding_names_one_of_its_own_kind(tmp_path):
 
 
 def test_bind_is_not_a_keyword_any_more_and_the_error_names_the_ones_there_are(tmp_path):
-    with pytest.raises(UsageError, match=r"unknown field\(s\) \['bind'\]; known: .*'storage', 'credential', 'service'"):
+    with pytest.raises(
+        UsageError, match=r"unknown option\(s\) \['bind'\]; it takes .*'storage', 'credential', 'service'"
+    ):
         tree(tmp_path, {"test/ducktest_conf.py": BIND_CONF.replace('storage="a"', 'bind={"storage": "a"}')})
     body = "from ducktest5 import test\n@test(bind={'storage': 'b'})\ndef own(ctx): pass"
-    with pytest.raises(UsageError, match=r"\['bind'\]; it takes \[.*'storage', 'credential', 'service'\]"):
+    with pytest.raises(
+        UsageError, match=r"own.py::own: @test\(...\): unknown option\(s\) \['bind'\]; it takes .*'storage'"
+    ):
         tree(tmp_path / "2", {"test/ducktest_conf.py": BIND_CONF, "test/own.py": body})
 
 
@@ -1136,7 +1143,7 @@ def test_an_axis_value_that_unsets_a_credentials_names_does_not_hide_it(tmp_path
         STORAGES = [StorageDef("bucket", "s3://bucket")]
         CREDENTIALS = [S3CredentialDef.from_aws_env("key", scopes=["bucket"])]
         AXES = {"auth": [Variant("key"), Variant("none", process_env={"AWS_ACCESS_KEY_ID": None})]}
-        RULES = [default(storage="bucket", variants=["auth"])]
+        RULES = [default(storage="bucket", axes=["auth"])]
     """
     tests, _ = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
     assert [[d.id for d, _ in c.inputs] for c in tests] == [["bucket", "key"], ["bucket", "key"]]
@@ -1328,3 +1335,58 @@ def test_scan_env_says_where_helpers_come_from(tmp_path, clean_path, monkeypatch
     monkeypatch.chdir(tmp_path)
     assert main(["scan", "--env"]) == 0
     assert capsys.readouterr().out.splitlines()[0] == "pythonpath: py  <- ducktest_conf.py"
+
+
+# -----------------------------------------------------------------------------
+# One option set: a rule, @test and an axis value take the same names
+#
+
+OPTIONS = (
+    'requires=["json"], settings={"threads": 2}, init_sql="SELECT 1", process_env={"HTTP_PROXY": "p"}, '
+    'values={"region": "eu"}, timeout=7, retries=1, mutex="m", tags=["t"]'
+)
+
+
+@pytest.mark.parametrize(
+    "conf, body",
+    [
+        (f"RULES = [default({OPTIONS})]", "@test()"),
+        ("RULES = []", f"@test({OPTIONS})"),
+        (f'AXES = {{"k": [Variant("v", {OPTIONS})]}}\nRULES = [default(axes=["k"])]', "@test()"),
+    ],
+    ids=["rule", "@test", "axis value"],
+)
+def test_every_option_works_on_a_rule_on_test_and_on_an_axis_value(tmp_path, conf, body):
+    head = "from ducktest5 import Variant, default\n"
+    (test,) = tree(
+        tmp_path,
+        {
+            "test/ducktest_conf.py": head + conf,
+            "test/t.py": f"from ducktest5 import test\n{body}\ndef t(ctx): pass\n",
+        },
+    )[0]
+    env = resolve(test)
+    assert env.extensions == ["json"]
+    assert [e.value for e in env.init_sql] == ["SET threads = '2';", "SELECT 1;"]
+    assert env.environ({}) == {"HTTP_PROXY": "p"}
+    assert env.value_map["region"] == "eu"
+    assert (test.timeout, test.retries, test.mutex) == (7, 1, ["m"])
+    assert "t" in test.tags
+
+
+def test_an_axis_value_takes_no_axes_and_an_unknown_option_names_the_ones_there_are(tmp_path):
+    for option, message in (
+        ('axes=["k"]', r"Variant 'v': unknown option\(s\) \['axes'\]; it takes \['tags', 'engines', 'mutex'"),
+        ('roots={"data_dir": "/d"}', r"Variant 'v': unknown option\(s\) \['roots'\]"),
+        ('inputs=["a"]', r"Variant 'v': unknown option\(s\) \['inputs'\]"),
+    ):
+        conf = f'from ducktest5 import Variant\nAXES = {{"k": [Variant("v", {option})]}}\n'
+        with pytest.raises(UsageError, match=message):
+            tree(tmp_path, {"test/ducktest_conf.py": conf, "test/a.test": ""})
+
+
+def test_init_sql_adds_up_from_the_rules_down_and_names_only_its_source(tmp_path):
+    conf = 'from ducktest5 import default, match\nRULES = [default(init_sql="SELECT 1"), match("t.test", init_sql=["SELECT 2"])]'
+    (test,) = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})[0]
+    assert [e.value for e in resolve(test).init_sql] == ["SELECT 1;", "SELECT 2;"]
+    assert "init_sql  <- ducktest_conf.py: match 't.test'" in test.why

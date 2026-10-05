@@ -92,7 +92,7 @@ def environment(test, test_env, project):
     requires = [Entry(x, where, kind="require") for x in d.requires if x not in loaded]
     set_by_test = {e.name for e in test_env.init_sql if e.kind == "set"}
     init_sql = [set_entry(name, value, where) for name, value in d.settings.items() if name not in set_by_test]
-    init_sql += [Entry(sql.strip().rstrip(";") + ";", where, kind="sql", shown="") for sql in d.init]
+    init_sql += [Entry(sql.strip().rstrip(";") + ";", where, kind="sql", shown="") for sql in d.init_sql]
     env, unset, state = {}, {}, {}
     for name, value in d.process_env.items():
         if name in test_env.process_state:
@@ -149,7 +149,7 @@ def lines(test, project) -> list[str]:
             out.append(f"  require: {', '.join(d.requires)}  <- {where}")
         for name, value in d.settings.items():
             out.append(f"  set: {name}={MASK if SECRET_NAME.search(name) else value}  <- {where}")
-        if d.init:
+        if d.init_sql:
             out.append(f"  init sql  <- {where}")
         for name, value in d.process_env.items():
             if value is None:
@@ -168,7 +168,7 @@ def bind(test, test_env, project) -> list:
         if d.kind == DEFAULT.kind:
             d = d.with_(
                 requires=[*d.requires, *(x for x in test_env.extensions if x not in d.requires)],
-                init=[*d.init, *(e.value for e in test_env.init_sql if e.value)],
+                init_sql=[*d.init_sql, *(e.value for e in test_env.init_sql if e.value)],
                 process_env={**d.process_env, **_process_env(test_env)},
             )
         if inputs and d.dialect is not None:

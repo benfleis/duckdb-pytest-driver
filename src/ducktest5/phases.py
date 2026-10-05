@@ -179,8 +179,8 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, keep=False):
                 "tests": [c.id for c in chunk],
                 "files": [c.definition.root_path for c in chunk],
                 "timeout": sqllogic.DEFAULT_TIMEOUT_S,
-                "timeouts": {c.id: c.definition.timeout for c in chunk if c.definition.timeout},
-                "retries": {c.id: c.definition.retries for c in chunk if c.definition.retries},
+                "timeouts": {c.id: c.timeout for c in chunk if c.timeout},
+                "retries": {c.id: c.retries for c in chunk if c.retries},
                 **({"mutex": sorted({m for c in chunk for m in c.mutex})} if any(c.mutex for c in chunk) else {}),
                 "key": _key_record(chunk[0], project),
             }
@@ -199,8 +199,8 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, keep=False):
                 "order": len(batches) + 1,
                 "tests": [test.id],
                 "files": [test.definition.root_path],
-                "timeout": test.definition.timeout or sqllogic.DEFAULT_TIMEOUT_S,
-                "retries": {test.id: test.definition.retries} if test.definition.retries else {},
+                "timeout": test.timeout or sqllogic.DEFAULT_TIMEOUT_S,
+                "retries": {test.id: test.retries} if test.retries else {},
                 **({"mutex": sorted(test.mutex)} if test.mutex else {}),
                 "key": _key_record(test, project),
             }

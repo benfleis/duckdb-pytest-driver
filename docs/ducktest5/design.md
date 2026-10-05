@@ -157,6 +157,31 @@ the binary skips the file that `ctx.run_paired()` runs, the body ends SKIPPED wi
 6. Helper code outside the test files' directories (`test/py`, `scripts`) goes in the root
    `ducktest_conf.py` as `PYTHONPATH = ["py", "../scripts"]`, relative to that file (2.8).
 
+## 1.7 Options
+
+A rule (`default(...)`, `match(pattern, ...)`), `@test(...)` and an axis value (`Variant(id, ...)`)
+take one set of options. They merge from the root `ducktest_conf.py` down, then `@test`, then each
+axis value of the test. An unknown name is a scan error that lists the ones there are.
+
+| Option | What it gives | Merge |
+| --- | --- | --- |
+| `storage=`, `credential=`, `service=` | the id of one of STORAGES, CREDENTIALS, SERVICES (2.3) | a later one replaces |
+| `values={...}` | `{NAME}`s | by name |
+| `requires=[...]` | extensions to load first | add up |
+| `settings={...}` | DuckDB settings, as `SET` after the requires | by name |
+| `init_sql="..."` | statements after the settings; never printed, only its source | add up |
+| `process_env={...}` | the engine process's variables; `None` unsets one | by name |
+| `engines=[...]` | the engines the test drives | add up |
+| `axes=[...]` | the axes of AXES the test takes part in (not on an axis value) | add up |
+| `tags=[...]`, `suites=[...]` | what selects it (`suites` not on an axis value) | add up |
+| `mutex="name"` | what the test must have to itself while it runs | add up |
+| `timeout=N` | seconds for the whole test; past it, ERROR | a later one replaces |
+| `retries=N` | runs again, alone, after a FAILED or ERROR | a later one replaces |
+
+`@test` also takes `params={key: {...}}`: one test per row. An axis value gives way to nothing: a
+value or binding it gives that a rule, `@test`, the params row or another axis value gives too is a
+scan error; only what `default()` binds gives way to it.
+
 ---
 
 # Part 2. How it works
@@ -189,8 +214,8 @@ The Python objects are thin handles all the way down: the engines run elsewhere.
 a `duckdb` shell process, Spark is a JVM (one clone per worker), a `.test` batch is a `unittest`
 process. An engine instance serves one test at a time and is reset between tests (DuckDB: a fresh
 instance and its preamble; Spark: its conf restored); after a failed test it is opened again.
-`lifetime` is `worker` (default), `batch` or `run`. `requires`, `settings`, `init` and `process_env`
-are part of its identity; `lifetime` and `timeout` are not. Tests one after the other share an
+`lifetime` is `worker` (default), `batch` or `run`. `requires`, `settings`, `init_sql` and `process_env`
+are part of its identity; `lifetime` and `statement_timeout` (for one statement) are not. Tests one after the other share an
 instance of one identity; two names for engines of one identity in one test get two instances. A
 test takes its mutexes, then its engine instances, each in one order for the whole run, so tests on
 several workers never wait for each other in a circle. A Python body past its timeout is ERROR, and
@@ -436,7 +461,7 @@ CREDENTIALS = [S3.credential("s3_keys", scopes=["s3_lake"])]
 AXES = {"storage": [Variant("local", storage="default"), Variant("s3", storage="s3_lake")]}
 
 # The .test files stay on local storage.
-RULES = [match("cross_engine/**", variants=["storage"])]
+RULES = [match("cross_engine/**", axes=["storage"])]
 ```
 
 A params row and a keyword value, from `test/cross_engine/create_table.py`, shortened:

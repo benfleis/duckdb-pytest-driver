@@ -587,7 +587,7 @@ def execute(
                 begin(test, phases.PYTHON_RUNNER)
                 test_started[test.id] = time.perf_counter()
                 t0 = time.perf_counter()
-                allowed, tried, first, ctx = 1 + test.definition.retries, [], None, None
+                allowed, tried, first, ctx = 1 + test.retries, [], None, None
                 for n in range(1, allowed + 1):
                     outcome, problems, failure, temp_dir, ctx = attempt(test, n, lease)
                     if lease.revoked:  # its timeout reported it and released what it held
@@ -888,7 +888,7 @@ def _run_paired(test, test_env, unittest_bin, working_dir, temp_dir, *, values=N
         os.path.join(temp_dir, "run_paired"),
         [(test.id, test.definition.body_file)],
         test_env.plus(values=values, init_sql=init_sql),
-        test.definition.timeout or sqllogic.DEFAULT_TIMEOUT_S,
+        test.timeout or sqllogic.DEFAULT_TIMEOUT_S,
     )
     result = sqllogic.run_batch(unittest_bin, batch, working_dir)[test.id]
     if result.outcome == SKIPPED:

@@ -182,7 +182,7 @@ def test_a_credential_pairs_with_every_storage_it_is_scoped_to(two_storages):
 
 def test_the_preamble_is_requires_then_settings_then_secrets_then_init(remote):
     storage, credential = remote
-    session = SimpleNamespace(requires=["httpfs"], settings={"threads": 1}, init=["SELECT 42;"])
+    session = SimpleNamespace(requires=["httpfs"], settings={"threads": 1}, init_sql=["SELECT 42;"])
     assert preamble("duckdb", session, remote).sql == [
         "LOAD httpfs;",
         "SET threads = '1';",

@@ -95,7 +95,7 @@ class DuckDBEngineDef(EngineDef):
 
 class DuckDBEngine(Engine):
     def run(self, statements, *, timeout=None):
-        return self.live.run(statements, timeout=timeout or self.definition.timeout or DEFAULT_TIMEOUT_S)
+        return self.live.run(statements, timeout=timeout or self.definition.statement_timeout or DEFAULT_TIMEOUT_S)
 
 
 DuckDBEngineDef.instance = DuckDBEngine

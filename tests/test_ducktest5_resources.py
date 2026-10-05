@@ -586,7 +586,7 @@ from ducktest5.resources import S3CredentialDef, StorageDef, from_env
 STORAGES = [StorageDef("local", "s3://bucket/store")]
 CREDENTIALS = [S3CredentialDef("local-key", sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})], scopes=["local"])]
 AXES = {"storage": [Variant("local", storage="local")]}
-RULES = [match("a/**", variants=["storage"])]
+RULES = [match("a/**", axes=["storage"])]
 """
 
 

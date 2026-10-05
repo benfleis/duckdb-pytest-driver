@@ -82,7 +82,7 @@ def preamble(dialect, definition, inputs) -> Preamble:
         out += render(dialect, "settings", dict(definition.settings))
     for credential, storages in pairs(inputs):
         out += render(dialect, "secret", storages, credential)
-    return out + Preamble(sql=list(definition.init))
+    return out + Preamble(sql=list(definition.init_sql))
 
 
 def pairs(inputs):

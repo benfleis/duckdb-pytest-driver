@@ -96,11 +96,6 @@ def test_an_extension_asked_for_twice_is_loaded_once_in_the_order_of_the_axes():
     assert resolve(make_test(axis_values)).extensions == ["httpfs", "json"]
 
 
-def test_a_root_the_binary_does_not_have_is_refused():
-    with pytest.raises(UsageError, match="root 'tmp' is not one of"):
-        resolve(make_test({"storage": Variant("s3", roots={"tmp": "/x"})}))
-
-
 def test_the_environment_of_the_engine_process_is_this_process_with_the_variant_on_top():
     variant = Variant("no-key", process_env={"AWS_PROFILE": "ducktest", "PATH": None})
     env = resolve(make_test({"auth": variant}))
@@ -174,7 +169,6 @@ def test_two_tests_share_a_key_only_when_everything_the_process_gets_is_the_same
     for other in (
         make_test({"k": plain}, values={"region": "us"}),
         make_test({"k": Variant("plain", requires=("httpfs",))}, values={"region": "eu"}),
-        make_test({"k": Variant("plain", roots={"data_dir": "/d"})}, values={"region": "eu"}),
         make_test({"k": Variant("plain", process_env={"AWS_PROFILE": "p"})}, values={"region": "eu"}),
         make_test({"k": Variant("plain", process_env={"AWS_PROFILE": None})}, values={"region": "eu"}),
         make_test({"k": plain}, values={"region": "eu"}, inputs=[StoreDef()]),

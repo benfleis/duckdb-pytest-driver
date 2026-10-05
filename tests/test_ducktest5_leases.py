@@ -62,9 +62,9 @@ def opened(definition, inputs=None):
 #
 
 
-def test_identity_is_the_content_not_the_label_lifetime_or_timeout():
+def test_identity_is_the_content_not_the_label_lifetime_or_statement_timeout():
     one = duckdb_engine("duck", requires=["delta"])
-    assert one.identity() == duckdb_engine("other", requires=["delta"], lifetime="run", timeout=5).identity()
+    assert one.identity() == duckdb_engine("other", requires=["delta"], lifetime="run", statement_timeout=5).identity()
     assert one.identity() != duckdb_engine("duck", requires=["httpfs"]).identity()
     assert one.identity() != BootedEngineDef("duck", requires=["delta"]).identity()
 
@@ -431,7 +431,8 @@ def test_a_client_template_sees_the_names_a_test_file_sees_and_no_secret(tmp_pat
         seen.update(names=ctx.values, location=ctx.location("t"))
         ctx.client("duckdb").oks("SELECT '{TEMP_DIR}', '{CATALOG}', '{catalog}'")
 
-    local = py_test(body, {"k": Variant("local", roots={"data_dir": "/data"})}, values={"catalog": "c"})
+    storage = StorageDef("local", str(tmp_path / "local-root"), data="/data")
+    local = py_test(body, values={"catalog": "c"}, inputs=[storage])
     assert go(tmp_path / "local", [local])[0] == 0
     names = seen["names"]
     assert {n: names[n] for n in ("DATA_DIR", "LOCAL_DATA_DIR", "CATALOG", "catalog")} == {
