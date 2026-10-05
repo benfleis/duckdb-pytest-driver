@@ -17,12 +17,12 @@ would be, with three short tests in `sql/`, one for each kind of file the conf h
 
 ```sh
 cd examples/httpfs
-(mkdir -p /tmp/python_test_server && cd /tmp/python_test_server && python3 -m http.server 8008 &)
 BUILD_DIR=<duckdb v2.0 build with httpfs> ducktest5 run --root .
 ```
 
-With both servers up, all 6 cells pass (3 files x 2 clients; 2026-10-05). With neither, the two
-`client_setting` cells pass and the other four are BLOCKED, each with the server it waited for.
+With the S3 server up, all 6 cells pass (3 files x 2 clients; 2026-10-05). Without it, the S3
+file's two cells are BLOCKED, each saying which server it waited for, and the other four pass. The
+HTTP server needs nothing: the run starts it.
 
 ## What it shows
 
@@ -36,9 +36,10 @@ With both servers up, all 6 cells pass (3 files x 2 clients; 2026-10-05). With n
 - **A matrix.** The parameter `httpfs_client` in `MATRIX` runs each test once with curl and once with
   httplib, as two of the CI configs in `test/configs/` do. Ids end in `[httpfs_client=curl]` or
   `[httpfs_client=httplib]`; `--select httpfs_client=curl` takes one.
-- **A service bound by `service=`.** The Python HTTP server of CI, which the run uses but does not
-  start. `{pyhttp.url}` becomes its address. `mutex=` stops the two clients from writing the same
-  file at the same time.
+- **A service bound by `service=`.** A small HTTP server that the run starts in its own process,
+  the same on a dev box and in CI. `{pyhttp.url}` becomes its address and `{pyhttp.dir}` the
+  directory it serves, where a test writes the files it then reads over HTTP. `mutex=` stops the two
+  clients from writing the same file at the same time.
 - **Values, settings, process env.** `values=` fills the `{NAME}`s and `require-env` lines,
   `settings=` gives `SET` statements, `process_env=` gives the variables httpfs reads with `getenv`.
 
@@ -51,9 +52,7 @@ With both servers up, all 6 cells pass (3 files x 2 clients; 2026-10-05). With n
    `s3_seed/README.md` lists.
 4. For the S3 files: an S3 server at `DUCKTEST_SERVICE_HOST:DUCKTEST_S3_LOCAL_PORT` (keys
    `admin`/`password`), or docker, and `rclone` on PATH.
-5. For the 4 files with `require-env PYTHON_HTTP_SERVER_URL`: `python3 -m http.server 8008` in
-   `PYTHON_HTTP_SERVER_DIR` (default `/tmp/python_test_server`).
-6. `ducktest5 run --suite default`. `ducktest5 scan --env <file>` shows what a test gets.
+5. `ducktest5 run --suite default`. `ducktest5 scan --env <file>` shows what a test gets.
 
 ## Measured, 2026-10-05
 
