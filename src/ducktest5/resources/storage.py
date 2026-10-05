@@ -234,7 +234,7 @@ def default_storage(id="default") -> DefaultStorageDef:
     return DefaultStorageDef(id)
 
 
-DEFAULT_TEMP_ROOT = "duckdb_unittest_tempdir"
+DEFAULT_TEMP_ROOT = "ducktest_temp"
 
 
 @dataclass(frozen=True)

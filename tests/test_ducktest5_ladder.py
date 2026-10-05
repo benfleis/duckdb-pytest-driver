@@ -120,7 +120,7 @@ def rung_copy(tmp_path, monkeypatch):
     def copy(rung):
         where = tmp_path / "repo" / rung
         shutil.copytree(
-            os.path.join(LADDER, rung), where, ignore=shutil.ignore_patterns("__pycache__", "duckdb_unittest_tempdir")
+            os.path.join(LADDER, rung), where, ignore=shutil.ignore_patterns("__pycache__", "ducktest_temp")
         )
         if rung == "00_existing":
             (where / ".git").mkdir()  # its top is a git repository's, where {DATA_DIR} is found

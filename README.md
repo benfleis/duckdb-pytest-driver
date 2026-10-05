@@ -65,7 +65,7 @@ another build, use `--build release`, or set `BUILD_DIR` to the directory that h
   process with up to 10 `.test` files. For a big run, `--level terse` prints only the tests that did not pass, and the summary.
 - **Diagnostics.** `-v` and `-vv` print ducktest5's own diagnostics on stderr, at INFO and DEBUG.
 
-Each run writes a run directory, `duckdb_unittest_tempdir/<run>/`, in the working directory. The
+Each run writes a run directory, `ducktest_temp/<run>/`, in the working directory. The
 last line of the output gives its path. It holds `01-tests.yaml` (the tests and what each gets),
 `02-plan.yaml` (the batches), `03-provision.yaml` (what was made), `04-events.jsonl` (what
 happened), `05-report.json` and `05-report.yaml` (the results), and `ducktest.log` (diagnostics at

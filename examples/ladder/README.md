@@ -34,7 +34,7 @@ A repo that gates files this way can give them what they need from that line whe
 `mid_file_skip.test` (deprecated, a way in: move to tags or paths).
 
 `{DATA_DIR}` is `data/` at the top of the git repository, and `{TEMP_DIR}` is the test's own place
-in the run directory, `duckdb_unittest_tempdir/<run>/` in the working directory. For duckdb core,
+in the run directory, `ducktest_temp/<run>/` in the working directory. For duckdb core,
 that is all: build it, go to the top of the checkout, and run
 `ducktest5 run test/sql/aggregate --suite default`. The build is found in `build/debug/` there.
 
@@ -79,7 +79,7 @@ cell's `storage` value. `--select storage=b` or `--select case=small` takes some
 SKIPPED, and the report lists the reason under "skipped". A body skips only on a condition it checks
 itself; an input that does not come up makes the test BLOCKED (rung 04).
 
-A run writes its records to `duckdb_unittest_tempdir/<run>/` in the working directory, and what its
+A run writes its records to `ducktest_temp/<run>/` in the working directory, and what its
 tests write under `<storage>/temp/<run>/`; when the run ends, that prefix goes, but the places of the
 tests that failed.
 

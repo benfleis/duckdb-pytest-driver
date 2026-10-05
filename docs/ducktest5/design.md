@@ -116,7 +116,7 @@ run   own_inputs.py::own_inputs
 skip  excluded.test::excluded  -- not in suite 'default': tag opt-in
 $ ducktest5 run
 9 passed, 1 skipped in 2.67s
-run dir: <repo>/examples/ladder/02_rules/duckdb_unittest_tempdir/2026-09-30T12-57-31Z--swift-raven-54
+run dir: <repo>/examples/ladder/02_rules/ducktest_temp/2026-09-30T12-57-31Z--swift-raven-54
 ```
 
 Tests carry tags (`tags=[...]` on a rule or `@test`); a `.test_slow` file has the tag `slow`, a
@@ -328,7 +328,7 @@ One `run_token` per invocation (`2026-09-30T12-57-31Z--swift-raven-54`); one `ba
 | `TEMP_DIR` | Python: `<run>/<key>`; `.test`: `<run>/<batch_token>/<test id>`, made by the binary |
 
 `default_storage()` is the implicit default: `DATA_DIR` = `<repo>/data`, `TEMP_DIR` = the test's own
-place in the run dir (`duckdb_unittest_tempdir/<run_token>/tests/<key>` for Python). A project may
+place in the run dir (`ducktest_temp/<run_token>/tests/<key>` for Python). A project may
 name it in `STORAGES`. At run end the run level goes, except the places of failed tests.
 
 ## 2.5 Credentials

@@ -233,7 +233,7 @@ def test_a_test_that_binds_only_the_credential_gets_its_env_and_no_secret(tree, 
           bind: credential=az  <- ducktest_conf.py: match 'existing.test'
           secret: none (no storage of the test is in its scope)  <- credential az
           values: AZ_TEMP_DIR=writes  <- ducktest_conf.py: match 'existing.test'
-          root: temp_dir_root=ROOT/duckdb_unittest_tempdir/<run_token>  <- default storage
+          root: temp_dir_root=ROOT/ducktest_temp/<run_token>  <- default storage
           root: data_dir=ROOT/test/data  <- default storage
           process env: AZURE_STORAGE_CONNECTION_STRING=***  <- credential az (AzureCredentialDef, from env DT_CONN)
         """

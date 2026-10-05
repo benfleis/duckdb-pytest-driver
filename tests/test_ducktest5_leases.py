@@ -653,7 +653,7 @@ def engines_project(root, engines, rules="[]"):
 
 def default_roots(root):
     return (
-        f"  root: temp_dir_root={root}/duckdb_unittest_tempdir/<run_token>  <- default storage\n"
+        f"  root: temp_dir_root={root}/ducktest_temp/<run_token>  <- default storage\n"
         f"  root: data_dir={root}/data  <- default storage\n"
     )
 
