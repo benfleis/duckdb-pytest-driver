@@ -66,7 +66,6 @@ def _binary_options(parser):
     )
     parser.add_argument("--duckdb-bin", help="the duckdb shell to use (default: found by --build)")
     parser.add_argument("--unittest-bin", help="the test/unittest binary to use (default: found by --build)")
-    parser.add_argument("--run-bin", help="DuckDB's run wrapper, for --runner run (default: beside test/unittest)")
 
 
 def _storage_options(parser, *, temp=True):
@@ -113,18 +112,6 @@ def _plan_options(parser):
     parser.add_argument("--batch-size", type=int, default=10, help=".test files for one unittest process")
     parser.add_argument(
         "--workers", type=int, default=4, help="how many run at a time: a .test batch or a Python test takes one slot"
-    )
-    parser.add_argument(
-        "--runner",
-        default=phases.UNITTEST_RUNNER,
-        choices=phases.RUNNERS,
-        help="what runs a .test batch (default: unittest); a Python body always runs in this process",
-    )
-    parser.add_argument(
-        "--run-args",
-        default="",
-        metavar="'...'",
-        help="passed to DuckDB's run wrapper as they are, with --runner run (its --retry, --batch-timeout, ...)",
     )
 
 
@@ -339,9 +326,6 @@ def main(argv=None):
             keep_services=args.keep_services,
             batch_size=args.batch_size,
             workers=args.workers,
-            runner=args.runner,
-            run_args=args.run_args,
-            run_bin=args.run_bin,
             debugger=debugger,
             command=["ducktest5"] + list(argv if argv is not None else sys.argv[1:]),
             selection=asked,
@@ -408,9 +392,7 @@ def _binaries(args, selected, project, working_dir):
 def _plan(args):
     cwd = os.getcwd()
     tests, project = _tests_by_id(args, phases.ids_of_tests(phases.read_tests(args.run_dir)), cwd)
-    doc = phases.build_plan(
-        tests, project, batch_size=args.batch_size, workers=args.workers, runner=args.runner, run_args=args.run_args
-    )
+    doc = phases.build_plan(tests, project, batch_size=args.batch_size, workers=args.workers)
     path = phases.write_plan(args.run_dir, doc, force=args.force)
     print(f"{len(doc['batches'])} batches for {len(tests)} tests -> {path}")
     return 0
@@ -475,7 +457,6 @@ def _exec(args):
         keep=args.keep,
         existing_services=args.existing_service,
         provision_here=args.provision,
-        run_bin=args.run_bin,
         events_file=args.events,
         append=append,
         interrupted=set(phases.unfinished(history)),

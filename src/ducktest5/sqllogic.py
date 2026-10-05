@@ -92,9 +92,6 @@ class TestResult:
     kept: str | None = None
     note: str = ""
     attempts: int = 1
-    # How the outcome is known: an event of the binary, or the summary of a runner that forwards
-    # none (the `run` wrapper). None where it does not matter, so no event line carries noise.
-    evidence: str | None = None
 
 
 def init_file_text(test_env):

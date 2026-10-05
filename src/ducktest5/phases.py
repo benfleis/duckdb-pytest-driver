@@ -48,8 +48,7 @@ _log = logging.getLogger(__name__)
 TESTS_FILE, PLAN_FILE, PROVISION_FILE = "01-tests.yaml", "02-plan.yaml", "03-provision.yaml"
 TESTS_SCHEMA = PLAN_SCHEMA = PROVISION_SCHEMA = 1
 
-PYTHON_RUNNER, UNITTEST_RUNNER, RUN_RUNNER = "python", "unittest", "run"
-RUNNERS = (UNITTEST_RUNNER, RUN_RUNNER)  # what `--runner` may say; a Python body is always `python`
+PYTHON_RUNNER, UNITTEST_RUNNER = "python", "unittest"
 
 KEPT_OUTCOMES = (FAILED, ERROR, BLOCKED)  # what a test must end with for its files to stay
 
@@ -154,9 +153,9 @@ def _key_record(test, project):
     }
 
 
-def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST_RUNNER, run_args="", keep=False):
+def build_plan(tests, project=None, *, batch_size=10, workers=4, keep=False):
     """`02-plan.yaml` as a document. Tests of `.test` files of one identity -- one DuckDB engine over
-    one test environment -- share a batch; a Python body is a batch of one, whatever `--runner` says,
+    one test environment -- share a batch for the unittest binary; a Python body is a batch of one,
     because only this process can run it. Without `project` every test has the default engine.
 
     A batch: `id`, `runner`, `order`, `tests` (the test ids), `files` (the `.test` files, relative to
@@ -164,8 +163,6 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST
     test names one, and `key` (a digest of its tests' identity, and the test environment). `knobs`
     records what the planner was given; the batch key is worked out again before a batch runs, so a
     plan can be read by another engine without being believed."""
-    if runner not in RUNNERS:
-        raise UsageError(f"--runner {runner!r}; it is one of {RUNNERS}")
 
     def environment(test):
         return leases.environment(test, testenv.resolve(test), project)
@@ -177,7 +174,7 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST
         for chunk in _chunks(group, batch_size):
             entry = {
                 "id": f"b{len(batches) + 1:03d}",
-                "runner": runner,
+                "runner": UNITTEST_RUNNER,
                 "order": len(batches) + 1,
                 "tests": [c.id for c in chunk],
                 "files": [c.definition.root_path for c in chunk],
@@ -218,8 +215,6 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, runner=UNITTEST
         "knobs": {
             "workers": workers,
             "batch_size": batch_size,
-            "runner": runner,
-            **({"run_args": run_args} if run_args else {}),
             "keep": keep,
         },
         "batches": batches,

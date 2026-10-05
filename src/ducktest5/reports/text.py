@@ -162,13 +162,8 @@ def failure_block(test, *, color=False, merged=False, verbose=False):
 
 def summary_lines(report, *, color=False):
     """Counts in a fixed order, the wall time, the slowest tests, what was retried, and where the
-    run dir is. A run whose outcomes are not all the binary's own says so first."""
+    run dir is."""
     out, counts = [], report.counts
-    if weak := report.weak:
-        out.append(
-            f"{len(weak)} of {len(report.tests)} tests have no event of their own: the run wrapper forwards none "
-            "for a batch that passed, so passed is what its summary says, without seconds"
-        )
     for reason, ids in report.by_reason(SKIPPED).items():
         if not out:
             out.append(f"{counts[SKIPPED]} skipped:")
@@ -260,9 +255,8 @@ def terse(report, out):
         print(file=out)
     counts = report.counts
     where = "".join(f"; run-dir={r.get('run_dir')}" for r in report.runs if r.get("run_dir"))
-    weak = f"; from-run-summary={len(report.weak)}" if report.weak else ""
     print(
-        "summary: " + ", ".join(f"{counts[o]} {o}" for o in OUTCOMES) + f" in {report.seconds}s{where}{weak}",
+        "summary: " + ", ".join(f"{counts[o]} {o}" for o in OUTCOMES) + f" in {report.seconds}s{where}",
         file=out,
     )
 

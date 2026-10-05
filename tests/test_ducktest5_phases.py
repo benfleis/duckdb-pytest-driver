@@ -94,7 +94,6 @@ def test_the_plan_names_the_batches_the_tests_and_the_knobs(tree):
     assert main(["plan", "--run-dir", "apart", "--batch-size", "1", "--workers", "2"]) == 0
     doc = yaml.safe_load(open(os.path.join("apart", phases.PLAN_FILE)))
     assert doc["knobs"]["batch_size"] == 1 and doc["knobs"]["workers"] == 2
-    assert doc["knobs"]["runner"] == "unittest"
     assert [b["id"] for b in doc["batches"]] == ["b001", "b002", "b003", "b004"]
     assert [b["runner"] for b in doc["batches"]] == ["unittest"] * 3 + ["python"]
     assert sorted(b["tests"][0] for b in doc["batches"]) == [

@@ -7,8 +7,8 @@ and what happened is in the run dir: `01-tests.yaml`, `02-plan.yaml`, `03-provis
 wrong outside a body is an ERROR of the tests it hit, never the end of the run, and services are
 released on every way out.
 
-`.test` batches go to the unittest binary, several processes at a time, or to DuckDB's own `run`
-wrapper (`--runner run`, `runners.py`); Python bodies run in worker threads of this process. Both
+`.test` batches go to the unittest binary, several processes at a time; Python bodies run in
+worker threads of this process. Both
 kinds take their slot from one budget of `--workers`, and what each worker owns is in `workers.py`.
 
 The run prints nothing itself. It writes events and hands each one to the renderers that watch, so
@@ -34,7 +34,7 @@ import threading
 import time
 import traceback
 
-from . import events, logconfig, phases, runners, leases, sqllogic, testenv
+from . import events, logconfig, phases, leases, sqllogic, testenv
 from .binary import UsageError
 from .resources.client import SetupFailed
 from .ctx import Context
@@ -199,9 +199,6 @@ def run(
     keep_services=False,
     batch_size=10,
     workers=4,
-    runner=phases.UNITTEST_RUNNER,
-    run_args="",
-    run_bin=None,
     out=None,
     shell_factory=DuckDBShell,
     debugger=None,
@@ -220,9 +217,7 @@ def run(
     os.makedirs(run_dir)
     logconfig.add_run_dir(run_dir)
     phases.write_tests(run_dir, tests, project, working_dir=working_dir, selection=selection)
-    plan = phases.build_plan(
-        tests, project, batch_size=batch_size, workers=workers, runner=runner, run_args=run_args, keep=keep
-    )
+    plan = phases.build_plan(tests, project, batch_size=batch_size, workers=workers, keep=keep)
     phases.write_plan(run_dir, plan)
     return execute(
         tests,
@@ -237,7 +232,6 @@ def run(
         keep_services=keep_services,
         provision_here=True,
         clean=True,
-        run_bin=run_bin,
         out=out,
         shell_factory=shell_factory,
         debugger=debugger,
@@ -265,7 +259,6 @@ def execute(
     keep_services=False,
     provision_here=True,
     clean=False,
-    run_bin=None,
     events_file=None,
     append=False,
     interrupted=(),
@@ -298,7 +291,7 @@ def execute(
     engines = project.engines
     knobs = plan.get("knobs") or {}
     workers = knobs.get("workers", 4)
-    runner = knobs.get("runner", phases.UNITTEST_RUNNER)
+    runner = phases.UNITTEST_RUNNER
 
     verbose = level == "verbose"
     # Text at normal or verbose is the live renderer; anything else is rendered once, at the end.
@@ -500,8 +493,7 @@ def execute(
             else:
                 runnable[test.id] = test
 
-        # .test bodies with no Python: batches through the unittest binary, several at a time, or
-        # through DuckDB's own `run` wrapper.
+        # .test bodies with no Python: batches through the unittest binary, several at a time.
         batches = []
         for entry in plan.get("batches") or []:
             chunk = [runnable[i] for i in entry["tests"] if i in runnable]
@@ -636,22 +628,6 @@ def execute(
                     statements=[s for _, c in tried if c for s in c.statements],
                     **({"attempts": n} if n > 1 else {}),
                 )
-
-        if runner == phases.RUN_RUNNER and batches:
-            for _, chunk, batch in batches:
-                for test in chunk:
-                    begin(test, runner)
-            for chunk, group, by_test in runners.run_wrapper(
-                unittest_bin,
-                [(chunk, batch) for _, chunk, batch in batches],
-                working_dir,
-                run_dir=run_dir,
-                workers=workers,
-                run_args=knobs.get("run_args", ""),
-                run_bin=run_bin,
-            ):
-                _report_batch(chunk, group, by_test, done, run_dir, runner)
-            batches = []
 
         def python_timed_out(test, test_timeout):
             """A thread cannot be killed: give up waiting on it, release whatever it holds, and
@@ -851,7 +827,7 @@ def _batch_of(run_dir, entry, chunk, test_env):
 
 
 def _report_batch(chunk, batch, by_test, done, run_dir, runner):
-    """One event for each test of a batch the binary or the wrapper has run."""
+    """One event for each test of a batch the binary has run."""
     for test in chunk:
         r = by_test.get(test.id)
         if r is None:
@@ -877,7 +853,6 @@ def _report_batch(chunk, batch, by_test, done, run_dir, runner):
             note=r.note,
             batch_dir=batch.dir,
             batch=os.path.relpath(batch.dir, run_dir),
-            evidence=r.evidence,
             **({"attempts": r.attempts} if r.attempts > 1 else {}),
         )
 

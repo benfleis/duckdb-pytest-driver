@@ -57,8 +57,6 @@ test's own line, so no renderer has to open another file.
                   statements     what a Python body ran: client, sql, seconds
                   batch          the batch directory of a test of a `.test` file, relative to the run dir
                   dirs           what the test wrote under the run dir, for the cleanup phase
-                  evidence       how the outcome is known: `event` (the binary said so) or
-                                 `run-summary` (a runner that forwards no event; weaker, no seconds)
                   kept           paths and URIs the run left behind for a second look
                   again          the command that runs this one test again
 

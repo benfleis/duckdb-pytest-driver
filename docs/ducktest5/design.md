@@ -391,6 +391,9 @@ credential; several credentials of one type in one test; scan checks of `{NAME}`
 `ctx.client("...")` names; `.test` header blocks as rules; the `Run` object; the events of runs loaded into
 a DuckDB file, so a history is a query.
 
+One runner for `.test` files: the `unittest` binary. Convergence with DuckDB's own `test/run` -- its
+coverage, its minimal-token output, its options -- is phase 2: needed, not dropped.
+
 ---
 
 # Appendix A. The ladder
