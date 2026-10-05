@@ -235,16 +235,6 @@ class Project:
             _glob(p).fullmatch(rel_to_root) or _glob(p.rstrip("/") + "/**").fullmatch(rel_to_root) for p in self.exclude
         )
 
-    def excluded_bodies(self, working_dir):
-        """The `.test` files EXCLUDE leaves out, relative to `working_dir`: the binary still knows them."""
-        out = []
-        for dirpath, _, filenames in os.walk(self.root):
-            for f in filenames:
-                rel = os.path.relpath(os.path.join(dirpath, f), self.root).replace(os.sep, "/")
-                if f.endswith((".test", ".test_slow", ".test_coverage")) and self.excludes(rel):
-                    out.append(os.path.relpath(os.path.join(dirpath, f), working_dir))
-        return out
-
     def settle(self, test_path):
         """Apply every rule on the way from the root down to `test_path` (absolute)."""
         settled = Settled()

@@ -36,7 +36,6 @@ from . import events, init, logconfig, phases, leases, sqllogic, testenv
 from .binary import UsageError, check_floor, find_duckdb
 from .conf import load_project, repo_root
 from .declare import CONF_FILE
-from .model import PAIRED
 from .provision import bring_up
 from .resources.made import Made
 from .resources.storage import DEFAULT_TEMP_ROOT
@@ -192,9 +191,6 @@ def main(argv=None):
     _storage_options(run_options)
     run_options.add_argument("--keep", action="store_true", help="keep what passed tests wrote, too")
     _plan_options(run_options)
-    run_options.add_argument(
-        "--no-binary-check", action="store_true", help="do not compare the .test files on disk with `unittest -l`"
-    )
     _service_options(run_options)
     run_options.add_argument(
         "--keep-services", action="store_true", help="leave each service it starts running, with what it holds"
@@ -217,9 +213,6 @@ def main(argv=None):
     _binary_options(exec_options)
     _storage_options(exec_options, temp=False)
     exec_options.add_argument("--keep", action="store_true", help="keep what passed tests wrote, too")
-    exec_options.add_argument(
-        "--no-binary-check", action="store_true", help="do not compare the .test files on disk with `unittest -l`"
-    )
     exec_options.add_argument(
         "--provision", action="store_true", help="provision the services here, as `run` does, instead of reading 03"
     )
@@ -339,7 +332,7 @@ def main(argv=None):
             return 0
         if not selected:
             raise UsageError("no test selected")
-        duckdb_bin, unittest_bin = _binaries(args, selected, tests, project, cwd)
+        duckdb_bin, unittest_bin = _binaries(args, selected, project, cwd)
         return run(
             selected,
             project,
@@ -395,10 +388,8 @@ def _scan(args, working_dir):
 
 
 def _tests_by_id(args, ids, working_dir):
-    """(the Tests a phase file names, every test of the tree, the project). A file of a phase holds
-    ids, not bodies: a Python body is only in the tree, and a test of a `.test` file must find the file of that
-    name. The whole tree comes back too, because the check against the binary is of the tree, not of
-    the tests one invocation runs."""
+    """(the Tests a phase file names, the project). A file of a phase holds ids, not bodies: a Python
+    body is only in the tree, and a test of a `.test` file must find the file of that name."""
     tests, project = _scan(args, working_dir)
     by_id = {c.id: c for c in tests}
     if missing := [i for i in ids if i not in by_id]:
@@ -406,48 +397,24 @@ def _tests_by_id(args, ids, working_dir):
             f"{len(missing)} test(s) of the run directory are not in {project.root} any more:\n  "
             + "\n  ".join(missing[:10])
         )
-    return [by_id[i] for i in ids], tests, project
+    return [by_id[i] for i in ids], project
 
 
-def _binaries(args, selected, tests, project, working_dir):
+def _binaries(args, selected, project, working_dir):
     """The duckdb shell and, when a `.test` file is selected, the unittest binary of this machine."""
     places = (repo_root(project.root), working_dir)
     duckdb_bin = find_duckdb(explicit=args.duckdb_bin, build=args.build, places=places)
     unittest_bin = None
     if any(c.definition.body_file for c in selected):
         unittest_bin = sqllogic.find_unittest(explicit=args.unittest_bin, build=args.build, places=places)
-    scratch = os.path.join(getattr(args, "run_dir", None) or project.default_storage.temp_root, ".list")
+    scratch = os.path.join(getattr(args, "run_dir", None) or project.default_storage.temp_root, ".version-probe")
     check_floor(duckdb_bin, unittest_bin, scratch)
-    if unittest_bin is not None and not args.no_binary_check:
-        # A paired `.test` runs only through its body, never as a test of its own.
-        paired = [c.definition.body_file for c in tests if c.definition.type == PAIRED]
-        unknown, stale = sqllogic.check_against_binary(
-            [c.definition.body_file for c in tests if c.definition.body_file],
-            unittest_bin,
-            working_dir,
-            scratch,
-            project.root,
-            excluded=[*project.excluded_bodies(working_dir), *paired],
-        )
-        fix = "re-run cmake and rebuild, or pass --no-binary-check to skip this check"
-        if stale:
-            raise UsageError(
-                f"the unittest binary knows {len(stale)} test(s) that are not on disk (stale build?): "
-                f"{', '.join(stale[:5])}; {fix}"
-            )
-        if unknown:
-            print(
-                f"ducktest5: warning: {len(unknown)} test file(s) on disk that the unittest binary does not know: "
-                f"{', '.join(unknown[:5])}{' ...' if len(unknown) > 5 else ''}. They run here when selected; the "
-                f"binary's own runs leave them out until you {fix}",
-                file=sys.stderr,
-            )
     return duckdb_bin, unittest_bin
 
 
 def _plan(args):
     cwd = os.getcwd()
-    tests, _, project = _tests_by_id(args, phases.ids_of_tests(phases.read_tests(args.run_dir)), cwd)
+    tests, project = _tests_by_id(args, phases.ids_of_tests(phases.read_tests(args.run_dir)), cwd)
     doc = phases.build_plan(
         tests, project, batch_size=args.batch_size, workers=args.workers, runner=args.runner, run_args=args.run_args
     )
@@ -458,7 +425,7 @@ def _plan(args):
 
 def _provision(args):
     cwd = os.getcwd()
-    tests, _, project = _tests_by_id(args, phases.ids_of_plan(phases.read_plan(args.run_dir)), cwd)
+    tests, project = _tests_by_id(args, phases.ids_of_plan(phases.read_plan(args.run_dir)), cwd)
     made = Made(phases.run_id_of(args.run_dir))
     errors = bring_up(
         made,
@@ -502,8 +469,8 @@ def _exec(args):
     if not slice_of["batches"]:
         print("no test left to run")
         return 0
-    tests, every, project = _tests_by_id(args, phases.ids_of_plan(slice_of), cwd)
-    duckdb_bin, unittest_bin = _binaries(args, tests, every, project, cwd)
+    tests, project = _tests_by_id(args, phases.ids_of_plan(slice_of), cwd)
+    duckdb_bin, unittest_bin = _binaries(args, tests, project, cwd)
     return execute(
         tests,
         project,

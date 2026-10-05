@@ -36,7 +36,7 @@ set `BUILD_DIR` to a directory that holds `duckdb` and `test/unittest`. Rung 03 
     cd examples/ladder/02_rules
     ducktest5 scan --env               # what each test gets, and from where
     ducktest5 select --explain         # what a run takes, and why
-    ducktest5 run --no-binary-check    # run it
+    ducktest5 run                      # run it
 
 duckdb-delta, branch `test/cross-engine-resources`. Run from the top of the repo; the build is found in
 `build/debug/` there (`--build release` for another one).

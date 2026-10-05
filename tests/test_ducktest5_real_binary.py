@@ -56,9 +56,7 @@ def test_a_setting_of_an_extension_reaches_a_test_body(tmp_path, monkeypatch, ca
     (tmp_path / "test" / "ducktest_conf.py").write_text(textwrap.dedent(CONF))
     (tmp_path / "test" / "client_setting.test").write_text(textwrap.dedent(BODY).lstrip())
     monkeypatch.chdir(tmp_path)
-    code = main(
-        ["run", "--duckdb-bin", _shell(), "--unittest-bin", _unittest(), "--no-binary-check", "--temp-dir-root", "runs"]
-    )
+    code = main(["run", "--duckdb-bin", _shell(), "--unittest-bin", _unittest(), "--temp-dir-root", "runs"])
     out = capsys.readouterr().out
     assert code == 0, out
     assert "PASSED   client_setting.test::client_setting[client=curl]" in out

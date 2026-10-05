@@ -643,7 +643,6 @@ def test_the_secret_reaches_the_process_environment_and_no_file_the_run_writes(t
                 "--temp-dir-root",
                 "runs",
                 "--keep",
-                "--no-binary-check",
             ]
         )
         == 0
@@ -676,7 +675,7 @@ def test_a_credential_that_does_not_resolve_waits_at_scan(tree, monkeypatch, cap
 def test_a_credential_that_does_not_resolve_blocks_its_test_and_the_run_goes_on(tree, monkeypatch, capsys):
     monkeypatch.delenv("DT_SECRET")
     (tree / "test" / "b.test").write_text("")
-    args = ["run", "--duckdb-bin", FAKE, "--unittest-bin", FAKE, "--temp-dir-root", "runs", "--no-binary-check"]
+    args = ["run", "--duckdb-bin", FAKE, "--unittest-bin", FAKE, "--temp-dir-root", "runs"]
     assert main([*args, "--format", "json"]) == 1
     ended = [json.loads(line) for line in capsys.readouterr().out.splitlines() if '"test_end"' in line]
     outcomes = {t["id"]: (t["outcome"], t.get("note")) for t in ended}

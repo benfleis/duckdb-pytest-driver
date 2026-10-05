@@ -28,7 +28,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .binary import UsageError, find_built
+from .binary import find_built
 from .outcomes import ERROR, FAILED, PASSED, SKIPPED
 from .resources.dialect import render
 from .testenv import TestEnv
@@ -470,48 +470,3 @@ def _run_once(binary, batch, working_dir):
     if len(names) == 1 and results[names[0]].seconds is None:  # no end event: what the process took
         results[names[0]].seconds = round(seconds, 2)
     return results
-
-
-def list_binary_tests(binary, working_dir, scratch):
-    """The names the binary knows, as paths relative to `working_dir`. An extension build lists an
-    extension's tests by relative and by absolute path; both forms fold into one."""
-    os.makedirs(scratch, exist_ok=True)
-    # The pattern "*" also lists hidden tests (.test_slow, .test_coverage); a bare -l leaves them out.
-    args = [binary, "-l", "*", "--temp-dir-root", scratch]
-    _log.debug("unittest -l: %s", shlex.join(args))
-    p = subprocess.run(args, cwd=working_dir, capture_output=True, text=True, timeout=120)
-    if "\t" not in p.stdout:
-        # The exit code of -l is the test count, so it says nothing; no listing at all says the binary
-        # did not start (for example Catch refuses a directory name that gives a tag it reserves).
-        said = (p.stderr or p.stdout).strip()
-        older = "\n(an option it does not know: a build older than DuckDB v2.0, which ducktest5 needs?)"
-        raise UsageError(
-            f"`{os.path.basename(binary)} -l` listed nothing:\n{said[:600]}{older if 'Unrecognised token' in said else ''}"
-        )
-    names = set()
-    root = os.path.realpath(working_dir)
-    for line in p.stdout.splitlines():
-        name = line.split("\t")[0].strip()
-        if not name.endswith((".test", ".test_slow", ".test_coverage")):
-            continue
-        real = os.path.realpath(os.path.join(working_dir, name))
-        if real.startswith(root + os.sep):
-            names.add(os.path.relpath(real, root))
-    return names
-
-
-def check_against_binary(scanned_paths, binary, working_dir, scratch, scan_root, excluded=()):
-    """Both sides in one scope: every `.test` the scan found under `scan_root` against every test the
-    binary knows under it. Returns (files on disk the binary does not know, tests the binary knows
-    that are not on disk). ducktest5 runs the first kind by path; the binary's own runs leave them
-    out until the build is configured again. The second kind is a stale build."""
-    root_rel = os.path.relpath(scan_root, working_dir)
-    inside = lambda n: root_rel in (".", "") or n == root_rel or n.startswith(root_rel.rstrip("/") + "/")  # noqa: E731
-    left_out = {os.path.normpath(p) for p in excluded}
-    known = {n for n in list_binary_tests(binary, working_dir, scratch) if inside(n) and n not in left_out}
-    scanned = {
-        os.path.normpath(p)
-        for p in scanned_paths
-        if inside(os.path.normpath(p)) and os.path.normpath(p) not in left_out
-    }
-    return sorted(scanned - known), sorted(known - scanned)

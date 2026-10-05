@@ -18,7 +18,7 @@
 As the binary does, a name in the config's `env_passthrough` that is not in its environment fails
 the whole invocation before any test.
 
-`-l` lists the names in the file that $FAKE_UNITTEST_LIST names.
+`-l` lists no names, as a v2.0 build answers the version probe.
 """
 
 import json
@@ -77,9 +77,7 @@ def main(argv):
         return 0
     if "-l" in argv:
         print("name\tgroup")
-        for line in open(os.environ["FAKE_UNITTEST_LIST"]) if "FAKE_UNITTEST_LIST" in os.environ else []:
-            print(f"{line.strip()}\t[x]")
-        return 3
+        return 0
     names = [line.strip() for line in open(argv[argv.index("-f") + 1]) if line.strip()]
     config = json.load(open(argv[argv.index("--test-config") + 1]))
     missing = [name for name in config.get("env_passthrough", []) if name not in os.environ]

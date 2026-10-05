@@ -150,7 +150,7 @@ def test_run(rung, binaries, rung_copy, tmp_path, capsys):
     shell, unittest = BINARIES[binaries]
     rung_copy(rung)
     runs = tmp_path / "runs"
-    args = ["--duckdb-bin", shell, "--unittest-bin", unittest, "--no-binary-check", "--temp-dir-root", str(runs)]
+    args = ["--duckdb-bin", shell, "--unittest-bin", unittest, "--temp-dir-root", str(runs)]
     # --keep leaves every file of the run for the search below.
     code = main(["run", *args, "--workers", "1", "--keep", *ARGS.get(rung, [])])
     out = capsys.readouterr().out
@@ -166,7 +166,7 @@ def test_the_run_s_debug_log_never_holds_the_fake_secret(rung_copy, tmp_path, ca
     rung_copy("03_credentials")
     runs = tmp_path / "runs"
     shell, unittest = BINARIES["fake"]
-    args = ["--duckdb-bin", shell, "--unittest-bin", unittest, "--no-binary-check", "--temp-dir-root", str(runs)]
+    args = ["--duckdb-bin", shell, "--unittest-bin", unittest, "--temp-dir-root", str(runs)]
     assert main(["run", *args, "-vv", "--keep"]) == 0, capsys.readouterr().out
     (run_dir,) = runs.iterdir()
     log = run_dir / "ducktest.log"
@@ -181,7 +181,7 @@ def test_a_green_run_leaves_nothing_under_its_storages(binaries, rung_copy, tmp_
     shell, unittest = BINARIES[binaries]
     rung_copy("02_rules")
     runs = tmp_path / "runs"
-    args = ["--duckdb-bin", shell, "--unittest-bin", unittest, "--no-binary-check", "--temp-dir-root", str(runs)]
+    args = ["--duckdb-bin", shell, "--unittest-bin", unittest, "--temp-dir-root", str(runs)]
     assert main(["run", *args]) == 0, capsys.readouterr().out
     (run_dir,) = runs.iterdir()
     assert [p for p in (tmp_path / "tmp").rglob("*") if p.is_file() or p.name == "temp"] == []

@@ -46,7 +46,7 @@ def tree(tmp_path, monkeypatch):
 
 def binaries(*more):
     # The fake binary lists other tests than this tree holds, so the check against `unittest -l` is off.
-    return ["--duckdb-bin", FAKE, "--unittest-bin", FAKE, "--no-binary-check", *more]
+    return ["--duckdb-bin", FAKE, "--unittest-bin", FAKE, *more]
 
 
 def outcomes(run_dir):

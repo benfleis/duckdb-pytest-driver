@@ -6,11 +6,10 @@ before. Rung 00 is a repo that has never heard of ducktest5. Run these from insi
 
     ducktest5 scan --env                what each test is given, and where each part came from
     ducktest5 select --explain          what a bare run takes, which rule gave each test what, and why not
-    ducktest5 run --no-binary-check     run it
+    ducktest5 run                       run it
 
 `run` needs a DuckDB build: set `BUILD_DIR` to the directory that holds `duckdb` and `test/unittest`.
-`--no-binary-check` is there because the build does not list these `.test` files. Without it,
-ducktest5 warns that the binary does not know them, and runs them all the same.
+ducktest5 runs the `.test` files it finds on disk, whether the build lists them or not.
 
 ## 00_existing
 
@@ -20,7 +19,7 @@ directory, ducktest5 takes it as the root of the tests, so a test id is relative
 (`sql/math/add.test::add`), but a path you give is relative to where you are:
 
     ducktest5 select --explain test/sql/math --suite default
-    ducktest5 run --no-binary-check test/sql/math --suite default
+    ducktest5 run test/sql/math --suite default
 
 A path selects every test under it, the `.test_slow` files too. A bare run leaves those out, because
 they are not in the suite `default`; with a path, add `--suite default` to leave them out again.
@@ -34,8 +33,7 @@ report says what each skipped test needed. A Python body skips the same way with
 `{DATA_DIR}` is `data/` at the top of the git repository, and `{TEMP_DIR}` is the test's own place
 in the run directory, `duckdb_unittest_tempdir/<run>/` in the working directory. For duckdb core,
 that is all: build it, go to the top of the checkout, and run
-`ducktest5 run test/sql/aggregate --suite default`. The build is found in `build/debug/` there, and
-the binary lists the files, so `--no-binary-check` is not needed.
+`ducktest5 run test/sql/aggregate --suite default`. The build is found in `build/debug/` there.
 
 ## 01_solo
 

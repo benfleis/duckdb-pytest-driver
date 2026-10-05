@@ -11,7 +11,7 @@ service s3 -- did not come up: existing service 's3' does not answer at http://1
   root: data_dir=<tmp>/repo/05_s3/data  <- default storage
   not served: s3 did not come up (existing service 's3' does not answer at http://127.0.0.1:9)  <- storage lake
   not served: s3 did not come up (existing service 's3' does not answer at http://127.0.0.1:9)  <- credential keys
-  again: ducktest5 run --id scoped_write.test::scoped_write --no-binary-check
+  again: ducktest5 run --id scoped_write.test::scoped_write
 
 --- scoped_write_body.py::scoped_write_body
 
@@ -20,7 +20,7 @@ service s3 -- did not come up: existing service 's3' does not answer at http://1
   root: data_dir=<tmp>/repo/05_s3/data  <- default storage
   not served: s3 did not come up (existing service 's3' does not answer at http://127.0.0.1:9)  <- storage lake
   not served: s3 did not come up (existing service 's3' does not answer at http://127.0.0.1:9)  <- credential keys
-  again: ducktest5 run --id scoped_write_body.py::scoped_write_body --no-binary-check
+  again: ducktest5 run --id scoped_write_body.py::scoped_write_body
 
 
 's3' did not come up: 2 tests blocked

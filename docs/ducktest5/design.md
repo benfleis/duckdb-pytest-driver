@@ -103,7 +103,7 @@ def duckdb_creates_by_path_spark_appends_by_path(ctx):
 Run from above your tests (`ducktest5` finds `./test`, else `.`). The DuckDB build is found at the
 top of the repository, else set `BUILD_DIR`. Paths narrow each command; `--id ID` runs one test.
 A path also takes the `.test_slow` files under it; `--suite default` leaves them out, as a bare run does.
-From `examples/ladder/02_rules`, shortened (`--no-binary-check`: the build does not list the ladder):
+From `examples/ladder/02_rules`, shortened:
 
 ```
 $ ducktest5 scan --env              # what each test gets, and from where
@@ -113,7 +113,7 @@ $ ducktest5 select --explain        # what a run takes, which rule gave what, an
 run   own_inputs.py::own_inputs
         bind={'storage': 'scratch_b'}  <- @test
 skip  excluded.test::excluded  -- not in suite 'default': declared out  <- ducktest_conf.py: match 'excluded.test'
-$ ducktest5 run --no-binary-check
+$ ducktest5 run
 5 passed, 1 skipped in 2.67s
 run dir: <repo>/examples/ladder/02_rules/duckdb_unittest_tempdir/2026-09-30T12-57-31Z--swift-raven-54
 ```

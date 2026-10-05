@@ -786,9 +786,9 @@ def execute(
     return code
 
 
-# What a re-run of one test needs to find the same tests and pass the same check: option -> how many
+# What a re-run of one test needs to find the same tests: option -> how many
 # values follow. Binary paths stay out: they are of one machine, and `--build`/$BUILD_DIR find them.
-_CARRIED = {"--build": 1, "--root": 1, "--data-dir": 1, "--no-binary-check": 0}
+_CARRIED = {"--build": 1, "--root": 1, "--data-dir": 1}
 
 
 def _carried(command):

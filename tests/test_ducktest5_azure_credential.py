@@ -250,7 +250,6 @@ def test_the_connection_string_reaches_the_binary_by_name_and_no_file_the_run_wr
         "--temp-dir-root",
         "runs",
         "--keep",
-        "--no-binary-check",
     ]
     assert main(args) == 0
     configs, leaked = [], []

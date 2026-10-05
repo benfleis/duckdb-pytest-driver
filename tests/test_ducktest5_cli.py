@@ -202,15 +202,15 @@ def test_slow_and_why_are_gone(tree, option):
 
 
 def test_run_gives_the_exit_code_of_the_run(tree, capsys):
-    assert main(run_args("test/a", "--no-binary-check")) == 0
-    assert main(run_args("test/b", "--no-binary-check")) == 1
+    assert main(run_args("test/a")) == 0
+    assert main(run_args("test/b")) == 1
     assert "FAILED   b/z_fail.test::z_fail" in capsys.readouterr().out
 
 
 def test_an_id_names_the_same_test_from_any_directory(tree, monkeypatch, capsys):
-    assert main(run_args("--id", "b/z_fail.test::z_fail", "--no-binary-check")) == 1
+    assert main(run_args("--id", "b/z_fail.test::z_fail")) == 1
     monkeypatch.chdir(tree / "test" / "a")
-    assert main(run_args("--id", "b/z_fail.test::z_fail", "--no-binary-check")) == 1
+    assert main(run_args("--id", "b/z_fail.test::z_fail")) == 1
     assert capsys.readouterr().out.count("FAILED   b/z_fail.test::z_fail") == 2
 
 
@@ -218,55 +218,22 @@ def test_lldb_starts_the_debugger_on_the_one_selected_test(tree, monkeypatch, ca
     record = tree / "debugger.json"
     monkeypatch.setenv("FAKE_DEBUGGER_RECORD", str(record))
     monkeypatch.setenv("DUCKTEST_DEBUGGER", f"{sys.executable} {DEBUGGER} --")
-    assert main(run_args("--lldb", "--id", "a/x.test::x", "--no-binary-check")) == 0
+    assert main(run_args("--lldb", "--id", "a/x.test::x")) == 0
     argv = json.loads(record.read_text())["argv"]
     assert argv[:4] == ["--", FAKE, "--test-dir", str(tree)]
     assert "batch kept: " in capsys.readouterr().out
 
 
 def test_lldb_on_more_than_one_test_is_a_usage_error_that_lists_them(tree, capsys):
-    assert main(run_args("--lldb", "test", "--no-binary-check")) == 2
+    assert main(run_args("--lldb", "test")) == 2
     err = capsys.readouterr().err
     assert "exactly one test of a .test file" in err and "a/x.test::x" in err and "b/z_fail.test::z_fail" in err
 
 
-def test_an_excluded_file_that_the_binary_knows_is_not_a_stale_build(tree, monkeypatch, capsys):
-    known = tree / "known.txt"
-    known.write_text("test/a/x.test\ntest/a/y.test_slow\ntest/b/z_fail.test\ntest/generated/g.test\n")
-    monkeypatch.setenv("FAKE_UNITTEST_LIST", str(known))
-    assert main(run_args("test/a")) == 0
-
-    known.write_text("test/a/x.test\ntest/a/y.test_slow\ntest/b/z_fail.test\ntest/generated/g.test\ntest/gone.test\n")
-    assert main(run_args("test/a")) == 2
-    err = capsys.readouterr().err
-    assert "test/gone.test" in err and "generated" not in err and "--no-binary-check" in err
-
-
-def test_a_file_the_binary_does_not_know_is_a_warning_and_still_runs(tree, monkeypatch, capsys):
-    known = tree / "known.txt"
-    known.write_text("test/a/y.test_slow\ntest/b/z_fail.test\ntest/generated/g.test\n")
-    monkeypatch.setenv("FAKE_UNITTEST_LIST", str(known))
-    assert main(run_args("test/a/x.test")) == 0
-    out, err = capsys.readouterr()
-    assert "warning: 1 test file(s) on disk that the unittest binary does not know: test/a/x.test" in err
-    assert "re-run cmake and rebuild" in err and "--no-binary-check" in err
-    assert "PASSED" in out
-
-
-def test_a_paired_test_file_is_not_checked_against_the_binary(tree, monkeypatch, capsys):
-    (tree / "test" / "a" / "pair.py").write_text("from ducktest5 import test\n\n\n@test()\ndef pair(ctx):\n    pass\n")
-    (tree / "test" / "a" / "pair.test").write_text("# name: test/a/pair.test\n")
-    known = tree / "known.txt"
-    known.write_text("test/a/x.test\ntest/a/y.test_slow\ntest/b/z_fail.test\ntest/generated/g.test\n")
-    monkeypatch.setenv("FAKE_UNITTEST_LIST", str(known))
-    assert main(run_args("test/a")) == 0
-    assert "warning" not in capsys.readouterr().err
-
-
 def test_the_again_command_carries_the_flags_the_run_used(tree, capsys):
-    assert main(run_args("test/b", "--no-binary-check")) == 1
+    assert main(run_args("test/b", "--build", "debug")) == 1
     out = capsys.readouterr().out
-    assert "again: ducktest5 run --id b/z_fail.test::z_fail --no-binary-check\n" in out
+    assert "again: ducktest5 run --id b/z_fail.test::z_fail --build debug\n" in out
 
 
 # -----------------------------------------------------------------------------
@@ -301,7 +268,7 @@ def test_the_command_line_moves_the_default_storage_for_the_run(tree, capsys):
     out = capsys.readouterr().out
     assert f"root: temp_dir_root={tree}/scratch/<run_token>  <- default storage" in out
     assert f"root: data_dir={tree}/fixtures  <- default storage" in out
-    assert main([*run_args("test/a/x.test", "--keep", "--no-binary-check"), "--data-dir", "fixtures"]) == 0
+    assert main([*run_args("test/a/x.test", "--keep"), "--data-dir", "fixtures"]) == 0
     (run_dir,) = (tree / "runs").iterdir()
     (config,) = run_dir.glob("batches/*/config.json")
     given = json.loads(config.read_text())
@@ -372,7 +339,7 @@ def test_run_finds_the_build_of_the_repository_from_a_directory_below_it(tree, m
     (tree / ".git").mkdir()
     build_in(tree)
     monkeypatch.chdir(tree / "test" / "a")
-    assert main(["run", "x.test", "--no-binary-check", "--temp-dir-root", str(tree / "runs"), "--format", "json"]) == 0
+    assert main(["run", "x.test", "--temp-dir-root", str(tree / "runs"), "--format", "json"]) == 0
     assert f"{tree}/build/debug/test/unittest" in capsys.readouterr().out
 
 
@@ -382,26 +349,26 @@ def test_run_finds_the_build_of_the_repository_from_a_directory_below_it(tree, m
 
 
 def test_by_default_stderr_is_quiet(tree, capsys):
-    assert main(run_args("test/a/x.test", "--no-binary-check")) == 0
+    assert main(run_args("test/a/x.test")) == 0
     assert capsys.readouterr().err == ""
 
 
 def test_v_puts_info_on_stderr_but_not_debug(tree, capsys):
-    assert main(run_args("test/a/x.test", "--no-binary-check", "-v")) == 0
+    assert main(run_args("test/a/x.test", "-v")) == 0
     err = capsys.readouterr().err
     assert "INFO" in err and "run start:" in err
     assert "DEBUG" not in err
 
 
 def test_vv_puts_debug_on_stderr_too(tree, capsys):
-    assert main(run_args("test/a/x.test", "--no-binary-check", "-vv")) == 0
+    assert main(run_args("test/a/x.test", "-vv")) == 0
     err = capsys.readouterr().err
     assert "DEBUG" in err
 
 
 def test_vv_does_not_change_a_terse_report_on_stdout(tree, capsys):
     def once(*more):
-        assert main(run_args("test/a/x.test", "--no-binary-check", "--level", "terse", *more)) == 0
+        assert main(run_args("test/a/x.test", "--level", "terse", *more)) == 0
         out = capsys.readouterr().out
         (run_dir,) = (tree / "runs").iterdir()
         shutil.rmtree(run_dir)
@@ -412,7 +379,7 @@ def test_vv_does_not_change_a_terse_report_on_stdout(tree, capsys):
 
 
 def test_the_run_dir_always_holds_a_debug_log(tree, capsys):
-    assert main(run_args("test/a/x.test", "--no-binary-check")) == 0  # no -v at all
+    assert main(run_args("test/a/x.test")) == 0  # no -v at all
     (run_dir,) = (tree / "runs").iterdir()
     log = (run_dir / "ducktest.log").read_text()
     assert "DEBUG" in log

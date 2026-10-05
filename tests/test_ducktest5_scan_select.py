@@ -945,7 +945,6 @@ def test_an_excluded_directory_is_not_scanned_and_its_configuration_is_not_loade
         },
     )
     assert ids(tests) == ["a.test::a"]
-    assert project.excluded_bodies(str(tmp_path)) == ["test/old/b.test"]
 
 
 def test_a_skip_while_a_test_file_is_imported_is_a_usage_error_that_says_where_to_skip(tmp_path):

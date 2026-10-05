@@ -69,7 +69,7 @@ def tree(tmp_path, monkeypatch):
 
 
 def binaries(*more):
-    return ["--duckdb-bin", FAKE, "--unittest-bin", FAKE, "--no-binary-check", *more]
+    return ["--duckdb-bin", FAKE, "--unittest-bin", FAKE, *more]
 
 
 def provisioned(run_dir):

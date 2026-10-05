@@ -33,7 +33,7 @@ def tree(tmp_path, monkeypatch):
 
 
 def binaries(*more):
-    return ["--duckdb-bin", FAKE, "--unittest-bin", FAKE, "--run-bin", WRAPPER, "--no-binary-check", *more]
+    return ["--duckdb-bin", FAKE, "--unittest-bin", FAKE, "--run-bin", WRAPPER, *more]
 
 
 def ends_of(run_dir="runs"):
@@ -143,7 +143,6 @@ def test_a_missing_wrapper_is_a_usage_error_that_names_the_other_runner(tree, ca
                 FAKE,
                 "--unittest-bin",
                 FAKE,
-                "--no-binary-check",
                 "--temp-dir-root",
                 "one",
                 "--runner",

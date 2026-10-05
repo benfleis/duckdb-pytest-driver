@@ -139,32 +139,6 @@ def test_a_hung_test_is_killed_at_its_own_timeout_and_the_rest_still_runs(tmp_pa
     assert [results[n].outcome for n in ("a.test", "c_fail.test", "d.test")] == [PASSED, FAILED, PASSED]
 
 
-def test_the_check_against_the_binary_uses_one_scope_on_both_sides(tmp_path, monkeypatch):
-    (tmp_path / "test").mkdir()
-    monkeypatch.setattr(
-        sqllogic,
-        "list_binary_tests",
-        lambda binary, working_dir, scratch: {"test/a.test", "test/gone.test", "other_extension/x.test"},
-    )
-    unknown, stale = sqllogic.check_against_binary(
-        ["test/a.test", "test/new.test", "test/paired.test"],
-        FAKE,
-        str(tmp_path),
-        str(tmp_path / "s"),
-        str(tmp_path / "test"),
-        excluded=["test/paired.test"],
-    )
-    assert (unknown, stale) == (["test/new.test"], ["test/gone.test"])
-
-
-def test_a_binary_that_lists_nothing_is_an_error_not_an_empty_set(tmp_path):
-    silent = tmp_path / "silent"
-    silent.write_text("#!/bin/sh\necho 'Errors occurred during startup!' >&2\nexit 1\n")
-    silent.chmod(0o755)
-    with pytest.raises(sqllogic.UsageError, match="listed nothing"):
-        sqllogic.list_binary_tests(str(silent), str(tmp_path), str(tmp_path / "s"))
-
-
 def test_each_test_of_a_batch_has_its_own_seconds(tmp_path):
     results = run(tmp_path, ["a.test", "b_nap.test", "c_fail.test", "d_crash.test"])
     assert 0 <= results["a.test"].seconds < 0.3 <= results["b_nap.test"].seconds < 2
