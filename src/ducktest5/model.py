@@ -140,10 +140,7 @@ class Test:
                 "params": self.params_key,
                 "variants": {a: v.id for a, v in self.axis_values.items()},
             },
-            "selection": {
-                "tags": self.tags,
-                **({"suites": list(self.definition.suites)} if self.definition.suites else {}),
-            },
+            "selection": {"tags": self.tags},
             "preconditions": {
                 "services": self.services,
                 "engines": [{"id": d.id, "version": d.version} for d in engines_of(self, project)],

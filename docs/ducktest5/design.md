@@ -112,11 +112,24 @@ rule_matched_body.py::rule_matched_body
 $ ducktest5 select --explain        # what a run takes, which rule gave what, and why not
 run   own_inputs.py::own_inputs
         storage='scratch_b'  <- @test
-skip  excluded.test::excluded  -- not in suite 'default': declared out  <- ducktest_conf.py: match 'excluded.test'
+skip  excluded.test::excluded  -- not in suite 'default': tag opt-in
 $ ducktest5 run
 5 passed, 1 skipped in 2.67s
 run dir: <repo>/examples/ladder/02_rules/duckdb_unittest_tempdir/2026-09-30T12-57-31Z--swift-raven-54
 ```
+
+Tests carry tags (`tags=[...]` on a rule or `@test`); a `.test_slow` file has the tag `slow`, a
+`.test_coverage` file `coverage`. A bare run is the suite `default`: every test but those tagged
+`slow`, `coverage` or `opt-in`. Give `opt-in` to a test a bare run should leave out (it reads the
+public network, it is manual); `--suite all` runs everything. `SUITES` in the root
+`ducktest_conf.py` names selections over tags and paths, in the command line's own words:
+
+```python
+SUITES = {"smoke": {"paths": ["sql/core"], "select": ["tag=fast"], "skip": ["tag=spark"]}}
+```
+
+`--select`, `--skip` and a suite's `select`/`skip` take `key=value` terms (`tag`, `type`, `path`,
+`suite`, an axis name); `!` negates a term: `--select '!tag=spark'`, `--select 'suite=smoke;!tag=s3'`.
 
 ## 1.5 A failure, and a BLOCKED
 
@@ -178,7 +191,7 @@ axis value of the test. An unknown name is a scan error that lists the ones ther
 | `process_env={...}` | the engine process's variables; `None` unsets one | by name |
 | `engines=[...]` | the engines the test drives | add up |
 | `axes=[...]` | the axes of AXES the test takes part in (not on an axis value) | add up |
-| `tags=[...]`, `suites=[...]` | what selects it (`suites` not on an axis value) | add up |
+| `tags=[...]` | what selects it; `opt-in` keeps it out of a bare run | add up |
 | `mutex="name"` | what the test must have to itself while it runs | add up |
 | `timeout=N` | seconds for the whole test; past it, ERROR | a later one replaces |
 | `retries=N` | runs again, alone, after a FAILED or ERROR | a later one replaces |

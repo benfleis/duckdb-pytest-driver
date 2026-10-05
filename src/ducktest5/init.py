@@ -32,7 +32,7 @@ STARTER_CONF = '''\
 #
 # RULES = [
 #     default(engines=["duck"]),
-#     match("slow/**", suites=["!default"]),
+#     match("slow/**", tags=["opt-in"]),
 # ]
 '''
 

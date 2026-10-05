@@ -147,7 +147,7 @@ def py_test(body, axis_values=None, *, path="test/body.py", body_file=None, inpu
 def go(tmp_path, tests, *, engines=(), unittest_bin=FAKE, duckdb_bin="no-duckdb", **kwargs):
     """Returns (exit code, run dir, report, printed text)."""
     storages = {d.id: d for t in tests for d, _ in t.inputs if isinstance(d, StorageDef)}
-    project = Project(str(tmp_path), {e.id: e for e in engines}, {}, {}, {}, (), storages)
+    project = Project(str(tmp_path), {e.id: e for e in engines}, {}, {}, {}, storages)
     out = io.StringIO()
     kwargs.setdefault("shell_factory", FakeShell)
     code = run(
@@ -370,7 +370,7 @@ def debugger(tmp_path, monkeypatch):
 
 
 def debug(tmp_path, tests, command, **kwargs):
-    project = Project(str(tmp_path), {}, {}, {}, {}, ())
+    project = Project(str(tmp_path), {}, {}, {}, {})
     out = io.StringIO()
     code = run(
         tests,
@@ -728,7 +728,7 @@ def test_the_report_is_written_and_services_are_released_when_the_run_raises(tmp
     with pytest.raises(UsageError, match="no unittest binary"):
         run(
             [sql_test("a.test"), py_test(passes, engines=["fake"])],
-            Project(str(tmp_path), {"fake": engine.engine()}, {}, {}, {}, ()),
+            Project(str(tmp_path), {"fake": engine.engine()}, {}, {}, {}),
             duckdb_bin="no-duckdb",
             unittest_bin=None,
             temp_root=str(tmp_path / "runs"),
@@ -1153,7 +1153,7 @@ def test_the_timeout_of_the_engine_reaches_each_statement_of_a_new_client_too(tm
 
 
 def test_the_scan_record_names_every_engine_a_test_runs_on_and_its_version(tmp_path):
-    project = Project(str(tmp_path), {"fake": FakeEngine().engine()}, {}, {}, {}, ())
+    project = Project(str(tmp_path), {"fake": FakeEngine().engine()}, {}, {}, {})
     record = py_test(passes, engines=["fake"]).record(project)
     assert record["preconditions"]["engines"] == [
         {"id": "duckdb", "version": "duckdb"},

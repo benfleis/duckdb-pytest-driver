@@ -19,13 +19,11 @@ DEBUGGER = os.path.join(os.path.dirname(__file__), "ducktest5_fakes", "fake_debu
 FILES = {
     "test/ducktest_conf.py": """
         from ducktest5 import default, match
-        EXCLUDE = ["generated"]
         RULES = [default(tags=["all"]), match("a/**", timeout=30)]
     """,
     "test/a/x.test": "",
     "test/a/y.test_slow": "",
     "test/b/z_fail.test": "",
-    "test/generated/g.test": "",
 }
 
 
@@ -110,7 +108,6 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
                 settings={"s3_region": "eu"},
                 process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None},
             )]}
-            EXCLUDE = ["generated"]
             RULES = [default(tags=["all"], values={"region": "eu"}), match("a/**", axes=["storage"])]
         """)
     )

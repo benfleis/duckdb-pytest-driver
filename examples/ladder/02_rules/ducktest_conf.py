@@ -23,5 +23,5 @@ RULES = [
     match("own_inputs.py", tags=["matched"]),
     match("paired_own_inputs.py", tags=["matched"]),
     # It reads over the public network, so a bare run leaves it out; `--suite all` runs it.
-    match("excluded.test", suites=["!default"]),
+    match("excluded.test", tags=["opt-in"]),
 ]

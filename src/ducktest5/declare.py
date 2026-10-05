@@ -15,7 +15,7 @@ CONF_FILE = "ducktest_conf.py"  # not `ducktest.py`: that name would shadow the 
 @dataclass(frozen=True, init=False)
 class Variant:
     """One value of an axis, with everything it brings: the options a rule and `@test` take
-    (`options.py`), but `axes` and `suites`. What it gives goes into the test environment, and
+    (`options.py`), but `axes`. What it gives goes into the test environment, and
     both kinds of body are given it the same way:
 
     `requires`     extensions to load before anything else. A setting, a function or a secret type
@@ -40,7 +40,7 @@ class Variant:
 
     def __init__(self, id, **options):
         object.__setattr__(self, "id", id)
-        object.__setattr__(self, "options", Options.of(options, f"Variant {id!r}", leave_out=("axes", "suites")))
+        object.__setattr__(self, "options", Options.of(options, f"Variant {id!r}", leave_out=("axes",)))
 
 
 @dataclass(frozen=True)

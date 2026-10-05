@@ -22,6 +22,6 @@ run   rule_matched_body.py::rule_matched_body
 run   skipped_body.py::skipped_body
         storage='scratch_a'  <- ducktest_conf.py: default
         engines=['duck']  <- ducktest_conf.py: default
-skip  excluded.test::excluded  -- not in suite 'default': declared out  <- ducktest_conf.py: match 'excluded.test'
+skip  excluded.test::excluded  -- not in suite 'default': tag opt-in
 
 6 of 7 tests; left out: 1 not in suite 'default'

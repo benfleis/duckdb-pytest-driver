@@ -3,7 +3,7 @@
 `Settled.apply` merges them all, in one order: the root `ducktest_conf.py`, each file down to the
 test, then `@test`, then each axis value of the test in AXES order.
 
-    tags, engines, axes, mutex, suites, requires    lists; they add up
+    tags, engines, axes, mutex, requires            lists; they add up
     values, settings, process_env                    dicts; a later key replaces an earlier one
     init_sql                                         statements; they add up, in order
     storage, credential, service                     the id of one input of that kind; a later one replaces
@@ -23,35 +23,11 @@ from .binary import UsageError
 from .provision import MASK, SECRET_NAME
 from .resources.client import check_names
 
-LISTS = ("tags", "engines", "axes", "mutex", "suites", "requires")
+LISTS = ("tags", "engines", "axes", "mutex", "requires")
 DICTS = ("values", "settings", "process_env")
 BINDINGS = ("storage", "credential", "service")
 SINGLES = ("timeout", "retries")
 NAMES = LISTS + DICTS + ("init_sql",) + BINDINGS + SINGLES
-
-
-def suite_name(entry):
-    """The suite a `suites` entry speaks about: `!smoke` and `smoke` both name `smoke`."""
-    return entry[1:] if entry.startswith("!") else entry
-
-
-def check_suites(entries, where):
-    for entry in entries:
-        if suite_name(entry) == "all" and entry.startswith("!"):
-            raise UsageError(f"{where}: '!all' -- every test is in the suite 'all'")
-
-
-def merge_suites(target, entries, source, sources):
-    """Adds `entries` to `target`, the last word on a name winning where the name was first said."""
-    for entry in entries:
-        at = next((i for i, e in enumerate(target) if suite_name(e) == suite_name(entry)), None)
-        if at is None:
-            target.append(entry)
-        else:
-            sources.pop(("suites", target[at]), None)
-            target[at] = entry
-        sources.pop(("suites", entry), None)
-        sources[("suites", entry)] = source
 
 
 def _masked(given):
@@ -92,8 +68,6 @@ class Options:
                 raise UsageError(f"{where}: {name}={value!r}; it is the id of one, a string")
             elif name == "retries" and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
                 raise UsageError(f"{where}: retries={value!r}; it is a whole number, 0 or more")
-            if name == "suites":
-                check_suites(value, where)
             out[name] = value
         return cls(out)
 
@@ -106,7 +80,6 @@ class Settled:
     engines: list = field(default_factory=list)  # ids of the engines it drives, among the project's ENGINES
     axes: list = field(default_factory=list)
     mutex: list = field(default_factory=list)  # what it must have to itself while it runs
-    suites: list = field(default_factory=list)  # a suite it declares itself in, or out of as `!NAME`
     requires: list = field(default_factory=list)  # extensions loaded before its settings
     values: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
@@ -134,9 +107,7 @@ class Settled:
         """Merge what one place gave. `axis` is the id of the test when the place is an axis value,
         which gives way to nothing."""
         for name, value in options.given.items():
-            if name == "suites":
-                merge_suites(self.suites, value, source, self.sources)
-            elif name == "init_sql":
+            if name == "init_sql":
                 for sql in value:
                     self.sources[("init_sql", len(self.init_sql))] = source
                     self.init_sql.append(sql)

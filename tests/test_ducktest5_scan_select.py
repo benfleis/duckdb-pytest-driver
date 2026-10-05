@@ -666,150 +666,58 @@ def test_a_suite_may_refer_to_suite_all_or_suite_default(tmp_path):
     assert ids(select((tests, proj), suites=["base"])[0]) == ["a.test::a"]  # default: slow left out
 
 
-@pytest.fixture
-def declared(tmp_path):
-    """A tree whose tests name their own suites: `quick`, which only they name, and `smoke`, which the
-    project file defines as well -- and which one of them declares itself out of."""
-    return tree(
-        tmp_path,
-        {
-            "test/ducktest_conf.py": """
-                from ducktest5 import match
-                SUITES = {"smoke": {"select": ["tag=smoke"]}}
-                RULES = [match("a.test", tags=["smoke"])]
-            """,
-            "test/a.test": "",
-            "test/b.py": """
-                from ducktest5 import test
-                @test(suites=["quick"])
-                def b(ctx): pass
-            """,
-            "test/c.py": """
-                from ducktest5 import test
-                @test(tags=["smoke"], suites=["!smoke"])
-                def c(ctx): pass
-            """,
-        },
-    )
-
-
-def test_a_test_declares_itself_into_a_suite_no_project_file_defines(declared):
-    assert ids(select(declared, suites=["quick"])[0]) == ["b.py::b"]
-    assert ids(select(declared, select=["suite=quick"])[0]) == ["b.py::b"]
-    assert ids(select(declared, select=["suite=quick;type=python"])[0]) == ["b.py::b"]
-    assert select(declared, suites=["quick"])[1]["a.test::a"] == "not in suite 'quick'"
-
-
-def test_a_test_declared_out_beats_the_suites_own_select(declared):
-    # c carries tag smoke, which is all the suite asks for -- and is out of it all the same
-    selected, why_not = select(declared, suites=["smoke"])
-    assert ids(selected) == ["a.test::a"]
-    assert why_not["c.py::c"] == "not in suite 'smoke': declared out  <- @test"
-
-
-def test_an_id_beats_a_declaration_out_of_a_suite(declared):
-    assert ids(select(declared, suites=["smoke"], ids=["c.py::c"])[0]) == ["a.test::a", "c.py::c"]
-
-
-def test_a_declared_suite_is_a_known_name_and_an_undeclared_one_is_not(declared):
-    with pytest.raises(UsageError, match=r"no suite \['nope'\]; known suites: \['quick', 'smoke'\]"):
-        select(declared, suites=["nope"])
-
-
-def test_declaring_a_test_out_of_the_default_suite_leaves_a_bare_run(tmp_path):
+def test_an_opt_in_tag_leaves_a_bare_run_and_suite_all_takes_it(tmp_path):
     tests, proj = tree(
         tmp_path,
         {
-            "test/ducktest_conf.py": """
-                from ducktest5 import match
-                RULES = [match("slow.test_slow", suites=["default"])]
-            """,
+            "test/ducktest_conf.py": "from ducktest5 import match\nRULES = [match('net.test', tags=['opt-in'])]",
             "test/a.test": "",
-            "test/b.py": """
-                from ducktest5 import test
-                @test(suites=["!default"])
-                def b(ctx): pass
-            """,
-            "test/slow.test_slow": "",
+            "test/net.test": "",
+            "test/manual.py": "from ducktest5 import test\n@test(tags=['opt-in'])\ndef manual(ctx): pass",
         },
     )
     selected, why_not = apply(tests, Selection(), proj)
-    # declared in, so the bare run takes it although it is slow; declared out, so it takes neither b
-    assert ids(selected) == ["a.test::a", "slow.test_slow::slow"]
-    assert why_not["b.py::b"] == "not in suite 'default': declared out  <- @test"
+    assert ids(selected) == ["a.test::a"]
+    assert why_not == {
+        "manual.py::manual": "not in suite 'default': tag opt-in",
+        "net.test::net": "not in suite 'default': tag opt-in",
+    }
+    assert ids(apply(tests, Selection(suites=["all"]), proj)[0]) == ["a.test::a", "manual.py::manual", "net.test::net"]
 
 
-def test_a_rule_declares_a_suite_for_a_directory_and_one_test_declares_itself_out(tmp_path):
+def test_a_test_does_not_name_its_suites(tmp_path):
+    with pytest.raises(UsageError, match=r"rule '\*\*': unknown option\(s\) \['suites'\]"):
+        tree(tmp_path, {"test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(suites=['x'])]"})
+    body = "from ducktest5 import test\n@test(suites=['!default'])\ndef a(ctx): pass"
+    with pytest.raises(UsageError, match=r"a.py::a: @test\(...\): unknown option\(s\) \['suites'\]"):
+        tree(tmp_path / "2", {"test/a.py": body})
+
+
+def test_a_suite_negates_in_its_select_and_its_skip(tmp_path):
     tests, proj = tree(
         tmp_path,
         {
             "test/ducktest_conf.py": """
                 from ducktest5 import match
-                RULES = [match("cloud/**", suites=["cloud"])]
+                SUITES = {
+                    "no_spark": {"select": ["!tag=spark"]},
+                    "fast_only": {"skip": ["!tag=fast"]},
+                    "fast_no_spark": {"select": ["tag=fast;!tag=spark"]},
+                }
+                RULES = [match("s.test", tags=["spark", "fast"]), match("f.test", tags=["fast"])]
             """,
-            "test/cloud/a.test": "",
-            "test/cloud/b.py": """
-                from ducktest5 import test
-                @test(suites=["!cloud"])
-                def b(ctx): pass
-            """,
-            "test/local/c.test": "",
+            "test/s.test": "",
+            "test/f.test": "",
+            "test/plain.test": "",
         },
     )
-    selected, why_not = apply(tests, Selection(suites=["cloud"]), proj)
-    assert ids(selected) == ["cloud/a.test::a"]
-    assert why_not["cloud/b.py::b"] == "not in suite 'cloud': declared out  <- @test"
-    assert why_not["local/c.test::c"] == "not in suite 'cloud'"
-
-
-def test_the_last_word_on_a_suite_name_wins(tmp_path):
-    tests, proj = tree(
-        tmp_path,
-        {
-            "test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(suites=['x'])]",
-            "test/sub/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(suites=['!x'])]",
-            "test/sub/in.py": "from ducktest5 import test\n@test(suites=['x'])\ndef t(ctx): pass",
-            "test/sub/out.test": "",
-            "test/top.test": "",
-        },
-    )
-    selected, why_not = apply(tests, Selection(suites=["x"]), proj)
-    assert ids(selected) == ["sub/in.py::t", "top.test::top"]
-    assert why_not["sub/out.test::out"] == "not in suite 'x': declared out  <- sub/ducktest_conf.py: default"
-
-
-def test_the_scan_record_carries_the_declared_suites(tmp_path):
-    tests, proj = tree(
-        tmp_path,
-        {
-            "test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(suites=['nightly', 'quick'])]",
-            "test/a.py": "from ducktest5 import test\n@test(suites=['!nightly'])\ndef a(ctx): pass",
-            "test/b.test": "",
-        },
-    )
-    records = {c.id: c.record(proj)["selection"] for c in tests}
-    assert records["a.py::a"]["suites"] == ["!nightly", "quick"]  # the name keeps the place it was first said
-    assert records["b.test::b"]["suites"] == ["nightly", "quick"]
-    plain, plain_proj = tree(tmp_path / "2", {"test/a.test": ""})
-    assert "suites" not in plain[0].record(plain_proj)["selection"]
-
-
-@pytest.mark.parametrize(
-    "files, message",
-    [
-        (
-            {"test/ducktest_conf.py": "from ducktest5 import default\nRULES = [default(suites=['!all'])]"},
-            r"rule '\*\*': '!all'",
-        ),
-        (
-            {"test/a.py": "from ducktest5 import test\n@test(suites=['!all'])\ndef a(ctx): pass"},
-            r"a\.py::a: @test\(\.\.\.\): '!all'",
-        ),
-    ],
-)
-def test_declaring_a_test_out_of_suite_all_is_an_error(tmp_path, files, message):
-    with pytest.raises(UsageError, match=message):
-        tree(tmp_path, {"test/a.test": "", **files})
+    assert ids(apply(tests, Selection(suites=["no_spark"]), proj)[0]) == ["f.test::f", "plain.test::plain"]
+    assert ids(apply(tests, Selection(suites=["fast_only"]), proj)[0]) == ["f.test::f", "s.test::s"]
+    assert ids(apply(tests, Selection(suites=["fast_no_spark"]), proj)[0]) == ["f.test::f"]
+    with pytest.raises(
+        UsageError, match=r"no suite \['nope'\]; known suites: \['fast_no_spark', 'fast_only', 'no_spark'\]"
+    ):
+        apply(tests, Selection(suites=["nope"]), proj)
 
 
 def test_a_directory_path_brings_in_a_slow_test(project):
@@ -932,19 +840,6 @@ def test_a_star_stays_inside_one_directory_and_two_stars_cross(tmp_path):
     )
     tags = {c.definition.path: c.definition.tags for c in tests}
     assert tags == {"test/x.test": ["top", "any"], "test/sub/deep/y.test": ["any", "below"]}
-
-
-def test_an_excluded_directory_is_not_scanned_and_its_configuration_is_not_loaded(tmp_path):
-    tests, project = tree(
-        tmp_path,
-        {
-            "test/ducktest_conf.py": "EXCLUDE = ['old']",
-            "test/a.test": "",
-            "test/old/b.test": "",
-            "test/old/ducktest_conf.py": "from ducktest5 import match\nRULES = [match('gone.test', tags=['x'])]",
-        },
-    )
-    assert ids(tests) == ["a.test::a"]
 
 
 def test_a_skip_while_a_test_file_is_imported_is_a_usage_error_that_says_where_to_skip(tmp_path):

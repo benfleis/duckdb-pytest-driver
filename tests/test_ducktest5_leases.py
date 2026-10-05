@@ -303,7 +303,7 @@ def test_a_failed_test_says_what_its_engines_did_not_take_from_the_shells_env(tm
 
 
 def test_a_credentials_env_counts_toward_the_engines_identity_by_source_never_by_value(monkeypatch):
-    project = Project("/p", {}, {}, {}, {}, ())
+    project = Project("/p", {}, {}, {}, {})
     storage = StorageDef("bucket", "s3://bucket")
 
     def identity(keys):
@@ -588,7 +588,7 @@ def test_scan_env_shows_the_clients_of_each_test_and_what_their_engines_render(b
 
 def test_the_engine_comes_first_in_the_init_file_and_nothing_is_given_twice():
     duck = duckdb_engine("duck", requires=["httpfs", "json"], settings={"threads": 2, "memory_limit": "1GB"})
-    project = Project("/p", {"duck": duck}, {}, {}, {}, ())
+    project = Project("/p", {"duck": duck}, {}, {}, {})
     test = sql_test(
         "a.test", {"storage": Variant("s3", requires=["httpfs"])}, engines=["duck"], settings={"threads": 4}
     )

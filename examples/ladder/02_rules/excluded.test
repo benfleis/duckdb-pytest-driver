@@ -1,5 +1,5 @@
 # name: excluded.test
-# description: Declared out of the default suite by its rule; select --explain says so.
+# description: Tagged opt-in by its rule, so a bare run leaves it out; select --explain says so.
 # group: [ladder]
 
 require httpfs

@@ -62,9 +62,9 @@ and that wins over the rule; `select --explain` shows both bindings. `paired_own
 binary with the body's own test environment, so the file sees `scratch_b` too. `default.test` is named by no
 `match()` and runs with what `default()` gives. `rule_matched_body.py` does what `default.test` does,
 through the Client on `duck`: its SQL names `'{TEMP_DIR}/t'` as a `.test` file would, and the Client
-fills in the test's own place under `scratch_a`. The rule of `excluded.test` declares it out of the
-default suite, so a bare run leaves it out and `select --explain` names that rule; `--suite all` runs
-it.
+fills in the test's own place under `scratch_a`. The rule of `excluded.test` tags it `opt-in`, so
+the default suite, and a bare run, leave it out, and `select --explain` says which tag did; `--suite all`
+runs it.
 
 `skipped_body.py` checks for a tool that is not installed and calls `ctx.skip(reason)`: it ends
 SKIPPED, and the report lists the reason under "skipped". A body skips only on a condition it checks

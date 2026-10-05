@@ -42,7 +42,9 @@
 8. BASE. The suite `all` is every scanned test, slow and coverage tests included; it always exists, and
    a project may not define a suite named `all`. The suite `default` is what a bare run takes -- no
    PATH, no `--select`, no `--skip`, no `--suite`, no `--id` -- and is the project's own suite `default`
-   when it has one, else the built-in definition: select `suite=all`, skip `tag=slow,coverage`. Anything
+   when it has one, else the built-in definition: select `suite=all`, skip `tag=slow,coverage,opt-in`.
+   `slow` and `coverage` come from the file suffixes `.test_slow` and `.test_coverage`; `opt-in` is the
+   tag a test is given to stay out of a bare run (it reads the public network, it is manual). Anything
    at all on the command line replaces the default entirely, not just narrows it -- `--skip tag=spark`
    alone runs everything else, slow tests included, because a skip on the command line already means
    the base is `all`, not `default`; write `--suite default --skip tag=spark` for the default minus spark.
@@ -58,12 +60,8 @@
     NAME` (repeatable, a union) is exactly `--select suite=NAME`: `suite=NAME[,NAME2]` is an ordinary
     TERM, and `!suite=NAME` negates it -- usable on the command line and inside another suite's own
     select/skip, the same as `suite=all` or `suite=default` is. A suite that refers to itself, directly
-    or through another suite, is a usage error that prints the cycle. A test says its own suites too:
-    `suites=["smoke"]`, on `@test(...)` or on a rule, puts the test in `smoke` whatever the suite's own
-    definition selects, and `suites=["!smoke"]` keeps it out -- declared out wins over the suite's own
-    select and over `--suite smoke` on the command line, and only `--id` still runs the test. A name
-    that declarations alone ever name is a suite as well, with no `SUITES` entry of its own; `!all` is
-    an error, and `!default` is how a test stays out of a bare run.
+    or through another suite, is a usage error that prints the cycle. A test does not name its suites:
+    it carries tags (on a rule or `@test(...)`), and a suite selects by tags and paths.
 11. `select --explain` names the reason a test is missing: which skip removed it and where that skip
     came from -- `--skip backend=oss;storage=s3` for a command-line skip, `skip tag=spark  <- suite
     'default'` for a suite's skip, and `--skip tag=spark (from --select !tag=spark)` for a translated
@@ -71,7 +69,8 @@
     clause -- unless that whole positive selection is a single `suite=NAME` term, when it instead reads
     `not in suite 'NAME'`, the same whether the test is outside the suite or was dropped by the suite's
     own skip; a project-defined suite's definition is never expanded here. A test the built-in default
-    drops adds why: `not in suite 'default': tag slow` (or `coverage`), so a bare run explains itself.
+    drops adds why: `not in suite 'default': tag slow` (or `coverage`, `opt-in`), so a bare run explains
+    itself.
 
 Examples:
 
@@ -92,7 +91,8 @@ from dataclasses import dataclass, field
 
 from .binary import UsageError
 from .conf import _glob
-from .options import suite_name
+
+DEFAULT_LEAVES_OUT = ("slow", "coverage", "opt-in")  # the tags the built-in suite `default` skips
 
 
 @dataclass
@@ -146,7 +146,6 @@ class _Ctx:
     project_root: str
     working_dir: str
     suites: dict
-    declared: set  # every suite name a test declares itself in or out of
     # Per-run memoisation: a suite is parsed and matched against every test at most once, however many
     # `suite=` terms name it.
     suite_defs: dict = field(default_factory=dict)
@@ -197,7 +196,7 @@ def _parse_term(term, flag, origin, ctx):
         if unknown:
             raise UsageError(f"{flag} {term!r}: path {unknown} matches no scanned test")
     elif key == "suite":
-        known = set(ctx.suites) | ctx.declared
+        known = set(ctx.suites)
         unknown = [v for v in values if v not in known and v not in ("all", "default")]
         if unknown:
             raise UsageError(f"{flag} {term!r}: no suite {unknown}; known suites: {sorted(known)}")
@@ -240,21 +239,8 @@ def _matches(test, key, values, ctx):
     return key in test.axis_values and test.axis_values[key].id in values
 
 
-def _declared(test, name):
-    """ "in" or "out" when the rules or the `@test` of its definition named suite `name`, else None."""
-    for entry in test.definition.suites:
-        if entry == name:
-            return "in"
-        if entry == "!" + name:
-            return "out"
-    return None
-
-
 def _in_suite(test, name, ctx):
-    """The suite's own definition selects the test, or the test declares itself in -- and never when it
-    declares itself out."""
-    declared = _declared(test, name)
-    return declared != "out" and (declared == "in" or test.id in _suite_members(name, ctx))
+    return test.id in _suite_members(name, ctx)
 
 
 def _clause_holds(test, terms, ctx):
@@ -292,8 +278,7 @@ def _suite_selection(name, ctx, stack=()):
     """Parses suite `name`'s own select/skip once per run -- including the built-in suites `all` (always
     every test) and `default` (when the project does not define its own). A `suite=` reference that leads
     back to `name` is a cycle, caught here -- before any test is matched -- rather than by recursing
-    forever. A name only declarations ever name has no definition of its own: None, so that its members
-    are the tests that declare themselves in and nothing else."""
+    forever."""
     if name in ctx.suite_defs:
         return ctx.suite_defs[name]
     if name == "all":
@@ -301,12 +286,9 @@ def _suite_selection(name, ctx, stack=()):
         return ctx.suite_defs[name]
     if name == "default" and "default" not in ctx.suites:
         positive = [[(False, "suite", ["all"])]]
-        skips = [([(False, "tag", ["slow", "coverage"])], "skip tag=slow,coverage  <- suite 'default'")]
+        skips = [([(False, "tag", list(DEFAULT_LEAVES_OUT))], "skip tag=slow,coverage,opt-in  <- suite 'default'")]
         ctx.suite_defs[name] = ([], positive, skips)
         return ctx.suite_defs[name]
-    if name not in ctx.suites:
-        ctx.suite_defs[name] = None
-        return None
     if name in stack:
         cycle = stack[stack.index(name) :] + (name,)
         raise UsageError(f"suite cycle: {' -> '.join(cycle)}")
@@ -330,11 +312,7 @@ def _suite_members(name, ctx):
     """The tests suite `name` selects: scope(its paths) AND (its select) MINUS (its skip). Cached, so a
     suite is matched against every test once per run, not once per test per `suite=` term."""
     if name not in ctx.suite_members:
-        definition = _suite_selection(name, ctx)
-        if definition is None:
-            ctx.suite_members[name] = set()
-            return ctx.suite_members[name]
-        paths, positive_clauses, skip_clauses = definition
+        paths, positive_clauses, skip_clauses = _suite_selection(name, ctx)
         ctx.suite_members[name] = {
             test.id
             for test in ctx.tests
@@ -354,7 +332,7 @@ def _sole_suite_term(positive_clauses):
 
 
 def _default_exclusion_reason(test):
-    return "tag slow" if "slow" in test.tags else "tag coverage"
+    return "tag " + next((t for t in DEFAULT_LEAVES_OUT if t in test.tags), DEFAULT_LEAVES_OUT[0])
 
 
 def _not_in_positive_reason(test, positive_clauses, ctx):
@@ -364,9 +342,6 @@ def _not_in_positive_reason(test, positive_clauses, ctx):
     if values is None:
         return "matches no --select clause"
     reason = "not in suite " + " or ".join(repr(v) for v in values)
-    declared_out = [v for v in values if _declared(test, v) == "out"]
-    if len(declared_out) == len(values):
-        return f"{reason}: declared out  <- {test.definition.source_of('suites', '!' + declared_out[0])}"
     if values == ["default"] and "default" not in ctx.suites:
         reason += f": {_default_exclusion_reason(test)}"
     return reason
@@ -378,10 +353,7 @@ def apply(tests, selection, project, working_dir=None):
     axes = {axis: set(values) for axis, values in project.axes.items()}
     known_tags = {t for c in tests for t in c.tags}
     known_params = {c.params_key for c in tests if c.params_key is not None}
-    declared = {suite_name(s) for c in tests for s in c.definition.suites}
-    ctx = _Ctx(
-        axes, known_tags, known_params, tests, project.root, working_dir or project.root, project.suites, declared
-    )
+    ctx = _Ctx(axes, known_tags, known_params, tests, project.root, working_dir or project.root, project.suites)
 
     if selection.is_bare():
         paths = {}

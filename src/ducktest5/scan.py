@@ -69,16 +69,13 @@ def _has_test_bodies(path):
         return "@test" in f.read()
 
 
-def _walk(root, excludes):
+def _walk(root):
     """(bodies, scripts): `.test`-like files and `.py` files under root, as absolute paths."""
     bodies, scripts = [], []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if not d.startswith((".", "__")))
         for f in sorted(filenames):
             path = os.path.join(dirpath, f)
-            rel = os.path.relpath(path, root).replace(os.sep, "/")
-            if excludes(rel):
-                continue
             if f.endswith(BODY_SUFFIXES):
                 bodies.append(path)
             elif f.endswith(".py") and f not in _NOT_TESTS and _has_test_bodies(path):
@@ -98,7 +95,7 @@ def scan(start, *, working_dir="."):
     """Returns (tests, project): every test under the project root, in a stable order."""
     project = load_project(start)
     asserts.rewrite_under(project.root)
-    bodies, scripts = _walk(project.root, project.excludes)
+    bodies, scripts = _walk(project.root)
     body_by_stem = {}
     for b in bodies:
         body_by_stem.setdefault(os.path.splitext(b)[0], b)  # .test wins over .test_slow of one stem

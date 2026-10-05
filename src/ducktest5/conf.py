@@ -1,7 +1,7 @@
 """`ducktest_conf.py`: configuration for a directory and everything below it.
 
 The file at the root of the scanned tree is the project file; it may also declare ENGINES, SERVICES,
-STORAGES, CREDENTIALS, AXES, SUITES, EXCLUDE, PYTHONPATH and INHERIT_ENV.
+STORAGES, CREDENTIALS, AXES, SUITES, PYTHONPATH and INHERIT_ENV.
 
 `INHERIT_ENV = ["AWS_CA_BUNDLE"]` names variables engine processes keep from the shell's env. Every
 other name under an SDK prefix (`AWS_`) is left out of them: an SDK reads it with getenv(), so a test
@@ -29,9 +29,8 @@ of the project's services too, whether SERVICES names it or not.
 `mutex="name"`, or several names, says what a test must have to itself: no two tests that name one of
 them run at the same time, however many workers the run has.
 
-`suites` names the suites a test is in: `"smoke"` declares it in, `"!smoke"` declares it out. It adds up
-like the other list fields, except that a name may be said again: the last word on a name wins, in the
-place that name was first said. `!all` is an error -- every test is in the suite `all`.
+A test is in a suite by what it carries: its path, its tags, its axis values. `SUITES` names
+selections over those (`select.py`); `tags=["opt-in"]` keeps a test out of a bare run.
 
 `retries=N` lets a test that ended FAILED or ERROR run again, alone, up to N times; it is PASSED when an
 attempt passes, and the report says which attempt. It is for a test that can fail for reasons that are
@@ -139,7 +138,6 @@ class Project:
     services: dict
     axes: dict
     suites: dict
-    exclude: tuple
     storages: dict = field(default_factory=dict)
     credentials: dict = field(default_factory=dict)
     _rules_by_dir: dict = field(default_factory=dict)
@@ -153,11 +151,6 @@ class Project:
     def __post_init__(self):
         if self.default_storage is None:
             self.default_storage = DefaultStorage(os.path.join(repo_root(self.root), "data"))
-
-    def excludes(self, rel_to_root):
-        return any(
-            _glob(p).fullmatch(rel_to_root) or _glob(p.rstrip("/") + "/**").fullmatch(rel_to_root) for p in self.exclude
-        )
 
     def settle(self, test_path, body_file=None):
         """Apply every rule on the way from the root down to `test_path` (absolute); `body_file`,
@@ -266,18 +259,18 @@ def _apply_pythonpath(paths):
 
 def load_project(start):
     root = find_root(start)
-    project = Project(root, {}, {}, {}, {}, ())
+    project = Project(root, {}, {}, {}, {})
     inherit_env(())
     root_file = os.path.join(root, CONF_FILE)
     if os.path.isfile(root_file):
         project.pythonpath = _literal_pythonpath(root_file, root)
         _apply_pythonpath(project.pythonpath)
-    for dirpath, dirnames, filenames in os.walk(root):  # top-down, so the root file and its EXCLUDE come first
+    for dirpath, dirnames, filenames in os.walk(root):  # top-down, so the root file comes first
         for name in filenames:
             if _misnamed_conf(name):
                 _log.warning("%s: not read; the file ducktest5 reads is %s", os.path.join(dirpath, name), CONF_FILE)
         if CONF_FILE not in filenames:
-            _prune(project, root, dirpath, dirnames)
+            _prune(dirnames)
             continue
         path = os.path.join(dirpath, CONF_FILE)
         module = _load(
@@ -303,7 +296,6 @@ def load_project(start):
             project.suites = dict(getattr(module, "SUITES", {}))
             if "all" in project.suites:
                 raise UsageError(f"{path}: a project may not define a suite named 'all' -- it always exists, built in")
-            project.exclude = tuple(getattr(module, "EXCLUDE", ()))
             project.inherit_env = inherit_env(list(getattr(module, "INHERIT_ENV", ())), f"{path}: INHERIT_ENV")
             if (
                 hasattr(module, "PYTHONPATH")
@@ -322,13 +314,12 @@ def load_project(start):
                 "CREDENTIALS",
                 "AXES",
                 "SUITES",
-                "EXCLUDE",
                 "PYTHONPATH",
                 "INHERIT_ENV",
             ):
                 if hasattr(module, name):
                     raise UsageError(f"{path}: {name} belongs in the root {CONF_FILE} only; this file may hold RULES")
-        _prune(project, root, dirpath, dirnames)
+        _prune(dirnames)
     return project
 
 
@@ -344,13 +335,8 @@ def _misnamed_conf(name):
     )
 
 
-def _prune(project, root, dirpath, dirnames):
-    rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
-    dirnames[:] = sorted(
-        d
-        for d in dirnames
-        if not d.startswith((".", "__")) and not project.excludes(d if rel_dir == "." else f"{rel_dir}/{d}")
-    )
+def _prune(dirnames):
+    dirnames[:] = sorted(d for d in dirnames if not d.startswith((".", "__")))
 
 
 def _check(path, project):
