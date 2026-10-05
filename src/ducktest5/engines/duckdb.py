@@ -1,13 +1,8 @@
 """The built duckdb shell as a client.
 
-`DuckDBShell` is the rule: one shell process for the whole run, as the unittest binary is one
-process for its run. The words are sqllogictest's, where it has them:
-
-    reconnect()   new connection, same instance   the shell has one connection, so it cannot
-    restart()     new instance, same process      `.open :memory:`, then the test's preambles again
-    respawn()     new process                     not in sqllogictest, which is one process
-
-Each test starts on a fresh instance.
+`DuckDBShell` is one shell process for each engine instance, as the unittest binary is one process
+for its batch. Each test starts on a fresh instance in it (`.open :memory:`); a shell that died
+under a test is started again, with the test's preambles.
 
 It runs with a private HOME, as the unittest binary does: the persistent secrets and the installed
 extensions of whoever starts the run stay out of the tests, and what a test persists stays out of
@@ -120,7 +115,7 @@ class DuckDBShell:
         self._process = None
         self._lines = None
         self._calls = 0
-        self._preambles = []  # of the running test, in order: what `restart` and `respawn` must redo
+        self._preambles = []  # of the running test, in order: what a new shell must redo
 
     # -- lifecycle ------------------------------------------------------------
     def begin_test(self):
@@ -134,14 +129,6 @@ class DuckDBShell:
     def add_preamble(self, preamble):
         self._preambles.append(preamble)
         self._run_each(split_statements(preamble), numbered=False)
-
-    def restart(self):
-        self._dot(".open :memory:")
-        self._replay()
-
-    def respawn(self):
-        self.close()
-        self._replay()
 
     def close(self):
         if self._process is not None:

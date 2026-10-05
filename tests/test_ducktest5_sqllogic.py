@@ -146,12 +146,15 @@ def test_the_check_against_the_binary_uses_one_scope_on_both_sides(tmp_path, mon
         "list_binary_tests",
         lambda binary, working_dir, scratch: {"test/a.test", "test/gone.test", "other_extension/x.test"},
     )
-    problems = sqllogic.check_against_binary(
-        ["test/a.test", "test/new.test"], FAKE, str(tmp_path), str(tmp_path / "s"), str(tmp_path / "test")
+    unknown, stale = sqllogic.check_against_binary(
+        ["test/a.test", "test/new.test", "test/paired.test"],
+        FAKE,
+        str(tmp_path),
+        str(tmp_path / "s"),
+        str(tmp_path / "test"),
+        excluded=["test/paired.test"],
     )
-    assert len(problems) == 2
-    assert "test/new.test" in problems[0] and "does not know" in problems[0]
-    assert "test/gone.test" in problems[1] and "other_extension" not in problems[1]
+    assert (unknown, stale) == (["test/new.test"], ["test/gone.test"])
 
 
 def test_a_binary_that_lists_nothing_is_an_error_not_an_empty_set(tmp_path):

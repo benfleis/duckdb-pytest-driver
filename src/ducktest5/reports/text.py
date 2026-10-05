@@ -55,6 +55,7 @@ TERSE_KEYS = (
     "note",
     "message",
     "sql",
+    "error",
     "expected",
     "actual",
     "made-of",
@@ -137,7 +138,7 @@ def failure_block(test, *, color=False, merged=False, verbose=False):
     problems = list(test.get("problems", ()))
     if failure:
         out += ["", *(f"  {line}" for line in str(failure.get("summary", "")).splitlines())]
-        for name in ("sql", "expected", "actual"):
+        for name in ("sql", "error", "expected", "actual"):
             if failure.get(name):
                 out.append(f"  {name}:")
                 out += [f"    {line}" for line in str(failure[name]).splitlines()]
@@ -227,6 +228,7 @@ def _terse_block(test, *, merged):
         "note": test.get("note"),
         "message": _message(test, failure),
         "sql": failure.get("sql"),
+        "error": failure.get("error"),
         "expected": failure.get("expected"),
         "actual": failure.get("actual"),
         "made-of": "\n".join(made_of_lines(test.get("made_of"))) or None,

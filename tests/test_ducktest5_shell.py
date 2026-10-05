@@ -1,4 +1,4 @@
-"""ducktest5's DuckDB shell: one process for the run, a fresh instance per test, and the reset levels."""
+"""ducktest5's DuckDB shell: one process for each engine instance, and a fresh instance per test."""
 
 import os
 import shutil
@@ -40,23 +40,6 @@ def test_the_next_test_starts_on_a_fresh_instance_in_the_same_process(shell):
     assert _tables(shell) == []
     assert shell.run(["SELECT current_setting('threads') <> 2 AS reset"])[1] == [(True,)]
     assert shell._process is process
-
-
-def test_restart_is_a_new_instance_and_redoes_the_preambles(shell):
-    shell.add_preamble("CREATE TABLE from_preamble (i INT);")
-    shell.run(["CREATE TABLE made_in_body (i INT)"])
-    process = shell._process
-    shell.restart()
-    assert _tables(shell) == ["from_preamble"]
-    assert shell._process is process
-
-
-def test_respawn_is_a_new_process_and_redoes_the_preambles(shell):
-    shell.add_preamble("CREATE TABLE from_preamble (i INT);")
-    process = shell._process
-    shell.respawn()
-    assert _tables(shell) == ["from_preamble"]
-    assert shell._process is not process
 
 
 def test_a_failure_stops_the_block_names_the_statement_and_the_shell_lives(shell):

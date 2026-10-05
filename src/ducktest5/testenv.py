@@ -1,8 +1,8 @@
 """The test environment: everything the engine process of one test is given, in one record.
 
-A test is a definition with one set of parameters. What a parameter contributes used to reach a
-`.test` body (the batch's config and init file) and a Python body (the `ctx.duckdb()` preamble) by
-two separate paths, which could and did disagree. `resolve()` builds this record once, after
+A test is a definition with one set of parameters. A `.test` body (the batch's config and init
+file) and a Python body (its engines' preamble) read this one record, so they cannot disagree.
+`resolve()` builds it once, after
 provisioning and before exec, out of the rules, the definition's own declaration, the test's params and
 the chosen value of every variant axis; both deliveries read it, under the test's DuckDB engine
 (`leases.py`), and nothing else, and the batch key of a test of a `.test` file is made of that.

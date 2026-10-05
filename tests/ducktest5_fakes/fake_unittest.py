@@ -32,6 +32,15 @@ def event(**fields):
     print("[TEST_EVENT] " + json.dumps(fields), file=sys.stderr, flush=True)
 
 
+RULE = "=" * 80
+CATCH_BANNER = "~" * 79 + "\nunittest is a Catch v2.13.7 host application.\nRun with -? for options\n"
+
+
+def failure(where, *parts):
+    """A failure as the real binary frames it: each part between lines of `=`, then Catch's banner."""
+    return "\n".join([f"1. {where}", *(f"{RULE}\n{part}" for part in parts), "", CATCH_BANNER])
+
+
 def runs_so_far(name):
     path = os.path.join(os.environ["FAKE_UNITTEST_STATE"], name.replace("/", "_") + ".runs")
     runs = int(open(path).read()) + 1 if os.path.exists(path) else 1
@@ -63,6 +72,9 @@ def init_statement(config, which=1):
 
 
 def main(argv):
+    if "--version" in argv:  # as the duckdb shell of a build answers; the self-tests give this fake for both
+        print("v2.0.0 (fake) 0000000000")
+        return 0
     if "-l" in argv:
         print("name\tgroup")
         for line in open(os.environ["FAKE_UNITTEST_LIST"]) if "FAKE_UNITTEST_LIST" in os.environ else []:
@@ -102,14 +114,34 @@ def main(argv):
         if "initfail" in name:
             which = re.search(r"initfail(\d+)", name)
             sql, line = init_statement(config, int(which.group(1)) if which else 1)
-            print(f"Query unexpectedly failed! ({name}:{line})!\n{sql}\nCatalog Error: no such thing", flush=True)
+            print(
+                failure(
+                    f"{name}:{line}",
+                    f"Query unexpectedly failed! ({name}:{line})!",
+                    sql,
+                    "Catalog Error: no such thing",
+                ),
+                flush=True,
+            )
             data = f"{name}:{line}"
             event(
                 event="end", name=name, status="error", passes=0, fails=1, **{"skip-mode": 0}, temp_dir=temp, data=data
             )
             failed = True
         elif "fail" in name or (flaky and runs_so_far(name) < int(flaky.group(1))):
-            print(f"Wrong result in query! ({name}:4)\nExpected result:\n2\nActual result:\n1", flush=True)
+            print(
+                failure(
+                    f"{name}:4",
+                    f"Wrong result in query! ({name}:4)!",
+                    "SELECT 1;",
+                    "Mismatch on row 1, column 1(index 1)\n1 <> 2",
+                    "Expected result:",
+                    "2\n",
+                    "Actual result:",
+                    "1\n",
+                ),
+                flush=True,
+            )
             event(
                 event="end",
                 name=name,

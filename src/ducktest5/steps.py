@@ -1,25 +1,17 @@
-"""High-level operation logging for drivers/fixtures.
+"""`ctx.step(message)`: a coarse operation of a body -- start a server, seed a table -- logged with
+its time, at INFO: on stderr with `-v`, and always in `<run dir>/ducktest.log`.
 
-`step()` wraps a coarse operation -- start a service, seed a table, clean a temp dir --
-so it shows up with timing. It logs at INFO via `logging`: visible live with
-`pytest --log-cli-level=INFO`, and in the per-phase "Captured log" section on failure.
-
-    from ducktest import step
-
-    with step("starting OSS UC docker image"):
+    with ctx.step("seeding the table"):
         ...
 
-NOTE: plain `-v` does NOT surface these. pytest captures stdout/terminal during a test,
-so plugin writes are swallowed (shown only on failure); the logging plugin's live-log,
-enabled by --log-cli-level, is the reliable live channel. Pass `logger=` to log under an
-extension's own namespace (default: the "driver" logger).
+Pass `logger=` to log under an extension's own namespace.
 """
 
 import logging
 import time
 from contextlib import contextmanager
 
-_log = logging.getLogger("driver")
+_log = logging.getLogger("ducktest5.step")
 
 
 @contextmanager

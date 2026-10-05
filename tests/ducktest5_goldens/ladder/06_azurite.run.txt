@@ -11,7 +11,7 @@ service az -- did not come up: existing service 'az' does not answer at http://1
   root: data_dir=<tmp>/repo/06_azurite/data  <- default storage
   not served: az did not come up (existing service 'az' does not answer at http://127.0.0.1:9)  <- storage blobs
   not served: az did not come up (existing service 'az' does not answer at http://127.0.0.1:9)  <- credential keys
-  again: ducktest5 run --id scoped_write.test::scoped_write
+  again: ducktest5 run --id scoped_write.test::scoped_write --no-binary-check
 
 --- scoped_write_body.py::scoped_write_body
 
@@ -20,7 +20,7 @@ service az -- did not come up: existing service 'az' does not answer at http://1
   root: data_dir=<tmp>/repo/06_azurite/data  <- default storage
   not served: az did not come up (existing service 'az' does not answer at http://127.0.0.1:9)  <- storage blobs
   not served: az did not come up (existing service 'az' does not answer at http://127.0.0.1:9)  <- credential keys
-  again: ducktest5 run --id scoped_write_body.py::scoped_write_body
+  again: ducktest5 run --id scoped_write_body.py::scoped_write_body --no-binary-check
 
 
 'az' did not come up: 2 tests blocked

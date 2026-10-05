@@ -85,6 +85,23 @@ def test_a_credential_in_the_command_line_is_masked():
                 "where": "b.test:18",
             },
         ),
+        (
+            "1. c.test:4\n"
+            + "=" * 80
+            + "\nQuery unexpectedly failed! (c.test:4)!\n"
+            + "=" * 80
+            + "\nSELECT * FROM t;\n"
+            + "=" * 80
+            + "\nCatalog Error: Table with name t does not exist!\n\nLINE 1: SELECT * FROM t\n\n"
+            + "~" * 79
+            + "\nunittest is a Catch v2.13.7 host application.",
+            {
+                "summary": "Query unexpectedly failed! (c.test:4)!",
+                "sql": "SELECT * FROM t;",
+                "error": "Catalog Error: Table with name t does not exist!\n\nLINE 1: SELECT * FROM t",
+                "where": "c.test:4",
+            },
+        ),
         ("", {}),
     ],
 )

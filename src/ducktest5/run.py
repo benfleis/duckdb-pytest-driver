@@ -327,6 +327,8 @@ def execute(
         tests=len(tests),
     )
 
+    again_flags = _carried(command or [])
+
     def begin(test, runner_name):
         writer.emit(TEST_START, at=round(time.perf_counter() - started, 2), runner=runner_name, **_identity(test))
 
@@ -365,7 +367,7 @@ def execute(
             line["dirs"] = [os.path.relpath(d, run_dir) for d in dirs]
         if outcome != PASSED or verbose:
             line["made_of"] = _made_of(test_env(test), batch_dir=batch_dir, test_dir=test_dir)
-            line["again"] = f"ducktest5 run --id {shlex.quote(test.id)}"
+            line["again"] = shlex.join(["ducktest5", "run", "--id", test.id, *again_flags])
         if kept:
             line["kept"] = list(kept)
         if statements and (outcome != PASSED or verbose):
@@ -541,7 +543,7 @@ def execute(
                 _log.info("batch %s: finished, %d test(s)", os.path.basename(batch.dir), len(chunk))
                 return results
 
-        def attempt(test, n):
+        def attempt(test, n, lease):
             """Returns (outcome, problems, the failure in parts, the test's directory, its ctx)."""
             # An attempt after the first has its own directory and prefix, so it does not see what
             # the one before it left.
@@ -551,7 +553,7 @@ def execute(
             try:
                 os.makedirs(temp_dir)
                 env = test_env(test, dir_name)
-                held = pool.take(test.id, leases.bind(test, env, project))
+                held = pool.take(lease, leases.bind(test, env, project))
                 for engine in held.values():
                     if hasattr(engine.live, "scope_jobs"):  # so a timeout can cancel just this test's jobs
                         engine.live.scope_jobs(test.id)
@@ -571,11 +573,11 @@ def execute(
                     ),
                 )
             except Exception as exc:
-                pool.give_back(test.id, held, failed=True)
+                pool.give_back(lease, held, failed=True)
                 problems = [f"the test could not be set up: {type(exc).__name__}: {exc}"]
                 return ERROR, problems, {"summary": problems[0]}, temp_dir, None
             outcome, problems, failure = _run_body(test, ctx)
-            pool.give_back(test.id, held, failed=outcome in (FAILED, ERROR))
+            pool.give_back(lease, held, failed=outcome in (FAILED, ERROR))
             return outcome, problems, failure, temp_dir, ctx
 
         def place_of(test, dir_name):
@@ -592,13 +594,15 @@ def execute(
             is released."""
             if sqllogic.stopped():  # a test still waiting when the run was stopped never began
                 return
-            with pool.holding(test.mutex):
+            with pool.lease(test.id) as lease, pool.holding(test.mutex, lease):
                 begin(test, phases.PYTHON_RUNNER)
                 test_started[test.id] = time.perf_counter()
                 t0 = time.perf_counter()
                 allowed, tried, first, ctx = 1 + test.definition.retries, [], None, None
                 for n in range(1, allowed + 1):
-                    outcome, problems, failure, temp_dir, ctx = attempt(test, n)
+                    outcome, problems, failure, temp_dir, ctx = attempt(test, n, lease)
+                    if lease.revoked:  # its timeout reported it and released what it held
+                        return
                     tried.append((temp_dir, ctx))
                     if outcome not in (FAILED, ERROR):
                         break
@@ -654,10 +658,10 @@ def execute(
 
         def python_timed_out(test, test_timeout):
             """A thread cannot be killed: give up waiting on it, release whatever it holds, and
-            report it now, so the pool's slot is free for the next test in the plan."""
-            # Claimed before the cancel: the body then fails on its dead engine, and must not report that.
+            report it now; a new thread takes its slot for the next test in the plan."""
+            # Claimed before the revoke: the body then fails on its dead engine, and must not report that.
             first = report_once(test.id)
-            pool.cancel(test.id)
+            pool.revoke(test.id)
             if first:
                 done(test, ERROR, runner=phases.PYTHON_RUNNER, note=f"timed out after {test_timeout:.0f}s")
 
@@ -678,7 +682,7 @@ def execute(
                 for i in entry["tests"]:
                     if i not in runnable:
                         continue
-                    future = pool.submit(python_test, runnable[i])
+                    future = pool.submit(python_test, runnable[i], owner=i)
                     python_deadlines[future] = (runnable[i], test_timeout)
                     every_future.append(future)
 
@@ -780,6 +784,25 @@ def execute(
                 duckdb_bin=duckdb_bin,
             )
     return code
+
+
+# What a re-run of one test needs to find the same tests and pass the same check: option -> how many
+# values follow. Binary paths stay out: they are of one machine, and `--build`/$BUILD_DIR find them.
+_CARRIED = {"--build": 1, "--root": 1, "--data-dir": 1, "--no-binary-check": 0}
+
+
+def _carried(command):
+    """The options of `command` that a re-run of one of its tests must be given again."""
+    out, args = [], list(command[1:])
+    while args:
+        arg = args.pop(0)
+        name = arg.split("=", 1)[0]
+        if name in _CARRIED:
+            out.append(arg)
+            if "=" not in arg:
+                out += args[: _CARRIED[name]]
+                del args[: _CARRIED[name]]
+    return out
 
 
 def _credential_env(tests, engine_id, made):

@@ -132,9 +132,6 @@ def _glob(pattern):
 
 
 def _rule(pattern, fields):
-    for gone in ("sessions", "clients"):
-        if gone in fields:
-            raise UsageError(f"rule {pattern!r}: {gone}= is now engines=; each engine gets a Client")
     unknown = sorted(set(fields) - set(_LISTS + _DICTS + _SINGLES))
     if unknown:
         raise UsageError(f"rule {pattern!r}: unknown field(s) {unknown}; known: {_LISTS + _DICTS + _SINGLES}")
@@ -378,8 +375,6 @@ def load_project(start):
             raise UsageError(f"{path}: RULES must hold default(...) and match(...) rules")
         project._rules_by_dir[dirpath] = rules
         if dirpath == root:
-            if hasattr(module, "SESSIONS"):
-                raise UsageError(f"{path}: declare engines in ENGINES, not in SESSIONS")
             project.engines = {e.id: e for e in getattr(module, "ENGINES", ())}
             project.services = {s.id: s for s in getattr(module, "SERVICES", ())}
             project.storages = {s.id: s for s in getattr(module, "STORAGES", ())}

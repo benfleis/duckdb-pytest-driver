@@ -9,7 +9,8 @@ before. Rung 00 is a repo that has never heard of ducktest5. Run these from insi
     ducktest5 run --no-binary-check     run it
 
 `run` needs a DuckDB build: set `BUILD_DIR` to the directory that holds `duckdb` and `test/unittest`.
-`--no-binary-check` is there because the build does not list these `.test` files.
+`--no-binary-check` is there because the build does not list these `.test` files. Without it,
+ducktest5 warns that the binary does not know them, and runs them all the same.
 
 ## 00_existing
 

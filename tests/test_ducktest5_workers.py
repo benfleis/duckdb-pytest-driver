@@ -2,6 +2,7 @@
 
 import os
 import re
+import signal
 import subprocess
 import sys
 import textwrap
@@ -11,7 +12,7 @@ import time
 import pytest
 
 from ducktest5 import events, phases, sqllogic
-from ducktest5.engines.duckdb import DuckDBShell
+from ducktest5.engines.duckdb import DuckDBShell, duckdb_engine
 from test_ducktest5_run import FAKE, FakeShell, go, outcomes, py_test, sql_test
 
 SLEEP_S = 0.3  # long enough that tests overlap, short enough for a self-test
@@ -280,6 +281,31 @@ def test_a_stopped_run_with_several_workers_ends_by_itself_and_leaves_nothing_ru
 #
 
 
+STUCK_S = 60  # a body that waits this long is stuck, for every bound below
+GUARD_S = 20  # a run that has not ended by then hangs: the self-test fails instead of the suite hanging
+
+
+def within(seconds, fn, *args, **kwargs):
+    """`fn(*args, **kwargs)`, or a failed self-test when it has not returned after `seconds`. It runs on
+    a daemon thread, so a hang it leaves behind does not keep the suite from ending."""
+    result = {}
+
+    def run():
+        try:
+            result["value"] = fn(*args, **kwargs)
+        except BaseException as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        pytest.fail(f"still running after {seconds}s: it hangs")
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
 def _named(fn, name):
     fn.__name__ = name
     return fn
@@ -291,12 +317,17 @@ def _quick_tests(n):
 
 @pytest.mark.parametrize("workers", [1, 4])
 def test_a_body_that_sleeps_past_its_timeout_ends_error_and_the_run_moves_on(tmp_path, workers):
+    release = threading.Event()
+
     def slow(ctx):
-        time.sleep(0.5)
+        release.wait(STUCK_S)
 
     tests = [py_test(_named(slow, "slow"), path="test/slow.py", timeout=0.1), *_quick_tests(3)]
     t0 = time.perf_counter()
-    code, run_dir, report, _ = go(tmp_path, tests, workers=workers)
+    try:
+        code, run_dir, report, _ = within(GUARD_S, go, tmp_path, tests, workers=workers)
+    finally:
+        release.set()
     took = time.perf_counter() - t0
     out = outcomes(report)
     assert out["slow"] == "error"
@@ -329,3 +360,116 @@ def test_a_rules_timeout_reaches_a_python_test_and_it_defaults_like_a_sqllogic_t
     by_file = {b["files"][0]: b for b in plan["batches"]}
     assert by_file["test/default.py"]["timeout"] == sqllogic.DEFAULT_TIMEOUT_S
     assert by_file["test/custom.py"]["timeout"] == 42
+
+
+def test_a_body_stuck_past_its_timeout_frees_its_slot_its_mutex_and_its_run_engine(tmp_path):
+    release = threading.Event()
+
+    def stuck(ctx):
+        ctx.client("solo").oks("SELECT 1")
+        release.wait(STUCK_S)
+
+    def after(ctx):
+        ctx.client("solo").oks("SELECT 2")
+
+    engine = duckdb_engine("solo", lifetime="run")
+    tests = [
+        py_test(_named(stuck, "stuck"), path="test/stuck.py", timeout=0.3, engines=["solo"], mutex=["port"]),
+        py_test(_named(after, "after"), path="test/after.py", engines=["solo"], mutex=["port"]),
+    ]
+    try:
+        _, _, report, _ = within(GUARD_S, go, tmp_path, tests, engines=[engine], workers=1)
+    finally:
+        release.set()
+    assert outcomes(report) == {"stuck": "error", "after": "passed"}
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc"), reason="the check for leftovers reads /proc")
+@pytest.mark.parametrize("stop", [None, signal.SIGINT])
+def test_a_process_with_a_stuck_body_ends_when_the_run_does(tmp_path, stop):
+    tree = {
+        # Stopped: Ctrl-C while the body is stuck and within its timeout; else the timeout gives up on it.
+        "test/ducktest_conf.py": f"from ducktest5 import default\nRULES = [default(timeout={STUCK_S if stop else 1})]\n",
+        "test/stuck.py": f"""
+            import time
+
+            from ducktest5 import test
+
+            @test()
+            def a_stuck(ctx):
+                time.sleep({STUCK_S})
+
+            @test()
+            def b_quick(ctx):
+                pass
+        """,
+    }
+    for name, body in tree.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(textwrap.dedent(body))
+    args = [sys.executable, "-m", "ducktest5.cli", "run", "--duckdb-bin", FAKE, "--workers", "1"]
+    started = subprocess.Popen(
+        [*args, "--temp-dir-root", "runs"], cwd=str(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    )
+    try:
+        if stop is not None:
+            for _ in range(GUARD_S * 10):  # until the stuck body is under way
+                lines = [e for f in (tmp_path / "runs").glob("*/04-events.jsonl") for e in events.read(str(f))]
+                if any(e["event"] == events.TEST_START for e in lines):
+                    break
+                time.sleep(0.1)
+            started.send_signal(stop)
+        out, _ = started.communicate(timeout=GUARD_S)
+    finally:
+        started.kill()
+    if stop is None:
+        assert started.returncode == 1
+        assert re.search(r"1 passed.*1 error", out.decode()), out.decode()
+    else:
+        assert started.returncode == 130
+
+
+def test_two_names_for_one_engine_in_one_test_are_two_instances(tmp_path):
+    made = []
+
+    class Counted(FakeShell):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            made.append(self)
+
+    def both(ctx):
+        ctx.client("writer").oks("SELECT 1")
+        ctx.client("reader").oks("SELECT 2")
+
+    engines = [duckdb_engine("writer"), duckdb_engine("reader")]
+    tests = [
+        py_test(_named(both, "both"), path="test/both.py", engines=["writer", "reader"]),
+        py_test(_named(both, "again"), path="test/again.py", engines=["reader", "writer"]),
+    ]
+    code, *_ = within(GUARD_S, go, tmp_path, tests, engines=engines, workers=1, shell_factory=Counted)
+    assert code == 0
+    assert len(made) == 2  # one for each name in a test, and the next test shares them
+
+
+def test_engines_of_lifetime_run_named_in_opposite_orders_do_not_deadlock(tmp_path):
+    class SlowToOpen(FakeShell):
+        def __init__(self, *a, **kw):
+            time.sleep(SLEEP_S)  # the window between taking one engine and the next
+            super().__init__(*a, **kw)
+
+    def uses(name):
+        def run(ctx):
+            ctx.client(name).oks("SELECT 1")
+
+        return _named(run, f"{name}_first")
+
+    engines = [
+        duckdb_engine("x", lifetime="run", settings={"threads": 1}),
+        duckdb_engine("y", lifetime="run", settings={"threads": 2}),
+    ]
+    tests = [
+        py_test(uses("x"), path="test/x.py", engines=["x", "y"]),
+        py_test(uses("y"), path="test/y.py", engines=["y", "x"]),
+    ]
+    code, *_ = within(GUARD_S, go, tmp_path, tests, engines=engines, workers=2, shell_factory=SlowToOpen)
+    assert code == 0

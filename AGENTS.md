@@ -57,6 +57,9 @@ stays the central artifact** — the Python is thin glue, never the test itself.
 ## Layout
 
 ```
+src/ducktest5/  the runner (CLI ducktest5): scan/select/plan/run/report; resources/, engines/, services/, reports/
+examples/ladder/            rungs 00-06, executable docs; goldens in tests/ducktest5_goldens/ladder/
+docs/ducktest5/             design.md (how to write a test; how it works), status.md
 src/ducktest/   plugin.py suites.py store.py provision.py requires.py fixtures.py sqllogic.py sqldef.py steps.py mnemonic.py cli.py
   resources/    ready-made service()/credential() descriptors — azurite.py (see docs/SERVICES.md)
   tools/        rclone.py — object-store seed/clean runner (a means, not core framework surface)

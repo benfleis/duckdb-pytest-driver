@@ -1,6 +1,7 @@
 # ducktest5: resources and engines
 
 ducktest5 runs DuckDB tests: `.test` files and Python bodies, on one or more engines (DuckDB, Spark).
+It needs DuckDB v2.0 or newer; an older build is refused at start, with the version it found.
 The one idea: a test gets its world as `{NAME}` values. ducktest makes what the test needs, gives it
 the values, and removes what it made. Part 1 is for a test author and stands alone. Part 2 is for
 people who write resource kinds or debug the runner. The rulings behind it are in the maintainers'
@@ -189,7 +190,12 @@ a `duckdb` shell process, Spark is a JVM (one clone per worker), a `.test` batch
 process. An engine instance serves one test at a time and is reset between tests (DuckDB: a fresh
 instance and its preamble; Spark: its conf restored); after a failed test it is opened again.
 `lifetime` is `worker` (default), `batch` or `run`. `requires`, `settings`, `init` and `process_env`
-are part of its identity; `lifetime` and `timeout` are not.
+are part of its identity; `lifetime` and `timeout` are not. Tests one after the other share an
+instance of one identity; two names for engines of one identity in one test get two instances. A
+test takes its mutexes, then its engine instances, each in one order for the whole run, so tests on
+several workers never wait for each other in a circle. A Python body past its timeout is ERROR, and
+what it holds is released at once; its thread cannot be killed and is left to end on its own, while a
+new one takes its worker slot.
 
 A **client** is one engine's lease for one test: the verbs, the lock, the engine's dialect. The
 **Context** (`ctx`) is the one object a body gets: its clients, `ctx.values`, `ctx.params`, and what
@@ -277,7 +283,7 @@ as the signal an existing file checks with `require-env`.
 to the storage; several need one `default=True`. A test without a credential is a definition of its
 own that binds no storage in the scope. A test that holds a credential that does not resolve is
 BLOCKED, never SKIPPED. A process has one set of each SDK's names, so a test holds one credential of a
-type, and a booted engine (Spark) one for the whole run; several are a scan error until wiring lands.
+type, and a booted engine (Spark) one for the whole run; several are a scan error: not supported yet.
 
 **Delivery.** The fields reach every engine process of the test as SDK env: a Python body's DuckDB
 shell, the `unittest` binary (and by name in `env_passthrough`), and the Spark JVM when it boots. That
@@ -299,7 +305,7 @@ azure_storage_connection_string = getenv('AZURE_STORAGE_CONNECTION_STRING')`), a
 extension's own Azurite tests set it; the setting is not scoped, and `secret_name` is None. Its other
 providers get a scoped `TYPE azure` secret; an `access_token` is in it by reference
 (`AZURE_ACCESS_TOKEN`, ducktest's name: the Azure SDK reads no bearer token from env). A test that
-binds the storage but makes its own secret is left to wiring; there is no flag for it. Spark gets, per scoped bucket,
+binds the storage but makes its own secret is not supported yet; there is no flag for it. Spark gets, per scoped bucket,
 the env credentials provider and the bucket's endpoint, never a key. A body reads what it holds with
 `ctx.credential(id)` and `ctx.credentials()`: id, type, `secret_name`, storages, scope, env names,
 fields masked, source. A service can make a credential: `s3.credential("keys", scopes=["lake"])`.
@@ -381,7 +387,7 @@ path itself. `scan --env` prints it first.
 
 `TableDef` and tables per test; catalog services (UC, Databricks); input slots declared by a kind;
 the `1password:` source; credential types other than S3 and Azure (GCS, R2); Spark with an Azure
-credential; wiring several credentials of one type into one test (`wired(...)`); scan checks of `{NAME}` references and of
+credential; several credentials of one type in one test; scan checks of `{NAME}` references and of
 `ctx.client("...")` names; `.test` header blocks as rules; the `Run` object.
 
 ---

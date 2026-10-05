@@ -173,12 +173,11 @@ def test_the_conf_file_itself_gives_no_warning(tree, capsys):
         (["select", "--select", "tag=typo"], "no scanned test has tag ['typo']"),
         (["select", "--id", "a/x.test::nope"], "--id: no such test"),
         (["select", "--suite", "nightly"], "no suite ['nightly']; known suites: []"),
-        (["select", "--skip", "not:tag=all"], "write !tag=all"),
         (["select", "--select", "tag=!all"], "write !tag=all"),
         (["run", "--select", "!tag=all"], "no test selected"),
         (["select", "--select", "test/nope"], "matches no scanned test"),
         (["select", "--select", "nope/outside"], "is outside the project root"),
-        (["select", "--select", "a/b=c"], "a bare path can't contain '='"),
+        (["select", "--select", "a/b=c"], "a bare path cannot contain '='"),
         (["run", "test/a"], "duckdb shell not found"),
         (["run", "test/a", "--duckdb-bin", FAKE, "--unittest-bin", "absent"], "unittest binary not found"),
     ],
@@ -237,10 +236,37 @@ def test_an_excluded_file_that_the_binary_knows_is_not_a_stale_build(tree, monke
     monkeypatch.setenv("FAKE_UNITTEST_LIST", str(known))
     assert main(run_args("test/a")) == 0
 
-    known.write_text("test/a/x.test\ntest/generated/g.test\ntest/gone.test\n")
+    known.write_text("test/a/x.test\ntest/a/y.test_slow\ntest/b/z_fail.test\ntest/generated/g.test\ntest/gone.test\n")
     assert main(run_args("test/a")) == 2
     err = capsys.readouterr().err
-    assert "test/gone.test" in err and "test/b/z_fail.test" in err and "generated" not in err
+    assert "test/gone.test" in err and "generated" not in err and "--no-binary-check" in err
+
+
+def test_a_file_the_binary_does_not_know_is_a_warning_and_still_runs(tree, monkeypatch, capsys):
+    known = tree / "known.txt"
+    known.write_text("test/a/y.test_slow\ntest/b/z_fail.test\ntest/generated/g.test\n")
+    monkeypatch.setenv("FAKE_UNITTEST_LIST", str(known))
+    assert main(run_args("test/a/x.test")) == 0
+    out, err = capsys.readouterr()
+    assert "warning: 1 test file(s) on disk that the unittest binary does not know: test/a/x.test" in err
+    assert "re-run cmake and rebuild" in err and "--no-binary-check" in err
+    assert "PASSED" in out
+
+
+def test_a_paired_test_file_is_not_checked_against_the_binary(tree, monkeypatch, capsys):
+    (tree / "test" / "a" / "pair.py").write_text("from ducktest5 import test\n\n\n@test()\ndef pair(ctx):\n    pass\n")
+    (tree / "test" / "a" / "pair.test").write_text("# name: test/a/pair.test\n")
+    known = tree / "known.txt"
+    known.write_text("test/a/x.test\ntest/a/y.test_slow\ntest/b/z_fail.test\ntest/generated/g.test\n")
+    monkeypatch.setenv("FAKE_UNITTEST_LIST", str(known))
+    assert main(run_args("test/a")) == 0
+    assert "warning" not in capsys.readouterr().err
+
+
+def test_the_again_command_carries_the_flags_the_run_used(tree, capsys):
+    assert main(run_args("test/b", "--no-binary-check")) == 1
+    out = capsys.readouterr().out
+    assert "again: ducktest5 run --id b/z_fail.test::z_fail --no-binary-check\n" in out
 
 
 # -----------------------------------------------------------------------------
@@ -391,3 +417,47 @@ def test_the_run_dir_always_holds_a_debug_log(tree, capsys):
     log = (run_dir / "ducktest.log").read_text()
     assert "DEBUG" in log
     assert "INFO" in log and "run start:" in log
+
+
+# -----------------------------------------------------------------------------
+# The oldest DuckDB ducktest5 runs on
+#
+
+
+@pytest.mark.parametrize(
+    "said, refused",
+    [
+        ("v2.0.0-dev84411 (Development Version) fc4002c6e3", None),
+        ("v2.1.3 (Something) 0123456789", None),
+        ("v1.5.2 (Variegata) 8a5851971f", "is DuckDB v1.5.2; ducktest5 needs DuckDB v2.0 or newer"),
+        ("", None),  # a shell that does not say: the unittest binary takes the options ducktest5 gives
+    ],
+)
+def test_a_duckdb_older_than_the_floor_is_refused_before_anything_runs(tree, capsys, said, refused):
+    old = tree / f"duckdb-{len(said)}"
+    old.write_text(f"#!/bin/sh\necho '{said}'\n")
+    old.chmod(0o755)
+    code = main(["run", "--duckdb-bin", str(old), "--unittest-bin", FAKE, "--temp-dir-root", "runs", "test/a/x.test"])
+    if refused is None:
+        assert code == 0
+    else:
+        assert code == 2
+        err = capsys.readouterr().err
+        assert refused in err and str(old) in err
+        assert not (tree / "runs").exists()
+
+
+def test_a_unittest_binary_older_than_the_floor_is_refused_when_the_shell_does_not_say(tree, capsys):
+    silent, old = tree / "duckdb", tree / "unittest"
+    silent.write_text("#!/bin/sh\necho 'Extension Autoloading Error' >&2\nexit 1\n")
+    old.write_text(
+        "#!/bin/sh\necho 'Error(s) in input:' >&2\necho '  Unrecognised token: --temp-dir-root' >&2\nexit 1\n"
+    )
+    for script in (silent, old):
+        script.chmod(0o755)
+    args = ["run", "--duckdb-bin", str(silent), "--temp-dir-root", "runs"]
+    assert main([*args, "--unittest-bin", str(old), "test/a/x.test"]) == 2
+    assert "does not take --temp-dir-root: a build older than DuckDB v2.0" in capsys.readouterr().err
+    (tree / "test" / "body.py").write_text("from ducktest5 import test\n\n\n@test()\ndef body(ctx):\n    pass\n")
+    assert main([*args, "test/body.py"]) == 2
+    assert "could not tell the DuckDB version" in capsys.readouterr().err

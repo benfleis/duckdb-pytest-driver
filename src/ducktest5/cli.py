@@ -33,9 +33,10 @@ import sys
 import yaml
 
 from . import events, init, logconfig, phases, leases, sqllogic, testenv
-from .binary import UsageError, find_duckdb
+from .binary import UsageError, check_floor, find_duckdb
 from .conf import load_project, repo_root
 from .declare import CONF_FILE
+from .model import PAIRED
 from .provision import bring_up
 from .resources.made import Made
 from .resources.storage import DEFAULT_TEMP_ROOT
@@ -67,8 +68,8 @@ def _binary_options(parser):
         help="build/<BUILD>/ holds duckdb and test/unittest, looked for at the top of the git repository, then "
         "in the working directory; $BUILD_DIR names the directory instead (default: debug)",
     )
-    parser.add_argument("--duckdb-bin")
-    parser.add_argument("--unittest-bin")
+    parser.add_argument("--duckdb-bin", help="the duckdb shell to use (default: found by --build)")
+    parser.add_argument("--unittest-bin", help="the test/unittest binary to use (default: found by --build)")
     parser.add_argument("--run-bin", help="DuckDB's run wrapper, for --runner run (default: beside test/unittest)")
 
 
@@ -115,7 +116,7 @@ def _service_options(parser):
 def _plan_options(parser):
     parser.add_argument("--batch-size", type=int, default=10, help=".test files for one unittest process")
     parser.add_argument(
-        "--workers", type=int, default=4, help="how much runs at a time: a .test batch or a Python test takes one slot"
+        "--workers", type=int, default=4, help="how many run at a time: a .test batch or a Python test takes one slot"
     )
     parser.add_argument(
         "--runner",
@@ -237,7 +238,7 @@ def main(argv=None):
     exec_options.add_argument(
         "--events",
         metavar="FILE",
-        help="write the events there instead of 04-events.jsonl, so that two execs over one plan do not clobber",
+        help="write the events there instead of 04-events.jsonl, so that two execs over one plan do not write over each other",
     )
     _service_options(exec_options)
     _report_options(exec_options)
@@ -415,18 +416,32 @@ def _binaries(args, selected, tests, project, working_dir):
     unittest_bin = None
     if any(c.definition.body_file for c in selected):
         unittest_bin = sqllogic.find_unittest(explicit=args.unittest_bin, build=args.build, places=places)
-        if not args.no_binary_check:
-            scratch = os.path.join(getattr(args, "run_dir", None) or project.default_storage.temp_root, ".list")
-            problems = sqllogic.check_against_binary(
-                [c.definition.body_file for c in tests if c.definition.body_file],
-                unittest_bin,
-                working_dir,
-                scratch,
-                project.root,
-                excluded=project.excluded_bodies(working_dir),
+    scratch = os.path.join(getattr(args, "run_dir", None) or project.default_storage.temp_root, ".list")
+    check_floor(duckdb_bin, unittest_bin, scratch)
+    if unittest_bin is not None and not args.no_binary_check:
+        # A paired `.test` runs only through its body, never as a test of its own.
+        paired = [c.definition.body_file for c in tests if c.definition.type == PAIRED]
+        unknown, stale = sqllogic.check_against_binary(
+            [c.definition.body_file for c in tests if c.definition.body_file],
+            unittest_bin,
+            working_dir,
+            scratch,
+            project.root,
+            excluded=[*project.excluded_bodies(working_dir), *paired],
+        )
+        fix = "re-run cmake and rebuild, or pass --no-binary-check to skip this check"
+        if stale:
+            raise UsageError(
+                f"the unittest binary knows {len(stale)} test(s) that are not on disk (stale build?): "
+                f"{', '.join(stale[:5])}; {fix}"
             )
-            if problems:
-                raise UsageError("the tests on disk and the unittest binary do not agree:\n  " + "\n  ".join(problems))
+        if unknown:
+            print(
+                f"ducktest5: warning: {len(unknown)} test file(s) on disk that the unittest binary does not know: "
+                f"{', '.join(unknown[:5])}{' ...' if len(unknown) > 5 else ''}. They run here when selected; the "
+                f"binary's own runs leave them out until you {fix}",
+                file=sys.stderr,
+            )
     return duckdb_bin, unittest_bin
 
 

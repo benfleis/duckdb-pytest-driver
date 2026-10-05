@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from test_ducktest5_run import FakeEngine, FakeShell, ctx_for, go, passes, py_test, sql_test
 
-from ducktest5 import declare, leases, phases
+from ducktest5 import leases, phases
 from ducktest5.binary import UsageError
 from ducktest5.cli import main
 from ducktest5.conf import Project
@@ -504,25 +504,6 @@ def test_engines_are_declared_among_the_engines_and_named_by_a_test(tmp_path):
     )
     with pytest.raises(UsageError, match="names engine 'nope'; the project's engines are \\['duck'\\]"):
         scan(str(tmp_path), working_dir=str(tmp_path))
-
-
-@pytest.mark.parametrize(
-    "conf, text",
-    [
-        ("SESSIONS = []", "declare engines in ENGINES, not in SESSIONS"),
-        ("from ducktest5 import default\nRULES = [default(sessions=['duck'])]", "sessions= is now engines="),
-        ("from ducktest5 import default\nRULES = [default(clients=['duck'])]", "clients= is now engines="),
-    ],
-)
-def test_sessions_and_clients_are_not_declared(tmp_path, conf, text):
-    (tmp_path / "ducktest_conf.py").write_text(conf)
-    with pytest.raises(UsageError, match=text):
-        scan(str(tmp_path), working_dir=str(tmp_path))
-
-
-def test_a_body_names_engines_not_clients():
-    with pytest.raises(UsageError, match=r"@test\(clients=...\) is now @test\(engines=...\)"):
-        declare.test(clients=["duck"])
 
 
 # -----------------------------------------------------------------------------

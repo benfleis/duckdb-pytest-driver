@@ -126,14 +126,16 @@ def where_in(text):
 
 
 def binary_failure(text):
-    """What the unittest binary printed, laid out: summary, sql, expected, actual, where.
+    """What the unittest binary printed, laid out: summary, sql, error, expected, actual, where.
 
     The binary frames the parts of a failure with lines of `=` and names two of them ("Expected
     result:", "Actual result:"), then Catch2 appends a banner that says nothing about the test.
-    What does not fit the shape stays in `summary`, so nothing is lost."""
+    The first framed part is the summary (with any text before the first rule, such as where an
+    init statement came from), the second the statement; every later one (DuckDB's error, how the
+    rows differ) is `error`, so nothing is lost. Text with no rules keeps its first two parts."""
     if not (text or "").strip():
         return {}
-    segments, current, bucket, buckets = [], [], None, {}
+    segments, current, bucket, buckets, lead = [], [], None, {}, None
 
     def flush():
         nonlocal current
@@ -149,18 +151,27 @@ def binary_failure(text):
             bucket = marker  # everything after the marker belongs to it, rules in between and all
         elif _RULE.match(line):
             flush()
+            if lead is None:
+                lead, segments = segments, []
         else:
             current.append(line)
     flush()
 
-    head = []
-    for segment in segments:
-        kept = [line for line in segment.splitlines() if line.strip() and not _NOISE.match(line.strip())]
-        if kept:
-            head.append("\n".join(kept))
-    out = {"summary": head[0]} if head else {}
-    if len(head) > 1:
-        out["sql"] = head[1]
+    def meaningful(segment):
+        return "\n".join(line for line in segment.splitlines() if line.strip() and not _NOISE.match(line.strip()))
+
+    parts = [p for p in map(meaningful, segments) if p]
+    if lead is not None:
+        first = "\n".join(p for p in [*map(meaningful, lead), parts[0] if parts else ""] if p)
+        rest = [s.strip("\n") for s in segments if meaningful(s)][2:]  # as printed
+        parts = [first, *parts[1:2]] if first else parts[:2]
+    else:
+        rest = []
+    out = {"summary": parts[0]} if parts else {}
+    if len(parts) > 1:
+        out["sql"] = parts[1]
+    if rest:
+        out["error"] = "\n\n".join(rest)
     for name, parts in buckets.items():
         if joined := "\n".join(parts).strip("\n"):
             out[name] = joined

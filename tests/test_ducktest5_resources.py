@@ -156,14 +156,6 @@ def test_a_read_only_kind_serves_a_writer_as_a_reader():
     assert thing.acquire(RW) is thing and thing.acquire(RW) is thing
 
 
-def test_an_expired_instance_is_renewed_at_acquire():
-    thing = ThingDef("a").make()
-    renewed = []
-    thing.expires_at, thing.renew = (lambda: time.time() - 1), (lambda: renewed.append(1))
-    thing.acquire(RO)
-    assert renewed == [1]
-
-
 def test_retain_says_when_the_run_leaves_it_in_place():
     assert ThingDef("a").make().retained(failed=True)
     assert not ThingDef("a").make().retained(failed=False)

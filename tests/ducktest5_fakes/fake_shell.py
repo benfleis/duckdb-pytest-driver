@@ -64,6 +64,9 @@ def answer(sql, secrets):
             print(json.dumps(rows), flush=True)
 
 
+if "--version" in sys.argv:
+    print("v2.0.0 (fake) 0000000000")
+    sys.exit(0)
 record = os.environ.get("FAKE_SHELL_RECORD")
 secrets, statement = [], []
 for line in sys.stdin:

@@ -6,7 +6,6 @@ import dataclasses
 import hashlib
 import json
 import threading
-import time
 from dataclasses import dataclass
 from typing import Any, Callable, ClassVar, Mapping
 
@@ -147,12 +146,6 @@ class Resource:
     def ready(self) -> bool:
         return True
 
-    def expires_at(self) -> float | None:
-        """When the attributes stop being valid, as a time.time(); None for never."""
-        return None
-
-    def renew(self): ...
-
     def mint_child(self, key: str) -> Resource | None:
         """What an exclusive acquirer gets instead of a lock, or None: the kind locks. Give the
         child identity `digest([self.identity, key])`: `key` is not part of a Def's own identity."""
@@ -188,9 +181,6 @@ class Resource:
     def acquire(self, mode: str = RW, key: str | None = None) -> Resource:
         """The instance to use: this one, shared or locked, or a child minted for `key`. A
         shared_ro kind serves a rw edge as a read: there is nothing in it to write."""
-        expires_at = self.expires_at()
-        if expires_at is not None and expires_at <= time.time():
-            self.renew()
         if self._exclusive(mode) and key is not None:
             with self._lock:
                 child = self.children.get(key) or self.mint_child(key)

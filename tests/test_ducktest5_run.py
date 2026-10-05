@@ -127,7 +127,8 @@ class FakeShell:
         self.timeouts.append(timeout)
         return ["v"], [(1,)]
 
-    restart = respawn = close = lambda self: None
+    def close(self):
+        pass
 
 
 def sql_test(path, axis_values=None, *, inputs=(), **fields):
@@ -563,6 +564,12 @@ def test_a_failure_in_the_init_sql_is_an_error_that_names_the_variant_and_the_fi
     assert first_line in text
 
 
+def test_a_failed_statement_shows_duckdbs_error_under_the_sql(tmp_path):
+    _, _, report, text = go(tmp_path, [sql_test("a_initfail.test", settings={"threads": 2})])
+    assert report["tests"][0]["failure"]["error"] == "Catalog Error: no such thing"
+    assert re.search(r"  sql:\n    SET threads = '2';\n  error:\n    Catalog Error: no such thing\n", text), text
+
+
 def test_the_failing_statement_of_the_init_sql_names_its_own_source(tmp_path):
     axis_values = {"backend": Variant("oss", init_sql="SET a = 1"), "storage": Variant("s3", init_sql="SET b = 2")}
     _, _, report, _ = go(tmp_path, [sql_test("a_initfail2.test", axis_values)], keep=True)
@@ -974,7 +981,7 @@ def test_ctx_service_is_the_runs_instance_of_a_service_behind_the_inputs(tmp_pat
 
     def body(ctx):
         seen["attributes"] = ctx.service("store").attribute_values()
-        with pytest.raises(KeyError, match="not behind this test's inputs"):
+        with pytest.raises(UsageError, match=r"ctx.service\('other'\): this test reaches services \['store'\]"):
             ctx.service("other")
 
     assert go(tmp_path, [py_test(body, inputs=[StoreDef()])])[0] == 0

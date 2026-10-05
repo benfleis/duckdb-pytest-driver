@@ -12,30 +12,29 @@ This repo also holds the older pytest plugin `ducktest`; see
 
 ## Install
 
-The package is `duckdb-pytest-driver`, and it gives the command `ducktest5`.
+The package is `duckdb-pytest-driver`, and it gives the command `ducktest5`. It needs DuckDB v2.0
+or newer: the build's `duckdb` and `test/unittest`. An older build is refused at start, with the
+version it found.
 
-For a repo with only `.test` files, such as duckdb core, install it as a tool:
+ducktest5 is not on the remote yet: its branch is not pushed. Until it is, install from a local
+checkout of this repo. Editable, so that your changes here take effect at once:
 
-    uv tool install "duckdb-pytest-driver @ git+https://github.com/benfleis/duckdb-pytest-driver@dev/v0.5"
+    uv tool install --editable /path/to/duckdb-pytest-driver
+
+That is enough for a repo with only `.test` files, such as duckdb core.
 
 For a repo with Python test bodies, give the repo a test environment with `ducktest5 init`, run
 once at the top of its checkout:
 
-    ducktest5 init --runner git+https://github.com/benfleis/duckdb-pytest-driver.git@<rev> \
-        --extra s3 --dep pyspark==4.2.0
+    ducktest5 init --runner path:/path/to/duckdb-pytest-driver --dep pyspark==4.2.0
     uv sync && .venv/bin/ducktest5 run
 
-It writes `pyproject.toml`: the runner pinned by git URL and rev (`--runner path:DIR` for a local
-checkout, editable; the default is where this `ducktest5` was installed from), its extras
+It writes `pyproject.toml`: the runner (`path:DIR` for a local checkout, editable; `git+URL@REV`
+once the branch is pushed; the default is where this `ducktest5` was installed from), its extras
 (`--extra`), the packages the bodies import (`--dep`), Python `>=3.12`, and `package = false`. Then
 it runs `uv lock`; check `uv.lock` in. `--conf [DIR]` also writes a starter `ducktest_conf.py` in
 `test/` or DIR; a tree of plain `.test` files needs none. A file that is already there and different
 is not overwritten: init prints the diff and exits 1; merge it by hand, or run again with `--write`.
-
-From a local checkout of this repo, editable, so that your changes here take effect at once:
-
-    uv tool install --editable /path/to/duckdb-pytest-driver
-    uv pip install -e /path/to/duckdb-pytest-driver
 
 ## A first run, in duckdb core
 
@@ -61,7 +60,7 @@ another build, use `--build release`, or set `BUILD_DIR` to the directory that h
   `require` ran. DuckDB's `test/run` counts such a file as passed, so the counts can be different.
   A Python body skips with `ctx.skip(reason)`, or `ducktest5.skip(reason)` from a helper.
 - **Speed.** `--workers N` (default 4) runs N batches at the same time. A batch is one `unittest`
-  process with up to 10 `.test` files. For a big run, `--level terse` prints only the summary.
+  process with up to 10 `.test` files. For a big run, `--level terse` prints only the tests that did not pass, and the summary.
 - **Diagnostics.** `-v` and `-vv` print ducktest5's own diagnostics on stderr, at INFO and DEBUG.
 
 Each run writes a run directory, `duckdb_unittest_tempdir/<run>/`, in the working directory. The

@@ -13,11 +13,11 @@ Code: `src/ducktest5/` in this repo, branch `feat/resources`. It will be squashe
 
 | What | Result |
 | --- | --- |
-| Runner self-tests | 816 passed, 1 skipped (the live Azurite check) |
+| Runner self-tests | 829 passed (2026-10-05, with `DUCKDB_SHELL` set) |
 | The ladder, rungs 00-06 | pass; the self-tests compare them with goldens |
 | Rung 05 (S3) with a live RustFS server | passes; its golden is the BLOCKED case (no server) |
 | Rung 06 (Azure blob) with a live Azurite | not run yet: no Azurite or docker where it was built; its golden is the BLOCKED case |
-| duckdb-delta, `storage` axis `local` and `s3`, live RustFS | 118 passed, 1 failed, 44 skipped |
+| duckdb-delta, `storage` axis `local` and `s3`, live RustFS | 121 passed, 1 failed (gcs.test), 41 skipped |
 
 The one delta failure is `sql/cloud/gcs.test`. It needs the network. The 44 skips are `.test`
 files that need an environment variable that is not set. Without an S3 server, the `s3` cases are
@@ -101,8 +101,7 @@ Azure blob, `az_local()`, works the same way: Azurite, reached at
 - Azure (`AzureCredentialDef`, `AZLocalDef`, rung 06) is checked offline only: the SharedKey signer
   against the Azure SDK's signatures, everything else against fakes. No Azurite run yet.
 
-- Two credentials of one type in one test (wiring, `wired(...)`) are a scan error until wiring is
-  built.
+- Two credentials of one type in one test are a scan error: not supported yet.
 - Engines no longer take `AWS_*` from the shell's env. A repo whose tests relied on personal keys
   declares `S3CredentialDef.from_aws_env(...)`, and lists other names it needs (`AWS_CA_BUNDLE`) in
   `INHERIT_ENV`. The same holds for `AZURE_*`, `IDENTITY_*`, `MSI_*` and `IMDS_*`: declare

@@ -5,8 +5,8 @@
 1. TERM. `key=v1,v2` holds for a test that has any of those values for `key` (for a multi-valued key
    such as `tag`, any of the test's own values is enough). `!key=v1,v2` is the negation of the whole
    term: it holds when the test has none of those values. `!` starts a term and nowhere else --
-   `key=!v1` and `key=v1,!v2` are errors that name the right spelling (`!key=v1`); the old `not:key=v`
-   prefix is gone the same way, with the same hint. A term with no `key=` is a `path` term (below):
+   `key=!v1` and `key=v1,!v2` are errors that name the right spelling (`!key=v1`). A term with no
+   `key=` is a `path` term (below):
    `sql/cloud` is `path=sql/cloud`, `!sql/cloud` is `!path=sql/cloud`. Keys: `tag`, `type`, `params`,
    `path`, `suite`, and the name of any variant axis. An unknown key is an error, and so is a tag, axis
    value or path that no scanned test has -- a term that can never match is a typo.
@@ -174,8 +174,6 @@ def _split_clause_terms(expr, flag):
 def _parse_term(term, flag, origin, ctx):
     negated = term.startswith("!")
     body = term[1:].strip() if negated else term
-    if body.startswith("not:"):
-        raise UsageError(f"{flag} {term!r}: 'not:' is gone; write !{body[4:].strip()}")
     if not body:
         raise UsageError(f"{flag} {term!r}: write key=value[,value] or !key=value")
     key, sep, raw = body.partition("=") if "=" in body else ("path", "", body)
@@ -212,10 +210,8 @@ def _parse_term(term, flag, origin, ctx):
     elif key == "params":
         if unknown := [v for v in values if v not in ctx.known_params]:
             raise UsageError(f"{flag} {term!r}: no test definition has a params row {unknown}")
-    elif key == "case":
-        raise UsageError(f"{flag} {term!r}: the key is params now; write params={raw.strip()}")
     elif _looks_like_path(term):
-        raise UsageError(f"{flag} {term!r}: a bare path can't contain '='; write path={key}")
+        raise UsageError(f"{flag} {term!r}: a bare path cannot contain '='; write path={key}")
     else:
         raise UsageError(
             f"{flag} {term!r}: unknown key {key!r}; keys are tag, type, params, path, suite"

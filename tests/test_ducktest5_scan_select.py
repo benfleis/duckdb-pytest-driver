@@ -271,8 +271,6 @@ def test_an_id_is_added_to_what_paths_and_selects_give(project):
         ({"suites": ["nightly"]}, "no suite \\['nightly'\\]; known suites:"),
         ({"skip": ["tag=smok"]}, "no scanned test has tag"),
         ({"skip": ["backnd=oss"]}, "unknown key 'backnd'"),
-        ({"select": ["not:tag=a"]}, "write !tag=a"),
-        ({"skip": ["not:tag=a"]}, "write !tag=a"),
         ({"select": ["tag=!a"]}, "write !tag=a"),
         ({"skip": ["tag=!a"]}, "write !tag=a"),
         ({"select": ["tag=a;;tag=mine"]}, "empty term"),
@@ -850,7 +848,7 @@ def test_a_term_with_no_key_is_a_path_term(project):
 
 
 def test_a_bare_path_with_an_embedded_equals_is_an_error(project):
-    with pytest.raises(UsageError, match="a bare path can't contain '='"):
+    with pytest.raises(UsageError, match="a bare path cannot contain '='"):
         select(project, select=["a/x.test=oss"])
 
 
@@ -967,7 +965,7 @@ def test_only_a_file_with_test_bodies_is_imported_and_a_broken_one_says_which(tm
             tmp_path / "2",
             {"test/broken.py": "import no_such_module\nfrom ducktest5 import test\n@test()\ndef t(ctx): pass"},
         )
-    with pytest.raises(UsageError, match=r"@test\(cases=\.\.\.\) is now @test\(params=\.\.\.\)"):
+    with pytest.raises(UsageError, match=r"unexpected keyword arguments \['cases'\]"):
         tree(tmp_path / "3", {"test/old.py": "from ducktest5 import test\n@test(cases={'a': {}})\ndef t(ctx): pass"})
 
 
@@ -996,7 +994,7 @@ def test_a_path_names_its_paired_file_and_nothing_wider(project):
     assert ids(select(project, paths=["a/y.test_slow"])[0]) == ["a/y.test_slow::y"]  # named exactly: asked for
     with pytest.raises(UsageError, match="no test definition has a params row"):
         select(project, select=["params=cmtt"])
-    with pytest.raises(UsageError, match="the key is params now; write params=cmt"):
+    with pytest.raises(UsageError, match="unknown key 'case'"):
         select(project, select=["case=cmt"])
 
 
@@ -1222,7 +1220,7 @@ def test_two_credentials_of_one_type_on_one_booted_engine_are_a_scan_error(tmp_p
             '["lake"]',
             '{"storage": "lake", "credential": "keys_b"}',
             "t.test::t: holds S3CredentialDef 'keys_b' and 'keys_a' by AWS_* env; one process has one set. "
-            "Wiring several into one test (wired(...)) is not built yet",
+            "Several credentials of one type in one test are not supported yet",
         ),
     ],
 )

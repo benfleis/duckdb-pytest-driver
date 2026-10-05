@@ -1,8 +1,7 @@
 """Small, memorable run-id mnemonics for external test directories.
 
-Standalone (not part of the sqllogic collector) so it can be reused and tested on
-its own. Produces short, eyeball-able names like `brave-otter` for a run dir, so a
-failure directory is easy to spot and recall from memory instead of a raw uuid.
+Produces short, eyeball-able names like `swift-raven-54` for a run dir, so a failure
+directory is easy to spot and recall from memory instead of a raw uuid.
 
 The tests for this module live in `tests/test_mnemonic.py`.
 """
@@ -66,7 +65,7 @@ _NOUNS = [
 
 
 def mnemonic(words=2, digits=2, sep="-", rng=None):
-    """A short memorable name like 'brave-otter' (adjective(s) + noun)."""
+    """A short memorable name like 'swift-raven-54' (adjective(s) + noun + digits)."""
     rng = rng or random
     parts = [rng.choice(_ADJECTIVES) for _ in range(max(0, words - 1))]
     parts.append(rng.choice(_NOUNS))
@@ -76,7 +75,7 @@ def mnemonic(words=2, digits=2, sep="-", rng=None):
 
 
 def run_id(now=None, words=2, digits=2):
-    """Sortable + memorable run id, e.g. 2026-06-23T08-48-12Z--brave-otter.
+    """Sortable + memorable run id, e.g. 2026-06-23T08-48-12Z--swift-raven-54.
 
     ISO-8601 *basic*-style in UTC: the `T` separates date/time, colons are replaced with
     dashes so the name is a legal path component on Windows too, and the trailing `Z` marks

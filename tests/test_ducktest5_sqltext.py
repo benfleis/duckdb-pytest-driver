@@ -54,7 +54,7 @@ def test_a_hand_written_literal_goes_in_as_it_is_and_rows_must_then_be_given():
 
 def test_a_list_of_rows_in_a_placeholder_is_a_values_list():
     seen = []
-    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), table="cat.t")
+    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), values=Values({"t": "cat.t"}))
     client.oks("INSERT INTO {t} VALUES {seed_values}", seed_values=[(1, "a"), (2, None)])
     assert seen == ["INSERT INTO cat.t VALUES (1, 'a'), (2, NULL)"]
 
@@ -73,26 +73,28 @@ def _client(result=None, fail_at=None):
             raise SqlError("boom", statement=fail_at)
         return ["i"], result
 
-    return Client("fake", run, table="cat.t")
+    return Client("fake", run, values=Values({"t": "cat.t"}))
 
 
 def test_a_list_of_statements_is_not_split():
     seen = []
-    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), table="cat.t")
+    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), values=Values({"t": "cat.t"}))
     client.oks(["BEGIN SELECT 1; SELECT 2; END", "SELECT * FROM {t}"])
     assert seen == ["BEGIN SELECT 1; SELECT 2; END", "SELECT * FROM cat.t"]
 
 
 def test_a_struct_literal_is_left_alone_and_a_params_row_cannot_shadow_a_verb_option():
     seen = []
-    client = Client("fake", lambda statements: seen.extend(statements) or (["x"], [(3,)]), table="cat.t")
+    client = Client(
+        "fake", lambda statements: seen.extend(statements) or (["x"], [(3,)]), values=Values({"t": "cat.t"})
+    )
     row = {"x": 3, "sort": "this is a column of the params row, not the option", "on_fail": "nor this"}
     client.expects("SELECT {'a': 1}, {{literal}} FROM {t} WHERE x = {x}", [3], params=row)
     assert seen == ["SELECT {'a': 1}, {literal} FROM cat.t WHERE x = 3"]
 
 
 def test_a_placeholder_with_no_value_is_an_error_that_names_what_is_known():
-    client = Client("fake", lambda statements: ([], []), table="cat.t", values=Values({"catalog": "duck"}))
+    client = Client("fake", lambda statements: ([], []), values=Values({"catalog": "duck", "t": "cat.t"}))
     with pytest.raises(UsageError, match=r"no value for \{seed_vlaues\}; known: \['catalog', 'seed_values', 't'\]"):
         client.oks("INSERT INTO {t} VALUES {seed_vlaues}", params={"seed_values": [(1,)]})
 
@@ -153,7 +155,7 @@ def test_a_teardown_is_deferred():
 
 def test_braces_that_a_value_or_a_nested_struct_brings_are_not_touched():
     seen = []
-    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), table="cat.t")
+    client = Client("fake", lambda statements: seen.extend(statements) or ([], []), values=Values({"t": "cat.t"}))
     client.oks("SELECT {'a': {'b': 1}} AS s, {n} AS n, '{j}' AS j", params={"n": 3, "j": '{"a":{"b":1}}'})
     assert seen == ["SELECT {'a': {'b': 1}} AS s, 3 AS n, '{\"a\":{\"b\":1}}' AS j"]
 
@@ -211,7 +213,7 @@ def test_exec_gives_back_the_result_of_a_statement_that_ran():
 
 def test_a_statement_that_failed_is_an_answer_not_a_failed_check():
     recorded = []
-    client = Client("fake", _fails_at(0), table="cat.t", record=recorded.append)
+    client = Client("fake", _fails_at(0), values=Values({"t": "cat.t"}), record=recorded.append)
     executed = client.exec("INSERT INTO {t} VALUES (1)")
     assert not executed
     assert executed.error == "Conflicting commit"
@@ -220,7 +222,7 @@ def test_a_statement_that_failed_is_an_answer_not_a_failed_check():
 
 
 def test_only_the_last_statement_of_a_try_answers_for_the_rest():
-    client = Client("fake", _fails_at(0), table="cat.t")
+    client = Client("fake", _fails_at(0), values=Values({"t": "cat.t"}))
     with pytest.raises(ExpectationFailed, match="statement failed"):
         client.exec("ATTACH 'x'; INSERT INTO {t} VALUES (1)")
 

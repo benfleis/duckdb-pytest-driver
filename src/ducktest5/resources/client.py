@@ -12,8 +12,7 @@ records the failure and lets the body go on, for independent checks a reader wan
 
 `sql` is one statement, a block of them split on `;`, or a list of statements taken as they are (for
 a statement the splitter would cut, such as a scripted BEGIN ... END). Every statement must succeed,
-and `rows` / `text` belong to the last one. `{t}` is this client's spelling of the table under test;
-other `{name}` placeholders come from the test's values (`ctx.values`, what a `.test` file reads as
+and `rows` / `text` belong to the last one. `{name}` placeholders come from the test's values (`ctx.values`, what a `.test` file reads as
 `{NAME}`), from `params=` (a dict: a params row goes there), or from keyword arguments; an
 unknown one is an error, and `{{word}}` is a literal brace pair. A value that is a list of rows goes
 in as a SQL VALUES list, so the values a test inserts and the rows it expects back are one definition
@@ -203,7 +202,7 @@ class Client:
     """One engine's lease for one test: the verbs, run on the engine instance the test holds.
     `engine` is that instance, or None for a client of a body's own (a shell nobody else uses)."""
 
-    def __init__(self, name, run, *, table=None, values=None, record=None, defer=None, log=None, engine=None):
+    def __init__(self, name, run, *, values=None, record=None, defer=None, log=None, engine=None):
         """`run(statements)` runs them in order and returns `(column_names, rows)` of the last,
         rows as tuples; it raises SqlError, with the failed statement's index, on the first error.
         `values` are the test's: this client's own `values` are over them, so what the test sets later is
@@ -214,7 +213,7 @@ class Client:
         self.name = name
         self.engine = engine
         self._run = run
-        self.values = Values({"t": table} if table else {}, parent=values)
+        self.values = Values({}, parent=values)
         self._record = record
         self._defer = defer
         self._log = log

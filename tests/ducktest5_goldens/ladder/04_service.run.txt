@@ -11,7 +11,7 @@ service http -- managed
   nowhere did not come up
 
   not served: nowhere did not come up (OSError: Cannot assign requested address)  <- storage unserved
-  again: ducktest5 run --id blocked.test::blocked
+  again: ducktest5 run --id blocked.test::blocked --no-binary-check
 
 
 'nowhere' did not come up: 1 test blocked

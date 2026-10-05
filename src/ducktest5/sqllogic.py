@@ -483,7 +483,11 @@ def list_binary_tests(binary, working_dir, scratch):
     if "\t" not in p.stdout:
         # The exit code of -l is the test count, so it says nothing; no listing at all says the binary
         # did not start (for example Catch refuses a directory name that gives a tag it reserves).
-        raise UsageError(f"`{os.path.basename(binary)} -l` listed nothing:\n{(p.stderr or p.stdout).strip()[:600]}")
+        said = (p.stderr or p.stdout).strip()
+        older = "\n(an option it does not know: a build older than DuckDB v2.0, which ducktest5 needs?)"
+        raise UsageError(
+            f"`{os.path.basename(binary)} -l` listed nothing:\n{said[:600]}{older if 'Unrecognised token' in said else ''}"
+        )
     names = set()
     root = os.path.realpath(working_dir)
     for line in p.stdout.splitlines():
@@ -498,22 +502,16 @@ def list_binary_tests(binary, working_dir, scratch):
 
 def check_against_binary(scanned_paths, binary, working_dir, scratch, scan_root, excluded=()):
     """Both sides in one scope: every `.test` the scan found under `scan_root` against every test the
-    binary knows under it. A file on disk that the binary does not know would never run; a test the
-    binary knows that is not on disk is a stale build."""
+    binary knows under it. Returns (files on disk the binary does not know, tests the binary knows
+    that are not on disk). ducktest5 runs the first kind by path; the binary's own runs leave them
+    out until the build is configured again. The second kind is a stale build."""
     root_rel = os.path.relpath(scan_root, working_dir)
     inside = lambda n: root_rel in (".", "") or n == root_rel or n.startswith(root_rel.rstrip("/") + "/")  # noqa: E731
     left_out = {os.path.normpath(p) for p in excluded}
     known = {n for n in list_binary_tests(binary, working_dir, scratch) if inside(n) and n not in left_out}
-    scanned = {os.path.normpath(p) for p in scanned_paths if inside(os.path.normpath(p))}
-    problems = []
-    if only_disk := sorted(scanned - known):
-        problems.append(
-            f"{len(only_disk)} test file(s) on disk that the binary does not know (rebuild?): "
-            + ", ".join(only_disk[:5])
-        )
-    if only_binary := sorted(known - scanned):
-        problems.append(
-            f"{len(only_binary)} test(s) the binary knows that are not on disk (stale build?): "
-            + ", ".join(only_binary[:5])
-        )
-    return problems
+    scanned = {
+        os.path.normpath(p)
+        for p in scanned_paths
+        if inside(os.path.normpath(p)) and os.path.normpath(p) not in left_out
+    }
+    return sorted(scanned - known), sorted(known - scanned)

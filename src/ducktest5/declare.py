@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .binary import UsageError
 
 CONF_FILE = "ducktest_conf.py"  # not `ducktest.py`: that name would shadow the package on a sys.path entry
 
@@ -102,13 +101,6 @@ def test(
     `bind` maps a role to one of the project's STORAGES, CREDENTIALS or SERVICES, by id; it
     replaces what a rule binds to the same role. An axis value that binds that role too is an
     error."""
-    if "cases" in unknown:
-        raise UsageError("@test(cases=...) is now @test(params=...); the body reads its row as ctx.params")
-    for gone in ("sessions", "clients"):
-        if gone in unknown:
-            raise UsageError(f"@test({gone}=...) is now @test(engines=...); each engine gets a Client")
-    if "services" in unknown:
-        raise UsageError("@test(services=...) is now @test(bind={role: service id}), or a storage on the service")
     if unknown:
         raise TypeError(f"test() got unexpected keyword arguments {sorted(unknown)}")
 

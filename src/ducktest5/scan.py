@@ -268,8 +268,8 @@ def _one_set_per_type(test):
             names = " and ".join(repr(i) for i in ids)
             raise UsageError(
                 f"{test.id}: holds {cls.__name__} {names} by {'/'.join(p + '*' for p in cls.sdk_prefixes)} env; "
-                "one process has one set. Wiring several into one test (wired(...)) is not built yet; "
-                "split the test until it is"
+                "one process has one set. Several credentials of one type in one test are not supported yet; "
+                "split the test"
             )
 
 

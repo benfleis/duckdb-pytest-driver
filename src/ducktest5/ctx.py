@@ -115,7 +115,7 @@ class Context:
         """The run's instance of a service behind this test's inputs; `.attribute_values()` are what
         it made, never its secrets."""
         if name not in self._services:
-            raise KeyError(f"service {name!r} is not behind this test's inputs (services={sorted(self._services)})")
+            raise UsageError(f"ctx.service({name!r}): this test reaches services {sorted(self._services)}")
         return self._services[name]
 
     def location(self, name):

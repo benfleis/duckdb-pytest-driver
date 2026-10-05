@@ -49,7 +49,9 @@ def add_parser(sub):
         help="where the runner comes from: git+URL@REV, or path:DIR for a local checkout, editable "
         "(default: where this ducktest5 was installed from)",
     )
-    p.add_argument("--extra", action="append", default=[], metavar="NAME", help=f"an extra of {DIST}, e.g. s3; repeats")
+    p.add_argument(
+        "--extra", action="append", default=[], metavar="NAME", help=f"an extra of {DIST}, e.g. tls; repeats"
+    )
     p.add_argument(
         "--dep", action="append", default=[], metavar="REQ", help="a package the tests import, e.g. pyspark==4.2.0"
     )
