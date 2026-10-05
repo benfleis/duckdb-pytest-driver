@@ -10,7 +10,7 @@ change. The file goes to `test/ducktest_conf.py` in an httpfs checkout.
   three buckets of httpfs CI. The run makes the buckets, seeds `test-bucket` from `test/s3_seed/`,
   and removes them at the end.
 - **A credential, given by the file's own `require-env` line.**
-  `match("**", requires_env="S3_TEST_SERVER_AVAILABLE", credential="minio")` gives the S3 keys only
+  `match("**", requires_env="S3_TEST_SERVER_AVAILABLE", credential="s3_keys")` gives the S3 keys only
   to the files that ask for them. The keys reach the engine as `AWS_*` env. Without an S3 server,
   only these files are BLOCKED; the other files run.
 - **An axis.** `client` runs each test once with curl and once with httplib, as two of the CI
