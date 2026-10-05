@@ -35,7 +35,9 @@ S3_HOST_PORT = (
 )
 
 RULES = [
-    # Path style: CI gives each bucket a host name in /etc/hosts; there is no such name here.
+    # Every file loads httpfs and runs once per client. S3 URLs put the bucket in the path,
+    # http://172.18.0.1:9999/test-bucket/key, not in the host, http://test-bucket.172.18.0.1:9999/key:
+    # CI makes such host names resolve in /etc/hosts; the run reaches its server by address.
     default(requires=["httpfs"], settings={"s3_url_style": "path"}, matrix=["httpfs_client"]),
     # A file with `require-env S3_TEST_SERVER_AVAILABLE` gets the S3 keys and the names it requires.
     match(
