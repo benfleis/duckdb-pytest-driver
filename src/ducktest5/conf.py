@@ -51,7 +51,7 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .binary import UsageError
 from .declare import CONF_FILE, Variant
@@ -67,9 +67,28 @@ _log = logging.getLogger(__name__)
 class Rule:
     pattern: str
     options: Options
+    requires_env: str | None = None
 
-    def matches(self, rel_to_conf):
-        return _glob(self.pattern).fullmatch(rel_to_conf) is not None
+    def matches(self, rel_to_conf, body_file=None):
+        if _glob(self.pattern).fullmatch(rel_to_conf) is None:
+            return False
+        return self.requires_env is None or (body_file is not None and self.requires_env in _env_gates(body_file))
+
+    @property
+    def label(self):
+        if self.pattern == "**" and self.requires_env is None:
+            return "default"
+        return f"match {self.pattern!r}" + (f", requires_env={self.requires_env!r}" if self.requires_env else "")
+
+
+@functools.lru_cache(maxsize=None)
+def _env_gates(path):
+    """The names a `.test` file gates itself on with `require-env NAME [VALUE]`, read on demand."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return frozenset(line.split()[1] for line in f if line.startswith("require-env") and len(line.split()) > 1)
+    except OSError:
+        return frozenset()
 
 
 @functools.lru_cache(maxsize=None)
@@ -100,11 +119,17 @@ def default(**fields):
     return _rule("**", fields)
 
 
-def match(pattern, **fields):
+def match(pattern, *, requires_env=None, **fields):
     """A rule for the test definitions whose path, relative to this file, matches `pattern`: `*` stays inside one
     directory level, `**` crosses levels, `dir/**` is everything below `dir`, and a pattern with no
-    wildcard names one file."""
-    return _rule(pattern, fields)
+    wildcard names one file.
+
+    `requires_env="NAME"` narrows it to the `.test` files that hold a `require-env NAME` line, with
+    or without a value. Deprecated: a starting point for a repo that gates files with `require-env`;
+    move to tags or paths."""
+    if requires_env is not None and not isinstance(requires_env, str):
+        raise UsageError(f"rule {pattern!r}: requires_env={requires_env!r}; it is one name")
+    return replace(_rule(pattern, fields), requires_env=requires_env)
 
 
 @dataclass
@@ -123,6 +148,7 @@ class Project:
     default_storage: DefaultStorage | None = None  # None: `<repo>/data` and the default temp root
     pythonpath: tuple = ()  # absolute, in the order PYTHONPATH gave them
     inherit_env: tuple = ()  # names engines keep from the shell's env under an SDK prefix
+    noted_requires_env: bool = False
 
     def __post_init__(self):
         if self.default_storage is None:
@@ -133,8 +159,9 @@ class Project:
             _glob(p).fullmatch(rel_to_root) or _glob(p.rstrip("/") + "/**").fullmatch(rel_to_root) for p in self.exclude
         )
 
-    def settle(self, test_path):
-        """Apply every rule on the way from the root down to `test_path` (absolute)."""
+    def settle(self, test_path, body_file=None):
+        """Apply every rule on the way from the root down to `test_path` (absolute); `body_file`,
+        the test's `.test` file, is what a `requires_env` rule reads."""
         settled = Settled()
         here = os.path.dirname(test_path)
         chain = []
@@ -147,20 +174,18 @@ class Project:
         for conf_dir in reversed(chain):
             rel = os.path.relpath(test_path, conf_dir).replace(os.sep, "/")
             for n, rule in enumerate(self._rules_by_dir[conf_dir]):
-                if rule.matches(rel):
+                if rule.matches(rel, body_file):
                     self._used.add((conf_dir, n))
                     where = os.path.relpath(os.path.join(conf_dir, CONF_FILE), self.root)
-                    settled.apply(
-                        rule.options, f"{where}: {'default' if rule.pattern == '**' else 'match ' + repr(rule.pattern)}"
-                    )
+                    settled.apply(rule.options, f"{where}: {rule.label}")
         return settled
 
     def note_unused_rules(self):
         for conf_dir, rules in self._rules_by_dir.items():
             for n, rule in enumerate(rules):
-                if (conf_dir, n) not in self._used and rule.pattern != "**":
+                if (conf_dir, n) not in self._used and rule.label != "default":
                     where = os.path.relpath(os.path.join(conf_dir, CONF_FILE), self.root)
-                    self.unused_rules.append(f"{where}: match {rule.pattern!r} matched no test")
+                    self.unused_rules.append(f"{where}: {rule.label} matched no test")
 
 
 def _load(path, name):
@@ -261,6 +286,13 @@ def load_project(start):
         rules = list(getattr(module, "RULES", ()))
         if not all(isinstance(r, Rule) for r in rules):
             raise UsageError(f"{path}: RULES must hold default(...) and match(...) rules")
+        if any(r.requires_env for r in rules) and not project.noted_requires_env:
+            project.noted_requires_env = True
+            _log.info(
+                "%s: match(requires_env=...) is deprecated: a starting point for a repo that gates files "
+                "with require-env; move to tags or paths",
+                path,
+            )
         project._rules_by_dir[dirpath] = rules
         if dirpath == root:
             project.engines = {e.id: e for e in getattr(module, "ENGINES", ())}

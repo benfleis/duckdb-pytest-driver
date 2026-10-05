@@ -29,6 +29,9 @@ A test is SKIPPED when a `require` in it is not met: here, `require-env DUCKTEST
 in the middle of `mid_file_skip.test`. The statements above it ran and passed, but ducktest5 reports
 the whole file as SKIPPED; DuckDB's `test/run` counts such a file as passed. Under "skipped", the
 report says what each skipped test needed. A Python body skips the same way with `ctx.skip(reason)`.
+A repo that gates files this way can give them what they need from that line when it starts a
+`ducktest_conf.py`: `match("**", requires_env="DUCKTEST_LADDER_NEVER_SET", values={...})` matches
+`mid_file_skip.test` (deprecated, a way in: move to tags or paths).
 
 `{DATA_DIR}` is `data/` at the top of the git repository, and `{TEMP_DIR}` is the test's own place
 in the run directory, `duckdb_unittest_tempdir/<run>/` in the working directory. For duckdb core,

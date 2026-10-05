@@ -250,7 +250,8 @@ def _engines(definition, project):
 
 def _settle(definition, own, project, working_dir):
     """Rules first, from the root down; then the definition's own `@test(...)` on top."""
-    settled = project.settle(os.path.abspath(os.path.join(working_dir, definition.path)))
+    body_file = os.path.abspath(os.path.join(working_dir, definition.body_file)) if definition.body_file else None
+    settled = project.settle(os.path.abspath(os.path.join(working_dir, definition.path)), body_file)
     if own is not None:
         settled.apply(own, "@test")
     suffix = [t for t in definition.tags if t not in settled.tags]

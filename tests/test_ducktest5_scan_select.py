@@ -1390,3 +1390,41 @@ def test_init_sql_adds_up_from_the_rules_down_and_names_only_its_source(tmp_path
     (test,) = tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})[0]
     assert [e.value for e in resolve(test).init_sql] == ["SELECT 1;", "SELECT 2;"]
     assert "init_sql  <- ducktest_conf.py: match 't.test'" in test.why
+
+
+# -----------------------------------------------------------------------------
+# match(requires_env=...): the .test files that gate themselves on a variable
+#
+
+
+def test_requires_env_selects_the_files_with_that_require_env_line_and_the_path_still_counts(tmp_path, caplog):
+    conf = """
+        from ducktest5 import match
+        RULES = [match("s3/**", requires_env="S3_TEST_SERVER", tags=["gated"])]
+    """
+    with caplog.at_level("INFO", logger="ducktest5.conf"):
+        tests, _ = tree(
+            tmp_path,
+            {
+                "test/ducktest_conf.py": conf,
+                "test/s3/bare.test": "require-env S3_TEST_SERVER\n\nquery I\nSELECT 1\n----\n1\n",
+                "test/s3/valued.test": "# name: x\n\nrequire-env S3_TEST_SERVER 1\n",
+                "test/s3/other.test": "require-env OTHER_NAME\n",
+                "test/s3/plain.test": "SELECT 1;\n",
+                "test/elsewhere/gated.test": "require-env S3_TEST_SERVER\n",
+            },
+        )
+    gated = sorted(c.definition.name for c in tests if "gated" in c.tags)
+    assert gated == ["bare", "valued"]
+    assert [r.message for r in caplog.records].count(
+        f"{tmp_path}/test/ducktest_conf.py: match(requires_env=...) is deprecated: a starting point for a repo "
+        "that gates files with require-env; move to tags or paths"
+    ) == 1
+    (bare,) = [c for c in tests if c.definition.name == "bare"]
+    assert bare.why == ["tags=['gated']  <- ducktest_conf.py: match 's3/**', requires_env='S3_TEST_SERVER'"]
+
+
+def test_a_requires_env_rule_that_selects_nothing_is_a_typo(tmp_path):
+    conf = "from ducktest5 import match\nRULES = [match('**', requires_env='NEVER_GATED', tags=['x'])]"
+    with pytest.raises(UsageError, match=r"match '\*\*', requires_env='NEVER_GATED' matched no test"):
+        tree(tmp_path, {"test/ducktest_conf.py": conf, "test/a.test": "SELECT 1;\n"})

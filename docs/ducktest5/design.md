@@ -156,6 +156,11 @@ the binary skips the file that `ctx.run_paired()` runs, the body ends SKIPPED wi
 5. CI steps that start, wait, run and stop become one `ducktest5 run`.
 6. Helper code outside the test files' directories (`test/py`, `scripts`) goes in the root
    `ducktest_conf.py` as `PYTHONPATH = ["py", "../scripts"]`, relative to that file (2.8).
+7. Files gated one by one with `require-env NAME` (httpfs gates its S3 tests so) can be given what
+   they need by that line: `match("**", requires_env="S3_TEST_SERVER_AVAILABLE", storage="lake")`
+   selects the `.test` files that hold `require-env S3_TEST_SERVER_AVAILABLE`, with or without a
+   value, among those the pattern matches. Deprecated from the start: it is a way in, not a way to
+   stay; move the files to a directory or give them tags. The scan says so once, at `-v`.
 
 ## 1.7 Options
 
