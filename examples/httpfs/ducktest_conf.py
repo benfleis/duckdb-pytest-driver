@@ -4,6 +4,7 @@ from ducktest5 import Variant, default, match
 from ducktest5.services.http import HttpServerDef
 from ducktest5.services.s3local import bucket, s3_local
 
+# Files the run uploads to test-bucket, as httpfs CI does; see s3_seed/README.md.
 SEED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "s3_seed")
 PYHTTP_DIR = os.environ.get("PYTHON_HTTP_SERVER_DIR", "/tmp/python_test_server")
 

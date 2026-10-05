@@ -26,8 +26,8 @@ change. The file goes to `test/ducktest_conf.py` in an httpfs checkout.
 1. A DuckDB v2.0 (main) build with httpfs. Set `BUILD_DIR` to its `build/debug` or `build/release`.
 2. In the httpfs checkout: `ducktest5 init`, then `uv sync`. Until the runner branch is pushed,
    point `pyproject.toml` at a local runner checkout (`path = "...", editable = true`).
-3. Copy `ducktest_conf.py` to `test/`. Put `attach.db` from `scripts/generate_presigned_url.sh` in
-   `test/s3_seed/presigned/`.
+3. Copy `ducktest_conf.py` and `s3_seed/` to `test/`, and add the three generated files that
+   `s3_seed/README.md` lists.
 4. For the S3 files: an S3 server at `DUCKTEST_SERVICE_HOST:DUCKTEST_S3_LOCAL_PORT` (keys
    `admin`/`password`), or docker, and `rclone` on PATH.
 5. For the 4 files with `require-env PYTHON_HTTP_SERVER_URL`: `python3 -m http.server 8008` in
