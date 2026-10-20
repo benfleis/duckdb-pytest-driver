@@ -1,5 +1,5 @@
-"""The names of one scan: every declaration the `ducktest_conf.py` files and the test bodies make, and every
-place that refers to one.
+"""The names of one scan: every declaration the `ducktest_conf.py` files make, and every place, in them or in
+a test body, that refers to one. A test file, or a helper it imports, declares nothing: that is an error.
 
 A name is the label the user gives a resource (`S3ServiceDef.rustfs("local_s3")`,
 `LOCAL_S3.storage("local_lake")`), and what a reference in the same project uses; identity stays the
@@ -96,13 +96,33 @@ class Reference:
 class Names:
     root: str = "."  # what a location is shown relative to
     conf: str | None = None  # the conf file that runs now
+    body: str | None = None  # the test file the scan imports now
+    confs: set = field(default_factory=set)  # every conf file the loader ran
     declared: list = field(default_factory=list)
     references: list = field(default_factory=list)
     _superseded: set = field(default_factory=set)  # id() of a declaration a derived one replaced
 
     # -- what the conf files do ---------------------------------------------------------
     def declare(self, obj) -> None:
-        self.declared.append(Declared(obj, kind_of(obj), here()))
+        where = here()
+        if self.body is not None:
+            self._refuse_in_body(obj, where)
+        self.declared.append(Declared(obj, kind_of(obj), where))
+
+    def _refuse_in_body(self, obj, where):
+        """A declaration belongs to a conf file: a test file, or a helper it imports, makes none."""
+        from .declare import CONF_FILE
+
+        if where is not None and where[0] in self.confs:
+            raise UsageError(
+                f"{self.show(_line_in(self.body) or where)}: imports {CONF_FILE}; "
+                "a body gets the project's objects by name, not by import"
+            )
+        name = getattr(obj, "name", None)
+        raise UsageError(
+            f"{self.show(where)}: {type(obj).__name__}({name!r}) is declared in a test file; "
+            f"declare it in {CONF_FILE} and bind it with @test(...)"
+        )
 
     def supersede(self, old, new) -> None:
         """`new` was derived from `old` (`as_existing`, `with_`): it is the declaration from now on."""
@@ -346,6 +366,16 @@ def here():
         path = frame.f_code.co_filename
         if not path.startswith("<") and not os.path.abspath(path).startswith(_PACKAGE + os.sep):
             return (os.path.abspath(path), frame.f_lineno)
+        frame = frame.f_back
+    return None
+
+
+def _line_in(path):
+    """(path, line) of the innermost frame running `path`, if any."""
+    frame = sys._getframe(1)
+    while frame is not None:
+        if os.path.abspath(frame.f_code.co_filename) == path:
+            return (path, frame.f_lineno)
         frame = frame.f_back
     return None
 

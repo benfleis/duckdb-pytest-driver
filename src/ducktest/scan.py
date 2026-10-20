@@ -136,8 +136,13 @@ def scan(start, *, working_dir=".", strict=False):
     paired_bodies = set()
     for path in scripts:
         rel = os.path.relpath(path, working_dir)
-        with _names.loading(project.names):  # what a body's @test(...) names is reached too
-            module = _load(path, "ducktest_tests." + rel.replace(os.sep, ".")[:-3])
+        # What a body's @test(...) names is reached too; a Def made while it imports is refused.
+        project.names.body = os.path.abspath(path)
+        try:
+            with _names.loading(project.names):
+                module = _load(path, "ducktest_tests." + rel.replace(os.sep, ".")[:-3])
+        finally:
+            project.names.body = None
         body_file = body_by_stem.get(os.path.splitext(path)[0])
         marked = [
             (name, obj.__ducktest__)

@@ -2,6 +2,7 @@
 slots that take a name or the object, and the checks over the names of one load."""
 
 import logging
+import sys
 import textwrap
 
 import pytest
@@ -371,3 +372,47 @@ def test_cleanup_reads_no_body_so_every_declaration_counts(tmp_path):
         "credentials": ["local_keys"],
     }
     assert project.unused == []
+
+
+# -----------------------------------------------------------------------------
+# A declaration belongs to a conf file
+#
+
+
+def test_a_def_made_in_a_body_is_an_error_at_its_line(tmp_path):
+    body = "from ducktest import S3ServiceDef, test\n\nBODY_S3 = S3ServiceDef.rustfs('body_s3')\n"
+    with pytest.raises(
+        UsageError,
+        match=r"^own.py:3: S3ServiceDef\('body_s3'\) is declared in a test file; "
+        r"declare it in ducktest_conf.py and bind it with @test\(...\)$",
+    ):
+        tree(tmp_path, conf("project = Project()", **{"test/own.py": body + "\n@test()\ndef own(ctx):\n    pass\n"}))
+
+
+def test_a_def_made_in_a_helper_a_body_imports_is_an_error_at_the_helpers_line(tmp_path):
+    helper = "from ducktest import StorageDef\n\nSHARED = StorageDef('shared_lake', '/s')\n"
+    body = "import helper_makes_a_def\nfrom ducktest import test\n\n@test()\ndef own(ctx):\n    pass\n"
+    files = conf("project = Project()", **{"test/helper_makes_a_def.py": helper, "test/own.py": body})
+    with pytest.raises(UsageError, match=r"^helper_makes_a_def.py:3: StorageDef\('shared_lake'\) is declared in a test"):
+        tree(tmp_path, files)
+
+
+def test_a_body_that_imports_the_conf_is_told_to_name_what_it_needs(tmp_path, monkeypatch):
+    monkeypatch.delitem(sys.modules, "ducktest_conf", raising=False)
+    body = "from ducktest import test\nfrom ducktest_conf import LOCAL_LAKE\n\n@test(storage=LOCAL_LAKE)\ndef own(ctx):\n    pass\n"
+    with pytest.raises(
+        UsageError,
+        match=r"^own.py:2: imports ducktest_conf.py; a body gets the project's objects by name, not by import$",
+    ):
+        tree(tmp_path, conf(CHAIN + "project = Project()", **{"test/own.py": body}))
+
+
+def test_a_helper_that_makes_no_def_is_shared_by_two_bodies(tmp_path):
+    helper = "ROWS = 3\n"
+    body = "from shared_rows import ROWS\nfrom ducktest import test\n\n@test(storage='local_lake')\ndef {0}(ctx):\n    pass\n"
+    files = conf(
+        CHAIN + "project = Project()",
+        **{"test/shared_rows.py": helper, "test/one.py": body.format("one"), "test/two.py": body.format("two")},
+    )
+    tests, _ = tree(tmp_path, files)
+    assert {"one.py::one", "two.py::two"} <= {t.name for t in tests}

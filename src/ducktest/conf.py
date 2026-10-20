@@ -416,6 +416,7 @@ def load_project(start):
                 continue
             path = os.path.join(dirpath, CONF_FILE)
             names.conf = path
+            names.confs.add(os.path.abspath(path))
             try:
                 module = _load(
                     path, "ducktest_conf_" + os.path.relpath(dirpath, root).replace(os.sep, "_").replace(".", "root")
