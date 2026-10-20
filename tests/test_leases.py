@@ -541,7 +541,7 @@ def test_engines_are_declared_among_the_engines_and_named_by_a_test(tmp_path):
         "from ducktest import test\n\n@test(engines=['duck'])\ndef a(ctx):\n    pass\n\n"
         "@test(engines=['nope'])\ndef b(ctx):\n    pass\n"
     )
-    with pytest.raises(UsageError, match="names engine 'nope'; the project's engines are \\['duck'\\]"):
+    with pytest.raises(UsageError, match=r"t.py:7: engine='nope' is not declared; the declared ones are 'duck'"):
         scan(str(tmp_path), working_dir=str(tmp_path))
 
 

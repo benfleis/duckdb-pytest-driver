@@ -14,6 +14,7 @@ import sys
 from dataclasses import fields
 
 from . import asserts, leases
+from . import names as _names
 from .binary import UsageError
 from .conf import bound_def, load_project
 from .declare import CONF_FILE
@@ -124,7 +125,7 @@ def _suffix_tags(path):
 def scan(start, *, working_dir=".", strict=False):
     """Returns (tests, project): every test under the project root, in a stable order. `strict`: a
     declaration nothing uses is an error."""
-    project = load_project(start, strict=strict)
+    project = load_project(start)
     asserts.rewrite_under(project.root)
     bodies, scripts = _walk(project.root)
     body_by_stem = {}
@@ -135,7 +136,8 @@ def scan(start, *, working_dir=".", strict=False):
     paired_bodies = set()
     for path in scripts:
         rel = os.path.relpath(path, working_dir)
-        module = _load(path, "ducktest_tests." + rel.replace(os.sep, ".")[:-3])
+        with _names.loading(project.names):  # what a body's @test(...) names is reached too
+            module = _load(path, "ducktest_tests." + rel.replace(os.sep, ".")[:-3])
         body_file = body_by_stem.get(os.path.splitext(path)[0])
         marked = [
             (name, obj.__ducktest__)
@@ -147,6 +149,7 @@ def scan(start, *, working_dir=".", strict=False):
         if body_file:
             paired_bodies.add(body_file)
         for name, decl in marked:
+            project.body_options.append((f"{rel}::{name}: @test", decl.options))
             definitions.append(
                 (
                     TestDef(
@@ -175,9 +178,13 @@ def scan(start, *, working_dir=".", strict=False):
         )
         definitions.append((definition, None))
 
-    tests = []
-    for definition, own in sorted(definitions, key=lambda d: (d[0].root_path, d[0].name)):
+    definitions.sort(key=lambda d: (d[0].root_path, d[0].name))
+    for definition, own in definitions:
         _settle(definition, own, project, working_dir)
+    project.declare(run_over={p for d, _ in definitions for p in d.matrix if isinstance(p, str)}, strict=strict)
+
+    tests = []
+    for definition, _ in definitions:
         _engines(definition, project)
         for cell in itertools.product(*_parameters(definition, project)):
             test = Test(definition, {v.parameter: v for v in cell})

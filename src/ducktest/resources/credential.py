@@ -141,7 +141,7 @@ def _scope(credential_name, entry):
         storage, mode = entry, RW
     from .. import names
 
-    storage = names.ref(storage, "storage", f"credential {credential_name!r}: scopes")
+    storage = names.ref(storage, "storage", f"credential {credential_name!r}: scopes", reach=False)
     if mode not in (RO, RW):
         raise UsageError(f"credential {credential_name!r}: scope mode {mode!r}; it is {RO!r} or {RW!r}")
     return storage, mode

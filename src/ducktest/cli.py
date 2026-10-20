@@ -472,8 +472,9 @@ def _exec(args):
 
 
 def _cleanup(args):
-    # The project file alone, not a scan: cleanup needs the services, never a body.
+    # The conf files alone, not a scan: cleanup needs the services, never a body, so every declaration counts.
     project = load_project(args.root or ("test" if os.path.isdir("test") else "."))
+    project.declare(everything=True)
     summary = phases.cleanup(args.run_dir, project=project, keep=args.keep)
     print(f"removed {len(summary['removed'])} directories of tests that passed")
     for path in summary["kept"]:

@@ -172,19 +172,18 @@ def test_a_reference_to_an_undeclared_name_is_an_error_with_the_closest_one(tmp_
         tree(tmp_path, conf(body))
 
 
-def test_a_reference_by_name_to_a_declaration_that_is_not_bound_says_where_to_bind_it(tmp_path):
-    body = 'LAKE = StorageDef("lake", "/l")\nproject = Project(rules=[default(storage="lake")])'
+def test_a_reference_to_a_body_name_nothing_declares_is_an_error_where_the_body_names_it(tmp_path):
+    body = "from ducktest import test\n\n@test(storage='s3_lak')\ndef own(ctx):\n    pass\n"
+    with pytest.raises(UsageError, match=r"own.py:3: storage='s3_lak' is not declared; did you mean 's3_lake'\?"):
+        tree(tmp_path, conf('S3_LAKE = StorageDef("s3_lake", "/l")\nproject = Project()', **{"test/own.py": body}))
+
+
+def test_an_engine_is_listed_not_reached(tmp_path):
+    body = 'SPARE = DuckDBEngineDef("spare")\nproject = Project(rules=[default(engines=[SPARE])])'
     with pytest.raises(
         UsageError,
-        match=r"storage='lake' \(declared at ducktest_conf.py:\d+\) is not bound; add it to Project\(storages=\[...\]\)",
-    ):
-        tree(tmp_path, conf(body))
-
-
-def test_a_reference_by_object_to_a_declaration_that_is_not_bound_says_where_to_bind_it(tmp_path):
-    body = 'KEYS = S3CredentialDef("keys")\nproject = Project(rules=[default(credential=KEYS)])'
-    with pytest.raises(
-        UsageError, match=r"credential='keys' \(declared at .*\) is not bound; add it to Project\(credentials=\[...\]\)"
+        match=r"engine 'spare' \(declared at ducktest_conf.py:\d+\) is not one of the project's engines; "
+        r"list it in Project\(engines=\[...\]\)",
     ):
         tree(tmp_path, conf(body))
 
@@ -245,10 +244,15 @@ def test_a_declaration_nothing_uses_is_a_warning(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="ducktest"):
         _, project = tree(tmp_path, conf(UNUSED))
     assert [w.split(": ", 1)[1] for w in project.unused] == [
-        "storage 'spare' is declared and not used; bind it in Project(storages=[...]), or remove it",
+        "storage 'spare' is declared and nothing reaches it; name it in a rule, a matrix value or @test(...), "
+        "or remove it",
         "container 'loose' is declared and not used; bind it in AzureServiceDef(containers=[...]), or remove it",
+        "storage 'lake' is listed in Project(storages=[...]) and nothing reaches it; name it in a rule, "
+        "a matrix value or @test(...), or take it out of the list",
+        "storage 'blobs' is listed in Project(storages=[...]) and nothing reaches it; name it in a rule, "
+        "a matrix value or @test(...), or take it out of the list",
     ]
-    assert "storage 'spare' is declared and not used" in caplog.text
+    assert "storage 'spare' is declared and nothing reaches it" in caplog.text
 
 
 def test_strict_makes_a_declaration_nothing_uses_an_error(tmp_path, monkeypatch, capsys):
@@ -265,3 +269,105 @@ def _help(command, capsys):
     with pytest.raises(SystemExit):
         main([command, "--help"])
     return capsys.readouterr().out
+
+
+# -----------------------------------------------------------------------------
+# The declared set: what the rules, the matrix values and the bodies reach
+#
+
+CHAIN = """
+LOCAL_S3 = S3ServiceDef.rustfs("local_s3")
+LOCAL_LAKE = LOCAL_S3.storage("local_lake", path="lake")
+LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])
+OTHER_LAKE = LOCAL_S3.storage("other_lake", path="other")
+"""
+
+
+def declared(project):
+    return {kind: sorted(getattr(project, kind)) for kind in ("services", "storages", "credentials")}
+
+
+@pytest.mark.parametrize("given", ["LOCAL_LAKE", '"local_lake"'], ids=["object", "name"])
+def test_a_storage_a_rule_names_is_declared_and_pulls_its_service_and_its_credential(tmp_path, given):
+    _, project = tree(tmp_path, conf(CHAIN + f"project = Project(rules=[default(storage={given})])"))
+    assert declared(project) == {"services": ["local_s3"], "storages": ["local_lake"], "credentials": ["local_keys"]}
+    assert [w.split(": ", 1)[1].split(";")[0] for w in project.unused] == [
+        "storage 'other_lake' is declared and nothing reaches it"
+    ]
+
+
+def test_a_matrix_value_reaches_what_it_names(tmp_path):
+    body = CHAIN + 'project = Project(matrix={"storage": {"s3": OTHER_LAKE}}, rules=[default(matrix=["storage"])])'
+    _, project = tree(tmp_path, conf(body))
+    assert declared(project) == {"services": ["local_s3"], "storages": ["other_lake"], "credentials": []}
+
+
+def test_a_credential_pulls_the_services_among_its_inputs(tmp_path):
+    body = CHAIN + 'project = Project(rules=[default(credential="local_keys")])'
+    _, project = tree(tmp_path, conf(body))
+    assert declared(project) == {"services": ["local_s3"], "storages": [], "credentials": ["local_keys"]}
+
+
+def test_a_template_in_a_value_reaches_what_it_names(tmp_path):
+    body = 'HTTP = HttpServerDef("http")\nproject = Project(rules=[default(values={"U": "{http.url}"})])'
+    _, project = tree(tmp_path, conf(body))
+    assert declared(project)["services"] == ["http"] and project.unused == []
+
+
+def test_a_body_reaches_a_storage_no_conf_names_and_it_is_not_unused(tmp_path, monkeypatch, capsys):
+    body = "from ducktest import test\n\n@test(storage='other_lake')\ndef own(ctx):\n    pass\n"
+    lake = 'LOCAL_S3 = S3ServiceDef.rustfs("local_s3")\nOTHER_LAKE = LOCAL_S3.storage("other_lake")\n'
+    tests, project = tree(tmp_path, conf(lake + "project = Project()", **{"test/own.py": body}), strict=True)
+    assert declared(project) == {"services": ["local_s3"], "storages": ["other_lake"], "credentials": []}
+    assert project.unused == []
+    assert [t.inputs[0][0].name for t in tests if t.name == "own.py::own"] == ["other_lake"]
+
+
+def test_a_listed_storage_nothing_reaches_still_loads_and_warns(tmp_path):
+    _, project = tree(tmp_path, conf('project = Project(storages=[StorageDef("lake", "/l")])'))
+    assert list(project.storages) == ["lake"]
+    assert [w.split(": ", 1)[1].split(";")[0] for w in project.unused] == [
+        "storage 'lake' is listed in Project(storages=[...]) and nothing reaches it"
+    ]
+
+
+def test_strict_makes_a_listed_storage_nothing_reaches_an_error(tmp_path):
+    with pytest.raises(UsageError, match=r"--strict: .*\n  ducktest_conf.py:\d+: storage 'lake' is listed"):
+        tree(tmp_path, conf('project = Project(storages=[StorageDef("lake", "/l")])'), strict=True)
+
+
+def test_a_matrix_parameter_no_test_runs_over_is_a_warning(tmp_path):
+    body = 'project = Project(matrix={"client": {"curl": {"values": {"C": "curl"}}}})'
+    _, project = tree(tmp_path, conf(body))
+    assert project.unused == [
+        "ducktest_conf.py: matrix parameter 'client': no rule or test runs over it; "
+        "give matrix=['client'] where tests need it, or remove it"
+    ]
+
+
+def test_a_listed_engine_no_test_drives_is_a_warning(tmp_path):
+    body = 'project = Project(engines=[DuckDBEngineDef("duck"), DuckDBEngineDef("spare")], rules=[default(engines=["duck"])])'
+    _, project = tree(tmp_path, conf(body))
+    assert [w.split(": ", 1)[1].split(";")[0] for w in project.unused] == [
+        "engine 'spare' is listed and no test drives it"
+    ]
+
+
+@pytest.mark.parametrize("given", ['settings={"s3_endpoint": "{http.url}"}', 'init_sql="SELECT \'{http.url}\'"'])
+def test_a_template_in_settings_or_init_sql_reaches_what_it_names(tmp_path, given):
+    _, project = tree(tmp_path, conf(f'HTTP = HttpServerDef("http")\nproject = Project(rules=[default({given})])'))
+    assert declared(project)["services"] == ["http"]
+
+
+def test_cleanup_reads_no_body_so_every_declaration_counts(tmp_path):
+    from ducktest.conf import load_project
+
+    tree(tmp_path, conf(CHAIN + "project = Project()"))
+    project = load_project(str(tmp_path / "test"))
+    project.declare(everything=True)
+    assert declared(project) == {
+        "services": ["local_s3"],
+        "storages": ["local_lake", "other_lake"],
+        "credentials": ["local_keys"],
+    }
+    assert project.unused == []

@@ -7,7 +7,6 @@ or a `Rules` in it; a file with neither is a warning.
 
     project = Project(
         engines=[DuckDBEngineDef("duck", requires=["delta"])],
-        storages=[LOCAL_DIR, LOCAL_LAKE],
         matrix={
             "storage": {
                 "local": {"storage": LOCAL_DIR, "temp": LOCAL_DIR},
@@ -16,6 +15,13 @@ or a `Rules` in it; a file with neither is a warning.
         },
         rules=[match("cross_engine/**", matrix=["storage"])],
     )
+
+The project's services, storages and credentials are what the rules, the matrix values and the bodies'
+`@test(...)` name, with what those pull: a storage brings its service and the credential scoped to it, a
+credential the service it is made of (`names.py`). `Project(services=, storages=, credentials=)` adds to
+that set and is never needed; the checks run on the set once the bodies are imported. `engines=` is
+different: an engine is not reached through what a test binds, and the project's one DuckDB engine is the
+default of every test only when it is listed there.
 
 `inherit_env=["AWS_CA_BUNDLE"]` names variables engine processes keep from the shell's env. Every
 other name under an SDK prefix (`AWS_`) is left out of them: an SDK reads it with getenv(), so a test
@@ -44,10 +50,9 @@ A cell is one more rule, applied last, that binds the slots its value names; a t
 from whatever that binds, as from any rule.
 
 `engines=` holds `EngineDef`s (`DuckDBEngineDef(...)`, `SparkEngineDef.delta(...)`, ...); `engines=["duck"]` on a
-rule names the engines a test drives, each through a Client of its own. `services=` holds the
-project's other `ServiceDef`s of `resources`. An engine stays a kind of service internally -- one lifecycle, one
-provisioning path -- so a service that is an input of a storage, a credential or an engine is one
-of the project's services too, whether `services=` names it or not.
+rule names the engines a test drives, each through a Client of its own. An engine stays a kind of service
+internally -- one lifecycle, one provisioning path -- so a service that is an input of an engine is one of
+the project's services too.
 
 `mutex="name"`, or several names, says what a test must have to itself: no two tests that name one of
 them run at the same time, however many workers the run has.
@@ -83,7 +88,6 @@ from .options import BINDINGS, Options, Settled, check_parameter, kind_of_slot
 from .resources import CredentialDef, DefaultStorage, EngineDef, ServiceDef, StorageDef
 from .resources.storage import At, declared_scheme
 from .resources.credential import inherit_env
-from .resources.made import services_in
 
 _log = logging.getLogger(__name__)
 
@@ -175,11 +179,10 @@ class Project:
     """What the root `ducktest_conf.py` declares, as `project = Project(...)`. Every field is optional.
 
     engines       DuckDB and Spark engines the tests drive: `DuckDBEngineDef(...)`, `SparkEngineDef.delta(...)`
-    services      servers the tests use: `S3ServiceDef.rustfs(...)`, `AzureServiceDef.azurite(...)`,
-                  `HttpServerDef(...)`; one that is an input of a bound storage, credential or engine
-                  is a service of the project too
-    storages      what `storage=`, `data=` and `temp=` bind: `default_storage()`, `LOCAL_S3.storage(...)`
-    credentials   keys, delivered as SDK env: `LOCAL_S3.credential(...)`, `S3CredentialDef.from_aws_env(...)`
+    services      more servers, besides those the rules and tests reach: `S3ServiceDef.rustfs(...)`,
+                  `AzureServiceDef.azurite(...)`, `HttpServerDef(...)`
+    storages      more storages, besides those the rules and tests reach: `LOCAL_S3.storage(...)`
+    credentials   more keys, besides those the rules and tests reach: `LOCAL_S3.credential(...)`
     matrix        parameter -> value name -> a dict of slots, or a name or declaration that fills the
                   slot named like the parameter: {"storage": {"local": "default", "s3": LOCAL_LAKE}}
     suites        named selections over tags and paths (`all` is built in)
@@ -261,7 +264,10 @@ class LoadedProject:
     inherit_env: tuple = ()  # names engines keep from the shell's env under an SDK prefix
     noted_requires_env: bool = False
     env_gates: dict = field(default_factory=dict)  # test path -> (conf file, name) of each requires_env rule on it
-    names: _names.Names | None = None  # what the load declared and referred to
+    names: _names.Names | None = None  # what the confs and the bodies declared and referred to
+    listed: dict = field(default_factory=dict)  # kind -> what Project(...) lists of it, as written
+    body_options: list = field(default_factory=list)  # (label, Options) of each body's @test(...)
+    project_file: str = CONF_FILE  # the root conf file, relative to the root
     unused: list = field(default_factory=list)  # declarations nothing uses
 
     def __post_init__(self):
@@ -296,6 +302,17 @@ class LoadedProject:
                     if rule.requires_env is not None:
                         self.env_gates.setdefault(test_path, []).append((where, rule.requires_env))
         return settled
+
+    def declare(self, *, run_over=None, strict=False, everything=False):
+        """The services, storages and credentials of the project are what the rules, the matrix values
+        and the bodies reach, with what those pull, and what `Project(...)` lists; check them. Call it once
+        the bodies are imported: their `@test(...)` reaches too. `everything`: every declaration is reached
+        (`cleanup` reads no body), and nothing warns."""
+        declared, self.unused = self.names.derive(self, run_over=run_over, strict=strict, everything=everything)
+        self.services, self.storages, self.credentials = (declared[k] for k in ("service", "storage", "credential"))
+        _check_declared(self)
+        for warning in self.unused:
+            _log.warning("%s", warning)
 
     def note_unused_rules(self):
         for conf_dir, rules in self._rules_by_dir.items():
@@ -380,8 +397,9 @@ def _apply_pythonpath(paths):
             sys.path.insert(0, p)
 
 
-def load_project(start, *, strict=False):
-    """Every `ducktest_conf.py` from the root down. `strict`: a declaration nothing uses is an error."""
+def load_project(start):
+    """Every `ducktest_conf.py` from the root down. Its services, storages and credentials are not known
+    until `declare()`: the bodies reach some of them."""
     root = find_root(start)
     project = LoadedProject(root, {}, {}, {}, {})
     inherit_env(())
@@ -416,10 +434,14 @@ def load_project(start, *, strict=False):
             project._rules_by_dir[dirpath] = rules
             if isinstance(declared, Project):
                 project.engines = {e.name: e for e in declared.engines}
-                project.services = {s.name: s for s in declared.services}
-                project.storages = {s.name: s for s in declared.storages}
-                project.credentials = {c.name: c for c in declared.credentials}
+                project.listed = {
+                    "engine": declared.engines,
+                    "service": declared.services,
+                    "storage": declared.storages,
+                    "credential": declared.credentials,
+                }
                 project.matrix = declared.matrix
+                project.project_file = os.path.relpath(path, root)
                 project.suites = dict(declared.suites)
                 if "all" in project.suites:
                     raise UsageError(
@@ -427,11 +449,8 @@ def load_project(start, *, strict=False):
                     )
                 project.inherit_env = inherit_env(list(declared.inherit_env), f"{path}: inherit_env")
                 project.pythonpath += declared.added_pythonpath
-                _check(path, project)
+                _check_listed(path, declared)
             _prune(dirnames)
-        project.unused = names.check(project, strict=strict)
-    for warning in project.unused:
-        _log.warning("%s", warning)
     return project
 
 
@@ -480,16 +499,32 @@ def _prune(dirnames):
     dirnames[:] = sorted(d for d in dirnames if not d.startswith((".", "__")))
 
 
-def _check(path, project):
-    for name, kind, declared in (
-        ("storages", StorageDef, project.storages),
-        ("credentials", CredentialDef, project.credentials),
+def _check_listed(path, declared):
+    """What `Project(...)` lists is of the kind each list holds."""
+    for name, kind, given in (
+        ("storages", StorageDef, declared.storages),
+        ("credentials", CredentialDef, declared.credentials),
     ):
-        bad = next((d for d in declared.values() if not isinstance(d, kind)), None)
+        bad = next((d for d in given if not isinstance(d, kind)), None)
         if bad is not None:
             raise UsageError(
                 f"{path}: Project({name}=...) holds {kind.__name__} declarations; {_label(bad)} is not one"
             )
+    bad_engine = next((e for e in declared.engines if not isinstance(e, EngineDef)), None)
+    if bad_engine is not None:
+        raise UsageError(f"{path}: {_label(bad_engine)} is not an engine; declare services in Project(services=...)")
+    bad_service = next((s for s in declared.services if isinstance(s, EngineDef)), None)
+    if bad_service is not None:
+        raise UsageError(f"{path}: {_label(bad_service)} is an engine; declare engines in Project(engines=...)")
+    bad = next((s for s in declared.services if not isinstance(s, ServiceDef)), None)
+    if bad is not None:
+        raise UsageError(f"{path}: Project(services=...) holds ServiceDef declarations; {_label(bad)} is not one")
+
+
+def _check_declared(project):
+    """Each storage of the declared set is one its service serves, and each credential is for the
+    scheme of the storages it is scoped to."""
+    path = os.path.join(project.root, project.project_file)
     for storage in project.storages.values():
         for _, _, service in storage.edges():
             if isinstance(service, ServiceDef):
@@ -503,18 +538,6 @@ def _check(path, project):
                     f"{path}: {c.label} is scoped to storage {storage_name!r} ({storage.root}): an "
                     f"{type(c).__name__} is for {', '.join(type(c).schemes)} storages only"
                 )
-    bad_engine = next((e for e in project.engines.values() if not isinstance(e, EngineDef)), None)
-    if bad_engine is not None:
-        raise UsageError(f"{path}: {_label(bad_engine)} is not an engine; declare services in Project(services=...)")
-    bad_service = next((s for s in project.services.values() if isinstance(s, EngineDef)), None)
-    if bad_service is not None:
-        raise UsageError(f"{path}: {_label(bad_service)} is an engine; declare engines in Project(engines=...)")
-    bad = next((s for s in project.services.values() if not isinstance(s, ServiceDef)), None)
-    if bad is not None:
-        raise UsageError(f"{path}: Project(services=...) holds ServiceDef declarations; {_label(bad)} is not one")
-    for s in services_in([*project.storages.values(), *project.credentials.values(), *project.engines.values()]):
-        if project.services.setdefault(s.name, s) is not s:
-            raise UsageError(f"{path}: two services are named {s.name!r}; a service is one declaration")
 
 
 def _label(obj):
@@ -553,11 +576,4 @@ def bound_def(project, slot, ref, where):
     name = ref.name if isinstance(ref, At) else ref
     if name in declared:
         return declared[name]
-    names = project.names
-    found = names.declared_at(name, kind) if names is not None else []
-    if found:
-        raise UsageError(
-            f"{where}: {slot}={ref!r} (declared at {names.show(found[0].where)}) is not bound; "
-            f"add it to {_names.BIND_IN[kind]}"
-        )
     raise UsageError(f"{where}: {slot}={ref!r} is not declared; the project's are {sorted(declared)}")

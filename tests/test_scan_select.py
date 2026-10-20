@@ -1085,7 +1085,7 @@ def test_a_value_a_matrix_value_and_a_local_value_both_give_is_a_scan_error(tmp_
 
 
 def test_a_binding_names_a_declared_storage_credential_or_service(tmp_path):
-    with pytest.raises(UsageError, match=r"own.py::own: storage='c' is not declared; the project's are \['a', 'b'\]"):
+    with pytest.raises(UsageError, match=r"own.py:2: storage='c' is not declared; the declared ones are 'a', 'b'"):
         tree(
             tmp_path,
             {
