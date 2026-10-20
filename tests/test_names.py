@@ -453,3 +453,41 @@ def test_a_helper_that_makes_no_def_is_shared_by_two_bodies(tmp_path):
     )
     tests, _ = tree(tmp_path, files)
     assert {"one.py::one", "two.py::two"} <= {t.name for t in tests}
+
+
+# -----------------------------------------------------------------------------
+# Two credentials on one storage: chosen by the mode the test needs
+#
+
+PAIR = """
+LOCAL_S3 = S3ServiceDef.rustfs("local_s3")
+LOCAL_LAKE = LOCAL_S3.storage("local_lake", path="lake")
+RW_KEYS = LOCAL_S3.credential("rw_keys", scopes=[LOCAL_LAKE])
+RO_KEYS = LOCAL_S3.credential("ro_keys", scopes=[(LOCAL_LAKE, "ro")])
+"""
+
+
+def test_a_test_that_reads_a_storage_gets_its_ro_credential_and_one_that_writes_its_rw_one(tmp_path):
+    rules = 'rules=[match("read.test", data=LOCAL_LAKE), match("write.test", temp=LOCAL_LAKE)]'
+    files = {"test/ducktest_conf.py": PAIR + f"project = Project({rules})", "test/read.test": "", "test/write.test": ""}
+    tests, _ = tree(tmp_path, files, strict=True)
+    held = {t.name: [d.name for d, _ in t.inputs if d.kind == "credential"] for t in tests}
+    assert held == {"read.test::read": ["ro_keys"], "write.test::write": ["rw_keys"]}
+
+
+def test_two_credentials_that_may_write_a_storage_are_an_error_naming_each_and_the_fix(tmp_path):
+    body = """
+        LOCAL_S3 = S3ServiceDef.rustfs("local_s3")
+        LOCAL_LAKE = LOCAL_S3.storage("local_lake", path="lake")
+        KEYS = LOCAL_S3.credential("keys", scopes=[LOCAL_LAKE])
+        MORE_KEYS = LOCAL_S3.credential("more_keys", scopes=[LOCAL_LAKE])
+        project = Project(credentials=[KEYS], rules=[default(storage=LOCAL_LAKE)])
+    """
+    with pytest.raises(
+        UsageError,
+        match=r"^a.test::a: storage 'local_lake' <- ducktest_conf.py: default: credentials "
+        r"'keys' \(ducktest_conf.py:\d+\), 'more_keys' \(ducktest_conf.py:\d+, pulled in by its scopes=\) are scoped "
+        r"rw to it and the test needs to write to it; name one with credential= on the rule, "
+        r"or set default=True on one$",
+    ):
+        tree(tmp_path, conf(body))

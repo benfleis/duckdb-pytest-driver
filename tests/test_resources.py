@@ -424,6 +424,11 @@ def test_a_read_only_credential_serves_a_read_only_edge_only():
     assert pick_credentials({"s3store": RO}, [S3_READ]) == [S3_READ]
 
 
+def test_of_an_ro_and_an_rw_credential_a_read_gets_the_ro_one_and_a_write_the_rw_one():
+    assert pick_credentials({"s3store": RO}, [S3_KEY, S3_READ]) == [S3_READ]
+    assert pick_credentials({"s3store": RW}, [S3_KEY, S3_READ]) == [S3_KEY]
+
+
 def test_two_credentials_for_one_storage_none_named_is_a_usage_error_listing_them():
     with pytest.raises(UsageError, match=r"storage 's3store' has credentials \['s3-key', 's3-other'\]"):
         pick_credentials({"s3store": RW}, [S3_KEY, S3_OTHER])

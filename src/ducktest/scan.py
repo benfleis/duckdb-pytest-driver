@@ -23,6 +23,7 @@ from .options import Settled
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef, Value
 from .resources.dialect import rendered_classes, secret_renderer
 from .resources import RO, RW, BootedEngineDef, CredentialDef, DefaultStorageDef, StorageDef, pick_credentials
+from .resources.credential import AmbiguousCredential
 from .resources.storage import At
 from .testenv import resolve
 
@@ -54,7 +55,25 @@ def _roles(bindings, where):
     }
 
 
-def _inputs(bindings, project):
+def _ambiguous(exc, bindings, project, where):
+    names = project.names
+    sources = " and ".join(source for _, d, source, _ in bindings if d.name == exc.storage)
+    candidates = []
+    for c in sorted(exc.candidates, key=lambda c: c.name):
+        found = names.declared_at(c.name, "credential")
+        how = [names.show(found[0].where)] if found else []
+        if c.name in names.pulled:
+            how.append("pulled in by its scopes=")
+        candidates.append(f"{c.name!r} ({', '.join(how)})" if how else repr(c.name))
+    need = "read" if exc.mode == RO else "write to"
+    return (
+        f"{where}: storage {exc.storage!r} <- {sources}: credentials {', '.join(candidates)} are scoped "
+        f"{exc.mode} to it and the test needs to {need} it; name one with credential= on the rule, "
+        "or set default=True on one"
+    )
+
+
+def _inputs(bindings, project, where):
     """What a test binds, each once, and a credential for each storage by scope unless one is named. A
     storage it only reads fixtures from (`data=`) is a read-only edge."""
     bound = []
@@ -65,7 +84,10 @@ def _inputs(bindings, project):
             next(slots for b, slots in bound if b is d).add(slot)
     mode = {d.name: RO if slots == {"data"} else RW for d, slots in bound if isinstance(d, StorageDef)}
     named = [d for d, _ in bound if isinstance(d, CredentialDef)]
-    credentials = pick_credentials(mode, project.credentials.values(), named)
+    try:
+        credentials = pick_credentials(mode, project.credentials.values(), named)
+    except AmbiguousCredential as exc:
+        raise UsageError(_ambiguous(exc, bindings, project, where)) from None
     return tuple((d, mode.get(d.name, RW)) for d, _ in bound if not isinstance(d, CredentialDef)) + tuple(
         (c, RO) for c in credentials
     )
@@ -198,7 +220,7 @@ def scan(start, *, working_dir=".", strict=False):
                 (slot, str(ref) if isinstance(ref, At) else d.name, source) for slot, d, source, ref in bindings
             )
             test.roles = _roles(bindings, test.name)
-            test.inputs = _inputs(bindings, project)
+            test.inputs = _inputs(bindings, project, test.name)
             tests.append(test)
     project.note_unused_rules()
     if project.unused_rules:

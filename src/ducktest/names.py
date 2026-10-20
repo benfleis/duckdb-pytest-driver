@@ -100,6 +100,7 @@ class Names:
     confs: set = field(default_factory=set)  # every conf file the loader ran
     declared: list = field(default_factory=list)
     references: list = field(default_factory=list)
+    pulled: set = field(default_factory=set)  # names in the declared set only because something pulled them
     _superseded: set = field(default_factory=set)  # id() of a declaration a derived one replaced
 
     # -- what the conf files do ---------------------------------------------------------
@@ -163,6 +164,8 @@ class Names:
             reach += [d for d in registry.values() if kind_of(d) != "engine"]
         reached = _closure(reach, registry)
         declared = _closure(listed + reach, registry)
+        direct = {id(d) for d in listed + reach}
+        self.pulled = {d.name for d in declared.values() if id(d) not in direct}
         out = {"engine": dict(project.engines), "service": {}, "storage": {}, "credential": {}}
         for d in declared.values():
             kind = kind_of(d)

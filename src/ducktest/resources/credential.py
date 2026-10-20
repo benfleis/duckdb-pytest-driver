@@ -532,16 +532,26 @@ class CredentialView:
     source: str
 
 
+class AmbiguousCredential(UsageError):
+    """Several credentials are scoped to one storage of a test, with the mode it needs, and none is chosen."""
+
+    def __init__(self, storage, mode, candidates):
+        self.storage, self.mode, self.candidates = storage, mode, candidates
+        ids = sorted(c.name for c in candidates)
+        super().__init__(f"storage {storage!r} has credentials {ids} and none is named or flagged default=True")
+
+
 def pick_credentials(
     storages: Mapping[str, str],
     declared: Iterable[CredentialDef],
     named: Iterable[CredentialDef] = (),
 ) -> list[CredentialDef]:
-    """The credentials of one test. `storages` maps each storage name it uses to its edge mode. A
-    credential matches a storage if any of its `scopes` names it, so one credential may serve
-    several storages of one test. A named credential wins over scope; a storage with no named one
-    gets the credential scoped to it, or the one flagged `default` when several are; with none
-    flagged, which is a usage error (per storage)."""
+    """The credentials of one test. `storages` maps each storage name it uses to the mode it needs. A
+    credential matches a storage if any of its `scopes` names it with a mode that allows that, so one
+    credential may serve several storages of one test. A named credential wins over scope. A storage
+    with no named one gets the credential scoped to it; of several, the ones whose scope is exactly the
+    mode needed (`ro` for a storage only read), then the one flagged `default` among those; with none
+    left to tell them apart, an `AmbiguousCredential` (per storage)."""
     chosen = list(named)
     covered = {s for c in chosen for s in c.scope_storages}
     for storage, mode in storages.items():
@@ -549,10 +559,11 @@ def pick_credentials(
             continue
         matches = [c for c in declared if storage in c.scope_storages and (c.scope_mode(storage) == RW or mode == RO)]
         if len(matches) > 1:
+            matches = [c for c in matches if c.scope_mode(storage) == mode] or matches
+        if len(matches) > 1:
             defaults = [c for c in matches if c.default]
             if len(defaults) != 1:
-                ids = sorted(c.name for c in matches)
-                raise UsageError(f"storage {storage!r} has credentials {ids} and none is named or flagged default=True")
+                raise AmbiguousCredential(storage, mode, matches)
             matches = defaults
         for c in matches:
             if c not in chosen:
