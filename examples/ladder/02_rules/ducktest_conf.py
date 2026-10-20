@@ -12,7 +12,6 @@ DUCK = DuckDBEngineDef("duck", requires=["parquet"])
 
 project = Project(
     engines=[DUCK],
-    storages=[SCRATCH_A, SCRATCH_B],
     # A value is a dict of slots: each cell binds the storage and writes under it.
     matrix={
         "storage": {

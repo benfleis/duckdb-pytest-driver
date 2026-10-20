@@ -7,7 +7,5 @@ LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])
 
 project = Project(
     engines=[DuckDBEngineDef("duck", requires=["httpfs"])],
-    storages=[LOCAL_LAKE],
-    credentials=[LOCAL_KEYS],
     rules=[default(storage=LOCAL_LAKE, temp=LOCAL_LAKE)],  # temp=: {TEMP_DIR} is on the server
 )

@@ -25,8 +25,6 @@ S3_HOST_PORT = (
 )
 
 project = Project(
-    credentials=[LOCAL_KEYS],
-    services=[PYHTTP],
     # Two CI configs (test/configs/httpfs_*.json) as one parameter: each test runs once per client.
     matrix={
         "httpfs_client": {

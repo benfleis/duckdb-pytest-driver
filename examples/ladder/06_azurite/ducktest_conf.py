@@ -7,7 +7,5 @@ LOCAL_KEYS = LOCAL_AZ.credential("local_keys", scopes=[LOCAL_BLOBS])
 
 project = Project(
     engines=[DuckDBEngineDef("duck", requires=["azure"])],
-    storages=[LOCAL_BLOBS],
-    credentials=[LOCAL_KEYS],
     rules=[default(storage=LOCAL_BLOBS, temp=LOCAL_BLOBS)],  # temp=: {TEMP_DIR} is on the server
 )

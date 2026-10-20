@@ -9,8 +9,6 @@ FAKE_KEY = S3CredentialDef(
 )
 
 project = Project(
-    storages=[FAKE_S3],
-    credentials=[FAKE_KEY],
     # A test that binds the bucket holds its credential; no_secret.test binds nothing, so it holds none.
     rules=[match("*scoped_*", storage=FAKE_S3)],
 )

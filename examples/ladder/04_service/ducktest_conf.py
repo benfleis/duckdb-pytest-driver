@@ -12,7 +12,6 @@ SERVED = StorageDef("served", "{local_http.url}", inputs=[LOCAL_HTTP])
 UNSERVED = StorageDef("unserved", "{nowhere.url}", inputs=[NOWHERE])
 
 project = Project(
-    storages=[SERVED, UNSERVED],
     # `data=` makes the server's root the tests' {DATA_DIR}.
     rules=[
         default(storage=SERVED, data=SERVED),

@@ -9,8 +9,6 @@ LOCAL_LAKE = LOCAL_S3.storage("local_lake", path="lake")
 LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])
 
 project = Project(
-    storages=[LOCAL_DIR, LOCAL_LAKE],
-    credentials=[LOCAL_KEYS],
     # Each cell binds the storage and writes under it; only the s3 cell needs httpfs.
     matrix={
         "storage": {
