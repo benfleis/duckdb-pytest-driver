@@ -1,5 +1,6 @@
 """The public API of a conf: the makers on the classes, and the module-level verbs that call them."""
 
+import importlib
 import os
 import textwrap
 
@@ -7,6 +8,7 @@ import pytest
 
 from ducktest.binary import UsageError
 from ducktest.conf import Rule, default, match
+from ducktest.engines import spark as spark_module
 from ducktest.engines.spark import SparkEngineDef
 from ducktest.scan import scan
 from ducktest.resources import BootedEngineDef
@@ -74,6 +76,22 @@ def test_spark_delta_is_a_booted_spark_engine():
     assert isinstance(spark, BootedEngineDef) and type(spark) is SparkEngineDef
     assert (spark.name, spark.dialect) == ("spark", "spark")
     assert spark.version.startswith("spark:") and spark.version.endswith(":local")
+
+
+def test_spark_delta_with_s3a_boots_with_the_hadoop_aws_of_its_hadoop(monkeypatch):
+    monkeypatch.setattr(spark_module, "_hadoop_version", lambda: "3.4.1")
+    booted = []
+    monkeypatch.setattr(spark_module, "_boot_delta", lambda *args: booted.append(args) or (None, "4.0"))
+    spark = SparkEngineDef.delta(s3a=True)
+    assert spark.version.endswith(":local:s3a")
+    spark.boot("spark.log")
+    assert booted == [("spark.log", ("org.apache.hadoop:hadoop-aws:3.4.1",), True)]
+
+
+def test_spark_delta_with_s3a_needs_pyspark(monkeypatch):
+    monkeypatch.setattr(spark_module, "_hadoop_version", lambda: None)
+    with pytest.raises(UsageError, match=r"SparkEngineDef\.delta\('spark', s3a=True\): pyspark is not installed"):
+        SparkEngineDef.delta(s3a=True)
 
 
 def test_spark_from_the_constructor_needs_a_boot():
@@ -223,3 +241,9 @@ def test_a_removed_name_is_gone(name):
     ):
         with pytest.raises(ImportError):
             exec(f"from {module} import {name}", {})
+
+
+@pytest.mark.parametrize("module", ["ducktest.services.s3local", "ducktest.services.azlocal"])
+def test_a_removed_module_is_gone(module):
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(module)
