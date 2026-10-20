@@ -28,8 +28,10 @@ once at the top of its checkout:
 
 It writes `pyproject.toml`: the runner (`path:DIR` for a local checkout, editable; `git+URL@REV`
 once the branch is pushed; the default is where this `ducktest` was installed from), its extras
-(`--extra`), the packages the bodies import (`--dep`), Python `>=3.12`, and `package = false`. Then
-it runs `uv lock`; check `uv.lock` in. `--conf [DIR]` also writes a starter `ducktest_conf.py` in
+(`--extra`), the packages the bodies import (`--dep`), Python `>=3.12`, and `package = false`; it
+pins the interpreter to 3.12 in `.python-version` (without a pin, uv takes the newest Python it
+knows, a different one on each machine) and ignores `ducktest_temp/`. Then it runs `uv lock`;
+check `uv.lock` and `.python-version` in. `--conf [DIR]` also writes a starter `ducktest_conf.py` in
 `test/` or DIR; a tree of plain `.test` files needs none. A file that is already there and different
 is not overwritten: init prints the diff and exits 1; merge it by hand, or run again with `--write`.
 It also makes sure `.gitignore` ignores the runner's default temp root (`ducktest_temp/`), creating

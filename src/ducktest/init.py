@@ -3,7 +3,7 @@
 The file pins the runner by git URL and rev (or a local checkout, editable) and lists what the tests
 import. A file that is already there is never overwritten without `--write`: init prints the diff
 from it to what it would write, and the user decides. It also makes sure `.gitignore` ignores the
-runner's default temp root.
+runner's default temp root, and pins the interpreter in `.python-version`.
 """
 
 import difflib
@@ -21,6 +21,7 @@ from .resources.storage import DEFAULT_TEMP_ROOT
 DIST = "duckdb-ducktest"
 RUNNER_GIT = "https://github.com/benfleis/duckdb-pytest-driver.git"
 PYTHON = ">=3.12"
+PYTHON_PIN = "3.12"  # what .python-version says: uv takes the newest interpreter it knows without it
 
 STARTER_CONF = '''\
 # What the tests under this directory need: engines, services, storages, credentials, rules.
@@ -70,6 +71,7 @@ def add_parser(sub):
 def run(args):
     repo = _repo(args.dir)
     _ensure_gitignore(repo)
+    _ensure_python_version(repo)
     source = _runner_source(args.runner)
     name = args.name or f"{_repo_name(repo)}-tests"
     rc = 0
@@ -154,6 +156,19 @@ def _runner_source(spec):
     except PackageNotFoundError:
         raise UsageError(f"cannot tell where {DIST} came from; give --runner git+URL@REV") from None
     return f'{{ git = "{RUNNER_GIT}", tag = "v{version}" }}'
+
+
+def _ensure_python_version(repo):
+    """Pin the interpreter uv uses: `requires-python` is a floor, and without a pin uv picks the newest
+    Python it knows, which differs from machine to machine and rebuilds a shared `.venv` each time."""
+    path = os.path.join(repo, ".python-version")
+    if os.path.exists(path):
+        with open(path) as f:
+            print(f"{path}: already pins {f.read().strip()}")
+        return
+    with open(path, "w") as f:
+        f.write(PYTHON_PIN + "\n")
+    print(f"{path}: written, pinning Python {PYTHON_PIN}")
 
 
 def _ensure_gitignore(repo):

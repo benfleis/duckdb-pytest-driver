@@ -196,7 +196,9 @@ the binary skips the file that `ctx.run_paired()` runs, the body ends SKIPPED wi
 1. Run your `.test` tree with no `ducktest_conf.py` (1.1): from the top of the repo,
    `ducktest run test/sql --suite default` (rung 00). For Python bodies, `ducktest init` writes
    the repo's test environment, `pyproject.toml`, with the runner pinned (README, Install); it also
-   makes sure `.gitignore` ignores the runner's default temp root.
+   makes sure `.gitignore` ignores the runner's default temp root and pins the interpreter in
+   `.python-version` (3.12), since `requires-python` is only a floor and uv otherwise takes the
+   newest Python it knows, which differs from machine to machine.
 2. Extensions the tests need go on the engine: `DuckEngineDef("duck", requires=[...])`.
 3. Scripts that export keys become a typed credential, such as `S3CredentialDef` with `from_env`
    (2.5). CI keeps its secrets. Keys of the shell's own env no longer reach the engines by

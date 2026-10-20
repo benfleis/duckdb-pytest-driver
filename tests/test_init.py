@@ -55,6 +55,19 @@ def test_writes_the_test_environment(repo, capsys):
     assert not (repo / "test").exists()
 
 
+def test_python_version_is_pinned_when_missing(repo, capsys):
+    assert main(["init", "--runner", LOCAL, "--no-lock"]) == 0
+    assert (repo / ".python-version").read_text() == "3.12\n"
+    assert "pinning Python 3.12" in capsys.readouterr().out
+
+
+def test_an_existing_python_version_is_left_alone(repo, capsys):
+    (repo / ".python-version").write_text("3.13\n")
+    assert main(["init", "--runner", LOCAL, "--no-lock"]) == 0
+    assert (repo / ".python-version").read_text() == "3.13\n"
+    assert "already pins 3.13" in capsys.readouterr().out
+
+
 def test_gitignore_is_created_when_missing(repo, capsys):
     assert main(["init", "--runner", LOCAL, "--no-lock"]) == 0
     assert (repo / ".gitignore").read_text() == f"{DEFAULT_TEMP_ROOT}/\n"
