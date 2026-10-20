@@ -397,18 +397,48 @@ def test_a_listed_engine_no_test_drives_is_a_warning(tmp_path):
     ]
 
 
-def test_cleanup_reads_no_body_so_every_declaration_counts(tmp_path):
+def cleanup_project(tmp_path, monkeypatch):
+    from ducktest import phases
     from ducktest.conf import load_project
 
-    tree(tmp_path, conf(CHAIN + "project = Project()"))
+    monkeypatch.chdir(tmp_path)
+    assert main(["scan", "--run-dir", "rd"]) == 0
     project = load_project(str(tmp_path / "test"))
-    project.declare(everything=True)
-    assert declared(project) == {
-        "services": ["local_s3"],
-        "storages": ["local_lake", "other_lake"],
-        "credentials": ["local_keys"],
-    }
-    assert project.unused == []
+    project.declare_by_name(*phases.used_by("rd"))
+    return project
+
+
+def test_cleanup_takes_what_the_run_used_from_its_records_also_what_only_a_body_binds(tmp_path, monkeypatch):
+    body = "from ducktest import test\n\n@test(storage='other_lake')\ndef own(ctx):\n    pass\n"
+    tree(tmp_path, conf(CHAIN + 'project = Project(rules=[match("a.test", storage="local_lake")])', **{"test/own.py": body}))
+    project = cleanup_project(tmp_path, monkeypatch)
+    assert declared(project) == {"services": ["local_s3"], "storages": ["local_lake", "other_lake"], "credentials": []}
+
+
+def test_cleanup_runs_no_check_on_a_declaration_the_run_did_not_use(tmp_path, monkeypatch, capsys):
+    body = """
+        LOCAL = StorageDef("local_dir", "/l")
+        KEYS = S3CredentialDef("keys", sources=[from_env({"K": "key_id", "S": "secret"})], scopes=[LOCAL])
+        project = Project()
+    """
+    _, project = tree(tmp_path, conf(body))
+    assert [w.split(": ", 1)[1].split(";")[0] for w in project.unused] == [
+        "storage 'local_dir' is declared and nothing reaches it",
+        "credential 'keys' is declared and nothing reaches it",
+    ]
+    assert declared(cleanup_project(tmp_path, monkeypatch)) == {"services": [], "storages": [], "credentials": []}
+    assert main(["cleanup", "--run-dir", "rd"]) == 0
+
+
+def test_cleanup_logs_a_name_the_run_used_that_no_conf_declares_now(tmp_path, monkeypatch, capsys):
+    tree(tmp_path, conf(CHAIN + 'project = Project(rules=[default(storage="other_lake")])'))
+    monkeypatch.chdir(tmp_path)
+    assert main(["scan", "--run-dir", "rd"]) == 0
+    (tmp_path / "test/ducktest_conf.py").write_text(textwrap.dedent(HEAD) + "project = Project()\n")
+    capsys.readouterr()
+    assert main(["cleanup", "--run-dir", "rd"]) == 0
+    said = capsys.readouterr().err
+    assert "storage 'other_lake': the run used it and no ducktest_conf.py declares it now; not cleaned" in said
 
 
 # -----------------------------------------------------------------------------

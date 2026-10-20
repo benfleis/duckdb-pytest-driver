@@ -145,11 +145,11 @@ class Names:
         return [d for d in self.live() if d.name == name and (kind is None or d.kind == kind)]
 
     # -- the declared set and the checks, once every conf and body has run ----------------
-    def derive(self, project, *, run_over=None, strict=False, everything=False) -> tuple[dict, list[str]]:
+    def derive(self, project, *, run_over=None, strict=False) -> tuple[dict, list[str]]:
         """The project's declared set, kind -> {name: Def}: what the rules, the matrix values and the
         bodies reach, each with what it pulls, and what `Project(...)` lists. Raise on the first error;
         return the set and the warnings (errors with `strict`). `run_over`: the parameters some test runs
-        over; `everything`: every declaration counts as reached (cleanup, which reads no body)."""
+        over."""
         self._collisions()
         registry = {d.name: d.obj for d in self.live() if d.kind not in PARTS}
         listed = [d for group in project.listed.values() for d in group]
@@ -160,8 +160,6 @@ class Names:
                 self._resolve(ref, registry, project.engines)
         reach = [registry[r.name] for r in self.references if r.reach and r.kind not in PARTS]
         reach += [registry[n] for n in _template_names(project) if n in registry]
-        if everything:
-            reach += [d for d in registry.values() if kind_of(d) != "engine"]
         reached = _closure(reach, registry)
         declared = _closure(listed + reach, registry)
         direct = {id(d) for d in listed + reach}
@@ -173,8 +171,6 @@ class Names:
                 if out[kind].setdefault(d.name, d) is not d:
                     raise UsageError(f"two {kind}s are named {d.name!r}; a {kind} is one declaration")
         self._attributes(project, out, registry)
-        if everything:
-            return out, []
         warnings = self._unused(project, declared, reached | _default_engine(project.engines))
         warnings += [
             f"{project.project_file}: matrix parameter {p!r}: no rule or test runs over it; "

@@ -172,6 +172,7 @@ class Test:
             "selection": {"tags": self.tags},
             "preconditions": {
                 "services": self.services,
+                "storages": [d.name for d, _ in self.inputs if d.kind == "storage"],
                 "engines": [{"name": d.name, "version": d.version} for d in engines_of(self, project)],
                 **({"mutex": self.mutex} if self.mutex else {}),
             },

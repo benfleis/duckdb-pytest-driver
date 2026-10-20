@@ -303,16 +303,27 @@ class LoadedProject:
                         self.env_gates.setdefault(test_path, []).append((where, rule.requires_env))
         return settled
 
-    def declare(self, *, run_over=None, strict=False, everything=False):
+    def declare(self, *, run_over=None, strict=False):
         """The services, storages and credentials of the project are what the rules, the matrix values
         and the bodies reach, with what those pull, and what `Project(...)` lists; check them. Call it once
-        the bodies are imported: their `@test(...)` reaches too. `everything`: every declaration is reached
-        (`cleanup` reads no body), and nothing warns."""
-        declared, self.unused = self.names.derive(self, run_over=run_over, strict=strict, everything=everything)
+        the bodies are imported: their `@test(...)` reaches too."""
+        declared, self.unused = self.names.derive(self, run_over=run_over, strict=strict)
         self.services, self.storages, self.credentials = (declared[k] for k in ("service", "storage", "credential"))
         _check_declared(self)
         for warning in self.unused:
             _log.warning("%s", warning)
+
+    def declare_by_name(self, services=(), storages=()):
+        """For `cleanup`, which reads no body: the services and storages a run used, by name, as the conf
+        files declare them now. No check runs; a name no conf declares as that kind is logged and left out."""
+        made = {d.name: d.obj for d in self.names.live()}
+        for kind, wanted, out in (("service", services, self.services), ("storage", storages, self.storages)):
+            for name in wanted:
+                d = made.get(name)
+                if _names.kind_of(d) != kind:
+                    _log.warning("%s %r: the run used it and no %s declares it now; not cleaned", kind, name, CONF_FILE)
+                    continue
+                out[name] = d
 
     def note_unused_rules(self):
         for conf_dir, rules in self._rules_by_dir.items():

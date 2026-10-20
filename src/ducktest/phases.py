@@ -278,6 +278,19 @@ def read_provision(run_dir):
     return read(run_dir, PROVISION_FILE, PROVISION_SCHEMA, made_by="provision")
 
 
+def used_by(run_dir):
+    """(service names, storage names) the run's records say it used: the services `03` made, and the
+    services and storages the tests of `01` need."""
+    services = list(read_provision(run_dir).get("services") or {})
+    storages = []
+    if os.path.isfile(os.path.join(run_dir, TESTS_FILE)):
+        for t in read_tests(run_dir).get("tests") or []:
+            needs = t.get("preconditions") or {}
+            services += [s for s in needs.get("services") or () if s not in services]
+            storages += [s for s in needs.get("storages") or () if s not in storages]
+    return services, storages
+
+
 def services_of(tests):
     """The services behind the inputs of `tests`, inputs first, each once."""
     return services_in(d for test in tests for d, _ in test.inputs)
