@@ -185,6 +185,11 @@ class SparkEngineDef(BootedEngineDef):
 
     dialect: str | None = "spark"
 
+    def __post_init__(self):
+        if self.boot is None:
+            raise UsageError(f"SparkEngineDef({self.name!r}) needs how to boot it; use SparkEngineDef.delta(...)")
+        super().__post_init__()
+
     @classmethod
     def delta(cls, name: str = "spark", *, s3a: bool = False, **fields) -> SparkEngineDef:
         """Local Spark with the delta-spark that matches the installed pyspark. `s3a=True` puts the

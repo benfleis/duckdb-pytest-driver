@@ -76,6 +76,11 @@ def test_spark_delta_is_a_booted_spark_engine():
     assert spark.version.startswith("spark:") and spark.version.endswith(":local")
 
 
+def test_spark_from_the_constructor_needs_a_boot():
+    with pytest.raises(UsageError, match=r"SparkEngineDef\('spark'\) needs how to boot it; use SparkEngineDef\.delta"):
+        SparkEngineDef("spark")
+
+
 # -----------------------------------------------------------------------------
 # Storages: typed by protocol, declared on a service by keyword
 #
