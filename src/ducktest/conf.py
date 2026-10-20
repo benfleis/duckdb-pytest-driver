@@ -68,7 +68,7 @@ import os
 import re
 import sys
 import tomllib
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from . import names as _names
@@ -85,6 +85,9 @@ _log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Rule:
+    """What a conf file gives the tests below it, all of them or by path; made by `Rule.default(...)` or
+    `Rule.match(...)`."""
+
     pattern: str
     options: Options
     requires_env: str | None = None
@@ -100,6 +103,36 @@ class Rule:
         if self.pattern == "**" and self.requires_env is None:
             return "default"
         return f"match {self.pattern!r}" + (f", requires_env={self.requires_env!r}" if self.requires_env else "")
+
+    @classmethod
+    def default(cls, **fields) -> Rule:
+        """A rule for every test definition below this file."""
+        return cls("**", Options.of(fields, "rule '**'"))
+
+    @classmethod
+    def match(cls, pattern: str, *, requires_env: str | None = None, **fields) -> Rule:
+        """A rule for the test definitions whose path, relative to this file, matches `pattern`: `*` stays
+        inside one directory level, `**` crosses levels, `dir/**` is everything below `dir`, and a pattern
+        with no wildcard names one file. A body paired with a `.test` matches by either file's path.
+
+        `requires_env="NAME"` narrows it to the `.test` files that hold a `require-env NAME` line, with
+        or without a value. Deprecated: a starting point for a repo that gates files with `require-env`;
+        move to tags or paths."""
+        if requires_env is not None and not isinstance(requires_env, str):
+            raise UsageError(f"rule {pattern!r}: requires_env={requires_env!r}; it is one name")
+        return cls(pattern, Options.of(fields, f"rule {pattern!r}"), requires_env)
+
+
+def default(**fields) -> Rule:
+    """Convenience for `Rule.default(**fields)`, the long form: a rule for every test definition below
+    this file."""
+    return Rule.default(**fields)
+
+
+def match(pattern: str, *, requires_env: str | None = None, **fields) -> Rule:
+    """Convenience for `Rule.match(pattern, ...)`, the long form: a rule for the test definitions whose
+    path, relative to this file, matches `pattern`."""
+    return Rule.match(pattern, requires_env=requires_env, **fields)
 
 
 @functools.lru_cache(maxsize=None)
@@ -129,28 +162,6 @@ def _glob(pattern):
         else:
             out, i = out + re.escape(pattern[i]), i + 1
     return re.compile(out)
-
-
-def _rule(pattern, fields):
-    return Rule(pattern, Options.of(fields, f"rule {pattern!r}"))
-
-
-def default(**fields):
-    """A rule for every test definition below this file."""
-    return _rule("**", fields)
-
-
-def match(pattern, *, requires_env=None, **fields):
-    """A rule for the test definitions whose path, relative to this file, matches `pattern`: `*` stays inside one
-    directory level, `**` crosses levels, `dir/**` is everything below `dir`, and a pattern with no
-    wildcard names one file. A body paired with a `.test` matches by either file's path.
-
-    `requires_env="NAME"` narrows it to the `.test` files that hold a `require-env NAME` line, with
-    or without a value. Deprecated: a starting point for a repo that gates files with `require-env`;
-    move to tags or paths."""
-    if requires_env is not None and not isinstance(requires_env, str):
-        raise UsageError(f"rule {pattern!r}: requires_env={requires_env!r}; it is one name")
-    return replace(_rule(pattern, fields), requires_env=requires_env)
 
 
 _LISTS = ("engines", "services", "storages", "credentials", "inherit_env", "pythonpath")
