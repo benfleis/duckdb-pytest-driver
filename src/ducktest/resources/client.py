@@ -82,8 +82,9 @@ class Executed:
     """What `exec` gives back: truthy when the statements ran, `error` the engine's message when
     the last one failed, `columns` and `rows` its result when it did not."""
 
-    def __init__(self, client, sql, *, error=None, columns=(), rows=()):
+    def __init__(self, client, sql, *, label=None, error=None, columns=(), rows=()):
         self.client, self.sql, self.error = client, sql, error
+        self.label = label or client  # what a message names it by
         self.columns, self.rows = list(columns), list(rows)
 
     def __bool__(self):
@@ -91,7 +92,7 @@ class Executed:
 
     def __repr__(self):
         what = f"failed: {self.error}" if self.error is not None else f"ok, {len(self.rows)} row(s)"
-        return f"[{self.client}] exec, {what}\n{_indent(self.sql)}"
+        return f"[{self.label}] exec, {what}\n{_indent(self.sql)}"
 
 
 def _indent(text, by="    "):
@@ -340,8 +341,8 @@ class Client:
             columns, rows = self._timed_run(statements)
         except SqlError as exc:
             self._not_from_the_last_statement(statements, exc)
-            return Executed(self.label, statements[-1], error=str(exc))
-        return Executed(self.label, statements[-1], columns=columns, rows=rows)
+            return Executed(self.name, statements[-1], label=self.label, error=str(exc))
+        return Executed(self.name, statements[-1], label=self.label, columns=columns, rows=rows)
 
     def expects_contains(self, sql, rows, *, on_fail="abort_test", **more):
         """Every row of `rows` is in the result, as often as it is in `rows`; the result may hold more."""

@@ -211,6 +211,12 @@ def test_exec_gives_back_the_result_of_a_statement_that_ran():
     assert repr(executed) == "[fake] exec, ok, 1 row(s)\n    SELECT i, name FROM cat.t"
 
 
+def test_an_answer_names_its_client_by_name_and_its_message_by_label():
+    executed = Client("duck", lambda statements: (["i"], [(1,)]), label="duck/duck-shell").exec("SELECT 1")
+    assert executed.client == "duck"
+    assert repr(executed) == "[duck/duck-shell] exec, ok, 1 row(s)\n    SELECT 1"
+
+
 def test_a_statement_that_failed_is_an_answer_not_a_failed_check():
     recorded = []
     client = Client("fake", _fails_at(0), values=Values({"t": "cat.t"}), record=recorded.append)
