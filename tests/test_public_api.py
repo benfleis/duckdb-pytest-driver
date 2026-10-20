@@ -157,6 +157,33 @@ def test_path_names_a_place_under_a_storage_a_bucket_and_temp(tmp_path):
     assert local.temp_places() == ["scratch", "other"]
 
 
+BAD_PATHS = ("/lake", "../x", "a/../b", "a//b", ".", "s3://b/p")
+
+
+@pytest.mark.parametrize("path", BAD_PATHS)
+def test_a_storage_on_a_service_refuses_a_path_that_leaves_or_doubles(path):
+    with pytest.raises(UsageError, match=r"service 'local_s3': storage\('l', path=.*\): give a path .* the bucket"):
+        S3ServiceDef.rustfs("local_s3").storage("l", path=path)
+    with pytest.raises(UsageError, match=r"service 'local_az': storage\('l', path=.*\): give a path .* the container"):
+        AzureServiceDef.azurite("local_az").storage("l", path=path)
+
+
+@pytest.mark.parametrize("path", (*BAD_PATHS, ""))
+def test_temp_path_and_at_refuse_a_path_that_leaves_or_doubles(tmp_path, path):
+    with pytest.raises(UsageError, match=r"LocalStorageDef\('x', temp_path=.*\): give a path"):
+        LocalStorageDef("x", str(tmp_path), temp_path=path)
+    with pytest.raises(UsageError, match=r"x\.at\(.*\): give a path"):
+        LocalStorageDef("x", str(tmp_path)).at(path)
+
+
+def test_a_path_may_be_nested_and_a_storage_path_empty():
+    local_s3 = S3ServiceDef.rustfs("local_s3")
+    assert local_s3.storage("l", path="a/b/").root == "s3://{local_s3.bucket}/a/b"
+    assert local_s3.storage("l").root == "s3://{local_s3.bucket}"
+    assert AzureServiceDef.azurite("local_az").storage("l", path="a/b").root == "az://{local_az.container}/a/b"
+    assert LocalStorageDef("x", "/tmp/x", temp_path="a/b/").temp_path == "a/b"
+
+
 # -----------------------------------------------------------------------------
 # One import line
 #

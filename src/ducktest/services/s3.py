@@ -24,6 +24,7 @@ from ..binary import UsageError
 from ..host import docker, has_docker, in_url, service_bind, service_host
 from ..resources import NEVER, ON_FAILURE, S3CredentialDef, S3StorageDef, Service, ServiceDef, ServiceNotUp
 from ..resources.remote import S3Access, remote_for
+from ..resources.storage import place_path
 from .parts import Part, Parts, parts_needed
 from .s3api import S3Api
 
@@ -182,6 +183,7 @@ class S3ServiceDef(ServiceDef):
             bucket = names.ref(bucket, "bucket", f"service {self.name!r}: storage({name!r})")
             if bucket not in [b.name for b in self.buckets]:
                 raise UsageError(f"service {self.name!r}: {bucket!r} is not one of its buckets")
+        path = place_path(path, f"service {self.name!r}: storage({name!r}, path={path!r})", "bucket", empty=True)
         root = f"s3://{bucket or '{' + self.name + '.bucket}'}/{path}".rstrip("/")
         return S3StorageDef(name, root, endpoint=f"{{{self.name}.endpoint}}", inputs=[self], **fields)
 

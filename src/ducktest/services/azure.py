@@ -25,7 +25,7 @@ from ..binary import UsageError
 from ..host import docker, has_docker, in_url, service_bind, service_host
 from ..resources import NEVER, ON_FAILURE, AzureCredentialDef, AzureStorageDef, Service, ServiceDef, ServiceNotUp
 from ..resources.remote import AzureBlobAccess, remote_for
-from ..resources.storage import declared_scheme
+from ..resources.storage import declared_scheme, place_path
 from .azblob import PUBLIC_LEVELS, BlobApi
 from .parts import Part, Parts, parts_needed
 
@@ -205,6 +205,7 @@ class AzureServiceDef(ServiceDef):
             container = names.ref(container, "container", f"service {self.name!r}: storage({name!r})")
             if container not in [c.name for c in self.containers]:
                 raise UsageError(f"service {self.name!r}: {container!r} is not one of its containers")
+        path = place_path(path, f"service {self.name!r}: storage({name!r}, path={path!r})", "container", empty=True)
         root = f"az://{container or '{' + self.name + '.container}'}/{path}".rstrip("/")
         return AzureStorageDef(name, root, account=f"{{{self.name}.account}}", inputs=[self], **fields)
 

@@ -55,13 +55,16 @@ def fill(template: str, inputs: Mapping[str, Resource]) -> str:
     return _REF.sub(one, template)
 
 
-def _place_path(path, where) -> str:
-    """`path` of `.at(path)`: relative, below the storage, without `.` or `..`."""
+def place_path(path, given, under="storage", *, empty=False) -> str:
+    """A `path` under something rooted, `given` as the call says: relative, without `.`, `..` or `//`;
+    `""`, the root itself, where `empty`."""
+    if empty and path == "":
+        return path
     if not isinstance(path, str) or "://" in path or path.startswith("/"):
-        raise UsageError(f"{where}.at({path!r}): give a path relative to the storage, such as 'ducktest'")
+        raise UsageError(f"{given}: give a path relative to the {under}, such as 'ducktest'")
     parts = path.strip("/").split("/")
     if not path.strip("/") or any(p in ("", ".", "..") for p in parts):
-        raise UsageError(f"{where}.at({path!r}): give a path below the storage, without '.', '..' or '//'")
+        raise UsageError(f"{given}: give a path below the {under}, without '.', '..' or '//'")
     return "/".join(parts)
 
 
@@ -115,6 +118,9 @@ class StorageDef(ResourceDef):
         scheme = declared_scheme(self.root)
         if scheme is not None:
             self.check_scheme(scheme, self.root)
+        self.temp_path = place_path(
+            self.temp_path, f"{type(self).__name__}({self.name!r}, temp_path={self.temp_path!r})"
+        )
         super().__post_init__()
 
     def check_scheme(self, scheme: str, root: str) -> None:
@@ -126,7 +132,7 @@ class StorageDef(ResourceDef):
 
     def at(self, path: str) -> At:
         """A place under this storage, for `data=` and `temp=`; cleanup knows it from here on."""
-        path = _place_path(path, self.name)
+        path = place_path(path, f"{self.name}.at({path!r})")
         # Not a field: a place is not part of what the storage is, so not of its identity.
         places = self.__dict__.setdefault("_places", [])
         if path not in places:
