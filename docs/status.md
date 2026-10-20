@@ -74,6 +74,8 @@ run"). Settings of the servers themselves:
   `[tool.uv.sources]` before `uv sync`.
 - Scan does not check plain `{NAME}` names or `ctx.client("...")` names. A typo shows only when the
   statement runs. It checks the names of declarations and `{name.attr}` (design.md, 1.9).
+- A body that drives only Spark still records `runner: duck-shell`: every body leases a DuckDB shell,
+  and the runner names the process kind that serves the body, not the engine its SQL goes to.
 - One project cannot include another's conf and tests yet, nor refer to a name of another project.
 - duckdb-delta and duckdb-azure still hold the earlier conf form and the runner's earlier name; they move to
   `Project(...)` and `ducktest` before they run on this release.

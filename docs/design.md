@@ -371,10 +371,11 @@ so two names may stand for one identity. The examples keep UPPER_CASE variables 
 each saying its domain and role (`LOCAL_LAKE`, `"local_lake"`), never a bare `S3` or `LAKE`.
 Engines, services, storages and credentials share one namespace, the one a value's `{name.attr}`
 reads (2.3); a bucket or a container is named within its server. `duck` is the built-in DuckDB
-engine's name: a `DuckEngineDef("duck")` may take it, any other kind may not. A reference slot takes the name or
-the object itself: `storage=`, `data=`, `temp=`, `credential=`, `service=`, `engines=[...]`,
-`scopes=[...]`, `container=`, `bucket=`, and a value of the project's matrix. The object gives an
-editor's go-to-definition from a rule to what it binds; either way the run sees the name.
+engine's name: a `DuckEngineDef("duck")` may take it, a storage, credential or service may not. A
+reference slot takes the name or the object itself: `storage=`, `data=`, `temp=`, `credential=`,
+`service=`, `engines=[...]`, `scopes=[...]`, `container=`, `bucket=`, and a value of the project's
+matrix. The object gives an editor's go-to-definition from a rule to what it binds; either way the
+run sees the name.
 
 **Checks.** At scan, over every conf file of the tree and every body (not only what a run
 selects). They run once the bodies are imported, on the declared set, so what only a body names
@@ -423,12 +424,13 @@ inputs, and it has no handlers.
 ## 2.2 Engines, clients, Context
 
 The Python objects are thin handles all the way down: the engines run elsewhere. A DuckDB engine is
-one build. It runs a `.test` batch as `duck-sqllogic` (the `unittest` binary) and serves a body as
-`duck-shell` (the `duckdb` CLI); both get the engine's extensions and settings. The plan, the
-events (`runner`), `scan --env` and a failure name the one that ran (`[duck/duck-shell] statement
-failed`); a test's `type` stays what the test is. Spark is a JVM (one clone per worker). An engine
-instance serves one test at a time and is reset between tests (DuckDB: a fresh database in the same
-shell process, and its preamble; Spark: its conf restored); after a failed test it is opened again.
+one build. It runs a `.test` batch as `duck-sqllogic` (today the `unittest` binary) and serves a
+body as `duck-shell` (the `duckdb` CLI); both get the engine's extensions and settings. The plan,
+the events (`runner`) and a failure name the one that ran (`[duck/duck-shell] statement failed`),
+and `scan --env` the one a test would run on; a test's `type` stays what the test is. Spark is a
+JVM (one clone per worker). An engine instance serves one test at a time and is reset between
+tests (DuckDB: a fresh database in the same shell process, and its preamble; Spark: its conf
+restored); after a failed test it is opened again.
 `lifetime` is `worker` (default), `batch` or `run`. `requires`, `settings`, `init_sql` and `process_env`
 are part of its identity; `lifetime` and `statement_timeout` (for one statement) are not. Tests one after the other share an
 instance of one identity; two names for engines of one identity in one test get two instances. A
