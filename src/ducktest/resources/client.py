@@ -202,15 +202,17 @@ class Client:
     """One engine's lease for one test: the verbs, run on the engine instance the test holds.
     `engine` is that instance, or None for a client of a body's own (a shell nobody else uses)."""
 
-    def __init__(self, name, run, *, values=None, record=None, defer=None, log=None, engine=None):
+    def __init__(self, name, run, *, values=None, record=None, defer=None, log=None, engine=None, label=None):
         """`run(statements)` runs them in order and returns `(column_names, rows)` of the last,
         rows as tuples; it raises SqlError, with the failed statement's index, on the first error.
         `values` are the test's: this client's own `values` are over them, so what the test sets later is
         seen too, and what is set on this client stays with it. `record(failure)` takes a failure under `on_fail="continue"`;
         `defer(callable)` takes a teardown. Without them such a failure raises and a teardown runs
         at once. `log(entry)` takes one `{client, sql, seconds}` for every call, which a verbose
-        report prints."""
+        report prints. `label` is what its messages name it by, `[label] ...`: the name, else
+        `name/process kind` (`[duck/duck-shell]`)."""
         self.name = name
+        self.label = label or name
         self.engine = engine
         self._run = run
         self.values = Values({}, parent=values)
@@ -245,10 +247,10 @@ class Client:
             if key not in filled:
                 if key in chain:
                     cycle = " -> ".join(f"{{{n}}}" for n in [*chain[chain.index(key) :], key])
-                    raise UsageError(f"[{self.name}] the values refer to each other in a cycle: {cycle}")
+                    raise UsageError(f"[{self.label}] the values refer to each other in a cycle: {cycle}")
                 v = known[name]
                 if chain:
-                    _log.debug("[%s] resolving {%s} for {%s}, in order", self.name, name, chain[-1])
+                    _log.debug("[%s] resolving {%s} for {%s}, in order", self.label, name, chain[-1])
                 filled[key] = fill(v, [*chain, key]) if isinstance(v, str) else v
             return filled[key]
 
@@ -260,7 +262,7 @@ class Client:
                 if name not in known:
                     inside = f" (in the value of {{{chain[-1]}}})" if chain else ""
                     raise UsageError(
-                        f"[{self.name}] no value for {{{name}}}{inside}; known: {sorted(known)}. "
+                        f"[{self.label}] no value for {{{name}}}{inside}; known: {sorted(known)}. "
                         "A literal brace pair around a word is written {{word}}."
                     )
                 v = resolved(name, list(chain))
@@ -285,7 +287,7 @@ class Client:
             return self._timed_run(statements)
         except SqlError as exc:
             failed = statements[exc.statement] if exc.statement is not None else "\n".join(statements)
-            raise ExpectationFailed(self.name, failed, f"{what} failed: {exc}") from None
+            raise ExpectationFailed(self.label, failed, f"{what} failed: {exc}") from None
 
     def _not_from_the_last_statement(self, statements, exc):
         """An earlier statement, the preamble, a timeout or a client that died: whatever the call
@@ -293,7 +295,7 @@ class Client:
         if exc.statement == len(statements) - 1:
             return
         failed = statements[exc.statement] if exc.statement is not None else "(not a statement of this call)"
-        raise ExpectationFailed(self.name, failed, f"statement failed: {exc}") from None
+        raise ExpectationFailed(self.label, failed, f"statement failed: {exc}") from None
 
     def rows(self, sql, **more):
         return self._must_run(self._statements(sql, more), "query")[1]
@@ -302,7 +304,7 @@ class Client:
         """The single row of `sql` as a dict, for DESCRIBE-like statements with many columns."""
         statements = self._statements(sql, more)
         columns, rows = self._must_run(statements, "query")
-        assert len(rows) == 1, f"[{self.name}] expected one row, got {len(rows)}\n{_indent(statements[-1])}"
+        assert len(rows) == 1, f"[{self.label}] expected one row, got {len(rows)}\n{_indent(statements[-1])}"
         return dict(zip(columns, rows[0]))
 
     def setup(self, sql, **more):
@@ -338,8 +340,8 @@ class Client:
             columns, rows = self._timed_run(statements)
         except SqlError as exc:
             self._not_from_the_last_statement(statements, exc)
-            return Executed(self.name, statements[-1], error=str(exc))
-        return Executed(self.name, statements[-1], columns=columns, rows=rows)
+            return Executed(self.label, statements[-1], error=str(exc))
+        return Executed(self.label, statements[-1], columns=columns, rows=rows)
 
     def expects_contains(self, sql, rows, *, on_fail="abort_test", **more):
         """Every row of `rows` is in the result, as often as it is in `rows`; the result may hold more."""
@@ -360,7 +362,7 @@ class Client:
         if actual and expected and widths[0] != widths[1]:
             hint = f" (expected rows have {sorted(widths[0])} values, the result has {sorted(widths[1])}; TAB between values?)"
         raise ExpectationFailed(
-            self.name,
+            self.label,
             statements[-1],
             f"wrong result{hint}\n  expected:\n{_indent(format_rows(expected))}\n  actual:\n{_indent(format_rows(actual))}\n  query:",
             expected=format_rows(expected),
@@ -373,7 +375,7 @@ class Client:
         missing = list((Counter(_as_text(rows)) - Counter(actual)).elements())
         if missing:
             raise ExpectationFailed(
-                self.name,
+                self.label,
                 statements[-1],
                 f"rows missing\n  missing:\n{_indent(format_rows(missing))}\n  actual:\n{_indent(format_rows(actual))}\n  query:",
                 expected=format_rows(missing),
@@ -387,6 +389,6 @@ class Client:
         except SqlError as exc:
             self._not_from_the_last_statement(statements, exc)
             if text not in str(exc):
-                raise ExpectationFailed(self.name, statements[-1], f"failed, but not with {text!r}: {exc}") from None
+                raise ExpectationFailed(self.label, statements[-1], f"failed, but not with {text!r}: {exc}") from None
             return
-        raise ExpectationFailed(self.name, statements[-1], f"statement succeeded, expected an error with {text!r}")
+        raise ExpectationFailed(self.label, statements[-1], f"statement succeeded, expected an error with {text!r}")

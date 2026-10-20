@@ -1,9 +1,10 @@
-"""The `unittest` binary as an engine: the process of one `.test` batch."""
+"""What runs a `.test` batch, as an engine: the `unittest` binary, one process for the batch."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..resources.dialect import DUCK_SQLLOGIC
 from ..resources.engine import BATCH, EngineDef
 
 
@@ -14,8 +15,7 @@ class UnittestEngineDef(EngineDef):
     the instance, so two `.test` bodies whose environments are equal lease one batch. The process is
     started and ended by the batch runner (`sqllogic.run_batch`), not opened here."""
 
-    kind = "unittest"
-    dialect = "unittest"
+    kind = dialect = DUCK_SQLLOGIC
 
     lifetime: str = BATCH
     environment: str = ""

@@ -182,7 +182,7 @@ def test_it_produces_a_credential_scoped_to_its_storage_and_emits_no_aws_names(f
     credential.create()
     credential.acquire()
     storage = storage_def.make({"s3": service})
-    assert render("duckdb", "secret", [storage], credential).sql == [
+    assert render("duck-shell", "secret", [storage], credential).sql == [
         "CREATE SECRET ducktest_s3_keys (TYPE s3, PROVIDER credential_chain, CHAIN 'env', "
         "REGION getenv('AWS_REGION'), ENDPOINT '127.0.0.1:9000', URL_STYLE 'path', USE_SSL false, "
         "SCOPE 's3://ducktest/lake');"
@@ -198,7 +198,7 @@ def test_its_credential_takes_provider_config_for_a_build_without_aws(fake_docke
     credential = credential_def.make({"s3": service})
     credential.create()
     credential.acquire()
-    rendered = render("unittest", "secret", [storage_def.make({"s3": service})], credential)
+    rendered = render("duck-sqllogic", "secret", [storage_def.make({"s3": service})], credential)
     assert rendered.sql == [
         "CREATE SECRET ducktest_s3_keys (TYPE s3, PROVIDER config, KEY_ID '{AWS_ACCESS_KEY_ID}', "
         "SECRET '{AWS_SECRET_ACCESS_KEY}', REGION '{AWS_REGION}', ENDPOINT '127.0.0.1:9000', URL_STYLE 'path', "

@@ -54,6 +54,7 @@ class EngineDef(ServiceDef):
     sharing = EXCLUSIVE
     provisioned = False
     dialect = None  # a class attribute of a kind; not annotated, so a kind may make it a field
+    process = None  # the process kind a client names in its messages beside the engine, where it has one
 
     name: str
     requires: list = field(default_factory=list)
@@ -93,6 +94,7 @@ class Engine(Service):
         super().__init__(definition, identity, run_token, inputs)
         self.runtime: Runtime | None = None
         self.live = None
+        self.holder = None  # the test that holds it, for the log
 
     @property
     def dialect(self) -> str | None:
@@ -179,8 +181,14 @@ class Engine(Service):
 
     def client(self, name=None, *, timeout=None, **fields) -> Client:
         """A Client on this instance for the test that holds it: the SQL verbs, run here."""
+        name = name or self.name
+        process = self.definition.process
         return Client(
-            name or self.name, lambda statements: self.run(statements, timeout=timeout), engine=self, **fields
+            name,
+            lambda statements: self.run(statements, timeout=timeout),
+            engine=self,
+            label=f"{name}/{process}" if process else name,
+            **fields,
         )
 
 

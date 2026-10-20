@@ -77,7 +77,7 @@ class Context:
         try:
             engine.reset()
         except SqlError as exc:
-            raise SetupFailed(f"[{name}] the preamble failed: {exc}") from None
+            raise SetupFailed(f"[{self.clients[name].label}] the preamble failed: {exc}") from None
         client = engine.client(**self._wiring())
         self._own.append(client)
         return client

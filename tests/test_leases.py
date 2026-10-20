@@ -1,6 +1,7 @@
 """Engines and the Context of a test: an engine instance takes a test's inputs, has an identity and
 a lifecycle, and mints the Clients a test's Context holds."""
 
+import logging
 import os
 import re
 from types import SimpleNamespace
@@ -228,6 +229,16 @@ def with_remote(test, remote_inputs):
     out = Test(test.definition, {}, ((defs[0], RW), (defs[1], RO)))
     out.roles = {"storage": (defs[0], None), "temp": (defs[0], None)}
     return out
+
+
+def test_the_log_names_the_engine_and_the_process_kind_of_a_shell_it_opens_for_a_test(tmp_path, caplog):
+    def body(ctx):
+        ctx.client("duck").oks("SELECT echo1")
+
+    with caplog.at_level(logging.INFO):
+        code, _, _, _ = go(tmp_path, [py_test(body)], duckdb_bin=FAKE_SHELL, shell_factory=DuckDBShell)
+    assert code == 0
+    assert "duck: duck-shell opened for test/body.py::body" in caplog.messages
 
 
 def test_the_default_duckdb_engine_sends_the_scoped_secret_over_the_shells_stdin(tmp_path, monkeypatch, remote_inputs):
@@ -595,11 +606,11 @@ def test_test_files_share_a_batch_exactly_when_their_engines_have_one_identity(b
     assert batch["json.test"] == batch["also_json.test"] == batch["inline_require.test"]
 
 
-def test_a_test_file_s_identity_is_that_of_the_unittest_engine_of_its_batch(bound):
+def test_a_test_file_s_identity_is_that_of_the_duck_sqllogic_engine_of_its_batch(bound):
     tests, project = scan(str(bound), working_dir=str(bound))
     of = {t.definition.path: leases.environment(t, resolve(t), project) for t in tests if t.definition.type == SQLLOGIC}
-    unittest = UnittestEngineDef("unittest", environment=of["json.test"].key()).make()
-    assert (unittest.dialect, unittest.definition.lifetime) == ("unittest", "batch")
+    unittest = UnittestEngineDef("duck-sqllogic", environment=of["json.test"].key()).make()
+    assert (unittest.dialect, unittest.definition.lifetime) == ("duck-sqllogic", "batch")
     assert leases.batch_identity(of["json.test"]) == leases.identity([unittest.identity], of["json.test"])
     assert leases.batch_identity(of["json.test"]) == leases.batch_identity(of["also_json.test"])
     assert leases.batch_identity(of["json.test"]) != leases.batch_identity(of["delta.test"])
@@ -619,10 +630,10 @@ def test_scan_env_shows_the_clients_of_each_test_and_what_their_engines_render(b
     assert main(["scan", "--env"]) == 0
     printed = capsys.readouterr().out
     assert (
-        "delta.test::delta\n  client: delta (unittest)  <- engines delta\n    require: delta  <- engine delta\n"
+        "delta.test::delta\n  engine: delta, as duck-sqllogic  <- engines delta\n    require: delta  <- engine delta\n"
         in printed
     )
-    assert "body.py::body\n  client: json (duckdb)  <- engines json\n    require: json  <- engine json\n" in printed
+    assert "body.py::body\n  client: json, as duck-shell  <- engines json\n    require: json  <- engine json\n" in printed
 
 
 def test_the_engine_comes_first_in_the_init_file_and_nothing_is_given_twice():
@@ -691,11 +702,11 @@ def test_the_projects_only_duckdb_engine_is_the_default(tmp_path, monkeypatch, c
     roots = default_roots(tmp_path / "p")
     assert capsys.readouterr().out == (
         "body.py::body\n"
-        "  client: duck (duckdb)  <- engines duck (the only DuckDB engine)\n"
+        "  client: duck, as duck-shell  <- engines duck (the only DuckDB engine)\n"
         "    require: json  <- engine duck\n"
         f"{roots}"
         "x.test::x\n"
-        "  client: duck (unittest)  <- engines duck (the only DuckDB engine)\n"
+        "  engine: duck, as duck-sqllogic  <- engines duck (the only DuckDB engine)\n"
         "    require: json  <- engine duck\n"
         f"{roots}"
     )

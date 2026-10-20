@@ -94,7 +94,7 @@ def plan_batches(run_dir):
     keys, lines = {}, ["", "02-plan.yaml batches:"]
     for batch in plan["batches"]:
         key = keys.setdefault(batch["key"]["digest"], f"key{len(keys) + 1}")
-        lines.append(f"  {batch['name']}  {batch['runner']:<8}  {key}  {', '.join(batch['files'])}")
+        lines.append(f"  {batch['name']}  {batch['runner']:<13}  {key}  {', '.join(batch['files'])}")
     return "\n".join(lines) + "\n"
 
 

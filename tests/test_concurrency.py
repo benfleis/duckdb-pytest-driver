@@ -105,5 +105,5 @@ def test_an_error_the_body_did_not_expect_is_reported_with_the_statement(tmp_pat
     code, printed = proof(tmp_path, break_it)
     assert code == 1
     assert "ATTACH failed for a reason this test does not expect" in printed
-    assert "[duck] exec, failed: IO Error: Could not set lock on file" in printed
+    assert "[duck/duck-shell] exec, failed: IO Error: Could not set lock on file" in printed
     assert "ATTACH '" in printed and "shared.db' AS shared" in printed

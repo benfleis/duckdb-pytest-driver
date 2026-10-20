@@ -35,7 +35,7 @@ test's own line, so no renderer has to open another file.
                   test           `path::name`, the test definition it comes from
                   type           sqllogic | paired | python
                   file           the test's file, relative to the working directory
-                  runner         unittest | python
+                  runner         the process kind that runs it: duck-sqllogic | duck-shell; - when blocked
                   at             seconds since run_start
 
     test_end      name, test, type, file, runner    the same identity as test_start

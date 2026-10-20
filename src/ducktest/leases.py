@@ -10,9 +10,9 @@ other inputs leases another instance.
 
 A test's identity is that of the engine instances it leases and its test environment; tests of one
 identity may share those instances, and `.test` bodies of one identity share a batch. A `.test` body
-runs in one DuckDB engine, rendered in the `unittest` dialect: the process of its batch.
+runs in one DuckDB engine as `duck-sqllogic`, rendered in that dialect: the process of its batch.
 `environment()` puts that engine over the test environment, and `batch_identity()` is the identity
-of a test that leases the `unittest` engine of a batch given the result. So two `.test` bodies share
+of a test that leases the `duck-sqllogic` engine of a batch given the result. So two `.test` bodies share
 a batch exactly when their DuckDB engines and test environments are equal. What the body itself
 says, an inline `require` among it, is not part of that.
 """
@@ -24,6 +24,7 @@ from dataclasses import replace
 from .binary import UsageError
 from .engines.duckdb import DuckEngineDef
 from .engines.unittest import UnittestEngineDef
+from .resources.dialect import DUCK_SHELL, DUCK_SQLLOGIC
 from .model import SQLLOGIC
 from .provision import MASK, SECRET_NAME
 from .resources.base import digest
@@ -120,8 +121,8 @@ def identity(engine_identities, test_env) -> str:
 
 def batch_identity(test_env) -> str:
     """The identity of a `.test` body, from its test environment under its DuckDB engine
-    (`environment()`): it leases one engine, the `unittest` process of the batch that is given it."""
-    return identity([UnittestEngineDef("unittest", environment=test_env.key()).make().identity], test_env)
+    (`environment()`): it leases one engine, the `duck-sqllogic` process of the batch that is given it."""
+    return identity([UnittestEngineDef(DUCK_SQLLOGIC, environment=test_env.key()).make().identity], test_env)
 
 
 def planned(test, test_env, project) -> str:
@@ -134,17 +135,22 @@ def planned(test, test_env, project) -> str:
 
 
 def lines(test, project) -> list[str]:
-    """What `scan --env` says of each engine the test names: the dialect of its Client, and what the
-    engine gives."""
+    """What `scan --env` says of each engine the test names: for a DuckDB engine the process kind
+    that runs the test (`engine: duck, as duck-sqllogic` for a `.test`, `client: duck, as duck-shell`
+    for a body), for another the dialect of its Client; then what the engine gives."""
     shown = [(d, f"engines {d.name}") for d in named(test, project)]
     duckdb = duckdb_of(test, project)
     if duckdb is not DEFAULT and all(d is not duckdb for d, _ in shown):
         shown.insert(0, (duckdb, f"engines {duckdb.name} (the only DuckDB engine)"))
     out = []
     for d, source in shown:
-        dialect = "unittest" if test.definition.type == SQLLOGIC else d.dialect
         where = f"engine {d.name}"
-        out.append(f"client: {d.name} ({dialect})  <- {source}")
+        if d.kind != DEFAULT.kind:
+            out.append(f"client: {d.name} ({d.dialect})  <- {source}")
+        elif test.definition.type == SQLLOGIC:
+            out.append(f"engine: {d.name}, as {DUCK_SQLLOGIC}  <- {source}")
+        else:
+            out.append(f"client: {d.name}, as {DUCK_SHELL}  <- {source}")
         if d.requires:
             out.append(f"  require: {', '.join(d.requires)}  <- {where}")
         for name, value in d.settings.items():

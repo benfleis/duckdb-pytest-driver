@@ -85,8 +85,9 @@ def test_each_phase_writes_its_own_file_and_the_files_say_what_schema_they_are(t
     phases_of("apart")
     for name in (phases.TESTS_FILE, phases.PLAN_FILE, phases.PROVISION_FILE, events.EVENTS_FILE):
         assert os.path.isfile(os.path.join("apart", name))
-    for name in (phases.TESTS_FILE, phases.PLAN_FILE, phases.PROVISION_FILE):
-        assert yaml.safe_load(open(os.path.join("apart", name)))["schema"] == 1
+    schemas = {phases.TESTS_FILE: 1, phases.PLAN_FILE: 2, phases.PROVISION_FILE: 1}
+    for name, schema in schemas.items():
+        assert yaml.safe_load(open(os.path.join("apart", name)))["schema"] == schema
 
 
 def test_the_plan_names_the_batches_the_tests_and_the_knobs(tree):
@@ -95,7 +96,7 @@ def test_the_plan_names_the_batches_the_tests_and_the_knobs(tree):
     doc = yaml.safe_load(open(os.path.join("apart", phases.PLAN_FILE)))
     assert doc["knobs"]["batch_size"] == 1 and doc["knobs"]["workers"] == 2
     assert [b["name"] for b in doc["batches"]] == ["b001", "b002", "b003", "b004"]
-    assert [b["runner"] for b in doc["batches"]] == ["unittest"] * 3 + ["python"]
+    assert [b["runner"] for b in doc["batches"]] == ["duck-sqllogic"] * 3 + ["duck-shell"]
     assert sorted(b["tests"][0] for b in doc["batches"]) == [
         "a/x.test::x",
         "a/y.test::y",

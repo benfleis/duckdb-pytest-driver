@@ -33,7 +33,7 @@ BLOCKED  py/spark.py::roundtrip[backend=oss]  [spark did not come up]
   py/write.py:14
 
   setup failed
-  [duck] statement failed: Catalog Error: Table with name t does not exist
+  [duck/duck-shell] statement failed: Catalog Error: Table with name t does not exist
       SELECT * FROM t;
 
   require: httpfs  <- matrix storage=s3

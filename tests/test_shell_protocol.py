@@ -1,6 +1,7 @@
 """The protocol between ducktest's DuckDB shell and the shell, against a fake shell: time limits and
 threads. No DuckDB is needed."""
 
+import logging
 import os
 import threading
 import time
@@ -27,6 +28,16 @@ def test_a_statement_that_still_prints_at_its_time_limit_is_killed(shell):
         shell.run(["SELECT drip"], timeout=0.5)
     assert time.monotonic() - t0 < 3
     assert shell.run(["SELECT echo4"]) == (["v"], [(4,)])  # a new shell, at the next statement
+
+
+def test_a_shell_that_died_under_a_test_is_opened_again_and_the_log_says_so(shell, caplog):
+    shell.label, shell.holder = "duck: duck-shell", "t.py::t"
+    assert shell.run(["SELECT echo1"]) == (["v"], [(1,)])
+    shell._process.kill()
+    shell._process.wait()
+    with caplog.at_level(logging.INFO, logger="ducktest.engines.duckdb"):
+        assert shell.run(["SELECT echo2"]) == (["v"], [(2,)])
+    assert "duck: duck-shell died under t.py::t; opened again" in caplog.messages
 
 
 def test_two_threads_never_get_each_others_result(shell):

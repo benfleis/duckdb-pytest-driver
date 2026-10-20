@@ -123,7 +123,7 @@ def connection(monkeypatch):
 
 def test_duckdb_gets_the_connection_string_as_a_scoped_secret_by_its_env_name(connection):
     storage = StorageDef("blobs", "az://data/lake").make()
-    assert render("duckdb", "secret", [storage], connection).sql == [
+    assert render("duck-shell", "secret", [storage], connection).sql == [
         "CREATE SECRET ducktest_az_keys (TYPE azure, PROVIDER config, "
         "CONNECTION_STRING getenv('AZURE_STORAGE_CONNECTION_STRING'), SCOPE 'az://data/lake');"
     ]
@@ -131,7 +131,7 @@ def test_duckdb_gets_the_connection_string_as_a_scoped_secret_by_its_env_name(co
 
 def test_the_unittest_binary_gets_the_name_never_the_value_and_requires_azure(connection):
     storage = StorageDef("blobs", "az://data/lake", account="acct").make()
-    assert replace(render("unittest", "secret", [storage], connection), why={}) == Preamble(
+    assert replace(render("duck-sqllogic", "secret", [storage], connection), why={}) == Preamble(
         sql=[
             "CREATE SECRET ducktest_az_keys (TYPE azure, PROVIDER config, "
             "CONNECTION_STRING '{AZURE_STORAGE_CONNECTION_STRING}', ACCOUNT_NAME 'acct', SCOPE 'az://data/lake');"
@@ -143,7 +143,7 @@ def test_the_unittest_binary_gets_the_name_never_the_value_and_requires_azure(co
 def test_an_account_name_alone_is_a_secret_for_anonymous_reads(monkeypatch):
     monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "acct")
     credential = made(AzureCredentialDef("anon", sources=[from_env(["AZURE_STORAGE_ACCOUNT"])]))
-    assert render("duckdb", "secret", [StorageDef("blobs", "az://data/lake").make()], credential).sql == [
+    assert render("duck-shell", "secret", [StorageDef("blobs", "az://data/lake").make()], credential).sql == [
         "CREATE SECRET ducktest_anon (TYPE azure, PROVIDER config, ACCOUNT_NAME getenv('AZURE_STORAGE_ACCOUNT'), "
         "SCOPE 'az://data/lake');"
     ]
@@ -155,7 +155,7 @@ def test_an_access_token_is_in_the_secret_by_reference(monkeypatch):
         AzureCredentialDef("tok", provider="access_token", sources=[from_env(["AZURE_ACCESS_TOKEN"])], account_name="a")
     )
     storage = StorageDef("blobs", "az://data/lake").make()
-    sql = [render(d, "secret", [storage], credential).sql[0] for d in ("duckdb", "unittest")]
+    sql = [render(d, "secret", [storage], credential).sql[0] for d in ("duck-shell", "duck-sqllogic")]
     assert sql == [
         "CREATE SECRET ducktest_tok (TYPE azure, PROVIDER access_token, ACCESS_TOKEN getenv('AZURE_ACCESS_TOKEN'), "
         "ACCOUNT_NAME getenv('AZURE_STORAGE_ACCOUNT'), SCOPE 'az://data/lake');",
@@ -168,7 +168,7 @@ def test_an_access_token_is_in_the_secret_by_reference(monkeypatch):
 def test_a_service_principal_secret_names_each_of_its_fields_and_the_account_an_abfss_root_names(spn_env):
     credential = made(AzureCredentialDef("spn", provider="service_principal", sources=[from_env(SPN)]))
     storage = StorageDef("lake", "abfss://data@acct.dfs.core.windows.net/lake").make()
-    assert render("duckdb", "secret", [storage], credential).sql == [
+    assert render("duck-shell", "secret", [storage], credential).sql == [
         "CREATE SECRET ducktest_spn (TYPE azure, PROVIDER service_principal, TENANT_ID getenv('AZURE_TENANT_ID'), "
         "CLIENT_ID getenv('AZURE_CLIENT_ID'), CLIENT_SECRET getenv('AZURE_CLIENT_SECRET'), ACCOUNT_NAME 'acct', "
         "SCOPE 'abfss://data@acct.dfs.core.windows.net/lake');"
@@ -180,7 +180,7 @@ def test_a_chain_secret_holds_no_key_the_sdk_reads_them_from_the_env(spn_env):
         AzureCredentialDef("ci", provider="credential_chain", chain="env", sources=[from_env(SPN)], account_name="acct")
     )
     storages = [StorageDef("a", "az://one").make(), StorageDef("b", "az://two").make()]
-    assert render("unittest", "secret", storages, credential).sql == [
+    assert render("duck-sqllogic", "secret", storages, credential).sql == [
         "CREATE SECRET ducktest_ci (TYPE azure, PROVIDER credential_chain, CHAIN 'env', "
         "ACCOUNT_NAME '{AZURE_STORAGE_ACCOUNT}', SCOPE ['az://one', 'az://two']);"
     ]
@@ -190,12 +190,12 @@ def test_storages_of_two_accounts_get_no_one_secret(spn_env):
     credential = made(AzureCredentialDef("ci", provider="credential_chain"))
     storages = [StorageDef("a", "az://one", account="x").make(), StorageDef("b", "az://two", account="y").make()]
     with pytest.raises(UsageError, match="of different accounts"):
-        render("duckdb", "secret", storages, credential)
+        render("duck-shell", "secret", storages, credential)
 
 
 def test_a_storage_of_another_scheme_is_refused(connection):
     with pytest.raises(UsageError, match=r"an AzureCredentialDef is for az, abfss storages only"):
-        render("duckdb", "secret", [StorageDef("blobs", "s3://bucket").make()], connection)
+        render("duck-shell", "secret", [StorageDef("blobs", "s3://bucket").make()], connection)
 
 
 def test_spark_renders_no_azure_secret(connection):
@@ -233,7 +233,7 @@ def test_a_test_that_binds_only_the_credential_gets_its_env_and_no_secret(tree, 
     assert capsys.readouterr().out.replace(str(tree), "ROOT") == textwrap.dedent(
         """\
         existing.test::existing
-          client: duck (unittest)  <- engines duck (the only DuckDB engine)
+          engine: duck, as duck-sqllogic  <- engines duck (the only DuckDB engine)
           bind: credential=az  <- ducktest_conf.py: match 'existing.test'
           secret: none (no storage of the test is in its scope)  <- credential az
           values: AZ_TEMP_DIR=writes  <- ducktest_conf.py: match 'existing.test'

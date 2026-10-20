@@ -38,7 +38,7 @@ from .provision import SECRET_NAME as _SECRET_NAME
 from .resources import RO, ServiceDef, ServiceNotUp
 from .resources.client import check_names
 from .resources.credential import CredentialView, credential_types, engine_env, kept_names, removed_names
-from .resources.dialect import pairs, render, secret_name
+from .resources.dialect import DUCK_SHELL, DUCK_SQLLOGIC, pairs, render, secret_name
 from .resources.made import Made, services_in
 
 _LABELS = {
@@ -290,7 +290,7 @@ def resolve(test, made=None, key=None, default=None):
             env.unrendered.append(Entry("", f"credential {credential.name}", kind="secret", shown=shown))
             continue
         # The same text either way; the init file of a .test body also requires what it needs.
-        rendered = render("unittest" if definition.body_file else "duckdb", "secret", storages, credential)
+        rendered = render(DUCK_SQLLOGIC if definition.body_file else DUCK_SHELL, "secret", storages, credential)
         where = f"credential {credential.name}, storage {', '.join(s.name for s in storages)}"
         for extension in rendered.requires:
             if extension not in env.extensions + [e.value for e in env.secret_requires]:

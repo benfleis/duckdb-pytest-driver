@@ -1,9 +1,9 @@
 """How resource attributes become an engine's preamble: one renderer per (dialect, action), and
 one per (dialect, credential class) for a credential's secret.
 
-    duckdb     SQL sent to a DuckDB shell over its stdin: LOAD, SET, CREATE SECRET ... SCOPE
-    unittest   the init file of a `.test` batch: `require`, SET, CREATE SECRET ... SCOPE
-    spark      runtime configuration of a Spark session; a secret is a per-bucket s3a setting
+    duck-shell      SQL sent to a DuckDB shell over its stdin: LOAD, SET, CREATE SECRET ... SCOPE
+    duck-sqllogic   the init file of a `.test` batch: `require`, SET, CREATE SECRET ... SCOPE
+    spark           runtime configuration of a Spark session; a secret is a per-bucket s3a setting
 
 The actions are `requires` (a list of extensions), `settings` (name -> value) and `secret` (a
 Credential and the Storages it is scoped to, among a Test's inputs). The keys reach every engine
@@ -22,6 +22,10 @@ from ..binary import UsageError
 from .credential import AzureCredentialDef, S3CredentialDef
 
 _RENDERERS = {}
+
+# A DuckDB engine's two process kinds, each with its dialect: the shell serving a Python body, and
+# what runs a `.test` batch.
+DUCK_SHELL, DUCK_SQLLOGIC = "duck-shell", "duck-sqllogic"
 
 
 @dataclass
@@ -132,16 +136,16 @@ def _scheme_checked(storages, credential):
 
 
 # -----------------------------------------------------------------------------
-# duckdb
+# duck-shell
 #
 
 
-@renders("duckdb", "requires")
+@renders(DUCK_SHELL, "requires")
 def _duckdb_requires(names):
     return Preamble(sql=[f"LOAD {name};" for name in names])
 
 
-@renders("duckdb", "settings")
+@renders(DUCK_SHELL, "settings")
 def _duckdb_settings(settings):
     from ..testenv import set_statement
 
@@ -223,8 +227,8 @@ def duckdb_secret(cls, statement, extensions):
         by_name = lambda name: f"{{{name}}}"  # noqa: E731
         return Preamble(sql=[statement(storages, credential, by_name)], **needed(credential))
 
-    renders("duckdb", cls)(shell)
-    renders("unittest", cls)(init_file)
+    renders(DUCK_SHELL, cls)(shell)
+    renders(DUCK_SQLLOGIC, cls)(init_file)
 
 
 def _s3_extensions(credential):
@@ -282,16 +286,16 @@ duckdb_secret(
 
 
 # -----------------------------------------------------------------------------
-# unittest
+# duck-sqllogic
 #
 
 
-@renders("unittest", "requires")
+@renders(DUCK_SQLLOGIC, "requires")
 def _unittest_requires(names):
     return Preamble(sql=[f"require {name}" for name in names])
 
 
-renders("unittest", "settings")(_duckdb_settings)
+renders(DUCK_SQLLOGIC, "settings")(_duckdb_settings)
 
 
 # -----------------------------------------------------------------------------

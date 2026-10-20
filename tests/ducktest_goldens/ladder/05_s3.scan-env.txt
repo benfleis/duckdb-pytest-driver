@@ -1,5 +1,5 @@
 scoped_write.test::scoped_write
-  client: duck (unittest)  <- engines duck (the only DuckDB engine)
+  engine: duck, as duck-sqllogic  <- engines duck (the only DuckDB engine)
     require: httpfs  <- engine duck
   bind: storage=local_lake  <- ducktest_conf.py: default
   bind: temp=local_lake  <- ducktest_conf.py: default
@@ -7,7 +7,7 @@ scoped_write.test::scoped_write
   root: <from service local_s3>  <- storage local_lake
   process env: <from service local_s3>  <- credential local_keys
 scoped_write_body.py::scoped_write_body
-  client: duck (duckdb)  <- engines duck (the only DuckDB engine)
+  client: duck, as duck-shell  <- engines duck (the only DuckDB engine)
     require: httpfs  <- engine duck
   bind: storage=local_lake  <- ducktest_conf.py: default
   bind: temp=local_lake  <- ducktest_conf.py: default

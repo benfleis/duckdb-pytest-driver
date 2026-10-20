@@ -22,7 +22,7 @@
     <testcase name="py/write.py::write_then_read" classname="test/py/write.py" time="0.9">
       <properties>
         <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
-        <property name="runner" value="python" />
+        <property name="runner" value="duck-shell" />
         <property name="type" value="python" />
       </properties>
       <error message="setup failed" type="ERROR">--- py/write.py::write_then_read
@@ -30,7 +30,7 @@
   py/write.py:14
 
   setup failed
-  [duck] statement failed: Catalog Error: Table with name t does not exist
+  [duck/duck-shell] statement failed: Catalog Error: Table with name t does not exist
       SELECT * FROM t;
 
   require: httpfs  &lt;- matrix storage=s3
@@ -43,7 +43,7 @@
     <testcase name="sql/flaky.test::flaky" classname="test/sql/flaky.test" time="2.6">
       <properties>
         <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
-        <property name="runner" value="unittest" />
+        <property name="runner" value="duck-sqllogic" />
         <property name="type" value="sqllogic" />
         <property name="attempts" value="2" />
         <property name="note" value="passed on attempt 2 of 2" />
@@ -54,7 +54,7 @@
     <testcase name="sql/needs_env.test::needs_env" classname="test/sql/needs_env.test" time="0.33">
       <properties>
         <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
-        <property name="runner" value="unittest" />
+        <property name="runner" value="duck-sqllogic" />
         <property name="type" value="sqllogic" />
       </properties>
       <skipped message="require-env DAT_PATH" />
@@ -64,7 +64,7 @@
     <testcase name="sql/read.test::read" classname="test/sql/read.test" time="0.41">
       <properties>
         <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
-        <property name="runner" value="unittest" />
+        <property name="runner" value="duck-sqllogic" />
         <property name="type" value="sqllogic" />
       </properties>
     </testcase>
@@ -73,7 +73,7 @@
     <testcase name="sql/rows.test::rows" classname="test/sql/rows.test" time="1.25">
       <properties>
         <property name="run" value="2026-09-21T10-00-00Z--amber-koala-01" />
-        <property name="runner" value="unittest" />
+        <property name="runner" value="duck-sqllogic" />
         <property name="type" value="sqllogic" />
       </properties>
       <failure message="Wrong result in query! (test/sql/rows.test:12)!" type="FAILED">--- sql/rows.test::rows

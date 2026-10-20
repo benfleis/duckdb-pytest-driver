@@ -21,7 +21,7 @@ from .declare import CONF_FILE
 from .outcomes import Skip
 from .options import Settled
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef, Value
-from .resources.dialect import rendered_classes, secret_renderer
+from .resources.dialect import DUCK_SQLLOGIC, rendered_classes, secret_renderer
 from .resources import RO, RW, BootedEngineDef, CredentialDef, DefaultStorageDef, StorageDef, pick_credentials
 from .resources.credential import AmbiguousCredential, ReadOnlyCredential
 from .resources.storage import At
@@ -333,7 +333,7 @@ def _renderable(test, project):
     engines = [] if test.definition.type == SQLLOGIC else leases.engines_of(test, project)
     dialects = [(d.name, d.dialect) for d in engines if d.dialect is not None]
     if test.definition.body_file:
-        dialects.append(("unittest", "unittest"))
+        dialects.append((leases.duckdb_of(test, project).name, DUCK_SQLLOGIC))
     for c, _ in test.inputs:
         if not isinstance(c, CredentialDef) or not storages & set(c.scope_storages):
             continue

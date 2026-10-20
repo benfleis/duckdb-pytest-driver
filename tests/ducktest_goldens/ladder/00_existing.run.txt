@@ -9,4 +9,4 @@
 run dir: <run>
 
 02-plan.yaml batches:
-  b001  unittest  key1  sql/math/add.test, sql/math/mid_file_skip.test
+  b001  duck-sqllogic  key1  sql/math/add.test, sql/math/mid_file_skip.test

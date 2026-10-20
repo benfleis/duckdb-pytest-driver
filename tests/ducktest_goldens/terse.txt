@@ -1,6 +1,6 @@
 test: sql/rows.test::rows
 outcome: FAILED
-runner: unittest
+runner: duck-sqllogic
 seconds: 1.25
 file: test/sql/rows.test
 where: test/sql/rows.test:12
@@ -21,7 +21,7 @@ again: ducktest run --id sql/rows.test::rows
 
 test: sql/needs_env.test::needs_env
 outcome: SKIPPED
-runner: unittest
+runner: duck-sqllogic
 seconds: 0.33
 file: test/sql/needs_env.test
 reason: require-env DAT_PATH
@@ -29,13 +29,13 @@ again: ducktest run --id sql/needs_env.test::needs_env
 
 test: py/write.py::write_then_read
 outcome: ERROR
-runner: python
+runner: duck-shell
 seconds: 0.9
 file: test/py/write.py
 where: py/write.py:14
 message:
   | setup failed
-  | [duck] statement failed: Catalog Error: Table with name t does not exist
+  | [duck/duck-shell] statement failed: Catalog Error: Table with name t does not exist
   |     SELECT * FROM t;
 made-of:
   | require: httpfs  <- matrix storage=s3

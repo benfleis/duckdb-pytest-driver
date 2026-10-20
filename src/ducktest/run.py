@@ -47,6 +47,7 @@ from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED, Skip
 from .provision import KEPT, adopt, attach_argument, bring_up
 from .resources import RO, BootedEngineDef, ServiceNotUp
 from .resources.credential import engine_env
+from .resources.dialect import DUCK_SHELL, DUCK_SQLLOGIC
 from .resources.engine import Runtime
 from .resources.made import Made, services_in
 from .reports import Report, render, write_files
@@ -291,7 +292,6 @@ def execute(
     engines = project.engines
     knobs = plan.get("knobs") or {}
     workers = knobs.get("workers", 4)
-    runner = phases.UNITTEST_RUNNER
 
     verbose = level == "verbose"
     # Text at normal or verbose is the live renderer; anything else is rendered once, at the end.
@@ -503,7 +503,7 @@ def execute(
         batches = []
         for entry in plan.get("batches") or []:
             chunk = [runnable[i] for i in entry["tests"] if i in runnable]
-            if not chunk or entry["runner"] == phases.PYTHON_RUNNER:
+            if not chunk or entry["runner"] == DUCK_SHELL:
                 continue
             if unittest_bin is None:
                 raise UsageError("the selection holds .test files, and no unittest binary was found")
@@ -534,10 +534,11 @@ def execute(
             worker = getattr(threading.current_thread(), "worker", None)
             with pool.holding({m for test in chunk for m in test.mutex}):
                 for test in chunk:
-                    begin(test, runner, worker=worker)
-                _log.info("batch %s: starting, %d test(s)", os.path.basename(batch.dir), len(chunk))
+                    begin(test, DUCK_SQLLOGIC, worker=worker)
+                engine, name = leases.duckdb_of(chunk[0], project).name, os.path.basename(batch.dir)
+                _log.info("%s: %s batch %s starts, %d test(s)", engine, DUCK_SQLLOGIC, name, len(chunk))
                 results = sqllogic.run_batch(unittest_bin, batch, working_dir)
-                _log.info("batch %s: finished, %d test(s)", os.path.basename(batch.dir), len(chunk))
+                _log.info("%s: %s batch %s finished, %d test(s)", engine, DUCK_SQLLOGIC, name, len(chunk))
                 return worker, results
 
         def attempt(test, n, lease):
@@ -593,7 +594,7 @@ def execute(
                 return
             worker = getattr(threading.current_thread(), "worker", None)
             with pool.lease(test.name) as lease, pool.holding(test.mutex, lease):
-                begin(test, phases.PYTHON_RUNNER, worker=worker)
+                begin(test, DUCK_SHELL, worker=worker)
                 _log.info("test %s: starting", test.name)
                 test_started[test.name] = time.perf_counter()
                 t0 = time.perf_counter()
@@ -626,7 +627,7 @@ def execute(
                 done(
                     test,
                     outcome,
-                    runner=phases.PYTHON_RUNNER,
+                    runner=DUCK_SHELL,
                     seconds=round(time.perf_counter() - t0, 2),
                     problems=problems,
                     failure=failure if outcome not in (PASSED, SKIPPED) else None,
@@ -650,7 +651,7 @@ def execute(
             pool.revoke(test.name)
             if first:
                 done(
-                    test, ERROR, runner=phases.PYTHON_RUNNER, note=f"timed out after {test_timeout:.0f}s", worker=worker
+                    test, ERROR, runner=DUCK_SHELL, note=f"timed out after {test_timeout:.0f}s", worker=worker
                 )
 
         # One budget of slots for both kinds of body: a batch of `.test` files and a Python test
@@ -665,7 +666,7 @@ def execute(
                 future = pool.submit(start_and_run, chunk, batch)
                 batch_futures[future] = (chunk, batch)
                 every_future.append(future)
-            elif entry["runner"] == phases.PYTHON_RUNNER:
+            elif entry["runner"] == DUCK_SHELL:
                 test_timeout = entry.get("timeout") or sqllogic.DEFAULT_TIMEOUT_S
                 for i in entry["tests"]:
                     if i not in runnable:
@@ -691,12 +692,12 @@ def execute(
                         done(
                             test,
                             ERROR,
-                            runner=runner,
+                            runner=DUCK_SQLLOGIC,
                             problems=[f"the batch could not run: {type(exc).__name__}: {exc}"],
                             batch_dir=batch.dir,
                         )
                     continue
-                _report_batch(chunk, batch, by_test, done, run_dir, runner, worker=worker)
+                _report_batch(chunk, batch, by_test, done, run_dir, DUCK_SQLLOGIC, worker=worker)
             now = time.perf_counter()
             for future in [f for f in pending if f in python_deadlines]:
                 test, test_timeout = python_deadlines[future]

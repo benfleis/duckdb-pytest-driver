@@ -22,5 +22,5 @@ service local_s3 -- did not come up: existing service 'local_s3' does not answer
 run dir: <run>
 
 02-plan.yaml batches:
-  b001  unittest  key1  write_read.test
-  b002  unittest  key2  write_read.test
+  b001  duck-sqllogic  key1  write_read.test
+  b002  duck-sqllogic  key2  write_read.test

@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 from .binary import find_built
 from .outcomes import ERROR, FAILED, PASSED, SKIPPED
-from .resources.dialect import render
+from .resources.dialect import DUCK_SQLLOGIC, render
 from .testenv import TestEnv
 
 _log = logging.getLogger(__name__)
@@ -102,7 +102,7 @@ def init_file_text(test_env):
     one block each, so a failure can be traced back to the one thing that asked for it."""
     lines, sources = [], {}
     extensions = test_env.extensions + [e.value for e in test_env.secret_requires]
-    for extension, line in zip(extensions, render("unittest", "requires", extensions).sql):
+    for extension, line in zip(extensions, render(DUCK_SQLLOGIC, "requires", extensions).sql):
         if extension in test_env.require_why:
             sources[len(lines) + 1] = test_env.require_why[extension]
         lines += [line, ""]
@@ -242,7 +242,7 @@ def _invoke(binary, batch, working_dir):
         raise RuntimeError("the run was stopped")
     batch.write()
     args = batch_args(binary, batch, working_dir)
-    _log.debug("unittest: %s", shlex.join(args))
+    _log.debug("%s: %s", DUCK_SQLLOGIC, shlex.join(args))
     proc = subprocess.Popen(
         args,
         cwd=working_dir,

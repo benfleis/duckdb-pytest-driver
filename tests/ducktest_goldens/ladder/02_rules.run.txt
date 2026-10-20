@@ -17,12 +17,12 @@
 run dir: <run>
 
 02-plan.yaml batches:
-  b001  unittest  key1  default.test, rule_matched.test
-  b002  python    key2  matrix_body.py
-  b003  python    key3  matrix_body.py
-  b004  python    key4  matrix_body.py
-  b005  python    key5  matrix_body.py
-  b006  python    key6  own_inputs.py
-  b007  python    key6  paired_own_inputs.py
-  b008  python    key7  rule_matched_body.py
-  b009  python    key7  skipped_body.py
+  b001  duck-sqllogic  key1  default.test, rule_matched.test
+  b002  duck-shell     key2  matrix_body.py
+  b003  duck-shell     key3  matrix_body.py
+  b004  duck-shell     key4  matrix_body.py
+  b005  duck-shell     key5  matrix_body.py
+  b006  duck-shell     key6  own_inputs.py
+  b007  duck-shell     key6  paired_own_inputs.py
+  b008  duck-shell     key7  rule_matched_body.py
+  b009  duck-shell     key7  skipped_body.py

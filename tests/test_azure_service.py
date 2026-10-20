@@ -165,7 +165,7 @@ def test_it_produces_a_credential_scoped_to_its_storage_and_emits_no_azure_names
     storage = storage_def.make({"az": service})
     assert storage.root == "az://ducktest/lake"
     assert {k: v.get() for k, v in storage.delivery()[0].items()}["AZ_ACCOUNT"] == "devstoreaccount1"
-    (sql,) = render("duckdb", "secret", [storage], credential).sql
+    (sql,) = render("duck-shell", "secret", [storage], credential).sql
     assert sql.startswith("CREATE SECRET ducktest_") and sql.endswith("SCOPE 'az://ducktest/lake');")
     assert "PROVIDER config, CONNECTION_STRING getenv('AZURE_STORAGE_CONNECTION_STRING')" in sql
 

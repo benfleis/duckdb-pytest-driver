@@ -42,12 +42,12 @@ def two_storages(monkeypatch):
 
 
 def test_requires_are_load_for_a_shell_and_require_for_the_init_file():
-    assert render("duckdb", "requires", ["delta", "httpfs"]).sql == ["LOAD delta;", "LOAD httpfs;"]
-    assert render("unittest", "requires", ["delta"]).sql == ["require delta"]
+    assert render("duck-shell", "requires", ["delta", "httpfs"]).sql == ["LOAD delta;", "LOAD httpfs;"]
+    assert render("duck-sqllogic", "requires", ["delta"]).sql == ["require delta"]
 
 
 def test_settings_are_set_statements_for_duckdb_and_runtime_conf_for_spark():
-    assert render("duckdb", "settings", {"threads": 1, "s": "it's"}).sql == ["SET threads = '1';", "SET s = 'it''s';"]
+    assert render("duck-shell", "settings", {"threads": 1, "s": "it's"}).sql == ["SET threads = '1';", "SET s = 'it''s';"]
     assert render("spark", "settings", {"spark.sql.ansi.enabled": True}).conf == {"spark.sql.ansi.enabled": "True"}
 
 
@@ -78,7 +78,7 @@ def _config(credential):
 
 def test_duckdb_gets_one_secret_scoped_to_the_storage_root_whose_chain_reads_the_keys_from_its_env(remote):
     storage, credential = remote
-    assert replace(render("duckdb", "secret", [storage], credential), why={}) == Preamble(
+    assert replace(render("duck-shell", "secret", [storage], credential), why={}) == Preamble(
         sql=["CREATE SECRET ducktest_remote_key (TYPE s3, PROVIDER credential_chain, CHAIN 'env', " + CONNECTION],
         requires=["httpfs", "aws"],
     )
@@ -86,7 +86,7 @@ def test_duckdb_gets_one_secret_scoped_to_the_storage_root_whose_chain_reads_the
 
 def test_provider_config_names_each_key_in_the_secret_and_needs_no_aws(remote):
     storage, credential = remote
-    assert replace(render("duckdb", "secret", [storage], _config(credential)), why={}) == Preamble(
+    assert replace(render("duck-shell", "secret", [storage], _config(credential)), why={}) == Preamble(
         sql=[
             "CREATE SECRET ducktest_remote_key (TYPE s3, PROVIDER config, KEY_ID getenv('AWS_ACCESS_KEY_ID'), "
             "SECRET getenv('AWS_SECRET_ACCESS_KEY'), " + CONNECTION
@@ -97,7 +97,7 @@ def test_provider_config_names_each_key_in_the_secret_and_needs_no_aws(remote):
 
 def test_a_build_without_aws_is_told_the_chain_needs_it_and_what_takes_its_place(remote):
     storage, credential = remote
-    assert render("unittest", "secret", [storage], credential).why["aws"] == (
+    assert render("duck-sqllogic", "secret", [storage], credential).why["aws"] == (
         "S3CredentialDef('remote-key') needs the aws extension: its secret's PROVIDER credential_chain is the aws "
         "extension's; a build without aws takes provider='config'"
     )
@@ -113,13 +113,13 @@ def test_an_unknown_provider_is_a_usage_error():
 def test_a_storage_with_no_endpoint_gets_the_provider_and_the_scope_only(remote):
     _, credential = remote
     storage = StorageDef("aws", "s3://bucket/x").make()
-    assert render("duckdb", "secret", [storage], credential).sql == [
+    assert render("duck-shell", "secret", [storage], credential).sql == [
         "CREATE SECRET ducktest_remote_key (TYPE s3, PROVIDER credential_chain, CHAIN 'env', SCOPE 's3://bucket/x');"
     ]
 
 
 def test_a_credential_scoped_to_two_storages_gets_one_duckdb_secret_with_both_scopes(two_storages):
-    assert render("duckdb", "secret", *two_storages).sql == [
+    assert render("duck-shell", "secret", *two_storages).sql == [
         "CREATE SECRET ducktest_shared_key (TYPE s3, PROVIDER credential_chain, CHAIN 'env', "
         "ENDPOINT '172.18.0.1:9999', URL_STYLE 'path', USE_SSL false, SCOPE ['s3://bucket-a', 's3://bucket-b']);"
     ]
@@ -127,7 +127,7 @@ def test_a_credential_scoped_to_two_storages_gets_one_duckdb_secret_with_both_sc
 
 def test_the_unittest_binary_never_gets_the_keys_in_its_init_file_and_requires_aws_for_the_chain(remote):
     storage, credential = remote
-    assert replace(render("unittest", "secret", [storage], credential), why={}) == Preamble(
+    assert replace(render("duck-sqllogic", "secret", [storage], credential), why={}) == Preamble(
         sql=["CREATE SECRET ducktest_remote_key (TYPE s3, PROVIDER credential_chain, CHAIN 'env', " + CONNECTION],
         requires=["httpfs", "aws"],
     )
@@ -135,7 +135,7 @@ def test_the_unittest_binary_never_gets_the_keys_in_its_init_file_and_requires_a
 
 def test_with_provider_config_the_unittest_binary_gets_the_names_of_the_keys_and_requires_httpfs_only(remote):
     storage, credential = remote
-    assert replace(render("unittest", "secret", [storage], _config(credential)), why={}) == Preamble(
+    assert replace(render("duck-sqllogic", "secret", [storage], _config(credential)), why={}) == Preamble(
         sql=[
             "CREATE SECRET ducktest_remote_key (TYPE s3, PROVIDER config, KEY_ID '{AWS_ACCESS_KEY_ID}', "
             "SECRET '{AWS_SECRET_ACCESS_KEY}', " + CONNECTION
@@ -152,7 +152,7 @@ def test_the_region_is_named_in_the_secret_and_a_field_the_source_does_not_give_
     for provider in S3CredentialDef.providers:
         credential = S3CredentialDef("remote-key", sources=[keys], scopes=["remote"], provider=provider).make()
         credential.start()
-        (sql,) = render("duckdb", "secret", [storage], credential).sql
+        (sql,) = render("duck-shell", "secret", [storage], credential).sql
         assert "REGION getenv('AWS_REGION')" in sql and "SESSION_TOKEN" not in sql, provider
 
 
@@ -190,7 +190,7 @@ def test_a_storage_of_another_scheme_is_refused_where_a_template_gave_it(remote)
     _, credential = remote
     storage = StorageDef("blobs", "az://c/p").make()
     with pytest.raises(UsageError, match=r"S3CredentialDef\('remote-key'\) is scoped to storage 'blobs'"):
-        render("duckdb", "secret", [storage], credential)
+        render("duck-shell", "secret", [storage], credential)
 
 
 def test_a_credential_class_a_dialect_does_not_render_is_a_usage_error():
@@ -224,9 +224,9 @@ def test_a_credential_pairs_with_every_storage_it_is_scoped_to(two_storages):
 def test_the_preamble_is_requires_then_settings_then_secrets_then_init(remote):
     storage, credential = remote
     session = SimpleNamespace(requires=["httpfs"], settings={"threads": 1}, init_sql=["SELECT 42;"])
-    assert preamble("duckdb", session, remote).sql == [
+    assert preamble("duck-shell", session, remote).sql == [
         "LOAD httpfs;",
         "SET threads = '1';",
-        render("duckdb", "secret", [storage], credential).sql[0],
+        render("duck-shell", "secret", [storage], credential).sql[0],
         "SELECT 42;",
     ]

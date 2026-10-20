@@ -41,14 +41,14 @@ from .model import SQLLOGIC
 from .outcomes import BLOCKED, ERROR, FAILED, PASSED, SKIPPED
 from .provision import EXISTING, MANAGED, record
 from .resources import ALWAYS, ON_FAILURE, DefaultStorageDef, ServiceNotUp
+from .resources.dialect import DUCK_SHELL, DUCK_SQLLOGIC
 from .resources.made import Made, services_in
 
 _log = logging.getLogger(__name__)
 
 TESTS_FILE, PLAN_FILE, PROVISION_FILE = "01-tests.yaml", "02-plan.yaml", "03-provision.yaml"
-TESTS_SCHEMA = PLAN_SCHEMA = PROVISION_SCHEMA = 1
-
-PYTHON_RUNNER, UNITTEST_RUNNER = "python", "unittest"
+TESTS_SCHEMA = PROVISION_SCHEMA = 1
+PLAN_SCHEMA = 2  # 2: a batch's runner is a process kind, duck-sqllogic or duck-shell
 
 KEPT_OUTCOMES = (FAILED, ERROR, BLOCKED)  # what a test must end with for its files to stay
 
@@ -155,14 +155,15 @@ def _key_record(test, project):
 
 def build_plan(tests, project=None, *, batch_size=10, workers=4, keep=False):
     """`02-plan.yaml` as a document. Tests of `.test` files of one identity -- one DuckDB engine over
-    one test environment -- share a batch for the unittest binary; a Python body is a batch of one,
+    one test environment -- share a batch, run as `duck-sqllogic`; a Python body is a batch of one,
     because only this process can run it. Without `project` every test has the default engine.
 
-    A batch: `name`, `runner`, `order`, `tests` (the test ids), `files` (the `.test` files, relative to
-    the project root), `timeout` and `timeouts`/`retries` where a test has its own, `mutex` where a
-    test names one, and `key` (a digest of its tests' identity, and the test environment). `knobs`
-    records what the planner was given; the batch key is worked out again before a batch runs, so a
-    plan can be read by another engine without being believed."""
+    A batch: `name`, `runner` (the process kind that runs it: `duck-sqllogic`, `duck-shell`), `order`,
+    `tests` (the test ids), `files` (the `.test` files, relative to the project root), `timeout` and
+    `timeouts`/`retries` where a test has its own, `mutex` where a test names one, and `key` (a digest
+    of its tests' identity, and the test environment). `knobs` records what the planner was given;
+    the batch key is worked out again before a batch runs, so a plan can be read by another engine
+    without being believed."""
 
     def environment(test):
         return leases.environment(test, testenv.resolve(test), project)
@@ -174,7 +175,7 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, keep=False):
         for chunk in _chunks(group, batch_size):
             entry = {
                 "name": f"b{len(batches) + 1:03d}",
-                "runner": UNITTEST_RUNNER,
+                "runner": DUCK_SQLLOGIC,
                 "order": len(batches) + 1,
                 "tests": [c.name for c in chunk],
                 "files": [c.definition.root_path for c in chunk],
@@ -195,7 +196,7 @@ def build_plan(tests, project=None, *, batch_size=10, workers=4, keep=False):
         batches.append(
             {
                 "name": f"b{len(batches) + 1:03d}",
-                "runner": PYTHON_RUNNER,
+                "runner": DUCK_SHELL,
                 "order": len(batches) + 1,
                 "tests": [test.name],
                 "files": [test.definition.root_path],

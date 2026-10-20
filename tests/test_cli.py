@@ -371,7 +371,7 @@ def test_v_tags_each_line_with_the_worker_that_logged_it(tree, capsys):
     assert main(run_args("test/a/x.test", "-v")) == 0
     err = capsys.readouterr().err
     assert "INFO    main  ducktest.run: run start:" in err
-    assert "INFO    w0    ducktest.run: batch b001: starting, 1 test(s)" in err
+    assert "INFO    w0    ducktest.run: duck: duck-sqllogic batch b001 starts, 1 test(s)" in err
 
 
 def test_vv_does_not_change_a_terse_report_on_stdout(tree, capsys):

@@ -198,6 +198,7 @@ class Pool:
         taken = {}
         try:
             for _, _, engine_id, engine in sorted(chosen, key=lambda c: c[:2]):
+                engine.holder = lease.test_id if lease is not None else None
                 engine.acquire(RW)
                 self._keep(lease, engine, lambda e=engine: e.release(e, RW, failed=True), engine_id)
                 taken[engine_id] = engine

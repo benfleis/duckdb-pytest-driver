@@ -30,5 +30,5 @@ service local_az -- did not come up: existing service 'local_az' does not answer
 run dir: <run>
 
 02-plan.yaml batches:
-  b001  unittest  key1  scoped_write.test
-  b002  python    key2  scoped_write_body.py
+  b001  duck-sqllogic  key1  scoped_write.test
+  b002  duck-shell     key2  scoped_write_body.py

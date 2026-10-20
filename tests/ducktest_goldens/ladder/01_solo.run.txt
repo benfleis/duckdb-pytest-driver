@@ -7,6 +7,6 @@
 run dir: <run>
 
 02-plan.yaml batches:
-  b001  unittest  key1  solo_sqllogic.test
-  b002  python    key2  paired_solo.py
-  b003  python    key2  solo_body.py
+  b001  duck-sqllogic  key1  solo_sqllogic.test
+  b002  duck-shell     key2  paired_solo.py
+  b003  duck-shell     key2  solo_body.py

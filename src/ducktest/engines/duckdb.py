@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 from ..resources.client import SqlError
 from ..resources.credential import engine_env
+from ..resources.dialect import DUCK_SHELL
 from ..resources.engine import Engine, EngineDef, environ
 from ..sqltext import split_statements
 
@@ -83,17 +84,24 @@ DEFAULT_TIMEOUT_S = 120  # for one statement
 
 @dataclass(eq=False)
 class DuckEngineDef(EngineDef):
-    """DuckDB as an engine: a shell process of its own for each instance, with the process
-    variables of `process_env`."""
+    """A DuckDB build as an engine. It serves a Python body as `duck-shell`, a shell process of its
+    own for each instance, with the process variables of `process_env`; a `.test` batch runs on it as
+    `duck-sqllogic` (`engines/unittest.py`)."""
 
     kind = "duck"
-    dialect = "duckdb"
+    dialect = process = DUCK_SHELL
 
     def open(self, runtime):
         return runtime.shell(environ(self.process_env))
 
 
 class DuckEngine(Engine):
+    def start(self):
+        if self.live is None:
+            _log.info("%s: %s opened%s", self.name, DUCK_SHELL, f" for {self.holder}" if self.holder else "")
+        super().start()
+        self.live.label, self.live.holder = f"{self.name}: {DUCK_SHELL}", self.holder
+
     def run(self, statements, *, timeout=None):
         return self.live.run(statements, timeout=timeout or self.definition.statement_timeout or DEFAULT_TIMEOUT_S)
 
@@ -112,6 +120,8 @@ class DuckDBShell:
         self._lines = None
         self._calls = 0
         self._preambles = []  # of the running test, in order: what a new shell must redo
+        self.label, self.holder = DUCK_SHELL, None  # for the log: whose shell, held by which test
+        self._spawns = 0
 
     # -- lifecycle ------------------------------------------------------------
     def begin_test(self):
@@ -141,8 +151,9 @@ class DuckDBShell:
 
     def _spawn(self):
         # stderr joins stdout, so an error arrives in order, before the marker of its statement.
+        self._spawns += 1
         args = [self.binary, "-unsigned", "-json", "-init", os.devnull]
-        _log.debug("duckdb shell: %s", shlex.join(args))
+        _log.debug("%s: %s", self.label, shlex.join(args))
         self._process = subprocess.Popen(
             args,
             stdin=subprocess.PIPE,
@@ -172,6 +183,8 @@ class DuckDBShell:
         shell lives on. Returns the output of the last statement."""
         with self._busy:
             if not self._alive():
+                if self._spawns:
+                    _log.info("%s died under %s; opened again", self.label, self.holder or "no test")
                 self._spawn()
                 if numbered:  # the shell died under this test; give it back what the test set up
                     self._replay()

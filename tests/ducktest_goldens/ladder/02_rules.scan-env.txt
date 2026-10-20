@@ -1,12 +1,12 @@
 default.test::default
-  client: duck (unittest)  <- engines duck
+  engine: duck, as duck-sqllogic  <- engines duck
     require: parquet  <- engine duck
   bind: storage=scratch_a  <- ducktest_conf.py: default
   bind: temp=scratch_a  <- ducktest_conf.py: default
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 matrix_body.py::matrix_body[storage=a,case=small]
-  client: duck (duckdb)  <- engines duck
+  client: duck, as duck-shell  <- engines duck
     require: parquet  <- engine duck
   bind: storage=scratch_a  <- matrix storage=a
   bind: temp=scratch_a  <- matrix storage=a
@@ -17,7 +17,7 @@ matrix_body.py::matrix_body[storage=a,case=small]
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 matrix_body.py::matrix_body[storage=a,case=large]
-  client: duck (duckdb)  <- engines duck
+  client: duck, as duck-shell  <- engines duck
     require: parquet  <- engine duck
   bind: storage=scratch_a  <- matrix storage=a
   bind: temp=scratch_a  <- matrix storage=a
@@ -28,7 +28,7 @@ matrix_body.py::matrix_body[storage=a,case=large]
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 matrix_body.py::matrix_body[storage=b,case=small]
-  client: duck (duckdb)  <- engines duck
+  client: duck, as duck-shell  <- engines duck
     require: parquet  <- engine duck
   bind: storage=scratch_b  <- matrix storage=b
   bind: temp=scratch_b  <- matrix storage=b
@@ -39,7 +39,7 @@ matrix_body.py::matrix_body[storage=b,case=small]
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp/<run_token>  <- storage scratch_b
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 matrix_body.py::matrix_body[storage=b,case=large]
-  client: duck (duckdb)  <- engines duck
+  client: duck, as duck-shell  <- engines duck
     require: parquet  <- engine duck
   bind: storage=scratch_b  <- matrix storage=b
   bind: temp=scratch_b  <- matrix storage=b
@@ -50,35 +50,35 @@ matrix_body.py::matrix_body[storage=b,case=large]
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp/<run_token>  <- storage scratch_b
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 own_inputs.py::own_inputs
-  client: duck (duckdb)  <- engines duck
+  client: duck, as duck-shell  <- engines duck
     require: parquet  <- engine duck
   bind: storage=scratch_b  <- @test
   bind: temp=scratch_b  <- @test
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp/<run_token>  <- storage scratch_b
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 paired_own_inputs.py::paired_own_inputs
-  client: duck (duckdb)  <- engines duck
+  client: duck, as duck-shell  <- engines duck
     require: parquet  <- engine duck
   bind: storage=scratch_b  <- @test
   bind: temp=scratch_b  <- @test
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_b/temp/<run_token>  <- storage scratch_b
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 rule_matched.test::rule_matched
-  client: duck (unittest)  <- engines duck
+  engine: duck, as duck-sqllogic  <- engines duck
     require: parquet  <- engine duck
   bind: storage=scratch_a  <- ducktest_conf.py: default
   bind: temp=scratch_a  <- ducktest_conf.py: default
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 rule_matched_body.py::rule_matched_body
-  client: duck (duckdb)  <- engines duck
+  client: duck, as duck-shell  <- engines duck
     require: parquet  <- engine duck
   bind: storage=scratch_a  <- ducktest_conf.py: default
   bind: temp=scratch_a  <- ducktest_conf.py: default
   root: temp_dir_root=<tmp>/tmp/ducktest-ladder/scratch_a/temp/<run_token>  <- storage scratch_a
   root: data_dir=<tmp>/repo/02_rules/data  <- default storage
 skipped_body.py::skipped_body
-  client: duck (duckdb)  <- engines duck
+  client: duck, as duck-shell  <- engines duck
     require: parquet  <- engine duck
   bind: storage=scratch_a  <- ducktest_conf.py: default
   bind: temp=scratch_a  <- ducktest_conf.py: default

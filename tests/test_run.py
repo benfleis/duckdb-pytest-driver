@@ -776,8 +776,8 @@ def test_each_test_has_one_event_line(tmp_path):
     assert all(isinstance(e["seconds"], float) for e in ended)
     # a test with no parameters carries no `matrix`: what is not there was not known, never empty
     assert {e["name"]: (e["outcome"], e["runner"], e.get("matrix", {})) for e in ended} == {
-        "a.test::a[backend=oss]": ("passed", "unittest", {"backend": "oss"}),
-        "test/body.py::fails": ("failed", "python", {}),
+        "a.test::a[backend=oss]": ("passed", "duck-sqllogic", {"backend": "oss"}),
+        "test/body.py::fails": ("failed", "duck-shell", {}),
     }
 
 
@@ -822,6 +822,22 @@ def test_failed_checks_are_reported_before_the_abort_and_the_outcome_is_failed(t
     assert outcome == "failed"
     assert ["2" in problems[0], "3" in problems[1], "then the body broke" in problems[2]] == [True] * 3
     assert "at test/body.py:" in problems[0]
+
+
+class FailingShell(FakeShell):
+    def run(self, statements, *, timeout=None):
+        raise SqlError("boom", statement=len(statements) - 1)
+
+
+@pytest.mark.parametrize("client, prefix", [("duck", "[duck/duck-shell]"), ("fake", "[fake]")])
+def test_a_failure_names_the_client_and_for_a_duckdb_engine_its_process_kind(tmp_path, client, prefix):
+    def body(ctx):
+        ctx.client(client).oks("SELECT boom")
+
+    test = py_test(body, engines=["fake"])
+    outcome, problems, _ = _run_body(test, ctx_for(test, tmp_path, shell=FailingShell()))
+    assert outcome == "failed"
+    assert f"{prefix} statement failed: boom\n    SELECT boom" in problems[0]
 
 
 def test_the_binary_names_a_failed_file_as_the_test_id_does():
@@ -1077,7 +1093,7 @@ def test_a_new_client_whose_preamble_fails_is_a_setup_error(tmp_path):
     value = matrix_value("s3", init_sql="CREATE SECRET s")
     _, _, report, _ = go(tmp_path, [py_test(body, {"k": value})], shell_factory=factory)
     assert report["tests"][0]["outcome"] == "error"
-    assert "[duck] the preamble failed: Catalog Error" in report["tests"][0]["problems"][0]
+    assert "[duck/duck-shell] the preamble failed: Catalog Error" in report["tests"][0]["problems"][0]
 
 
 def test_a_new_client_is_a_warm_shell_of_its_own_closed_when_the_test_ends(tmp_path):
