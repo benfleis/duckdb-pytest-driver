@@ -90,11 +90,11 @@ class At:
 class StorageDef(ResourceDef):
     """A location: a local directory, a bucket, a container, with the scheme its `root` says. The typed
     kinds say the protocol and check the root: `LocalStorageDef`, `S3StorageDef`, `AzureStorageDef`;
-    `StorageDef` itself takes any root, such as a URL a service serves. The
-    storage itself is shared; a writer with a key gets a child of its own, a path under the root;
-    a writer with none has the whole root to itself, under a lock. A test gets from it what the slots
-    that bind it say (`options.py`): bound by `storage=`, its values, `S3_ENDPOINT`, `S3_USE_SSL`,
-    `AZ_ACCOUNT` where they apply; by `data=`, `DATA_DIR`, its root; by `temp=`, `TEMP_DIR`.
+    `StorageDef` itself takes any root, such as a URL a service serves. The storage itself is shared; a
+    writer with a key gets a child of its own, a path under the root; a writer with none has the whole
+    root to itself, under a lock. A test gets from it what the slots that bind it say (`options.py`):
+    bound by `storage=`, its values, `S3_ENDPOINT`, `S3_USE_SSL`, `AZ_ACCOUNT` where they apply; by
+    `data=`, `DATA_DIR`, its root; by `temp=`, `TEMP_DIR`.
 
     Its temp roots have three levels: the place, `<root>/<temp_path>`, or `<root>/<path>` for
     `STORAGE.at(path)`; `<place>/<run token>`, bound to the run (`TEMP_DIR_ROOT`); and a child under

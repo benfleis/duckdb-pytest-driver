@@ -329,17 +329,16 @@ project = Project(
 )
 ```
 
-**Names.** Every resource has a name, its first argument: `S3ServiceDef.rustfs("local_s3")` (`s3` when
-left out), `LOCAL_S3.storage("local_lake", ...)`, `LOCAL_S3.credential("local_keys", ...)`,
-`DuckDBEngineDef("duck")`. It is a label you pick; what a resource is (its identity) is its
-content, so two names may stand for one identity. The examples keep UPPER_CASE variables and
-lowercase names, each saying its domain and role (`LOCAL_LAKE`, `"local_lake"`), never a bare `S3`
-or `LAKE`. Engines, services, storages
-and credentials share one namespace, the one a value's `{name.attr}` reads (2.3); a bucket or a
-container is named within its server. A reference slot takes the name or the object itself:
-`storage=`, `data=`, `temp=`, `credential=`, `service=`, `engines=[...]`, `scopes=[...]`, `container=`,
-`bucket=`, and a value of the project's matrix. The object gives an editor's go-to-definition from a rule to what it
-binds; either way the run sees the name.
+**Names.** Every resource has a name, its first argument: `S3ServiceDef.rustfs("local_s3")` (`s3`
+when left out), `LOCAL_S3.storage("local_lake", ...)`, `LOCAL_S3.credential("local_keys", ...)`,
+`DuckDBEngineDef("duck")`. It is a label you pick; what a resource is (its identity) is its content,
+so two names may stand for one identity. The examples keep UPPER_CASE variables and lowercase names,
+each saying its domain and role (`LOCAL_LAKE`, `"local_lake"`), never a bare `S3` or `LAKE`.
+Engines, services, storages and credentials share one namespace, the one a value's `{name.attr}`
+reads (2.3); a bucket or a container is named within its server. A reference slot takes the name or
+the object itself: `storage=`, `data=`, `temp=`, `credential=`, `service=`, `engines=[...]`,
+`scopes=[...]`, `container=`, `bucket=`, and a value of the project's matrix. The object gives an
+editor's go-to-definition from a rule to what it binds; either way the run sees the name.
 
 **Checks.** At scan, over every conf file of the tree (not only what a run selects):
 

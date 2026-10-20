@@ -14,9 +14,9 @@ ducktest runs the `.test` files it finds on disk, whether the build lists them o
 Rung 02 on has a `ducktest_conf.py`: one `project = Project(...)` that declares what the tests need
 (`help(Project)` lists the fields; design.md, 1.9). Each imports what it uses from `ducktest` in one
 line. Its variables are UPPER_CASE and its declared names lowercase, each saying the domain and the
-role: `LOCAL_S3 = S3ServiceDef.rustfs("local_s3")`, `LOCAL_LAKE`, `"local_lake"`. A file below it would hold only rules, `rules =
-Rules(...)`. The scan checks the names the file declares and refers to; `--strict` also fails on one
-that nothing uses.
+role: `LOCAL_S3 = S3ServiceDef.rustfs("local_s3")`, `LOCAL_LAKE`, `"local_lake"`. A file below it
+would hold only rules, `rules = Rules(...)`. The scan checks the names the file declares and refers
+to; `--strict` also fails on one that nothing uses.
 
 ## 00_existing
 
@@ -61,24 +61,24 @@ A `.test` file with a body of its stem is not a test of its own; only the body r
 ## 02_rules
 
 `ducktest_conf.py` holds the project, `project = Project(...)`: two local storages, each a
-`LocalStorageDef`, and, among its
-engines, a DuckDB engine, `duck`, that loads `parquet`. Each is bound to a variable, and the rules
-refer to it by that object: `default(storage=SCRATCH_A, temp=SCRATCH_A, engines=[DUCK])` binds that
-storage for every test and names `duck` in `engines=`, so every test drives that engine, through a
-Client made for it. `storage=` says what a test is about; `temp=` is where it writes, so its
-`{TEMP_DIR}` is under `scratch_a`. Without `temp=` it would stay in the run directory: binding a
-storage does not move it. `data=` moves `{DATA_DIR}` the same way (rung 04). A reference takes the
-name too (`storage="scratch_a"`), as a body's `@test(...)` does; the object gives an editor's
+`LocalStorageDef`, and, among its engines, a DuckDB engine, `duck`, that loads `parquet`. Each is
+bound to a variable, and the rules refer to it by that object:
+`default(storage=SCRATCH_A, temp=SCRATCH_A, engines=[DUCK])` binds that storage for every test and
+names `duck` in `engines=`, so every test drives that engine, through a Client made for it.
+`storage=` says what a test is about; `temp=` is where it writes, so its `{TEMP_DIR}` is under
+`scratch_a`. Without `temp=` it would stay in the run directory: binding a storage does not move it.
+`data=` moves `{DATA_DIR}` the same way (rung 04). A reference takes the name too
+(`storage="scratch_a"`), as a body's `@test(...)` does; the object gives an editor's
 go-to-definition, and the run sees the name either way. Each `match()` rule names one file.
 `own_inputs.py` and `paired_own_inputs.py` bind `scratch_b` with `@test(storage=..., temp=...)`, and
 that wins over the rule; `select --explain` shows both bindings. `paired_own_inputs.py` calls
 `ctx.run_paired()`, which runs `paired_own_inputs.test`, the file of its stem beside it, through the
-binary with the body's own test environment, so the file sees `scratch_b` too. `default.test` is named by no
-`match()` and runs with what `default()` gives. `rule_matched_body.py` does what `default.test` does,
-through the Client on `duck`: its SQL names `'{TEMP_DIR}/t'` as a `.test` file would, and the Client
-fills in the test's own place under `scratch_a`. The rule of `excluded.test` tags it `opt-in`, so
-the default suite, and a bare run, leave it out, and `select --explain` says which tag did; `--suite all`
-runs it.
+binary with the body's own test environment, so the file sees `scratch_b` too. `default.test` is
+named by no `match()` and runs with what `default()` gives. `rule_matched_body.py` does what
+`default.test` does, through the Client on `duck`: its SQL names `'{TEMP_DIR}/t'` as a `.test` file
+would, and the Client fills in the test's own place under `scratch_a`. The rule of `excluded.test`
+tags it `opt-in`, so the default suite, and a bare run, leave it out, and `select --explain` says
+which tag did; `--suite all` runs it.
 
 `matrix_body.py` runs once per cell of its matrix. The project's `matrix=` declares the parameter
 `storage`, with the values `a` and `b`; each is a dict of slots, `{"storage": SCRATCH_A, "temp":
