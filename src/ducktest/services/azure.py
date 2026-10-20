@@ -25,6 +25,7 @@ from ..binary import UsageError
 from ..host import docker, has_docker, in_url, service_bind, service_host
 from ..resources import NEVER, ON_FAILURE, AzureCredentialDef, AzureStorageDef, Service, ServiceDef, ServiceNotUp
 from ..resources.remote import AzureBlobAccess, remote_for
+from ..resources.storage import declared_scheme
 from .azblob import PUBLIC_LEVELS, BlobApi
 from .parts import Part, Parts, parts_needed
 
@@ -185,8 +186,8 @@ class AzureServiceDef(ServiceDef):
         return parts_needed(self, inputs, [c.name for c in self.containers], "az")
 
     def check_storage(self, storage) -> None:
-        scheme = storage.root.split("://", 1)[0].lower() if "://" in storage.root else "file"
-        if "{" not in scheme and scheme != "az":
+        scheme = declared_scheme(storage.root)
+        if scheme is not None and scheme != "az":
             raise UsageError(
                 f"storage {storage.name!r} ({storage.root}) is on service {self.name!r} ({self.flavor}), which "
                 "serves blob storage only, as az://; it has no DFS endpoint for abfss://"

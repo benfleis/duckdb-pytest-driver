@@ -37,6 +37,12 @@ def scheme_of(root: str) -> str:
     return scheme
 
 
+def declared_scheme(root: str) -> str | None:
+    """The scheme a declared root says; None when a template gives it, known only when the storage is made."""
+    scheme = root.split("://", 1)[0].lower() if "://" in root else "file"
+    return None if root.startswith("{") or "{" in scheme else scheme
+
+
 def fill(template: str, inputs: Mapping[str, Resource]) -> str:
     """`template` with each `{input.name}` replaced by that input's attribute `name`."""
 
@@ -106,13 +112,14 @@ class StorageDef(ResourceDef):
     schemes: ClassVar[tuple | None] = None  # what a typed kind's `root` may be; None: any, checked when made
 
     def __post_init__(self):
-        scheme = self.root.split("://", 1)[0].lower() if "://" in self.root else "file"
-        # A scheme a template gives is checked where the storage is made.
-        if self.schemes is not None and "{" not in scheme and scheme not in self.schemes:
-            raise UsageError(
-                f"{type(self).__name__}({self.name!r}): root {self.root!r} is not {' or '.join(self.schemes)}"
-            )
+        scheme = declared_scheme(self.root)
+        if scheme is not None:
+            self.check_scheme(scheme, self.root)
         super().__post_init__()
+
+    def check_scheme(self, scheme: str, root: str) -> None:
+        if self.schemes is not None and scheme not in self.schemes:
+            raise UsageError(f"{type(self).__name__}({self.name!r}): root {root!r} is not {' or '.join(self.schemes)}")
 
     def attribute_names(self) -> tuple:
         return ATTRIBUTES
@@ -144,6 +151,7 @@ class Storage(Resource):
         self.parent = parent
         self.root = (root or fill(definition.root, self.inputs)).rstrip("/")
         self.scheme = scheme_of(self.root)
+        definition.check_scheme(self.scheme, self.root)
         endpoint = fill(definition.endpoint, self.inputs) if definition.endpoint else None
         account = fill(definition.account, self.inputs) if definition.account else None
         if account is None and self.scheme == "abfss" and "@" in self.root:

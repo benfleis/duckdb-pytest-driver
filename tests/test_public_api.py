@@ -1,12 +1,14 @@
 """The public API of a conf: the makers on the classes, and the module-level verbs that call them."""
 
 import os
+import textwrap
 
 import pytest
 
 from ducktest.binary import UsageError
 from ducktest.conf import Rule, default, match
 from ducktest.engines.spark import SparkEngineDef
+from ducktest.scan import scan
 from ducktest.resources import BootedEngineDef
 from ducktest.resources import AzureStorageDef, LocalStorageDef, S3StorageDef, StorageDef
 from ducktest.services.azure import AzureServiceDef, container
@@ -108,6 +110,37 @@ def test_a_typed_storage_checks_its_root():
     with pytest.raises(UsageError, match="is not az or abfss"):
         AzureStorageDef("blobs", "/tmp/x")
     assert StorageDef("served", "{http.url}").root == "{http.url}"
+
+
+def test_a_typed_storage_with_a_templated_root_is_checked_when_made():
+    on_s3, on_az = StorageDef("on_s3", "s3://b/p"), StorageDef("on_az", "az://c/p")
+    lake = S3StorageDef("lake", "{on_s3.root}", inputs=[on_s3])
+    assert lake.make({"on_s3": on_s3.make()}).root == "s3://b/p"
+    wrong = S3StorageDef("lake", "{on_az.root}", inputs=[on_az])
+    with pytest.raises(UsageError, match=r"S3StorageDef\('lake'\): root 'az://c/p' is not s3"):
+        wrong.make({"on_az": on_az.make()})
+
+
+SCOPED_CONF = """
+    from ducktest import Project, S3CredentialDef, StorageDef, from_env
+
+    SERVED = StorageDef("served", "s3://b/p")
+    project = Project(
+        storages=[SERVED, StorageDef("lake", {root!r}, inputs=[SERVED])],
+        credentials=[S3CredentialDef("keys", sources=[from_env({{"K": "key_id", "S": "secret"}})], scopes=["lake"])],
+    )
+"""
+
+
+@pytest.mark.parametrize("root, refused", [("az://c/p", True), ("{served.root}", False), ("s3://b/q", False)])
+def test_a_credential_scope_is_checked_against_a_literal_scheme_only(tmp_path, root, refused):
+    (tmp_path / "test").mkdir()
+    (tmp_path / "test" / "ducktest_conf.py").write_text(textwrap.dedent(SCOPED_CONF.format(root=root)))
+    if refused:
+        with pytest.raises(UsageError, match=r"scoped to storage 'lake' \(az://c/p\): an S3CredentialDef is for s3"):
+            scan(str(tmp_path / "test"), working_dir=str(tmp_path))
+    else:
+        scan(str(tmp_path / "test"), working_dir=str(tmp_path))
 
 
 # -----------------------------------------------------------------------------

@@ -81,7 +81,7 @@ from .binary import UsageError
 from .declare import CONF_FILE
 from .options import BINDINGS, Options, Settled, check_parameter, kind_of_slot
 from .resources import CredentialDef, DefaultStorage, EngineDef, ServiceDef, StorageDef
-from .resources.storage import At
+from .resources.storage import At, declared_scheme
 from .resources.credential import inherit_env
 from .resources.made import services_in
 
@@ -499,9 +499,8 @@ def _check(path, project):
     for c in project.credentials.values():
         for storage_name in c.scope_storages:
             storage = project.storages.get(storage_name)
-            scheme = storage.root.split("://", 1)[0].lower() if storage and "://" in storage.root else "file"
-            # A scheme a template gives is checked where the storage is made.
-            if storage is not None and "{" not in scheme and scheme not in type(c).schemes:
+            scheme = declared_scheme(storage.root) if storage is not None else None
+            if scheme is not None and scheme not in type(c).schemes:
                 raise UsageError(
                     f"{path}: {c.label} is scoped to storage {storage_name!r} ({storage.root}): an "
                     f"{type(c).__name__} is for {', '.join(type(c).schemes)} storages only"
