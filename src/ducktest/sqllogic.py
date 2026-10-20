@@ -1,672 +1,485 @@
-"""The SQLLogic `.test` lane: collect & run `.test` files through the unittest binary.
+"""The `unittest` runner: `.test` bodies, in batches, through DuckDB's own binary.
 
-One `.test` file -> one SqlLogicItem; the item invokes the Catch2 unittest binary with the
-test path as a name filter, batched via `--batch-size` (batch assignment lives in
-driver.plugin's pytest_collection_modifyitems). Pass/skip/fail is parsed from the binary's
-name-tagged `[TEST_EVENT]` stream (--emit-test-events), so outcomes are attributable per test
-even inside a batch. Binary resolution, `run_paired` (driving a same-stem body), and all hooks
-live in driver.plugin.
+A batch is two files in its own directory, and that is the whole contract with the binary:
+
+    tests.txt     one test path per line (the binary's exact `-f` mode: only these are registered)
+    config.json   the `--test-config` file: `{NAME}` for the body, the roots, the init file
+
+Everything in them comes from the test environment the batch was made with, and every test in a
+batch has the same one. The binary applies the config before it runs anything, so an extension is
+not there yet; the init file is where a setting and a secret type of an extension can be reached,
+after a `require` for it.
+
+Every test must end with an event from the binary that says how it ended. A test with no such event
+did not run as far as this runner knows, and is never counted as passed.
 """
 
-import hashlib
+from __future__ import annotations
+
+import contextlib
 import json
+import logging
 import os
+import queue
+import re
 import shlex
 import subprocess
-import tempfile
 import threading
-import warnings
-from typing import Optional
+import time
+from dataclasses import dataclass, field
 
-import pytest
+from .binary import find_built
+from .outcomes import ERROR, FAILED, PASSED, SKIPPED
+from .resources.dialect import render
+from .testenv import TestEnv
 
-from .suites import EnvRef
+_log = logging.getLogger(__name__)
 
+_EVENT = re.compile(r"\[TEST_EVENT\] (\{.*\})")
+_SKIP = re.compile(r"\[SKIP_TEST\] (.*?) :: (.*)")
+_PROGRESS = re.compile(r"^\[\d+/\d+\] \(\d+%\): .*$", re.M)
+_LOCATION = re.compile(r"([^\s():]+):(\d+)")  # "file.test:12", as the binary names where a failure is
+DEFAULT_TIMEOUT_S = 600  # for one test, .test or Python, unless `timeout=` in conf.py says otherwise
+_OUTSIDE_A_TEST = object()  # the process hung while no test was running: at startup, between tests, at exit
+INIT_FILE = "init.sqllogic"
 
-# ---------------------------------------------------------------------------
-# <batch-id>: the per-invocation temp run-root segment (SPEC §11.2 / §11.4).
-# The composed --temp-dir-root is <root>/<session-id>/<batch-id>; <batch-id>
-# identifies ONE unittest invocation so concurrent invocations never share a
-# run-root (§11.6 concurrency). A batched invocation reuses the batch's id; a
-# single (unbatched) test / paired-driver invocation derives one from the test
-# name; an individual re-run gets its OWN distinct id (see _rerun_batch_id).
-# ---------------------------------------------------------------------------
-
-
-def _batch_dir(batch_no) -> str:
-    return f"batch-{batch_no}"
-
-
-def _test_batch_id(test_name: str) -> str:
-    return "test-" + hashlib.sha1(test_name.encode()).hexdigest()[:10]
+# The binaries this process started and has not reaped. A run that is stopped from outside kills
+# them, so that nothing of it is left running when it is gone, and starts no more.
+_running = set()
+_stopped = threading.Event()
 
 
-def _matrix_cell_properties(matrix_cell: Optional[dict] = None) -> dict:
-    """Return a matrix cell's backend-declared property vocabulary, or `{}` without a cell."""
-    return (matrix_cell.get("properties") if matrix_cell else None) or {}
+def kill_running():
+    _stopped.set()
+    for proc in list(_running):
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
-# Property names this module claims and routes into `temp_roots` (temp/data directory CLI args)
-# instead of passing through as a literal env var; everything else is a plain env var, verbatim.
-# `temp_dir_root` is deliberately NOT `TEMP_DIR` itself -- it's the prefix
-# `_invoke` composes `<root>/<session-id>/<batch-id>` onto (SPEC §11.2/§11.4). `<batch-id>` isn't
-# minted until `assign_batches` runs in the PLAN phase, strictly after a matrix cell's properties
-# are fixed at collect+decorate time (`_expand_test_matrix` runs first) -- so a cell can only ever
-# declare the root, never the composed TEMP_DIR.
-_TEMP_ROOTS_PROPERTY_KEYS = {
-    "temp_dir_root": "root",
-    "local_temp_dir_root": "local_temp_dir_root",
-    "data_dir": "data_dir",
-    "local_data_dir": "local_data_dir",
-}
-
-# A cell's `test_config` property is a duckdb `--test-config` JSON path (its `on_init` SQL,
-# `statically_loaded_extensions`, `skip_tests`) passed to the binary -- NOT a literal env var.
-_TEST_CONFIG_PROPERTY_KEY = "test_config"
-
-# A cell's `init_sql` property is inline preamble SQL (e.g. `SET x='y';`) merged into the item's
-# `--init-sqllogic` snippet ahead of the body (plugin._init_sqllogic_arg_for_item) -- NOT an env var.
-# The lighter alternative to `test_config` for a pure-SET cell (see docs/MATRIX.md).
-_INIT_SQL_PROPERTY_KEY = "init_sql"
-
-# Property names claimed by a dedicated mechanism, so never routed into env vars / temp roots.
-_CLAIMED_PROPERTY_KEYS = frozenset({_TEST_CONFIG_PROPERTY_KEY, _INIT_SQL_PROPERTY_KEY})
-
-# Names owned by the unittest runner and rejected by its --env-passthrough option.
-_ENV_PASSTHROUGH_RESERVED = frozenset(
-    """
-    BASE_TEST_NAME BUILD_DIR BUILD_DIRECTORY CATALOG_DIR DATA_DIR LOCAL_DATA_DIR LOCAL_TEMP_DIR
-    RUN_ID TEMP_DIR TEMP_DIR_ABSOLUTE TEMP_DIR_ROOT TEST_DIR TEST_ID TEST_NAME TEST_NAME__NO_SLASH
-    TEST_UUID UUID WORKING_DIR WORKING_DIRECTORY
-    """.split()
-)
+def start_running():
+    """A new run in this process may start binaries again."""
+    _stopped.clear()
 
 
-def _split_matrix_cell_properties(properties: dict):
-    """Split a cell's `properties` dict into `(env, temp_roots)` -- the ONE place that decides which
-    property names are temp/data directory CLI args (`_TEMP_ROOTS_PROPERTY_KEYS`) vs
-    literal env vars (everything else, passed through verbatim). `_CLAIMED_PROPERTY_KEYS`
-    (`test_config`/`init_sql`) are handled by their own mechanisms, never env vars."""
-    env, temp_roots = {}, {}
-    for key, value in properties.items():
-        if key in _CLAIMED_PROPERTY_KEYS:
-            continue
-        dest = _TEMP_ROOTS_PROPERTY_KEYS.get(key)
-        (temp_roots if dest else env)[dest or key] = value
-    return env, temp_roots
+def stopped():
+    return _stopped.is_set()
 
 
-def _resolve_matrix_properties(
-    base_temp_roots: dict,
-    matrix_cell: Optional[dict] = None,
-    *,
-    ambient_env: dict = None,
-    supplied_env: dict = None,
-):
-    """Assemble one subprocess's roots and environment, then resolve late-bound references.
-
-    Precedence is ambient/static service env, explicitly supplied env, then matrix properties.
-    References resolve only after those layers are assembled, so a matrix override remains final.
-    """
-    cell = matrix_cell or {}
-    properties = (cell.get("properties") if cell else None) or {}
-    matrix_env, root_overrides = _split_matrix_cell_properties(properties)
-    lower_precedence_values = dict(os.environ if ambient_env is None else ambient_env)
-    lower_precedence_values.update(supplied_env or {})
-    values = dict(lower_precedence_values)
-    values.update(matrix_env)
-    cell_id = cell.get("id", "<none>")
-
-    def resolve(name, value, chain):
-        if not isinstance(value, EnvRef):
-            return str(value)
-        if value.name == name:
-            if name not in lower_precedence_values:
-                property_name = chain[0]
-                raise pytest.UsageError(
-                    f"matrix cell {cell_id!r} property {property_name!r} references missing "
-                    f"environment variable {name!r}"
-                )
-            return str(lower_precedence_values[name])
-        if value.name in chain:
-            cycle = " -> ".join((*chain, value.name))
-            raise pytest.UsageError(f"environment reference cycle in matrix cell {cell_id!r}: {cycle}")
-        if value.name not in values:
-            property_name = chain[0]
-            raise pytest.UsageError(
-                f"matrix cell {cell_id!r} property {property_name!r} references missing "
-                f"environment variable {value.name!r}"
-            )
-        return resolve(value.name, values[value.name], (*chain, value.name))
-
-    resolved_env = {}
-    for name, value in {**(supplied_env or {}), **matrix_env}.items():
-        resolved_env[name] = resolve(name, value, (name,))
-
-    roots = dict(base_temp_roots)
-    for name, value in root_overrides.items():
-        if value is not None:
-            roots[name] = resolve(name, value, (name,))
-
-    return roots, resolved_env
+@contextlib.contextmanager
+def watched(proc):
+    """A binary of this run, for as long as it runs."""
+    _running.add(proc)
+    try:
+        yield proc
+    finally:
+        _running.discard(proc)
 
 
-def _matrix_cell_init_sql(matrix_cell: Optional[dict] = None):
-    """A matrix cell's `init_sql` property -- inline preamble SQL merged into the invocation's
-    `--init-sqllogic` snippet ahead of the body -- or `None` without a matrix cell or `init_sql`.
-    Merged (not a second `--init-sqllogic`) by `plugin._init_sqllogic_arg_for_item`."""
-    return _matrix_cell_properties(matrix_cell).get(_INIT_SQL_PROPERTY_KEY) or None
-
-
-def _item_init_sqllogic_args(config, item, matrix_cell) -> list:
-    from .plugin import _init_sqllogic_arg_for_item  # plugin imports this module
-
-    return _init_sqllogic_arg_for_item(config, item, matrix_cell=matrix_cell)
-
-
-def _matrix_cell_test_config_args(matrix_cell: Optional[dict], working_dir) -> list:
-    """`["--test-config", <path>]` when a matrix cell declares a `test_config` property (a duckdb
-    test-config JSON: its `on_init` SQL, `statically_loaded_extensions`, `skip_tests`); `[]` for a
-    missing cell or property. Path resolves relative to `working_dir`. Reusing duckdb's
-    native `--test-config` lets a consumer matrix over its existing config JSONs (see docs/MATRIX.md)."""
-    path = _matrix_cell_properties(matrix_cell).get(_TEST_CONFIG_PROPERTY_KEY)
-    if not path:
-        return []
-    return ["--test-config", path if os.path.isabs(path) else os.path.join(working_dir, path)]
-
-
-def _matrix_cell_env(matrix_cell: Optional[dict] = None) -> dict:
-    """Return a cell's plain environment properties, excluding claimed config and root keys."""
-    env, _ = _split_matrix_cell_properties(_matrix_cell_properties(matrix_cell))
-    return env or None
-
-
-def _matrix_cell_temp_roots(matrix_cell: Optional[dict], base: dict) -> dict:
-    """`base` (the run-wide `_temp_roots(config)`), with a matrix cell's temp/data directory
-    properties overlaid as the corresponding temp/data roots -- same rationale as `_matrix_cell_env`
-    (`--temp-dir-root`/`--data-dir` are already remote-capable, SPEC §11.2/§11.3, but
-    `_temp_roots` is cached once per `config`, not cell-aware): two cells of the same file needing
-    DIFFERENT remote roots (e.g. `az://` vs `abfss://`, different storage accounts) can't share one
-    temp/data arguments. `session_id`/`destroy` stay run-wide. `base` is unchanged without a cell or
-    directory properties."""
-    _, override = _split_matrix_cell_properties(_matrix_cell_properties(matrix_cell))
-    if not override:
-        return base
-    return {**base, **{k: v for k, v in override.items() if v is not None}}
-
-
-def _cell_suffix(cell) -> str:
-    """A stable string suffix for a matrix cell (a bare id string, a cell dict, or None — both
-    shapes occur: `.test` fan-out stamps a plain cell-id string, `.py`/`@requires_matrix` cells
-    are dicts), folded into a batch-id seed so two cells of the SAME test never collide on the same
-    temp-dir path. `""` for None (today's behavior, unchanged for every non-matrix test)."""
-    if not cell:
-        return ""
-    if isinstance(cell, dict):
-        cell = ",".join(f"{k}={cell[k]}" for k in sorted(cell))
-    return f"[{cell}]"
-
-
-def item_batch_id(item) -> str:
-    """The `<batch-id>` path segment for an item's temp run-root (SPEC §11.2).
-
-    A batched `SqlLogicItem` carries its `_batch_id` (assigned by `assign_batches`); an unbatched
-    single test (`--batch-size 1`) has none, so its id derives from the test name (+ its matrix
-    `_cell` stamp, if any — two cell siblings of the same file share a `_test_name` and, unbatched,
-    would otherwise collide on the identical temp-dir path). The controller computes the SAME id
-    for its keep-list mapping (node-id → batch-id) by calling this function directly, so both agree
-    by construction.
-    """
-    bid = getattr(item, "_batch_id", None)
-    if bid is not None:
-        return _batch_dir(bid)
-    return _test_batch_id(item._test_name + _cell_suffix(getattr(item, "_cell", None)))
-
-
-def _rerun_batch_id(batch_id: str, test_name: str) -> str:
-    """A DISTINCT batch-id for an individual re-run so its run-root never collides with the batch's
-    (SPEC §11.6). The re-run is a throwaway for a clean per-test diff — the failed test's authoritative
-    artifacts already live under the batch's own `<batch-id>/<test-id>/`, which the keep-list preserves."""
-    return f"{batch_id}-rerun-{_test_batch_id(test_name)}"
-
-
-# ---------------------------------------------------------------------------
-# Per-process batch cache (coherent within a worker; xdist_group keeps a
-# batch on one worker, so this is always correct).
-# ---------------------------------------------------------------------------
-
-_batch_cache: dict = {}  # batch_id → {test_name: result_dict}
-_batch_cache_lock = threading.Lock()
-
-
-# ---------------------------------------------------------------------------
-# Collector
-# ---------------------------------------------------------------------------
-
-
-def _new_item(parent, *, name, test_name, binary, working_dir, temp_roots):
-    """The one place that builds a `SqlLogicItem` from its invocation-constant fields — shared by
-    `SqlLogicFile.collect()` (the original, one per file) and the suite-matrix `.test` splice
-    (`plugin.py`'s `_expand_test_matrix`, one sibling per cell) so a `from_parent` signature change
-    has exactly one call site to update, not two independently-drifting ones."""
-    return SqlLogicItem.from_parent(
-        parent, name=name, test_name=test_name, binary=binary, working_dir=working_dir, temp_roots=temp_roots
+def find_unittest(*, explicit=None, build="debug", places=(".",)):
+    return find_built(
+        "test/unittest", "unittest binary", flag="--unittest-bin", explicit=explicit, build=build, places=places
     )
 
 
-class SqlLogicFile(pytest.File):
-    """One .test file → one SqlLogicItem."""
-
-    @classmethod
-    def from_parent(cls, parent, *, binary, working_dir, **kwargs):
-        obj = super().from_parent(parent, **kwargs)
-        obj._binary = binary
-        obj._working_dir = working_dir
-        return obj
-
-    def collect(self):
-        from .plugin import _temp_roots  # lazy: plugin imports this lane (avoid import cycle)
-
-        test_name = os.path.relpath(str(self.path), self._working_dir)
-        yield _new_item(
-            self,
-            name=self.path.stem,
-            test_name=test_name,
-            binary=self._binary,
-            working_dir=self._working_dir,
-            temp_roots=_temp_roots(self.config),
-        )
+@dataclass
+class TestResult:
+    name: str
+    outcome: str
+    seconds: float | None = None
+    detail: str = ""
+    kept: str | None = None
+    note: str = ""
+    attempts: int = 1
 
 
-# ---------------------------------------------------------------------------
-# Item
-# ---------------------------------------------------------------------------
+def init_file_text(test_env):
+    """The init file, and {line of a statement header or a `require`: what asked for it}.
+
+    The requires come first, as `require`, which is the binary's own way to load an extension: a
+    `SET` or a secret type of one fails before that. Then the scoped secrets, then the statements,
+    one block each, so a failure can be traced back to the one thing that asked for it."""
+    lines, sources = [], {}
+    extensions = test_env.extensions + [e.value for e in test_env.secret_requires]
+    for extension, line in zip(extensions, render("unittest", "requires", extensions).sql):
+        if extension in test_env.require_why:
+            sources[len(lines) + 1] = test_env.require_why[extension]
+        lines += [line, ""]
+    for entry in [*test_env.secret_sql, *test_env.init_sql]:
+        lines.append("statement ok")
+        sources[len(lines)] = entry.source
+        lines += [line for line in entry.value.splitlines() if line.strip()] + [""]
+    while lines and lines[-1] == "":
+        lines.pop()
+    return ("\n".join(lines) + "\n" if lines else ""), sources
 
 
-class SqlLogicItem(pytest.Item):
-    @classmethod
-    def from_parent(cls, parent, *, test_name, binary, working_dir, temp_roots=None, **kwargs):
-        obj = super().from_parent(parent, **kwargs)
-        obj._test_name = test_name
-        obj._binary = binary
-        obj._working_dir = working_dir
-        obj._temp_roots = temp_roots
-        obj._batch_id = None
-        obj._batch_test_names = None
-        return obj
+@dataclass
+class Batch:
+    dir: str
+    # (key, test name) pairs. The binary knows a test by its name; the caller knows it by the key, and
+    # gets its result, and gives its timeout and retries, by the key. A bare name is its own key.
+    tests: list
+    test_env: object = None  # the TestEnv every test in this batch is given
+    timeout_s: float = DEFAULT_TIMEOUT_S  # for one test, counted from the binary's begin event for it
+    timeouts: dict = field(default_factory=dict)  # key -> seconds, where a test has its own
+    retries: dict = field(default_factory=dict)  # key -> how often a failure may run again
+    # The binary's RUN_ID, so its TEMP_DIR is `temp_dir_root/<batch_token>/<test id>`; the dir name by default.
+    batch_token: str | None = None
 
-    def runtest(self):
-        if self._batch_id is not None:
-            self._run_batched()
-        else:
-            self._run_single()
+    def __post_init__(self):
+        self.tests = [(t, t) if isinstance(t, str) else tuple(t) for t in self.tests]
+        self._key = {name: key for key, name in self.tests}
+        self.test_env = self.test_env if self.test_env is not None else TestEnv()
+        self.init_sources = {}  # line of the init file -> source; filled by write()
+        self.batch_token = self.batch_token or os.path.basename(self.dir.rstrip("/"))
+        if len(self._key) != len(self.tests):
+            # The binary reports by name, so two tests of one file could not be told apart.
+            raise ValueError(f"a test can be in a batch once: {self.names}")
 
-    # -- single-test path (batch_size == 1) ----------------------------------
+    @property
+    def names(self):
+        return [name for _, name in self.tests]
 
-    def _run_single(self):
-        from .plugin import _item_env  # plugin imports this module
+    def timeout_for(self, name):
+        return self.timeouts.get(self._key[name]) or self.timeout_s
 
-        batch_id = item_batch_id(self)
-        matrix_cell = getattr(self, "_matrix_cell", None)
-        temp_roots, env = _resolve_matrix_properties(
-            self._temp_roots,
-            matrix_cell,
-            supplied_env=_item_env(self.config, self),
-        )
-        result = _invoke(
-            self._binary,
-            [self._test_name],
-            self._working_dir,
-            temp_roots,
-            batch_id=batch_id,
-            env=env,
-            extra_args=[
-                *_matrix_cell_test_config_args(matrix_cell, self._working_dir),
-                *_item_init_sqllogic_args(self.config, self, matrix_cell),
-                *resolve_unittest_args(self.config),
-            ],
-        )
-        _raise_for_result(_parse_result(result), test_file=str(self.path))
+    def retries_for(self, name):
+        return self.retries.get(self._key[name], 0)
 
-    # -- batch path (batch_size > 1) -----------------------------------------
-
-    def _run_batched(self):
-        from .plugin import _item_env  # plugin imports this module
-
-        with _batch_cache_lock:
-            if self._batch_id not in _batch_cache:
-                matrix_cell = getattr(self, "_matrix_cell", None)
-                temp_roots, env = _resolve_matrix_properties(
-                    self._temp_roots,
-                    matrix_cell,
-                    supplied_env=_item_env(self.config, self),
-                )
-                _batch_cache[self._batch_id] = _execute_batch(
-                    self._batch_test_names,
-                    self._binary,
-                    self._working_dir,
-                    temp_roots,
-                    batch_id=item_batch_id(self),
-                    env=env,
-                    extra_args=[
-                        *_matrix_cell_test_config_args(matrix_cell, self._working_dir),
-                        *_item_init_sqllogic_args(self.config, self, matrix_cell),
-                        *resolve_unittest_args(self.config),
-                    ],
-                )
-        r = _batch_cache[self._batch_id].get(self._test_name, {"status": "internal_error"})
-        _raise_for_result(r, test_file=str(self.path))
-
-    # -- pytest protocol -------------------------------------------------
-
-    def repr_failure(self, excinfo):
-        if isinstance(excinfo.value, SqlLogicFailure):
-            return str(excinfo.value)
-        return super().repr_failure(excinfo)
-
-    def reportinfo(self):
-        return self.path, None, self._test_name
-
-
-# ---------------------------------------------------------------------------
-# Batch execution
-# ---------------------------------------------------------------------------
-
-
-def _execute_batch(
-    test_names: list,
-    binary: str,
-    working_dir: str,
-    temp_roots: dict = None,
-    batch_id: str = None,
-    env: dict = None,
-    extra_args: list = None,
-) -> dict:
-    """Run a batch.  On failure, re-run individually for per-test attribution."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-        tmpfile = f.name
-        for name in test_names:
-            f.write(name + "\n")
-    try:
-        result = _invoke(
-            binary,
-            [
-                "-f",
-                tmpfile,
-                "--start-offset",
-                "0",
-                "--end-offset",
-                str(len(test_names)),
-            ],
-            working_dir,
-            temp_roots,
-            batch_id=batch_id,
-            env=env,
-            extra_args=extra_args,
-        )
-    finally:
-        os.unlink(tmpfile)
-
-    # Per-test outcome is attributable from the name-tagged [TEST_EVENT] stream, so a clean batch
-    # needs no re-run. A test the events mark failed/incomplete is re-run alone to get a clean,
-    # per-test diff (the batch's combined output isn't sliced per test). The re-run runs under its
-    # OWN distinct batch-id (SPEC §11.6) so its run-root never collides with the batch's.
-    events = _scan_test_events(result["stdout"] + result["stderr"])
-    statuses = {}
-    for name in test_names:
-        st = _classify(events, name, result)
-        if st["status"] in ("fail", "internal_error"):
-            st = _invoke_single(
-                name,
-                binary,
-                working_dir,
-                temp_roots,
-                batch_id=_rerun_batch_id(batch_id, name),
-                env=env,
-                extra_args=extra_args,
-            )
-        statuses[name] = st
-    return statuses
-
-
-def _invoke_single(
-    test_name: str,
-    binary: str,
-    working_dir: str,
-    temp_roots: dict = None,
-    batch_id: str = None,
-    env: dict = None,
-    extra_args: list = None,
-) -> dict:
-    result = _invoke(binary, [test_name], working_dir, temp_roots, batch_id=batch_id, env=env, extra_args=extra_args)
-    return _parse_result(result)
-
-
-# ---------------------------------------------------------------------------
-# Low-level subprocess helpers
-# ---------------------------------------------------------------------------
-
-
-def resolve_unittest_args(config) -> list:
-    """Flatten the repeatable --unittest-args option into binary argv tokens.
-
-    Each value is shlex-split, so --unittest-args='--test-config x.json' contributes two
-    tokens. Read lazily (at run time, not collection) so a consuming repo's conftest can set
-    the default in pytest_configure regardless of hook order. Both lanes (collector items and
-    run_paired) route the result through _invoke.
-    """
-    tokens = []
-    for value in config.getoption("--unittest-args", default=[]) or []:
-        tokens.extend(shlex.split(value))
-    return tokens
-
-
-def _compose_root(root, session_id, batch_id) -> str:
-    """The ONE composed per-batch run-root string `<root>/<session-id>/<batch-id>` (SPEC §11.4).
-
-    Joined with `/` so it is correct for a local root (POSIX) AND a remote one (`s3://…`); the binary
-    then appends only the `<test-id>` leaf under it.
-    """
-    return "/".join((str(root).rstrip("/"), str(session_id), str(batch_id)))
-
-
-def _env_passthrough_args(env) -> list:
-    """Register subprocess environment names for SQLLogic ``{NAME}`` substitution."""
-    names = sorted(name for name in (env or {}) if name.upper() not in _ENV_PASSTHROUGH_RESERVED)
-    return [token for name in names for token in ("--env-passthrough", name)]
-
-
-def _invoke(
-    binary: str,
-    args: list,
-    working_dir: str,
-    temp_roots: dict = None,
-    batch_id: str = None,
-    env: dict = None,
-    extra_args: list = None,
-) -> dict:
-    run_env = dict(os.environ)
-    if env:
-        run_env.update({key: str(value) for key, value in env.items()})
-
-    # Register ducktest-owned bindings for {...} substitution. Runner-owned names are excluded.
-    # User-supplied unittest arguments follow driver arguments and precede test selectors.
-    args = [*_env_passthrough_args(env), "--emit-test-events", *(extra_args or []), *args]
-    if temp_roots:
-        # SPEC §11.4: compose the per-batch run-root and pass it as the ONE --temp-dir-root string
-        # (<root>/<session-id>/<batch-id>) — NOT --temp-dir EXACT, and NOT a TEMP_DIR/LOCAL_*/DATA_DIR
-        # env var (the binary composes/derives + would overwrite those). --temp-dir-run-id off so the
-        # binary appends no extra run-id level (ResolveRunIdRoot returns the root verbatim). The binary
-        # then adds only the <test-id> leaf, derives LOCAL_*, and owns local create/sweep. --temp-dir-
-        # destroy is passed THROUGH to gate the binary's LOCAL sweep. DATA is a plain read-only path:
-        # --data-dir only when the driver has an override, else the binary defaults to working_dir/data.
-        root = _compose_root(temp_roots["root"], temp_roots["session_id"], batch_id)
-        temp_args = ["--temp-dir-root", root, "--temp-dir-run-id", "off"]
-        if temp_roots.get("destroy"):
-            temp_args += ["--temp-dir-destroy", str(temp_roots["destroy"])]
-        if temp_roots.get("local_temp_dir_root"):
-            local_root = _compose_root(temp_roots["local_temp_dir_root"], temp_roots["session_id"], batch_id)
-            temp_args += ["--local-temp-dir-root", local_root]
-        if temp_roots.get("data_dir"):
-            temp_args += ["--data-dir", str(temp_roots["data_dir"])]
-        if temp_roots.get("local_data_dir"):
-            temp_args += ["--local-data-dir", str(temp_roots["local_data_dir"])]
-        args = [*temp_args, *args]
-    try:
-        proc = subprocess.run(
-            [binary] + args,
-            cwd=working_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=run_env,
-        )
-    except FileNotFoundError:
-        return {
-            "returncode": 1,
-            "stdout": "",
-            "stderr": f"unittest binary not found: {binary}\nBuild the extension first (e.g. make debug).",
+    def write(self):
+        os.makedirs(self.dir, exist_ok=True)
+        with open(os.path.join(self.dir, "tests.txt"), "w") as f:
+            f.write("".join(n + "\n" for n in self.names))
+        config = {
+            "description": "a ducktest batch",
+            "temp_dir_root": os.path.join(self.dir, "tmp"),
+            "run_id": self.batch_token,
+            "test_env": [{"env_name": k, "env_value": str(v)} for k, v in sorted(self.test_env.names.items())],
+            # By default the binary ends a file early, as not failed, when an error mentions 'HTTP' or
+            # 'Unable to connect'. Here an error is a failure; a test that may fail for reasons that are
+            # not its own asks for `retries`.
+            "skip_error_messages": [],
         }
-    result = {
-        "returncode": proc.returncode,
-        "stdout": proc.stdout.decode("utf-8", errors="replace"),
-        "stderr": proc.stderr.decode("utf-8", errors="replace"),
-    }
-    if temp_roots:
-        # The event-tag check (RESOURCE-PLANNING.md §5 phase 9): confirm the binary's [TEST_EVENT]
-        # stream is actually attributable to THIS invocation, not just assumed to be from "whatever
-        # subprocess I launched" -- `root` is the one value we know this invocation was given.
-        _verify_event_temp_dirs(_scan_test_events(result["stdout"] + result["stderr"]), root)
-    return result
+        config.update(self.test_env.root_paths)
+        if self.test_env.passthrough:
+            config["env_passthrough"] = sorted(self.test_env.passthrough)  # names only: values stay in the process env
+        text, self.init_sources = init_file_text(self.test_env)
+        if text:
+            init = os.path.join(self.dir, INIT_FILE)
+            # For the owner only: the init SQL of a matrix value may hold the secret of a service.
+            with open(os.open(init, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+                f.write(text)
+            config["init_sqllogic"] = init
+        with open(os.path.join(self.dir, "config.json"), "w") as f:
+            json.dump(config, f, indent=1)
 
 
-# The unittest binary emits a per-test JSON event stream on stderr (gated by --emit-test-events,
-# passed by _invoke). Each line is `[TEST_EVENT] <json-object>` — a flare prefix + one JSON object,
-# so it survives interleaved stderr and is attributable per test even inside a batch:
-#   [TEST_EVENT] {"event":"begin","name":<test>}
-#   [TEST_EVENT] {"event":"end","name":<test>,"status":<ok|error|skip-requirement>,
-#                 "passes":N,"fails":N,"skip-mode":N[,"data":<reason|error text>]}
-# Only `end` carries the outcome; statement pass/fail/skip are counted into the tally, not emitted.
-_FLARE = "[TEST_EVENT] "
+def remove_init_sql(root):
+    """Take the init SQL out of every batch under `root`, for a directory that stays after the run:
+    it may hold a secret. The file stays, and says how to get its content again."""
+    for dirpath, _, filenames in os.walk(root):
+        if INIT_FILE in filenames:
+            with open(os.path.join(dirpath, INIT_FILE), "w") as f:
+                f.write(
+                    "# The init SQL of this batch was removed after the run: it may hold a secret.\n"
+                    "# Run the test again with --keep to get it.\n"
+                )
 
 
-def _scan_test_events(output: str) -> dict:
-    """Map test_name -> its `end` event object for every [TEST_EVENT] line in the output.
-
-    Robust to prefixes / interleaved stderr: find the flare anywhere on the line and json.loads the
-    object after it (once per test, not per statement — cheap). `begin` events are ignored (they
-    only mark that a test started, for crash detection).
-    """
-    tests: dict = {}
-    for line in output.splitlines():
-        i = line.find(_FLARE)
-        if i < 0:
-            continue
+def test_events(output):
+    begun, ended = [], {}
+    for m in _EVENT.finditer(output):
         try:
-            ev = json.loads(line[i + len(_FLARE) :])
+            ev = json.loads(m.group(1))
         except ValueError:
             continue
-        if ev.get("event") == "end":
-            tests[ev.get("name")] = ev
-    return tests
+        if ev.get("event") == "begin":
+            begun.append(ev.get("name"))
+        elif ev.get("event") == "end":
+            ended[ev.get("name")] = ev
+    return begun, ended
 
 
-def _verify_event_temp_dirs(events: dict, expected_root: str) -> None:
-    """Fail loud if any `end` event's echoed `temp_dir` doesn't start with THIS invocation's
-    composed `--temp-dir-root` (the event-tag check, RESOURCE-PLANNING.md §5 phase 9) — proof the
-    stream belongs to the subprocess we just ran, not silently assumed. A binary too old to echo
-    `temp_dir` (the field is simply absent) skips the check for that event, same as `_classify`'s
-    existing "no terminal event -> trust the return code" fallback for an old/crashed binary.
-    """
-    for name, ev in events.items():
-        temp_dir = ev.get("temp_dir")
-        if temp_dir and not temp_dir.startswith(expected_root):
-            raise RuntimeError(
-                f"[TEST_EVENT] for {name!r} echoed temp_dir={temp_dir!r}, which does not start with "
-                f"this invocation's --temp-dir-root={expected_root!r} -- the event stream may be "
-                "misattributed to the wrong subprocess."
-            )
+def skip_reasons(output):
+    """{test name: reason} from the binary's skip lines. The end event says `ok` for a file that the
+    binary gave up on (an error that matches its skip list, a `mode skip`), so the reason is here only."""
+    return {name.strip(): reason.strip() for name, reason in _SKIP.findall(output)}
 
 
-def _binary_output(combined: str) -> str:
-    """The binary's human output with the machine ``[TEST_EVENT]`` flare lines stripped — i.e. the
-    "Wrong result / Expected / Actual" diff a failing ``.test`` prints, for surfacing in the pytest
-    failure repr. (The events are parsed separately; here they'd just be noise.)"""
-    return "\n".join(ln for ln in combined.splitlines() if _FLARE not in ln).strip()
+def human(output):
+    """The binary's own text, without the event lines, the skip lines and the progress lines."""
+    text = _EVENT.sub("", output)
+    text = _SKIP.sub("", text)
+    text = _PROGRESS.sub("", text)
+    return "\n".join(line.rstrip() for line in text.splitlines() if line.strip()).strip()
 
 
-def _classify(events: dict, name, result: dict) -> dict:
-    """Resolve one test's pass/skip/fail from its `end` event, falling back to the return code."""
-    combined = result["stdout"] + result["stderr"]
-    ev = events.get(name)
-    if ev is None:
-        # No terminal event for this test (e.g. a crash before `end`, or an old binary): trust rc.
-        if result.get("returncode", 1) != 0:
-            return {"status": "fail", "output": _binary_output(combined) or "test failed (no output captured)"}
-        return {"status": "pass", "stats": {}}
-    stats = {"passes": ev.get("passes", 0), "fails": ev.get("fails", 0), "skip-mode": ev.get("skip-mode", 0)}
+def batch_args(binary, batch, working_dir="."):
+    """How the binary is started for a batch; a debugger is given the same."""
+    return [
+        binary,
+        # else the binary resolves every test path against the source root it was built in
+        "--test-dir",
+        os.path.abspath(working_dir),
+        "-f",
+        os.path.join(batch.dir, "tests.txt"),
+        "--test-config",
+        os.path.join(batch.dir, "config.json"),
+        "--emit-test-events",
+        "--emit-on-skip",
+    ]
+
+
+def _invoke(binary, batch, working_dir):
+    """Run the batch and watch it: a test that is still running after its timeout gets the process
+    killed. Returns (output, what was running when it was killed or None, the exit code, and
+    {test name: seconds between its begin and end events})."""
+    if _stopped.is_set():
+        # The run was stopped: the tests of this batch end with no event, which is what a resume
+        # takes up again.
+        raise RuntimeError("the run was stopped")
+    batch.write()
+    args = batch_args(binary, batch, working_dir)
+    _log.debug("unittest: %s", shlex.join(args))
+    proc = subprocess.Popen(
+        args,
+        cwd=working_dir,
+        env=batch.test_env.environ(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+    )
+    lines = queue.Queue()
+    threading.Thread(
+        target=lambda: [lines.put(line) for line in proc.stdout] and None or lines.put(None), daemon=True
+    ).start()
+    output, running, since, killed_for, took = [], None, time.perf_counter(), None, {}
+    _running.add(proc)
+    if _stopped.is_set():  # the run was stopped between the check above and the start
+        proc.kill()
+    while True:
+        try:
+            line = lines.get(timeout=0.2)
+        except queue.Empty:
+            line = ""
+        if line is None:
+            break
+        if line:
+            output.append(line)
+            for m in _EVENT.finditer(line):
+                try:
+                    ev = json.loads(m.group(1))
+                except ValueError:
+                    continue
+                if ev.get("event") == "begin":
+                    running, since = ev.get("name"), time.perf_counter()
+                elif ev.get("event") == "end":
+                    if running == ev.get("name"):
+                        took[running] = round(time.perf_counter() - since, 2)
+                    running, since = None, time.perf_counter()
+        # Before the first begin event the binary starts up and loads extensions; that shares the
+        # batch's general timeout.
+        limit = batch.timeout_for(running) if running else batch.timeout_s
+        if time.perf_counter() - since > limit:
+            killed_for = running or _OUTSIDE_A_TEST
+            proc.kill()
+            break
+    returncode = proc.wait()
+    _running.discard(proc)
+    text = "".join(output)
+    with open(os.path.join(batch.dir, "output.txt"), "w") as f:
+        f.write(text)
+    return text, killed_for, returncode, took
+
+
+def _init_statements(path):
+    """{line of a statement header, 1-based: the SQL under it} for a sqllogic file."""
+    blocks, header = {}, None
+    for n, line in enumerate((x.rstrip() for x in open(path).read().splitlines()), 1):
+        if line.split(" ")[0] in ("statement", "query"):
+            header, blocks[n] = n, []
+        elif not line.strip() or line.startswith("----"):
+            header = None
+        elif header:
+            blocks[header].append(line)
+    return {n: "\n".join(sql) for n, sql in blocks.items() if sql}
+
+
+def _in_the_init_sql(batch, detail):
+    """The init file's line the failure is on, or None.
+
+    The binary runs the init file under the body file's name (`command->file_name = script`), so a
+    statement of the init file that fails is reported as `<body>.test:<line of the init file>` and
+    sends the reader to the wrong file. It is ours when the reported line holds a statement of the
+    init file and that statement's text is in what the binary printed."""
+    if not batch.init_sources:
+        return None
+    try:
+        blocks = _init_statements(os.path.join(batch.dir, INIT_FILE))
+    except OSError:
+        return None
+    reported = {int(line) for _, line in _LOCATION.findall(detail)}
+    return next((n for n in sorted(reported & set(blocks)) if blocks[n] in detail), None)
+
+
+def _required_by_init(batch, skip_reason):
+    """What the init file required the extension of `skip_reason` (`require aws`) for, or None."""
+    try:
+        with open(os.path.join(batch.dir, INIT_FILE)) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    return next((batch.init_sources[n] for n in batch.init_sources if lines[n - 1].strip() == skip_reason), None)
+
+
+def classify(batch, name, ev, detail, skip_reason=None):
     status = ev.get("status")
+    # The binary skips the rest of the init file at an unmet `require` and runs the body anyway, which
+    # then fails for want of what the init file did not make: the body proved nothing.
+    if skip_reason and (why := _required_by_init(batch, skip_reason)):
+        return TestResult(name, SKIPPED, detail=f"{skip_reason} in the init SQL: {why}")
+    if skip_reason and status != "error":
+        return TestResult(name, SKIPPED, detail=skip_reason)
+    kept = ev.get("temp_dir") if status == "error" else None
+    if status == "ok":
+        if ev.get("skip-mode", 0):
+            return TestResult(name, PASSED, note="part of the file did not run (mode skip)")
+        return TestResult(name, PASSED)
     if status == "skip-requirement":
-        return {"status": "skip", "reason": ev.get("data") or "skipped", "stats": stats}
-    if status == "error":
-        # Surface the binary's FULL failure output — the "Wrong result in query! / Expected: / Actual:"
-        # block that lives in stdout. The event `data` (when present) is usually just the `.test:NN`
-        # location, already in that output — so prefer the rich text, falling back to `data` only when
-        # nothing was captured (an infra error with no stdout). (Was: `data or combined`, which dropped
-        # the whole diff whenever `data` held a bare location — the "opaque failure" bug.)
-        text = _binary_output(combined)
-        if not text:
-            text = ev.get("data") or "test failed (no output captured)"
-        elif ev.get("data") and ev["data"] not in text:
-            text = f"{ev['data']}\n\n{text}"
-        return {"status": "fail", "output": text, "stats": stats}
-    return {"status": "pass", "stats": stats}
+        return TestResult(name, SKIPPED, detail=detail or "a `require` or `require-env` of the file is not met")
+    detail = (ev.get("data") or "") + ("\n" + detail if detail else "")
+    if line := _in_the_init_sql(batch, detail):
+        where = batch.init_sources.get(line)
+        # Not FAILED: the body never ran, so it proved nothing.
+        return TestResult(
+            name,
+            ERROR,
+            detail=f"in the init SQL of {where} ({os.path.join(batch.dir, INIT_FILE)}:{line})\n{detail}",
+            kept=kept,
+        )
+    return TestResult(name, FAILED, detail=detail, kept=kept)
 
 
-def _parse_result(result: dict) -> dict:
-    """Classify a single-test invocation from its [TEST_EVENT] stream."""
-    events = _scan_test_events(result["stdout"] + result["stderr"])
-    name = next(iter(events), None)
-    return _classify(events, name, result)
+def _sub(batch, tag, names):
+    return Batch(
+        os.path.join(batch.dir, tag),
+        [(batch._key[name], name) for name in names],
+        batch.test_env,
+        batch.timeout_s,
+        batch.timeouts,
+        batch.retries,
+        f"{batch.batch_token}-{tag}",
+    )
 
 
-def _raise_for_result(result: dict, *, test_file: str | None = None) -> None:
-    # missing status is itself a harness bug, not a pass
-    status = result.get("status", "internal_error")
-    if status == "pass":
-        # Per-test granularity: a passing test that skipped `mode skip` region(s) surfaces the
-        # count as a warning (pytest has no native "passed-with-skips" outcome).
-        skipped = (result.get("stats") or {}).get("skip-mode", 0)
-        if skipped:
-            msg = f"{skipped} statement(s) skipped (mode skip)"
-            if test_file:
-                # Attribute to the .test body (where the mode-skip regions live) via warn_explicit,
-                # so the warnings summary points at the test file instead of this internal warn()
-                # call site. lineno=1: we have a count, not the skipped lines.
-                warnings.warn_explicit(msg, SqlLogicSkipWarning, test_file, 1)
-            else:
-                warnings.warn(SqlLogicSkipWarning(msg))
-        return
-    if status == "skip":
-        pytest.skip(result.get("reason", "skipped"))
-    if status == "fail":
-        # A SQL-body assertion failure is a TEST failure, not a harness bug: surface it
-        # cleanly (the `.test:NN` location, NO Python traceback) via pytrace=False. This keeps
-        # the invariant that a Python stack means ONLY a pytest/driver/provisioner failure --
-        # a bare `foo.test:NN` is always "the SQL body's assertion failed".
-        pytest.fail(result.get("output", ""), pytrace=False)
-    # internal_error (e.g. test absent from batch results) or any unexpected status IS a
-    # harness bug: raise a real exception (Python traceback) so infra failures stay loud.
-    raise SqlLogicFailure(result.get("output", f"internal error: unexpected status {status!r}"))
+def _safe(name):
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def run_batch(binary, batch, working_dir):
+    """Run one batch; returns {key: TestResult}, one for every test. A test with `retries` that ended
+    FAILED or ERROR runs again alone, up to that many times. The first attempt that passes makes it
+    PASSED, with the attempt in its note and in `attempts`; when none passes, the first result that is
+    the test's own stays. For such a test the run alone after a failure in a batch is attempt 2."""
+    results = _run_once(binary, batch, working_dir)
+    for name, first in list(results.items()):
+        allowed = 1 + batch.retries_for(name)
+        result, attempt = first, first.attempts
+        while result.outcome in (FAILED, ERROR) and attempt < allowed and not _stopped.is_set():
+            attempt += 1
+            result = _run_once(binary, _sub(batch, f"attempt{attempt}-{_safe(name)}", [name]), working_dir)[name]
+        if result.outcome == PASSED and attempt > 1:
+            result.note = "; ".join(x for x in (result.note, f"passed on attempt {attempt} of {allowed}") if x)
+            results[name] = result
+        else:
+            result = first
+        if attempt > 1:
+            _log.warning("%s: retried (%d of %d attempts), ended %s", name, attempt, allowed, result.outcome)
+        result.attempts = attempt
+    return {batch._key[name]: result for name, result in results.items()}
 
 
-class SqlLogicFailure(Exception):
-    pass
+def _run_once(binary, batch, working_dir):
+    """One batch, with no retries; returns {name: TestResult}, one for every name.
 
+    - An end event is the only thing that gives a test an outcome here. A test that was still running
+      at its timeout is an ERROR. A test with no end event runs again: the ones after a killed test as
+      a new batch, the others alone; with no end event alone, it is an ERROR.
+    - A test that failed inside a batch of several runs again alone for its text only. Its outcome
+      stays FAILED also when it passes alone: a failure that needs the other files of the batch is
+      state that leaks between tests, which is a failure. Only a test with `retries` may pass there.
+    - When the process hung while no test was running, or ended with an exit code that the end events
+      do not explain, every test of the batch that would count as passed is an ERROR instead.
+    """
+    t0 = time.perf_counter()
+    output, killed_for, returncode, took = _invoke(binary, batch, working_dir)
+    seconds = time.perf_counter() - t0
+    _, ended = test_events(output)
+    skipped = skip_reasons(output)
+    results, alone, rest = {}, [], []
+    names = batch.names
+    for name in names:
+        ev = ended.get(name)
+        if ev is None and killed_for is not _OUTSIDE_A_TEST and name == killed_for:
+            results[name] = TestResult(
+                name,
+                ERROR,
+                detail=f"still running after {batch.timeout_for(name):.0f}s; the process was killed\n{human(output)}".strip(),
+            )
+        elif ev is None:
+            (rest if killed_for is not None else alone).append(name)
+        elif ev.get("status") == "error" and len(names) > 1:
+            alone.append(name)
+        else:
+            results[name] = classify(
+                batch, name, ev, human(output) if ev.get("status") != "ok" else "", skipped.get(name)
+            )
+            results[name].seconds = took.get(name)
 
-class SqlLogicSkipWarning(UserWarning):
-    pass
+    unexplained = None
+    if killed_for is _OUTSIDE_A_TEST:
+        unexplained = f"the process hung while no test was running (limit {batch.timeout_s:.0f}s) and was killed"
+    elif (
+        killed_for is None
+        and returncode != 0
+        and all(n in ended for n in names)  # a missing end event is a crash, and has its own path below
+        and not any(ev.get("status") == "error" for ev in ended.values())
+    ):
+        unexplained = f"the binary ended with exit code {returncode} although no test reported a failure"
+    if unexplained:
+        for name in names:
+            if name not in results or results[name].outcome == PASSED:
+                results[name] = TestResult(name, ERROR, detail=f"{unexplained}\n{human(output)}".strip())
+        return results
+
+    if len(names) == 1 and alone:
+        name = alone.pop()
+        results[name] = TestResult(
+            name, ERROR, detail=f"the binary ended without an end event for this test\n{human(output)}".strip()
+        )
+    if _stopped.is_set():
+        return results
+    if rest and len(rest) < len(names):
+        results.update(_run_once(binary, _sub(batch, "rest", rest), working_dir))
+    for name in alone:
+        again = _run_once(binary, _sub(batch, "alone-" + _safe(name), [name]), working_dir)[name]
+        if batch.retries_for(name):
+            again.attempts = 2
+        elif name in ended and again.outcome == PASSED:  # it failed in the batch and passes alone
+            again = TestResult(
+                name,
+                FAILED,
+                detail="failed when run with the other tests of its batch, and passed when run alone: "
+                f"one of them leaves state that breaks it. The batch output is in {os.path.join(batch.dir, 'output.txt')}",
+            )
+        results[name] = again
+    for name in names:  # a name the binary never mentioned at all
+        results.setdefault(
+            name, TestResult(name, ERROR, detail=f"the binary reported nothing for this test\n{human(output)}".strip())
+        )
+    if len(names) == 1 and results[names[0]].seconds is None:  # no end event: what the process took
+        results[names[0]].seconds = round(seconds, 2)
+    return results

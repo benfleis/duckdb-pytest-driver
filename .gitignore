@@ -11,8 +11,8 @@ dist/
 .venv/
 venv/
 
-# Driver-managed project-local scratch (mitmproxy CA + logs, service artifacts). See workspace.py.
-.ducktest/
+# The runner's default temp root (run directories).
+ducktest_temp/
 
 # Tooling caches
 .pytest_cache/

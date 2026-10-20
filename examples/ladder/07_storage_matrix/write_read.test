@@ -1,0 +1,11 @@
+# name: write_read.test
+# description: Writes and reads under its own place, wherever the cell of its matrix puts it.
+# group: [ladder]
+
+statement ok
+COPY (SELECT 42 AS answer) TO '{TEMP_DIR}/answer.csv'
+
+query I
+SELECT answer FROM read_csv('{TEMP_DIR}/answer.csv')
+----
+42

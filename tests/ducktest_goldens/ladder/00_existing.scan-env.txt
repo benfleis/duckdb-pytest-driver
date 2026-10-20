@@ -1,0 +1,9 @@
+sql/math/add.test::add
+  root: temp_dir_root=<tmp>/repo/00_existing/ducktest_temp/<run_token>  <- default storage
+  root: data_dir=<tmp>/repo/00_existing/data  <- default storage
+sql/math/mid_file_skip.test::mid_file_skip
+  root: temp_dir_root=<tmp>/repo/00_existing/ducktest_temp/<run_token>  <- default storage
+  root: data_dir=<tmp>/repo/00_existing/data  <- default storage
+sql/strings/concat.test::concat
+  root: temp_dir_root=<tmp>/repo/00_existing/ducktest_temp/<run_token>  <- default storage
+  root: data_dir=<tmp>/repo/00_existing/data  <- default storage

@@ -1,0 +1,16 @@
+scoped_write.test::scoped_write
+  client: duck (unittest)  <- engines duck (the only DuckDB engine)
+    require: httpfs  <- engine duck
+  bind: storage=lake  <- ducktest_conf.py: default
+  bind: temp=lake  <- ducktest_conf.py: default
+  root: data_dir=<tmp>/repo/05_s3/data  <- default storage
+  root: <from service s3>  <- storage lake
+  process env: <from service s3>  <- credential keys
+scoped_write_body.py::scoped_write_body
+  client: duck (duckdb)  <- engines duck (the only DuckDB engine)
+    require: httpfs  <- engine duck
+  bind: storage=lake  <- ducktest_conf.py: default
+  bind: temp=lake  <- ducktest_conf.py: default
+  root: data_dir=<tmp>/repo/05_s3/data  <- default storage
+  root: <from service s3>  <- storage lake
+  process env: <from service s3>  <- credential keys

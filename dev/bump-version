@@ -3,9 +3,9 @@
 
     dev/bump-version patch|minor|major
 
-The tag is the release: `ducktest configure` reads the installed driver's version and pins a
-consumer's scaffold at `tag = "v<version>"` (see cli._driver_git_ref), so bump -> commit -> tag
-is all it takes for a new pinned release. Zero deps.
+The tag is the release: `ducktest init`, run from an installed release, pins a consumer's runner
+at `tag = "v<version>"` (see init._runner_source), so bump -> commit -> tag is all it takes for a
+new pinned release. Zero deps.
 
 Run from a clean tree; pushing is left to you (the command is printed at the end).
 """

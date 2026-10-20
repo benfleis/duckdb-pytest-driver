@@ -3,77 +3,36 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "duckdb-pytest-driver"
+name = "duckdb-ducktest"
 version = "0.2.0"
-description = "Generic pytest front-end over the duckdb unittest (Catch2) binary: collect & run .test files, Python drivers, @requires provisioning."
+description = "Runs duckdb .test (SQLLogic) files through the unittest binary, plus Python test bodies, with the services, storages and credentials a repo declares."
 readme = "README.md"
-# >=3.9: str.removeprefix (plugin.py terminal-summary) is 3.9+; back-compat isn't a goal.
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "DuckDB contributors" }]
-keywords = ["duckdb", "pytest", "sqllogic", "testing"]
+keywords = ["duckdb", "sqllogic", "testing"]
 classifiers = [
-    "Framework :: Pytest",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Topic :: Software Development :: Testing",
 ]
-# >=7.4: the pytest_ignore_collect hook uses the collection_path arg (added in 7.4).
-dependencies = ["pytest>=7.4", "pyyaml>=6"]
+dependencies = ["pyyaml>=6"]
 
-[project.optional-dependencies]
-# For ducktest5's S3 services (MinIO): bucket setup and the cleanup of what a run wrote.
-s3 = ["boto3"]
-
-# For CONSUMERS who want `-n` parallelism: `pip install duckdb-pytest-driver[xdist]`.
-xdist = ["pytest-xdist"]
-
-# For CONSUMERS who need TLS fixtures — the shared `ca` service and httpserver's HTTPS mode. Just a cert
-# generator, so it carries NO python floor and no proxy: TLS-origin tests work on the driver's own 3.9 floor.
-tls = ["cryptography>=42"]
-
-# For CONSUMERS who want L7 fault injection / capture (the in-venv mitmproxy service):
-# `pip install duckdb-pytest-driver[mitm]`. Superset of [tls] — mitm signs with the same shared CA.
-# The `python_version >= "3.12"` marker keeps the 3.9 FLOOR (the driver vendors into duckdb core) while
-# satisfying uv's universal lock: modern mitmproxy needs >=3.12, so on older interpreters that dep drops
-# out and the mitm service is unavailable (its self-test skips on a missing `mitmdump`) while [tls] — and
-# so the CA and the HTTPS origin — keeps working.
-mitm = ["mitmproxy>=11; python_version >= '3.12'", "cryptography>=42"]
-
-# For DEVELOPING the driver: its own self-tests spin up inner `pytest -n 2` subprocesses (the
-# controller/worker store, broadcast, and service tests), so xdist is required to run them. `uv run`
-# includes the `dev` group by default, so plain `uv run pytest` works with no extra flag.
 [dependency-groups]
-# mitmproxy: the mitm-service self-test boots a real `mitmdump` subprocess (offline — no docker, no
-# network), so `uv run pytest` exercises it. Same 3.12 marker as the `[mitm]` extra above, so the dev
-# env resolves on the 3.9 floor (the dep drops out; the test skips) and installs mitm on 3.12+.
-dev = ["pytest-xdist", "ruff", "mitmproxy>=11; python_version >= '3.12'"]
+# The runner does not use pytest; its self-tests do.
+dev = ["pytest", "ruff"]
 
 [project.urls]
 Homepage = "https://github.com/duckdb/duckdb"
 
-# Auto-registers the plugin in any pytest process that has this package installed —
-# replaces the old `pytest_plugins = ["ducktest.plugin"]` line + sys.path hacks.
-[project.entry-points.pytest11]
-ducktest = "ducktest.plugin"
-
-# `ducktest` front-end (currently: `ducktest configure`) — writes the base pytest
-# config a plugin can't inject, so bare `pytest` works afterward.
 [project.scripts]
 ducktest = "ducktest.cli:main"
-ducktest5 = "ducktest5.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ducktest", "src/ducktest5"]
+packages = ["src/ducktest"]
 
-# Scope the package's own `pytest` run to its self-tests; the runnable examples under
-# examples/ are collected only when targeted explicitly (`pytest examples/...`).
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Plain `pytest` runs the OFFLINE suite only — the docker resource-bring-up tier is opt-in behind the
-# `--run-docker` flag (see tests/conftest.py). NOT via `addopts = -m 'not docker'`: pytest's `-m` is
-# single-valued, so any user `-m` (e.g. `-m 'not slow'`) would REPLACE it and silently let the tier boot
-# real containers, and `pytest <that_file>` would deselect it. The flag can't be defeated that way.
 
 [tool.ruff]
 line-length = 120

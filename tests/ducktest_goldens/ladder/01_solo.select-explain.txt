@@ -1,0 +1,5 @@
+run   paired_solo.py::paired_solo
+run   solo_body.py::solo_body
+run   solo_sqllogic.test::solo_sqllogic
+
+3 of 3 tests

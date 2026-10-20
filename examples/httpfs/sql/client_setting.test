@@ -1,0 +1,14 @@
+# name: test/sql/client_setting.test
+# description: Needs no server; runs once per httpfs_client value, with that client set.
+# group: [sql]
+
+require httpfs
+
+# -----------------------------------------------------------------------------
+# The client of this cell
+#
+
+query I
+SELECT current_setting('httpfs_client_implementation') IN ('curl', 'httplib');
+----
+true

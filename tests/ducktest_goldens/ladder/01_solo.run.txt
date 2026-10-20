@@ -1,0 +1,12 @@
+[1/3] PASSED   paired_solo.py::paired_solo  (<s>)
+[2/3] PASSED   solo_body.py::solo_body  (<s>)
+[3/3] PASSED   solo_sqllogic.test::solo_sqllogic  (<s>)
+
+
+3 passed in <s>
+run dir: <run>
+
+02-plan.yaml batches:
+  b001  unittest  key1  solo_sqllogic.test
+  b002  python    key2  paired_solo.py
+  b003  python    key2  solo_body.py

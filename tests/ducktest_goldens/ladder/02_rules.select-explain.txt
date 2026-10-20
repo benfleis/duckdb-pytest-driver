@@ -1,0 +1,71 @@
+run   default.test::default
+        storage='scratch_a'  <- ducktest_conf.py: default
+        temp='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+run   matrix_body.py::matrix_body[storage=a,case=small]
+        storage='scratch_a'  <- ducktest_conf.py: default
+        temp='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        matrix=['storage']  <- ducktest_conf.py: match 'matrix_body.py'
+        tags=['matched']  <- ducktest_conf.py: match 'matrix_body.py'
+        matrix=[{'case': ['small', 'large']}]  <- @test
+        storage='scratch_a'  <- matrix storage=a
+        temp='scratch_a'  <- matrix storage=a
+run   matrix_body.py::matrix_body[storage=a,case=large]
+        storage='scratch_a'  <- ducktest_conf.py: default
+        temp='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        matrix=['storage']  <- ducktest_conf.py: match 'matrix_body.py'
+        tags=['matched']  <- ducktest_conf.py: match 'matrix_body.py'
+        matrix=[{'case': ['small', 'large']}]  <- @test
+        storage='scratch_a'  <- matrix storage=a
+        temp='scratch_a'  <- matrix storage=a
+run   matrix_body.py::matrix_body[storage=b,case=small]
+        storage='scratch_a'  <- ducktest_conf.py: default
+        temp='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        matrix=['storage']  <- ducktest_conf.py: match 'matrix_body.py'
+        tags=['matched']  <- ducktest_conf.py: match 'matrix_body.py'
+        matrix=[{'case': ['small', 'large']}]  <- @test
+        storage='scratch_b'  <- matrix storage=b
+        temp='scratch_b'  <- matrix storage=b
+run   matrix_body.py::matrix_body[storage=b,case=large]
+        storage='scratch_a'  <- ducktest_conf.py: default
+        temp='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        matrix=['storage']  <- ducktest_conf.py: match 'matrix_body.py'
+        tags=['matched']  <- ducktest_conf.py: match 'matrix_body.py'
+        matrix=[{'case': ['small', 'large']}]  <- @test
+        storage='scratch_b'  <- matrix storage=b
+        temp='scratch_b'  <- matrix storage=b
+run   own_inputs.py::own_inputs
+        storage='scratch_a'  <- ducktest_conf.py: default
+        temp='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        tags=['matched']  <- ducktest_conf.py: match 'own_inputs.py'
+        storage='scratch_b'  <- @test
+        temp='scratch_b'  <- @test
+run   paired_own_inputs.py::paired_own_inputs
+        storage='scratch_a'  <- ducktest_conf.py: default
+        temp='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        tags=['matched']  <- ducktest_conf.py: match 'paired_own_inputs.py'
+        storage='scratch_b'  <- @test
+        temp='scratch_b'  <- @test
+run   rule_matched.test::rule_matched
+        storage='scratch_a'  <- ducktest_conf.py: default
+        temp='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        tags=['matched']  <- ducktest_conf.py: match 'rule_matched.test'
+run   rule_matched_body.py::rule_matched_body
+        storage='scratch_a'  <- ducktest_conf.py: default
+        temp='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+        tags=['matched']  <- ducktest_conf.py: match 'rule_matched_body.py'
+run   skipped_body.py::skipped_body
+        storage='scratch_a'  <- ducktest_conf.py: default
+        temp='scratch_a'  <- ducktest_conf.py: default
+        engines=['duck']  <- ducktest_conf.py: default
+skip  excluded.test::excluded  -- not in suite 'default': tag opt-in
+
+10 of 11 tests; left out: 1 not in suite 'default'

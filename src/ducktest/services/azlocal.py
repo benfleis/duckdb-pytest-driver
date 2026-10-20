@@ -1,0 +1,302 @@
+"""A local Azure blob server, as a Service: run in docker, or found running at an address.
+
+`flavor` names what backs it; Azurite is the only one (`DUCKTEST_AZ_LOCAL_IMAGE` overrides its
+image). It serves blob only: no DFS endpoint, so no abfss://. A server that already answers where
+the run reaches it is used as it is, so a machine with no docker runs against one started elsewhere.
+A test does not see the server directly; it sees the container, the account, and the credential
+the service produces.
+
+The account key is that of a local server, not a secret, but it reaches a test only through a
+credential all the same, because an existing instance may be anyone's.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+import os
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+
+from .. import names
+from ..binary import UsageError
+from ..host import docker, has_docker, in_url, service_bind, service_host
+from ..resources import NEVER, ON_FAILURE, AzureCredentialDef, Service, ServiceDef, ServiceNotUp, StorageDef
+from ..resources.remote import AzureBlobAccess, remote_for
+from .azblob import PUBLIC_LEVELS, BlobApi
+from .parts import Part, Parts, parts_needed
+
+_log = logging.getLogger(__name__)
+
+
+AZURITE_IMAGE = "mcr.microsoft.com/azure-storage/azurite:3.37.0"
+# Not a secret: the storage emulator's fixed account and key, the same in every Azurite, published by
+# Microsoft (https://learn.microsoft.com/azure/storage/common/storage-use-azurite). Any other value
+# would not authenticate against a default Azurite.
+AZURITE_ACCOUNT = "devstoreaccount1"
+AZURITE_KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+FLAVORS = ("azurite",)
+
+
+def az_settings(**overrides):
+    """How one instance is reached and started; `DUCKTEST_AZ_LOCAL_*` of the environment give the defaults."""
+    port = int(overrides.get("port", os.environ.get("DUCKTEST_AZ_LOCAL_PORT", "10000")))
+    bind = overrides.get("bind", service_bind())
+    host = overrides.get("host", service_host())
+    address = overrides.get("address", f"http://{in_url(host)}:{port}").rstrip("/")
+    account = overrides.get("account", os.environ.get("DUCKTEST_AZ_LOCAL_ACCOUNT", AZURITE_ACCOUNT))
+    key = overrides.get("key", os.environ.get("DUCKTEST_AZ_LOCAL_KEY", AZURITE_KEY))
+    endpoint = f"{address}/{account}"
+    protocol = address.split("://", 1)[0]
+    return {
+        "address": address,
+        "endpoint": endpoint,
+        "account": account,
+        "key": key,
+        "connection_string": (
+            f"DefaultEndpointsProtocol={protocol};AccountName={account};AccountKey={key};BlobEndpoint={endpoint};"
+        ),
+        "container": overrides.get("container", os.environ.get("DUCKTEST_AZ_LOCAL_CONTAINER", "ducktest")),
+        "docker_name": overrides["docker_name"],
+        "port": port,
+        "publish": f"{in_url(bind)}:{port}",
+    }
+
+
+def az_answers(endpoint):
+    """Whether a Blob service answers at `endpoint`. It refuses an unsigned listing, and that refusal
+    is the answer; a 5xx is one that is not ready yet."""
+    try:
+        with urllib.request.urlopen(f"{endpoint}?comp=list", timeout=3):
+            return True
+    except urllib.error.HTTPError as exc:
+        return exc.code < 500
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _start(settings):
+    # A container leaked by an interrupted run holds the port; `rm -f` succeeding here means one was found.
+    if docker("rm", "-f", settings["docker_name"], check=False).returncode == 0:
+        _log.warning("az: removing a container left by an earlier run: %s", settings["docker_name"])
+    accounts = []
+    if (settings["account"], settings["key"]) != (AZURITE_ACCOUNT, AZURITE_KEY):
+        accounts = ["-e", f"AZURITE_ACCOUNTS={settings['account']}:{settings['key']}"]
+    docker(
+        "run", "-d", "--name", settings["docker_name"],
+        "-p", f"{settings['publish']}:10000",
+        *accounts,
+        os.environ.get("DUCKTEST_AZ_LOCAL_IMAGE", AZURITE_IMAGE),
+        # Blob only. A pinned Azurite refuses a newer SDK's API version unless told not to check it.
+        "azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000", "--location", "/data",
+        "--skipApiVersionCheck",
+    )  # fmt: skip
+
+
+@dataclass(frozen=True)
+class Container(Part):
+    """A container the server holds while the run uses it (see Part): `public` opens it to anonymous
+    reads, 'container' (list and read) or 'blob' (read)."""
+
+    noun = "container"
+
+    public: str | None = None
+
+
+class _ContainerCalls:
+    noun, scheme = "container", "az"
+
+    def __init__(self, api, remote):
+        self.api, self.copy, self.check = api, remote.copy, remote.check
+        self.exists, self.make, self.remove = api.container_exists, api.create_container, api.delete_container
+
+    def is_public(self, part):
+        return self.api.public_access(part.name) == part.public
+
+    def make_public(self, part):
+        self.api.set_public_access(part.name, part.public)
+
+
+def container(name: str, seed=(), public: bool | str = False, retain: str = NEVER) -> Container:
+    """A container on a local Azure blob server: `az_local(containers=[container("data", seed=[("dir", "")])])`."""
+    level = "container" if public is True else (public or None)
+    if level is not None and level not in PUBLIC_LEVELS:
+        raise UsageError(f"container {name!r}: public={public!r}; it is True, False, or one of {PUBLIC_LEVELS}")
+    return Container(name, tuple(tuple(s) for s in seed), level, retain)
+
+
+@dataclass(eq=False)
+class AZLocalDef(ServiceDef):
+    """A local Azure blob server with its container made: one that already answers where the run
+    reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_AZ_LOCAL_PORT), else in a docker container named for
+    the run, or the one `.as_existing(address="http://HOST:PORT")` names. `flavor` is what backs it:
+    `azurite`. Its attributes are `endpoint` (the blob service URL, with the account), `account` and
+    `container`; its key comes from the environment (DUCKTEST_AZ_LOCAL_ACCOUNT, DUCKTEST_AZ_LOCAL_KEY;
+    Azurite's own account when unset) and reaches a test through `credential(name, scopes=[...])`, an
+    AzureCredentialDef of its connection string. `storage(name, prefix)` declares a storage in its
+    container, `az://<container>/<prefix>`.
+
+    `containers` are more containers, each a `container(...)`, made when the server is and filled
+    from local directories. The run removes a container it made at the end, but on a server found
+    running, where other runs may use it: there it stays. One that is already there and holds what it seeds (and is public as asked) is used as it is and never
+    changed; one with other content is refused, and blocks only the tests that need it
+    (`parts_needed`). `container` itself is made when it is not there, and never removed."""
+
+    kind = "az_local"
+    detached = True
+    attributes = ("endpoint", "account", "container")
+    secret_attributes = ("key", "connection_string")
+    credential_type = AzureCredentialDef
+    delivers = {"connection_string": "connection_string", "account_name": "account"}
+
+    name: str = "az"
+    flavor: str = "azurite"
+    container: str = "ducktest"
+    containers: list = field(default_factory=list)
+    port: int | None = None
+    address: str | None = None
+    inputs: list = field(default_factory=list)
+    retain: str = ON_FAILURE
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.flavor not in FLAVORS:
+            raise UsageError(f"service {self.name!r}: flavor {self.flavor!r}; it is one of {', '.join(FLAVORS)}")
+
+    def reached_at(self, address: str) -> AZLocalDef:
+        # Cleanup after the run reaches the server for its storages; the containers the run made are gone.
+        return dataclasses.replace(self.as_existing(address), containers=[])
+
+    def parts(self) -> tuple:
+        return tuple(self.containers)
+
+    def parts_needed(self, inputs) -> list:
+        return parts_needed(self, inputs, [c.name for c in self.containers], "az")
+
+    def check_storage(self, storage) -> None:
+        scheme = storage.root.split("://", 1)[0].lower() if "://" in storage.root else "file"
+        if "{" not in scheme and scheme != "az":
+            raise UsageError(
+                f"storage {storage.name!r} ({storage.root}) is on service {self.name!r} ({self.flavor}), which "
+                "serves blob storage only, as az://; it has no DFS endpoint for abfss://"
+            )
+
+    def storage(self, name: str, prefix: str = "", container: str | None = None, **fields) -> StorageDef:
+        """A storage at `az://<container>/<prefix>` on this server; `container` names one of
+        `containers`, else it is the server's own."""
+        if container is not None:
+            if not isinstance(container, str) and not any(container is c for c in self.containers):
+                raise UsageError(
+                    f"service {self.name!r}: container {getattr(container, 'name', container)!r} is not one of its containers; "
+                    f"add it to az_local(containers=[...])"
+                )
+            container = names.ref(container, "container", f"service {self.name!r}: storage({name!r})")
+            if container not in [c.name for c in self.containers]:
+                raise UsageError(f"service {self.name!r}: {container!r} is not one of its containers")
+        root = f"az://{container or '{' + self.name + '.container}'}/{prefix}".rstrip("/")
+        return StorageDef(name, root, account=f"{{{self.name}.account}}", inputs=[self], **fields)
+
+
+def az_local(name: str = "az", **fields) -> AZLocalDef:
+    """A local Azure blob server; see AZLocalDef."""
+    return AZLocalDef(name, **fields)
+
+
+def _docker_name(service_id, run_token):
+    return f"ducktest-{service_id}-{run_token}"
+
+
+class AZLocal(Service):
+    """A stopped container is kept when `retain` keeps it; dealloc removes it. One found running is
+    never touched: no docker call is made for it."""
+
+    def __init__(self, definition, identity, run_token, inputs=None):
+        super().__init__(definition, identity, run_token, inputs)
+        overrides = {"container": definition.container, "docker_name": _docker_name(definition.name, run_token)}
+        if definition.port is not None:
+            overrides["port"] = definition.port
+        if definition.address is not None:
+            overrides["address"] = definition.address
+        self.settings = az_settings(**overrides)
+        self.parts = Parts(definition.name, definition.containers)
+        self.refused = self.parts.refused
+
+    @property
+    def made_containers(self):
+        return self.parts.made
+
+    @property
+    def handle(self):
+        return self.settings["docker_name"]
+
+    @property
+    def address(self):
+        return self.settings["address"]
+
+    def _key(self):
+        return self.settings["key"]
+
+    def remote(self):
+        """The file operations on this server's store (rclone), with its own key."""
+        return remote_for(AzureBlobAccess(self.settings["endpoint"], self.settings["account"], self._key))
+
+    def api(self):
+        """The server's own container calls: Blob service requests signed with the account key."""
+        return BlobApi(self.settings["endpoint"], self.settings["account"], self._key)
+
+    def _calls(self):
+        return _ContainerCalls(self.api(), self.remote())
+
+    def create(self):
+        super().create()
+        try:
+            self.api().create_container(self.settings["container"])
+        except Exception as exc:
+            self.delete()
+            raise ServiceNotUp(f"service {self.name}: its container: {type(exc).__name__}: {exc}") from exc
+        self.parts.create(self._calls())
+
+    def end(self, failed):
+        self.parts.end(self._calls(), failed, found=self.existing)
+        super().end(failed)
+
+    def delete(self):
+        self.parts.remove(self._calls(), lambda c: True, found=self.existing)
+        super().delete()
+
+    def start(self):
+        if self.run_token is None:
+            raise ValueError(f"service {self.name}: its container is named for the run, so it needs the run_token")
+        if not has_docker():
+            raise ServiceNotUp(
+                f"nothing answers at {self.address}, and there is no docker here to start one; start it where "
+                f"docker runs (`ducktest provision`) and set DUCKTEST_SERVICE_HOST to where it is reached from here"
+            )
+        _start(self.settings)
+
+    def stop(self):
+        docker("stop", self.handle, check=False)
+
+    def dealloc(self):
+        docker("rm", "-f", self.handle, check=False)
+
+    def read(self):
+        if not self.existing and docker("inspect", self.handle, check=False).returncode != 0:
+            return None
+        return {name: self.settings[name] for name in (*self.definition.attributes, *self.definition.secret_attributes)}
+
+    def ready(self):
+        return az_answers(self.settings["endpoint"])
+
+    answers = ready
+
+    def list(self, run_token):
+        if self.existing:
+            return []
+        name = _docker_name(self.name, run_token)
+        found = docker("ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.Names}}", check=False)
+        return [n for n in found.stdout.split() if n == name]
+
+
+AZLocalDef.instance = AZLocal

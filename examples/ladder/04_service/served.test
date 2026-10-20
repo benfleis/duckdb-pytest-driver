@@ -1,0 +1,14 @@
+# name: served.test
+# description: Reads a file the rung ships, from the HTTP server the run started.
+# group: [ladder]
+
+require httpfs
+
+# -----------------------------------------------------------------------------
+# The storage's root is the server's url
+#
+
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/cities.csv')
+----
+3

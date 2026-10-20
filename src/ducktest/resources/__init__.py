@@ -1,9 +1,39 @@
-"""Shared, ready-made resources — ``service()`` / ``credential()`` descriptors a backend imports
-instead of re-writing (see ``docs/SERVICES.md``).
+"""Resources: what a test needs and the run provides, each as a `FooDef` and the `Foo` made from it."""
 
-Azurite (the Azure Blob Storage emulator) is the first instance; MinIO (an S3-compatible object store,
-its S3 sibling) is the second. Each module here is *only values +
-thin derivations* — the generic mechanism (attach, the block/derive contract, the ``alive`` probe hook,
-the store lifecycle) lives in ``ducktest.plugin`` / ``ducktest.suites``. If a resource ever needs a
-mechanism that isn't there, the mechanism goes in core first; the instance stays config.
-"""
+from .base import (  # noqa: F401
+    ALWAYS,
+    EXCLUSIVE,
+    NEVER,
+    ON_FAILURE,
+    RO,
+    RW,
+    SHARED_RO,
+    SHARED_RW,
+    Attribute,
+    Resource,
+    ResourceDef,
+)
+from .contract import check_contract  # noqa: F401
+from .credential import (  # noqa: F401
+    AzureCredential,
+    AzureCredentialDef,
+    azure_credential,
+    Credential,
+    CredentialDef,
+    Field,
+    S3Credential,
+    S3CredentialDef,
+    from_env,
+    s3_credential,
+    pick_credentials,
+)
+from .service import Service, ServiceDef, ServiceNotUp  # noqa: F401
+from .engine import BootedEngineDef, Engine, EngineDef  # noqa: F401
+from .storage import (  # noqa: F401
+    DefaultStorage,
+    DefaultStorageDef,
+    StorageDef,
+    default_storage,
+    local_path,
+    scheme_of,
+)

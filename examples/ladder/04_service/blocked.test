@@ -1,0 +1,10 @@
+# name: blocked.test
+# description: Its storage needs a server that cannot start, so it never runs.
+# group: [ladder]
+
+require httpfs
+
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/cities.csv')
+----
+3

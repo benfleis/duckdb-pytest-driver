@@ -1,0 +1,13 @@
+run   blocked.test::blocked
+        storage='served'  <- ducktest_conf.py: default
+        data='served'  <- ducktest_conf.py: default
+        storage='unserved'  <- ducktest_conf.py: match 'blocked.test'
+        data='unserved'  <- ducktest_conf.py: match 'blocked.test'
+run   served.test::served
+        storage='served'  <- ducktest_conf.py: default
+        data='served'  <- ducktest_conf.py: default
+run   served_body.py::served_body
+        storage='served'  <- ducktest_conf.py: default
+        data='served'  <- ducktest_conf.py: default
+
+3 of 3 tests

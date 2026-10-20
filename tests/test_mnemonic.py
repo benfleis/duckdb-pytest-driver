@@ -3,7 +3,7 @@ normal, auto-collected pytest tests)."""
 
 from datetime import datetime
 
-from ducktest5.mnemonic import _ADJECTIVES, _NOUNS, mnemonic, run_id
+from ducktest.mnemonic import _ADJECTIVES, _NOUNS, mnemonic, run_id
 
 
 def test_mnemonic_shape():

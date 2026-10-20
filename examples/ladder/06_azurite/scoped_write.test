@@ -1,0 +1,24 @@
+# name: scoped_write.test
+# description: Writes and reads under its own place on the local Azure blob server, with a scoped secret of its connection string.
+# group: [ladder]
+
+# -----------------------------------------------------------------------------
+# The connection string is a scoped secret, not the global setting
+#
+
+query III
+SELECT type, provider, current_setting('azure_storage_connection_string') = '' FROM duckdb_secrets()
+----
+azure	config	true
+
+# -----------------------------------------------------------------------------
+# A write and a read under the test's own place
+#
+
+statement ok
+COPY (SELECT 42 AS answer) TO '{TEMP_DIR}/answer.csv'
+
+query I
+SELECT answer FROM read_csv('{TEMP_DIR}/answer.csv')
+----
+42

@@ -1,0 +1,12 @@
+[1/2] PASSED   sql/math/add.test::add  (<s>)
+[2/2] SKIPPED  sql/math/mid_file_skip.test::mid_file_skip  (<s>)
+
+1 skipped:
+     1  require-env DUCKTEST_LADDER_NEVER_SET
+          sql/math/mid_file_skip.test::mid_file_skip
+
+1 passed, 1 skipped in <s>
+run dir: <run>
+
+02-plan.yaml batches:
+  b001  unittest  key1  sql/math/add.test, sql/math/mid_file_skip.test

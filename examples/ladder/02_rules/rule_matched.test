@@ -1,0 +1,27 @@
+# name: rule_matched.test
+# description: Named by a match() rule; the storage comes from default().
+# group: [ladder]
+
+require json
+
+# -----------------------------------------------------------------------------
+# The storage default() binds
+#
+
+query I
+SELECT '{TEMP_DIR}' LIKE '%/scratch_a/%'
+----
+true
+
+# -----------------------------------------------------------------------------
+# An inline require is part of the body
+#
+# It does not change the test's identity, so this file shares a batch with default.test.
+
+statement ok
+COPY (SELECT 42 AS answer) TO '{TEMP_DIR}/answer.json'
+
+query I
+SELECT answer FROM read_json('{TEMP_DIR}/answer.json')
+----
+42

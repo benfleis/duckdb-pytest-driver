@@ -1,265 +1,148 @@
-"""Provisioning: the per-test Provisioner protocol + the single service provisioning entry.
+"""How a run gets each service its selected tests need. The mode is the run's choice, per service:
 
-Two things live here:
+    managed    create it, use it, end it                 the default
+    existing   adopt the one running at an address;      `--existing-service ID=URL`, or
+               never start it, never end it              DUCKTEST_EXISTING_SERVICE_<ID>=URL
+    kept       create it, retain what it holds, and      `--keep-services`
+               leave it running; the run prints the
+               `--existing-service` that adopts it
 
-1. **`provision_service(ctx, svc)`** — the ONE routing point for suite-level services (lifted out of
-   the shipped `plugin.py`). Attach-or-boot: if the service key is in `--existing-service`, ATTACH
-   (build the block, probe `alive`, populate idempotently) and never enter the store or tear it down;
-   else MANAGED (single-flight boot via the store). Either way `to_env(block)` is merged into the
-   caller's environment and SQLLogic substitution. A test cannot tell which stance ran — identical
-   block shape (the block/derive builder contract in the resource modules guarantees that). Because the
-   collect-first controller calls this UP FRONT for every service the plan needs, there is no
-   eager/on_demand disposition fork: provisioning has one entry and one timing.
+A managed or kept service that already answers where the run would reach it is used as an existing
+one, `found running`: nothing is started for it, and nothing ends it.
 
-2. **`Provisioner` base + registry** — the generic per-`@requires` access-policy loop (rw -> isolated
-   namespace instantiated + tracked for teardown; ro -> shared target instantiated once per session).
-   A backend subclasses and fills the hooks. **Redesign change vs the shipped base:** `provision()`
-   returns the *framework* `Bindings` (context.Bindings: token/isolated/env/summary + an opaque
-   `backend` payload) — the backend's catalog/default_schema/tables no longer masquerade as "generic"
-   fields the base never reads; they live in `.backend`. The registry is the one typed
-   `context.Registry` (scope REQUIRED, resolved nearest-ancestor — no `path=None` back-compat branch).
+Every mode makes the service in the run's `Made`, so it is made once, whichever phase makes it,
+and every consumer gets that one instance.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import os
-from dataclasses import dataclass, field
-from typing import Any, Optional
+import re
 
-from .context import Bindings, get_context
+from .binary import UsageError
+from .resources import ALWAYS, ServiceNotUp
+from .resources.made import EXISTING, FOUND, KEPT, MANAGED  # noqa: F401
 
+_log = logging.getLogger(__name__)
 
-# --- registry (thin adapters over the one typed Registry) -------------------------------------
+MASK = "***"
 
-
-def register_provisioner(config, provisioner, scope) -> None:
-    """Register a backend provisioner scoped to the registering conftest's directory (call from a
-    conftest `pytest_configure`; pass `scope=os.path.dirname(__file__)`). Resolution is by TEST
-    LOCATION (nearest-ancestor) so a mixed multi-backend selection resolves each test to ITS backend.
-
-    `scope` is required — the shipped `scope=None` global-fallback / `path=None` most-recent-wins
-    branches are gone (a legacy accommodation; the location is always knowable)."""
-    if scope is None:
-        raise ValueError("register_provisioner: scope is required (the registering conftest's dir)")
-    get_context(config).registry.register_provisioner(os.path.abspath(str(scope)), provisioner)
+# A name that says the value is a credential: masked wherever it is written down.
+SECRET_NAME = re.compile(r"SECRET|TOKEN|PASSW|CREDENTIAL|_KEY(_ID)?$", re.IGNORECASE)
 
 
-def get_provisioner(config, path) -> Optional[Any]:
-    """The provisioner whose scope is the nearest ancestor of `path`, else None. `path` required."""
-    return get_context(config).registry.provisioner_for(str(path))
+def _key(service_id):
+    return service_id.replace("-", "_").lower()
 
 
-# --- the single service provisioning entry ----------------------------------------------------
+def existing_address(service_id, cli_entries):
+    """The address of a running instance of `service_id` the run was told to adopt, or None.
+    `--existing-service ID=URL` wins over DUCKTEST_EXISTING_SERVICE_<ID>."""
+    for entry in cli_entries or ():
+        name, _, value = entry.partition("=")
+        if _key(name) == _key(service_id):
+            return _address(value, f"--existing-service {entry}")
+    name = f"DUCKTEST_EXISTING_SERVICE_{_key(service_id).upper()}"
+    value = os.environ.get(name)
+    return None if value is None else _address(value, name)
 
 
-def provision_service(config, svc) -> dict:
-    """Attach-or-boot `svc`, publish its env, return the block. The one entry (spec §3.6).
-
-    Config-first (the descriptors' `start`/`fetch`/`attach` callables all take a pytest config, and
-    the store + `--existing-service` resolution hang off the session context on the config). The
-    concrete routing (attach vs single-flight managed boot, `to_env` adoption) lives with the store
-    lifecycle in :mod:`ducktest.plugin`; this is the stable public entry that delegates to it.
-
-    Idempotent + single-flight: two workers racing the same managed service boot it once (the store
-    serializes); an attach just re-probes. Never booted twice, never a leaked half-boot in the store.
-    """
-    from .plugin import provision_service as _impl
-
-    return _impl(config, svc)
+def _address(value, where):
+    value = value.strip()
+    if not value:
+        raise UsageError(f"{where}: name the address of the running instance, as ID=URL")
+    return value
 
 
-# --- the per-@requires Provisioner base -------------------------------------------------------
+def bring_up(made, definitions, *, existing_services=(), keep=False, separate=False, on=None):
+    """Make each service of `definitions` in `made`, in order: adopted where the run names a
+    running instance or the service was declared `as_existing`, else created. `on(name, **fields)` is told what happened to each one. Returns
+    {service name: why it is not up}.
+
+    `separate` is the `provision` subcommand, which is not the process that runs the tests: it
+    refuses a service that cannot outlive it."""
+    errors = {}
+    for d in definitions:
+        address = existing_address(d.name, existing_services) or d.address
+        if separate and address is None and not d.detached:
+            raise UsageError(
+                f"service {d.name!r} lives in the process that starts it, so a separate `provision` would stop "
+                f"it again at once. Run `ducktest exec --run-dir DIR --provision`, which provisions and runs in "
+                f"one process, or name a running instance with --existing-service {d.name}=URL."
+            )
+        if address is not None:
+            _make(made, d.as_existing(address), EXISTING, errors, on)
+        elif keep:
+            _make(made, dataclasses.replace(d, retain=ALWAYS), KEPT, errors, on)
+        else:
+            _make(made, d, MANAGED, errors, on)
+    return errors
 
 
-@dataclass
-class State:
-    """The rich WORKING object a backend's hooks populate during `provision()`. Its data becomes the
-    opaque `Bindings.backend` payload at the return boundary — so the FRAMEWORK never sees
-    catalog/default_schema/tables (it reads only token/isolated/env/summary), but the backend keeps
-    the ergonomic rich structure its `instantiate`/`rw_target`/`make_init_sql` need. Public so a
-    backend can construct it in `new_state` (returning it, or a subclass with extra fields)."""
-
-    token: str
-    catalog: Optional[str] = None
-    default_schema: Optional[str] = None
-    tables: list = field(default_factory=list)
-    isolated: list = field(default_factory=list)
-    env: dict = field(default_factory=dict)
-    plan: list = field(default_factory=list)
-
-
-class Provisioner:
-    """Base Provisioner: the generic access-policy spec-loop + RO once-guard + teardown. A backend
-    overrides the hooks (`execute`, `rw_target`, `ro_target`, `instantiate`, `make_init_sql` required;
-    the rest have defaults). `provision()` returns the framework `Bindings`; backend-shaped data is in
-    `Bindings.backend` (a `State`, or a backend subclass of it via `new_state`)."""
-
-    def __init__(self):
-        # RO targets instantiated once this INVOCATION. Store-backed single-flight across workers
-        # when a store is running (see `_ro_already_shared`); this bare set is the fallback for when
-        # it isn't (e.g. a provisioner-only suite declaring no service/credential never starts one) --
-        # same as the shipped per-worker behavior, and also the always-used path in `dry_run` (a
-        # preview must never claim a real cross-worker slot).
-        self._shared_ro = set()
-
-    def provision(self, specs, token, *, dry_run=False, params=None, config=None) -> Bindings:
-        """`config` (optional) is the pytest config -- passed by the framework's call sites so the
-        RO once-guard can single-flight through the store; omit it (as direct/unit-test callers do)
-        to fall back to the bare per-process guard. See `_ro_already_shared`."""
-        self.before_provision(specs, token, dry_run)
-        state = self.new_state(token, params=params)
-        for spec in specs:
-            if spec.access == "rw":
-                target = self.rw_target(spec, token, state, dry_run)
-                self.instantiate(spec, target, dry_run, state)
-            else:
-                target = self.ro_target(spec, state)
-                if self._ro_already_shared(spec, target, state, dry_run, config):
-                    state.plan.append(f"[ro] {target} already provisioned this session")
-        self.finalize_state(state)
-        state.env = self.env_for(state)
-        if dry_run:
-            print("provision plan (NO DDL executed):")
-            for line in state.plan:
-                print(f"  {line}")
-            self.dry_run_summary(state)
-        return self._freeze(state)
-
-    def _freeze(self, state: State) -> Bindings:
-        """The Bindings SPLIT realized at one boundary: framework fields promoted, rich state opaque."""
-        return Bindings(
-            token=state.token,
-            isolated=tuple(state.isolated),
-            env=dict(state.env),
-            summary="\n".join(state.plan),
-            backend=state,
+def adopt(made, definitions, recorded, *, existing_services=(), on=None):
+    """For an exec that is not the process that provisioned: each service is adopted at the address
+    the command line or `03` (`recorded`, its `services`) gives. One that lives in this process
+    cannot have been made anywhere else, so it is made here. Returns {service name: why it is not up}."""
+    errors = {}
+    for d in definitions:
+        address = (
+            existing_address(d.name, existing_services) or d.address or (recorded.get(d.name) or {}).get("address")
         )
+        if address is not None:
+            _make(made, d.as_existing(address), EXISTING, errors, on)
+        elif not d.detached:
+            _make(made, d, MANAGED, errors, on)
+        else:
+            errors[d.name] = (
+                f"no instance of {d.name!r} was provisioned for this run. Run "
+                f"`ducktest provision --run-dir DIR` first, or `exec --provision` to provision here."
+            )
+            if on:
+                on(d.name, state="failed", error=errors[d.name])
+    return errors
 
-    def teardown(self, bindings: Optional[Bindings] = None) -> None:
-        """Drop the isolated `rw` namespaces this provision created — catalog metadata only.
 
-        Physical-storage reclaim moved OUT of teardown (SPEC §11.4): a remote root is swept by the
-        driver's path-addressed prefix delete of `${TEMP_DIR}/${token}/`, which is order-independent
-        — so the old `reclaim_physical`-before-`drop_sql` LIFO ordering (and the `reclaim_physical`
-        hook itself) is gone. Teardown now only drops namespaces. (`bindings.isolated` is the only
-        framework field the base reads.)"""
-        isolated = list(bindings.isolated) if bindings else []
-        for ns in isolated:
-            self.execute(self.drop_sql(ns))
+def _make(made, definition, mode, errors, on):
+    if on:
+        on(definition.name, state="starting")
+    try:
+        service = made.create(definition, mode)
+    except ServiceNotUp as exc:
+        errors[definition.name] = str(exc)
+        if on:
+            on(definition.name, state="failed", error=errors[definition.name])
+        _log.info("service %s: failed to start: %s", definition.name, errors[definition.name])
+        return
+    mode = made.modes[definition.name]
+    if on:
+        on(definition.name, state="up", mode=mode, address=service.address)
+    _log.info("service %s (%s): up at %s", definition.name, mode, service.address)
 
-    def _ro_already_shared(self, spec, target, state, dry_run, config) -> bool:
-        """Instantiate `target` at most once THIS INVOCATION; return whether it was already done
-        (by us or another worker) so the caller appends the "already provisioned" plan line instead.
 
-        Store-backed single-flight across workers when a store is running -- the same coordination
-        primitive `Service`/`Credential` already use (`store.copy_or_provision`), promoted here per
-        RESOURCE-PLANNING.md §4's validation: RO instantiation is typically an idempotent
-        `CREATE ... IF NOT EXISTS`, safe to dedupe the same way. A failed instantiate poisons the key
-        for the rest of the session (no retry storm) -- the same contract every other store-coordinated
-        resource already has, not a new one invented here.
+def record(service, mode, *, owned):
+    """What `03` says about one service: what it is, how it was reached, where it answers, its
+    attributes with every secret masked, `owned`: whether cleanup is the one to end it, and the
+    parts it refused (a bucket), each with why."""
+    attributes = {
+        name: MASK if SECRET_NAME.search(name) else value for name, value in service.attribute_values().items()
+    }
+    attributes.update({name: MASK for name in service.secrets})
+    out = {
+        "kind": service.definition.kind,
+        "identity": service.identity,
+        "mode": mode,
+        "detached": bool(service.definition.detached),
+        "owned": owned,
+        "address": service.address,
+        "attributes": attributes,
+    }
+    if service.refused:
+        out["refused"] = dict(service.refused)
+    return out
 
-        Falls back to the bare per-process `_shared_ro` set when no store is running (a
-        provisioner-only suite that declares no service/credential never starts one) -- identical to
-        the shipped per-worker behavior. `dry_run` ALWAYS uses that same bare-set path: a preview must
-        never claim a real cross-worker slot.
-        """
-        if dry_run or config is None:
-            if target in self._shared_ro:
-                return True
-            self.instantiate(spec, target, dry_run, state)
-            if not dry_run:
-                self._shared_ro.add(target)
-            return False
 
-        from .plugin import get_store
-
-        handle = get_store(config)
-        if handle is None:
-            if target in self._shared_ro:
-                return True
-            self.instantiate(spec, target, dry_run, state)
-            self._shared_ro.add(target)
-            return False
-
-        from . import store as _store
-
-        ran = False
-
-        def _factory():
-            nonlocal ran
-            self.instantiate(spec, target, dry_run, state)
-            ran = True
-            return True
-
-        _store.copy_or_provision(handle, self._ro_store_key(target), _factory)
-        return not ran
-
-    def _ro_store_key(self, target) -> str:
-        """Store key for a RO target -- namespaced so two different backends sharing one store
-        never collide even if a target string coincides.
-
-        The namespace is `self.backend()` when a subclass names one explicitly, else this
-        Provisioner's concrete class -- the RO-shared-identity guarantee
-        (`decorate.coordination_key`, phase 4) is really keyed on `backend`, not on which Python
-        class happens to implement it; the class-qualname fallback is what phase 3 shipped before
-        `backend()` existed, kept as the default for every existing subclass that doesn't override
-        it (so this is a strict behavior-preserving default, not a required change)."""
-        cls = type(self)
-        namespace = self.backend() or f"{cls.__module__}.{cls.__qualname__}"
-        return f"ro::{namespace}::{target}"
-
-    def backend(self) -> Optional[str]:
-        """Optional: this Provisioner's backend identity (`decorate.Key.backend` -- e.g.
-        `"azurite-az"`, `"uc-databricks"`), for callers that want to reason about RO sharing scope
-        by NAME rather than by which Python class implements it. None (the default) => `_ro_store_key`
-        falls back to the class-qualname scoping every Provisioner already had before this hook
-        existed -- overriding it is opt-in, never required."""
-        return None
-
-    def ensure_isolated(self, namespace, state, dry_run, *, create_sql=None):
-        if namespace in state.isolated:
-            return
-        state.isolated.append(namespace)
-        sql = create_sql if create_sql is not None else f"CREATE SCHEMA IF NOT EXISTS {namespace}"
-        state.plan.append(f"{sql};")
-        if not dry_run:
-            self.execute(sql)
-
-    # -- hooks a backend implements (state is the rich State / a subclass) --
-
-    def before_provision(self, specs, token, dry_run):
-        """Optional up-front validation before any spec is provisioned. Default: no-op."""
-
-    def new_state(self, token, *, params=None) -> State:
-        """Construct the working state. Default bare `State(token)`; override to preset
-        catalog/default_schema or return a `State` subclass with extra backend fields."""
-        return State(token=token)
-
-    def execute(self, sql):
-        raise NotImplementedError
-
-    def rw_target(self, spec, token, state, dry_run):
-        raise NotImplementedError
-
-    def ro_target(self, spec, state):
-        raise NotImplementedError
-
-    def instantiate(self, spec, target, dry_run, state):
-        raise NotImplementedError
-
-    def finalize_state(self, state):
-        """Called once after the spec loop, before `env_for`. Default: no-op."""
-
-    def env_for(self, state) -> dict:
-        return {}
-
-    def drop_sql(self, namespace) -> str:
-        return f"DROP SCHEMA IF EXISTS {namespace} CASCADE"
-
-    def dry_run_summary(self, state):
-        """Optional extra dry-run print after the plan. Default: no-op."""
-
-    def make_init_sql(self, bindings, *, redact: bool = False) -> str:
-        """Concrete duckdb init SQL for the `--repl` launch. `redact=True` masks secrets for display.
-        Receives the framework `Bindings`; read backend data via `bindings.backend`. Required."""
-        raise NotImplementedError
+def attach_argument(service):
+    """The `--existing-service` argument that adopts a kept instance in the next run."""
+    return f"--existing-service {service.name}={service.address}"

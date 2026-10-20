@@ -1,0 +1,26 @@
+service s3 ...
+service s3 -- did not come up: existing service 's3' does not answer at http://127.0.0.1:9
+[1/2] PASSED   write_read.test::write_read[storage=local]  (<s>)
+[2/2] BLOCKED  write_read.test::write_read[storage=s3]  [s3 did not come up]
+
+--- write_read.test::write_read[storage=s3]
+
+  s3 did not come up
+
+  require: httpfs  <- matrix storage=s3
+  values: storage=s3  <- matrix storage
+  root: data_dir=<tmp>/repo/07_storage_matrix/data  <- default storage
+  not served: s3 did not come up (existing service 's3' does not answer at http://127.0.0.1:9)  <- storage lake
+  not served: s3 did not come up (existing service 's3' does not answer at http://127.0.0.1:9)  <- credential keys
+  again: ducktest run --id 'write_read.test::write_read[storage=s3]'
+
+
+'s3' did not come up: 1 test blocked
+  existing service 's3' does not answer at http://127.0.0.1:9
+
+1 passed, 1 blocked in <s>
+run dir: <run>
+
+02-plan.yaml batches:
+  b001  unittest  key1  write_read.test
+  b002  unittest  key2  write_read.test

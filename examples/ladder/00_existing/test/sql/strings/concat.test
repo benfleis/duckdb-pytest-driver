@@ -1,0 +1,8 @@
+# name: test/sql/strings/concat.test
+# description: Outside the path the run selects.
+# group: [strings]
+
+query T
+SELECT 'duck' || 'db';
+----
+duckdb

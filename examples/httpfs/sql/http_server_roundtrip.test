@@ -1,0 +1,22 @@
+# name: test/sql/http_server_roundtrip.test
+# description: Writes a file into the directory the python HTTP server serves, then reads it over
+#              HTTP. The rule for PYTHON_HTTP_SERVER_URL gives this file the server.
+# group: [sql]
+
+require httpfs
+
+require-env PYTHON_HTTP_SERVER_URL
+
+require-env PYTHON_HTTP_SERVER_DIR
+
+# -----------------------------------------------------------------------------
+# Write locally, read over HTTP
+#
+
+statement ok
+COPY (SELECT 42 AS answer) TO '{PYTHON_HTTP_SERVER_DIR}/answer.csv';
+
+query I
+SELECT answer FROM read_csv('{PYTHON_HTTP_SERVER_URL}/answer.csv');
+----
+42
