@@ -174,7 +174,7 @@ def test_a_store_that_refuses_to_delete_is_a_problem_of_cleanup(store, tmp_path)
     store.keys.fail = "AccessDenied"
     summary = _cleanup(tmp_path, store.made, ENDED)
     assert summary["problems"] == [
-        f"storage 'lake': the run's prefix {RUN} could not be removed: RuntimeError: AccessDenied"
+        f"storage 'lake': the run's path {RUN} could not be removed: RuntimeError: AccessDenied"
     ]
 
 
@@ -193,7 +193,7 @@ def test_a_green_run_whose_cleanup_leaves_files_says_where_and_is_red(tmp_path, 
         STORES[shared.address].keys.add(f"{ctx.values.temp_dir}/a.csv")
 
     code, run_dir, report, text = go(tmp_path, [py_test(writes, temp=lake)])
-    problem = f"storage 'lake': the run's prefix s3://b/lake/temp/{run_dir.name} could not be removed: "
+    problem = f"storage 'lake': the run's path s3://b/lake/temp/{run_dir.name} could not be removed: "
     problem += "RuntimeError: AccessDenied"
     assert (code, report["exit_code"], report["counts"]["passed"]) == (1, 1, 1)
     assert report["left_behind"] == [problem]

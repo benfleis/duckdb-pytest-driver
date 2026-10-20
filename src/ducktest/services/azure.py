@@ -1,7 +1,8 @@
-"""A local Azure blob server, as a Service: run in docker, or found running at an address.
+"""A server that speaks Azure blob, as a Service: a local one run in docker, or found running at an
+address.
 
-`flavor` names what backs it; Azurite is the only one (`DUCKTEST_AZ_LOCAL_IMAGE` overrides its
-image). It serves blob only: no DFS endpoint, so no abfss://. A server that already answers where
+`flavor` names what backs it; Azurite, a local server, is the only one built (`DUCKTEST_AZ_LOCAL_IMAGE`
+overrides its image). It serves blob only: no DFS endpoint, so no abfss://. A server that already answers where
 the run reaches it is used as it is, so a machine with no docker runs against one started elsewhere.
 A test does not see the server directly; it sees the container, the account, and the credential
 the service produces.
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field
 from .. import names
 from ..binary import UsageError
 from ..host import docker, has_docker, in_url, service_bind, service_host
-from ..resources import NEVER, ON_FAILURE, AzureCredentialDef, Service, ServiceDef, ServiceNotUp, StorageDef
+from ..resources import NEVER, ON_FAILURE, AzureCredentialDef, AzureStorageDef, Service, ServiceDef, ServiceNotUp
 from ..resources.remote import AzureBlobAccess, remote_for
 from .azblob import PUBLIC_LEVELS, BlobApi
 from .parts import Part, Parts, parts_needed
@@ -119,7 +120,9 @@ class _ContainerCalls:
 
 
 def container(name: str, seed=(), public: bool | str = False, retain: str = NEVER) -> Container:
-    """A container on a local Azure blob server: `az_local(containers=[container("data", seed=[("dir", "")])])`."""
+    """A container on a local Azure blob server:
+    `AzureServiceDef.azurite(containers=[container("data", seed=[("dir", "path")])])`; each seed entry
+    copies a local directory to a path in the container."""
     level = "container" if public is True else (public or None)
     if level is not None and level not in PUBLIC_LEVELS:
         raise UsageError(f"container {name!r}: public={public!r}; it is True, False, or one of {PUBLIC_LEVELS}")
@@ -127,15 +130,17 @@ def container(name: str, seed=(), public: bool | str = False, retain: str = NEVE
 
 
 @dataclass(eq=False)
-class AZLocalDef(ServiceDef):
-    """A local Azure blob server with its container made: one that already answers where the run
-    reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_AZ_LOCAL_PORT), else in a docker container named for
-    the run, or the one `.as_existing(address="http://HOST:PORT")` names. `flavor` is what backs it:
-    `azurite`. Its attributes are `endpoint` (the blob service URL, with the account), `account` and
-    `container`; its key comes from the environment (DUCKTEST_AZ_LOCAL_ACCOUNT, DUCKTEST_AZ_LOCAL_KEY;
-    Azurite's own account when unset) and reaches a test through `credential(name, scopes=[...])`, an
-    AzureCredentialDef of its connection string. `storage(name, prefix)` declares a storage in its
-    container, `az://<container>/<prefix>`.
+class AzureServiceDef(ServiceDef):
+    """A server that speaks Azure blob, with its container made. `flavor` is what backs it: `azurite`, a
+    local server, is the only one built (`AzureServiceDef.azurite(...)`); a cloud flavor such as a
+    future `azure` would be one too, only ever found running at its endpoint. A local one is used
+    where it already answers where the run reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_AZ_LOCAL_PORT),
+    else run in a docker container named for the run; `.as_existing(address="http://HOST:PORT")` names
+    one elsewhere. Its attributes are `endpoint` (the blob service URL, with the account), `account`
+    and `container`; its key comes from the environment (DUCKTEST_AZ_LOCAL_ACCOUNT,
+    DUCKTEST_AZ_LOCAL_KEY; Azurite's own account when unset) and reaches a test through
+    `credential(name, scopes=[...])`, an AzureCredentialDef of its connection string.
+    `storage(name, container=..., path=...)` declares a storage on it, `az://<container>/<path>`.
 
     `containers` are more containers, each a `container(...)`, made when the server is and filled
     from local directories. The run removes a container it made at the end, but on a server found
@@ -143,14 +148,14 @@ class AZLocalDef(ServiceDef):
     changed; one with other content is refused, and blocks only the tests that need it
     (`parts_needed`). `container` itself is made when it is not there, and never removed."""
 
-    kind = "az_local"
+    kind = "azure_service"
     detached = True
     attributes = ("endpoint", "account", "container")
     secret_attributes = ("key", "connection_string")
     credential_type = AzureCredentialDef
     delivers = {"connection_string": "connection_string", "account_name": "account"}
 
-    name: str = "az"
+    name: str
     flavor: str = "azurite"
     container: str = "ducktest"
     containers: list = field(default_factory=list)
@@ -164,7 +169,12 @@ class AZLocalDef(ServiceDef):
         if self.flavor not in FLAVORS:
             raise UsageError(f"service {self.name!r}: flavor {self.flavor!r}; it is one of {', '.join(FLAVORS)}")
 
-    def reached_at(self, address: str) -> AZLocalDef:
+    @classmethod
+    def azurite(cls, name: str = "az", **fields) -> AzureServiceDef:
+        """A local Azurite: found running where the run reaches it, else run in docker."""
+        return cls(name, flavor="azurite", **fields)
+
+    def reached_at(self, address: str) -> AzureServiceDef:
         # Cleanup after the run reaches the server for its storages; the containers the run made are gone.
         return dataclasses.replace(self.as_existing(address), containers=[])
 
@@ -182,32 +192,27 @@ class AZLocalDef(ServiceDef):
                 "serves blob storage only, as az://; it has no DFS endpoint for abfss://"
             )
 
-    def storage(self, name: str, prefix: str = "", container: str | None = None, **fields) -> StorageDef:
-        """A storage at `az://<container>/<prefix>` on this server; `container` names one of
+    def storage(self, name: str, *, container: str | None = None, path: str = "", **fields) -> AzureStorageDef:
+        """A storage at `az://<container>/<path>` on this server; `container` names one of
         `containers`, else it is the server's own."""
         if container is not None:
             if not isinstance(container, str) and not any(container is c for c in self.containers):
                 raise UsageError(
                     f"service {self.name!r}: container {getattr(container, 'name', container)!r} is not one of its containers; "
-                    f"add it to az_local(containers=[...])"
+                    f"add it to AzureServiceDef(containers=[...])"
                 )
             container = names.ref(container, "container", f"service {self.name!r}: storage({name!r})")
             if container not in [c.name for c in self.containers]:
                 raise UsageError(f"service {self.name!r}: {container!r} is not one of its containers")
-        root = f"az://{container or '{' + self.name + '.container}'}/{prefix}".rstrip("/")
-        return StorageDef(name, root, account=f"{{{self.name}.account}}", inputs=[self], **fields)
-
-
-def az_local(name: str = "az", **fields) -> AZLocalDef:
-    """A local Azure blob server; see AZLocalDef."""
-    return AZLocalDef(name, **fields)
+        root = f"az://{container or '{' + self.name + '.container}'}/{path}".rstrip("/")
+        return AzureStorageDef(name, root, account=f"{{{self.name}.account}}", inputs=[self], **fields)
 
 
 def _docker_name(service_id, run_token):
     return f"ducktest-{service_id}-{run_token}"
 
 
-class AZLocal(Service):
+class AzureService(Service):
     """A stopped container is kept when `retain` keeps it; dealloc removes it. One found running is
     never touched: no docker call is made for it."""
 
@@ -299,4 +304,4 @@ class AZLocal(Service):
         return [n for n in found.stdout.split() if n == name]
 
 
-AZLocalDef.instance = AZLocal
+AzureServiceDef.instance = AzureService

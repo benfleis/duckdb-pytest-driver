@@ -135,8 +135,8 @@ def test_a_rule_loads_an_extension_for_its_setting_and_a_value_from_an_input_sho
     (tree / "test" / "ducktest_conf.py").write_text(
         textwrap.dedent("""
             from ducktest import Project, match
-            from ducktest.services.s3local import s3_local
-            S3 = s3_local()
+            from ducktest.services.s3 import S3ServiceDef
+            S3 = S3ServiceDef.rustfs()
             project = Project(
                 credentials=[S3.credential("keys", scopes=[])],
                 rules=[match("a/**", credential="keys", requires=["httpfs"],

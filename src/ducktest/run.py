@@ -542,7 +542,7 @@ def execute(
 
         def attempt(test, n, lease):
             """Returns (outcome, problems, the failure in parts, the test's directory, its ctx)."""
-            # An attempt after the first has its own directory and prefix, so it does not see what
+            # An attempt after the first has its own directory, so it does not see what
             # the one before it left.
             dir_name = test.dir_name if n == 1 else f"{test.dir_name}.attempt{n}"
             temp_dir = default.test_dir(run_id, dir_name)

@@ -328,7 +328,7 @@ def _paths_by_outcome(event_lines, run_dir):
 def cleanup(run_dir, *, project=None, keep=False, event_lines=None, ended=None):
     """What a run leaves behind, by what `04` says about each test: the files of a test that passed
     are removed, the files of a test that failed stay, and a service this run started is stopped.
-    Under each storage the run's own prefix goes, but the places of the tests that failed.
+    Under each storage the run's own path goes, but the places of the tests that failed.
     A run that never ended (it was killed) did not end the services behind its storages, nor remove
     what its tests wrote under them: what carries its run token is removed.
 
@@ -415,12 +415,12 @@ def clear_storages(run_token, storages, failed_kept, problems):
             found = storage.clear(run_token, keep)
         except Exception as exc:
             problems.append(
-                f"storage {storage.name!r}: the run's prefix {storage.run_root(run_token)} could not be removed: "
+                f"storage {storage.name!r}: the run's path {storage.run_root(run_token)} could not be removed: "
                 f"{type(exc).__name__}: {exc}"
             )
             continue
         if found:
-            _log.debug("storage %s: removed the run's prefix, %d path(s)", storage.name, len(found))
+            _log.debug("storage %s: removed the run's path, %d path(s)", storage.name, len(found))
         removed += found
     return removed
 

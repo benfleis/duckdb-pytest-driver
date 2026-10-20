@@ -1,10 +1,10 @@
 from ducktest import Project, default
 from ducktest.engines.duckdb import duckdb_engine
-from ducktest.services.azlocal import az_local
+from ducktest.services.azure import AzureServiceDef
 
 # The run uses an Azurite that answers at DUCKTEST_SERVICE_HOST:DUCKTEST_AZ_LOCAL_PORT, else starts one in docker.
-AZ = az_local()
-BLOBS = AZ.storage("blobs", "lake")
+AZ = AzureServiceDef.azurite()
+BLOBS = AZ.storage("blobs", path="lake")
 
 project = Project(
     engines=[duckdb_engine("duck", requires=["azure"])],

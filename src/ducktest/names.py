@@ -1,7 +1,8 @@
 """The names of one load: every declaration a `ducktest_conf.py` makes, and every place that refers to one.
 
-A name is the label the user gives a resource (`s3_local("s3")`, `S3.storage("s3_lake", ...)`), and what a
-reference in the same project uses; identity stays the content digest. While the loader runs the conf files
+A name is the label the user gives a resource (`S3ServiceDef.rustfs("local_s3")`,
+`LOCAL_S3.storage("local_lake")`), and what a reference in the same project uses; identity stays the
+content digest. While the loader runs the conf files
 it holds one `Names` (a context variable): each constructor registers what it made, and each reference slot
 (`storage=`, `credential=`, `service=`, `engines=[...]`, `scopes=[...]`, `container=`, `bucket=`, a matrix
 value) takes a plain name or the object, records it, and gives a plain string on. So a resource that exists
@@ -31,7 +32,7 @@ from .binary import UsageError
 
 _PACKAGE = os.path.dirname(os.path.abspath(__file__))
 _current: contextvars.ContextVar[Names | None] = contextvars.ContextVar("ducktest_names", default=None)
-ATTRIBUTE_REF = re.compile(r"\{([\w-]+)\.(\w+)\}")  # {s3.host_port}: an attribute of a resource
+ATTRIBUTE_REF = re.compile(r"\{([\w-]+)\.(\w+)\}")  # {local_s3.host_port}: an attribute of a resource
 
 # kind -> where a declaration of it is bound
 BIND_IN = {
@@ -39,8 +40,8 @@ BIND_IN = {
     "service": "Project(services=[...]), or as an input of a bound storage, credential or engine",
     "storage": "Project(storages=[...])",
     "credential": "Project(credentials=[...])",
-    "bucket": "s3_local(buckets=[...])",
-    "container": "az_local(containers=[...])",
+    "bucket": "S3ServiceDef(buckets=[...])",
+    "container": "AzureServiceDef(containers=[...])",
 }
 PARTS = ("bucket", "container")
 

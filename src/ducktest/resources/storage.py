@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import ClassVar, Mapping
 
 from ..binary import UsageError
 from .base import SHARED_RW, Attribute, Resource, ResourceDef, digest
@@ -79,13 +79,15 @@ class At:
 
 @dataclass(eq=False)
 class StorageDef(ResourceDef):
-    """A location: a local directory, a bucket, a container, with the scheme its `root` says. The
-    storage itself is shared; a writer with a key gets a child of its own, a prefix under the root;
+    """A location: a local directory, a bucket, a container, with the scheme its `root` says. The typed
+    kinds say the protocol and check the root: `LocalStorageDef`, `S3StorageDef`, `AzureStorageDef`;
+    `StorageDef` itself takes any root, such as a URL a service serves. The
+    storage itself is shared; a writer with a key gets a child of its own, a path under the root;
     a writer with none has the whole root to itself, under a lock. A test gets from it what the slots
     that bind it say (`options.py`): bound by `storage=`, its values, `S3_ENDPOINT`, `S3_USE_SSL`,
     `AZ_ACCOUNT` where they apply; by `data=`, `DATA_DIR`, its root; by `temp=`, `TEMP_DIR`.
 
-    Its temp roots have three levels: the place, `<root>/<temp prefix>`, or `<root>/<path>` for
+    Its temp roots have three levels: the place, `<root>/<temp_path>`, or `<root>/<path>` for
     `STORAGE.at(path)`; `<place>/<run token>`, bound to the run (`TEMP_DIR_ROOT`); and a child under
     that with a test's key (`TEMP_DIR`). `STORAGE.at(path)` bound by `data=` is `<root>/<path>`."""
 
@@ -94,12 +96,23 @@ class StorageDef(ResourceDef):
     mints_children = True
 
     name: str
-    root: str  # a URI or a path; `{s3local.bucket}` takes an input's attribute
+    root: str  # a URI or a path; `{local_s3.bucket}` takes an input's attribute
     endpoint: str | None = None  # http(s)://host:port of an S3-compatible store; may reference an input
     account: str | None = None  # the Azure account, where the root does not name it; may reference an input
-    temp_prefix: str = "temp"  # the place of `temp=STORAGE`, under the root
+    temp_path: str = "temp"  # the place of `temp=STORAGE`, under the root
     inputs: list = field(default_factory=list)
     retain: str = "on_failure"
+
+    schemes: ClassVar[tuple | None] = None  # what a typed kind's `root` may be; None: any, checked when made
+
+    def __post_init__(self):
+        scheme = self.root.split("://", 1)[0].lower() if "://" in self.root else "file"
+        # A scheme a template gives is checked where the storage is made.
+        if self.schemes is not None and "{" not in scheme and scheme not in self.schemes:
+            raise UsageError(
+                f"{type(self).__name__}({self.name!r}): root {self.root!r} is not {' or '.join(self.schemes)}"
+            )
+        super().__post_init__()
 
     def attribute_names(self) -> tuple:
         return ATTRIBUTES
@@ -114,8 +127,8 @@ class StorageDef(ResourceDef):
         return At(self, path)
 
     def temp_places(self) -> list:
-        """Where a run may write under the root: the temp prefix, and every `.at()` path asked for."""
-        return [self.temp_prefix, *(p for p in self.__dict__.get("_places", ()) if p != self.temp_prefix)]
+        """Where a run may write under the root: `temp_path`, and every `.at()` path asked for."""
+        return [self.temp_path, *(p for p in self.__dict__.get("_places", ()) if p != self.temp_path)]
 
 
 def _local(uri):
@@ -160,9 +173,9 @@ class Storage(Resource):
         return local_path(self.root)
 
     def run_root(self, run_token, at=None):
-        """Where everything the run `run_token` makes in a place of this storage is: the temp
-        prefix, or `at`, a path under the root."""
-        return f"{self.root}/{at or self.definition.temp_prefix}/{run_token}"
+        """Where everything the run `run_token` makes in a place of this storage is: `temp_path`, or
+        `at`, a path under the root."""
+        return f"{self.root}/{at or self.definition.temp_path}/{run_token}"
 
     def _run_roots(self, run_token):
         return [self.run_root(run_token, place) for place in self.definition.temp_places()]
@@ -283,6 +296,30 @@ class Storage(Resource):
 
 
 StorageDef.instance = Storage
+
+
+@dataclass(eq=False)
+class LocalStorageDef(StorageDef):
+    """A local directory: `root` is a path, `file:///path` or `file://localhost/path`."""
+
+    schemes = ("file",)
+
+
+@dataclass(eq=False)
+class S3StorageDef(StorageDef):
+    """A place on a store that speaks S3, `s3://<bucket>/<path>`; `endpoint` is the server's, where it
+    is not AWS. `S3ServiceDef.storage(...)` declares one on a server."""
+
+    schemes = ("s3",)
+
+
+@dataclass(eq=False)
+class AzureStorageDef(StorageDef):
+    """A place on Azure blob storage, `az://<container>/<path>` or `abfss://...`; `account` is the
+    storage account, where the root does not name it. `AzureServiceDef.storage(...)` declares one on a
+    server."""
+
+    schemes = ("az", "abfss")
 
 
 @dataclass(eq=False)

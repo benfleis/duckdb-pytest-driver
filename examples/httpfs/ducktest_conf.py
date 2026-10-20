@@ -2,14 +2,14 @@ import os
 
 from ducktest import Project, default, match
 from ducktest.services.http import HttpServerDef
-from ducktest.services.s3local import bucket, s3_local
+from ducktest.services.s3 import bucket, S3ServiceDef
 
 # Files the run uploads to test-bucket, as httpfs CI does; see s3_seed/README.md.
 SEED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "s3_seed")
 
 # The buckets of httpfs CI. The run makes them and removes them after; it uses the S3 server that
 # answers at DUCKTEST_SERVICE_HOST:DUCKTEST_S3_LOCAL_PORT, else it starts one in docker.
-S3 = s3_local(
+S3 = S3ServiceDef.rustfs(
     buckets=[
         bucket("test-bucket", seed=[(SEED, "")]),
         bucket("test-bucket-2"),

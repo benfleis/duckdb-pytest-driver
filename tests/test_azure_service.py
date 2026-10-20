@@ -5,15 +5,15 @@ import os
 
 import pytest
 from test_leases import opened
-from test_s3local import FakeDocker, files_of
+from test_s3_service import FakeDocker, files_of
 
 from ducktest.binary import UsageError
 from ducktest.engines.duckdb import duckdb_engine
 from ducktest.resources import RW, ServiceNotUp, StorageDef, check_contract
 from ducktest.resources.dialect import render
 from ducktest.resources.made import FOUND, Made
-from ducktest.services import azlocal
-from ducktest.services.azlocal import AZURITE_KEY, az_answers, az_local, az_settings, container
+from ducktest.services import azure as azure_module
+from ducktest.services.azure import AZURITE_KEY, az_answers, AzureServiceDef, az_settings, container
 
 CONNECTION = (
     f"DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey={AZURITE_KEY};"
@@ -74,17 +74,17 @@ class FakeStore:
 @pytest.fixture
 def store(monkeypatch):
     fake = FakeStore()
-    monkeypatch.setattr(azlocal, "BlobApi", lambda *args: fake)
-    monkeypatch.setattr(azlocal, "remote_for", lambda access: fake)
+    monkeypatch.setattr(azure_module, "BlobApi", lambda *args: fake)
+    monkeypatch.setattr(azure_module, "remote_for", lambda access: fake)
     return fake
 
 
 @pytest.fixture
 def fake_docker(monkeypatch, store):
     fake = FakeDocker()
-    monkeypatch.setattr(azlocal, "docker", fake)
-    monkeypatch.setattr(azlocal, "has_docker", lambda: True)
-    monkeypatch.setattr(azlocal, "az_answers", fake.answers)
+    monkeypatch.setattr(azure_module, "docker", fake)
+    monkeypatch.setattr(azure_module, "has_docker", lambda: True)
+    monkeypatch.setattr(azure_module, "az_answers", fake.answers)
     return fake
 
 
@@ -94,12 +94,12 @@ def no_service_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_az_local_keeps_the_contract(fake_docker):
-    check_contract(lambda run_token: az_local().make(run_token=run_token))
+def test_azurite_keeps_the_contract(fake_docker):
+    check_contract(lambda run_token: AzureServiceDef.azurite().make(run_token=run_token))
 
 
-def test_az_local_runs_in_a_container_named_for_the_run_and_makes_its_container(fake_docker, store):
-    service = az_local().make(run_token="r1")
+def test_azurite_runs_in_a_container_named_for_the_run_and_makes_its_container(fake_docker, store):
+    service = AzureServiceDef.azurite().make(run_token="r1")
     service.create()
     assert fake_docker.containers == {"ducktest-az-r1": True}
     assert store.created == ["ducktest"]
@@ -114,7 +114,7 @@ def test_az_local_runs_in_a_container_named_for_the_run_and_makes_its_container(
 
 
 def test_the_server_is_started_as_azurite_blob_only(fake_docker):
-    az_local().make(run_token="r1").create()
+    AzureServiceDef.azurite().make(run_token="r1").create()
     (run,) = fake_docker.runs
     assert list(run[run.index("-p") :]) == [
         "-p", "127.0.0.1:10000:10000", "mcr.microsoft.com/azure-storage/azurite:3.37.0",
@@ -126,7 +126,7 @@ def test_the_server_is_started_as_azurite_blob_only(fake_docker):
 def test_an_account_of_its_own_is_given_to_azurite(fake_docker, monkeypatch):
     monkeypatch.setenv("DUCKTEST_AZ_LOCAL_ACCOUNT", "mine")
     monkeypatch.setenv("DUCKTEST_AZ_LOCAL_KEY", "a2V5")
-    service = az_local().make(run_token="r1")
+    service = AzureServiceDef.azurite().make(run_token="r1")
     service.create()
     (run,) = fake_docker.runs
     assert run[run.index("-e") + 1] == "AZURITE_ACCOUNTS=mine:a2V5"
@@ -134,13 +134,13 @@ def test_an_account_of_its_own_is_given_to_azurite(fake_docker, monkeypatch):
 
 
 def test_the_flavor_names_what_backs_it():
-    assert az_local().flavor == "azurite"
+    assert AzureServiceDef.azurite().flavor == "azurite"
     with pytest.raises(UsageError, match="flavor 'minio'; it is one of azurite"):
-        az_local(flavor="minio")
+        AzureServiceDef("az", flavor="minio")
 
 
 def test_a_failed_run_leaves_the_container_stopped(fake_docker):
-    service = az_local().make(run_token="r1")
+    service = AzureServiceDef.azurite().make(run_token="r1")
     service.create()
     service.end(failed=True)
     assert fake_docker.containers == {"ducktest-az-r1": False}
@@ -149,8 +149,8 @@ def test_a_failed_run_leaves_the_container_stopped(fake_docker):
 
 
 def test_it_produces_a_credential_scoped_to_its_storage_and_emits_no_azure_names(fake_docker):
-    definition = az_local()
-    storage_def = definition.storage("blobs", "lake")
+    definition = AzureServiceDef.azurite()
+    storage_def = definition.storage("blobs", path="lake")
     credential_def = definition.credential("az_keys", scopes=["blobs"])
     service = definition.make(run_token="r1")
     service.create()
@@ -171,10 +171,10 @@ def test_it_produces_a_credential_scoped_to_its_storage_and_emits_no_azure_names
 
 
 def test_an_engine_bound_to_its_credential_acquires_it(fake_docker):
-    definition = az_local()
+    definition = AzureServiceDef.azurite()
     service = definition.make(run_token="r1")
     service.create()
-    storage = definition.storage("blobs", "lake").make({"az": service})
+    storage = definition.storage("blobs", path="lake").make({"az": service})
     credential = definition.credential("az_keys", scopes=["blobs"]).make({"az": service})
     engine, made = opened(duckdb_engine("duck"), {"blobs": storage, "az_keys": credential})
     engine.acquire(RW)
@@ -183,8 +183,8 @@ def test_an_engine_bound_to_its_credential_acquires_it(fake_docker):
 
 
 def test_a_storage_names_one_of_its_containers_and_is_az_only():
-    definition = az_local(containers=[container("data")])
-    assert definition.storage("d", "lake", container="data").root == "az://data/lake"
+    definition = AzureServiceDef.azurite(containers=[container("data")])
+    assert definition.storage("d", path="lake", container="data").root == "az://data/lake"
     assert definition.storage("own").root == "az://{az.container}"
     with pytest.raises(UsageError, match="'nope' is not one of its containers"):
         definition.storage("x", container="nope")
@@ -202,8 +202,8 @@ def test_an_abfss_storage_on_it_is_a_scan_error(tmp_path, monkeypatch, capsys):
     (tmp_path / "test" / "ducktest_conf.py").write_text(
         "from ducktest import Project\n"
         "from ducktest.resources import StorageDef\n"
-        "from ducktest.services.azlocal import az_local\n"
-        "AZ = az_local()\n"
+        "from ducktest.services.azure import AzureServiceDef\n"
+        "AZ = AzureServiceDef.azurite()\n"
         'project = Project(storages=[StorageDef("dfs", "abfss://ducktest@devstoreaccount1.dfs.core.windows.net", inputs=[AZ])])\n'
     )
     monkeypatch.chdir(tmp_path)
@@ -233,11 +233,11 @@ def test_a_server_that_already_answers_is_used_as_it_is(no_service_env, monkeypa
         raise AssertionError(f"docker {args} was called for a server found running")
 
     monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
-    monkeypatch.setattr(azlocal, "docker", no_docker)
-    monkeypatch.setattr(azlocal, "az_answers", lambda endpoint: endpoint == "http://172.18.0.1:10000/devstoreaccount1")
+    monkeypatch.setattr(azure_module, "docker", no_docker)
+    monkeypatch.setattr(azure_module, "az_answers", lambda endpoint: endpoint == "http://172.18.0.1:10000/devstoreaccount1")
     made = Made("r1")
     with caplog.at_level(logging.INFO):
-        service = made.create(az_local())
+        service = made.create(AzureServiceDef.azurite())
     assert made.modes["az"] == FOUND and service.existing and not service.owned
     assert store.created == ["ducktest"] and "found running at http://172.18.0.1:10000" in caplog.text
     service.end(failed=False)
@@ -248,8 +248,8 @@ def test_a_server_that_already_answers_is_used_as_it_is(no_service_env, monkeypa
 
 
 def test_an_existing_server_is_named_by_its_address_without_the_account(fake_docker, monkeypatch, store):
-    monkeypatch.setattr(azlocal, "az_answers", lambda endpoint: endpoint == "http://172.18.0.1:10999/devstoreaccount1")
-    service = az_local().as_existing(address="http://172.18.0.1:10999").make(run_token="r1")
+    monkeypatch.setattr(azure_module, "az_answers", lambda endpoint: endpoint == "http://172.18.0.1:10999/devstoreaccount1")
+    service = AzureServiceDef.azurite().as_existing(address="http://172.18.0.1:10999").make(run_token="r1")
     service.create()
     assert service.attributes["endpoint"].get() == "http://172.18.0.1:10999/devstoreaccount1"
     service.end(failed=False)
@@ -257,11 +257,11 @@ def test_an_existing_server_is_named_by_its_address_without_the_account(fake_doc
 
 
 def test_with_nothing_answering_and_no_docker_it_says_where_it_looked(no_service_env, monkeypatch, store):
-    monkeypatch.setattr(azlocal, "has_docker", lambda: False)
-    monkeypatch.setattr(azlocal, "az_answers", lambda endpoint: False)
-    monkeypatch.setattr(azlocal, "docker", FakeDocker())
+    monkeypatch.setattr(azure_module, "has_docker", lambda: False)
+    monkeypatch.setattr(azure_module, "az_answers", lambda endpoint: False)
+    monkeypatch.setattr(azure_module, "docker", FakeDocker())
     with pytest.raises(ServiceNotUp, match="nothing answers at http://127.0.0.1:10000, and there is no docker here"):
-        az_local().make(run_token="r1").create()
+        AzureServiceDef.azurite().make(run_token="r1").create()
 
 
 def test_a_refused_listing_is_an_answer_and_a_server_error_is_not(monkeypatch):
@@ -274,9 +274,9 @@ def test_a_refused_listing_is_an_answer_and_a_server_error_is_not(monkeypatch):
 
         return urlopen
 
-    monkeypatch.setattr(azlocal.urllib.request, "urlopen", refused(403))
+    monkeypatch.setattr(azure_module.urllib.request, "urlopen", refused(403))
     assert az_answers("http://store:10000/acct")
-    monkeypatch.setattr(azlocal.urllib.request, "urlopen", refused(503))
+    monkeypatch.setattr(azure_module.urllib.request, "urlopen", refused(503))
     assert not az_answers("http://store:10000/acct")
 
 
@@ -286,7 +286,7 @@ LIVE_AZ = f"http://{HOST}:{os.environ.get('DUCKTEST_AZ_LOCAL_PORT', '10000')}"
 
 @pytest.mark.skipif(not az_answers(f"{LIVE_AZ}/devstoreaccount1"), reason=f"no Azurite answers at {LIVE_AZ}")
 def test_a_live_existing_server_keeps_the_contract():
-    check_contract(lambda run_token: az_local().as_existing(address=LIVE_AZ).make(run_token=run_token))
+    check_contract(lambda run_token: AzureServiceDef.azurite().as_existing(address=LIVE_AZ).make(run_token=run_token))
 
 
 # -----------------------------------------------------------------------------
@@ -307,14 +307,14 @@ def data(tmp_path):
 @pytest.fixture
 def found(no_service_env, monkeypatch, store):
     """A server found running: what it holds is the fake store."""
-    monkeypatch.setattr(azlocal, "docker", FakeDocker())
-    monkeypatch.setattr(azlocal, "az_answers", lambda endpoint: True)
+    monkeypatch.setattr(azure_module, "docker", FakeDocker())
+    monkeypatch.setattr(azure_module, "az_answers", lambda endpoint: True)
     store.containers["ducktest"] = {}
     return store
 
 
 def test_containers_are_made_filled_and_opened_with_the_server_and_stay_on_one_found_running(found, data, caplog):
-    definition = az_local(
+    definition = AzureServiceDef.azurite(
         containers=[
             container("testing-private", seed=[(data, "")]),
             container("testing-public", seed=[(data, "")], public="blob"),
@@ -339,7 +339,7 @@ def test_containers_are_made_filled_and_opened_with_the_server_and_stay_on_one_f
 
 
 def test_containers_of_a_server_the_run_started_go_before_it_stops(fake_docker, store, data):
-    service = az_local(containers=[container("data", seed=[(data, "")])]).make(run_token="r1")
+    service = AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")])]).make(run_token="r1")
     service.create()
     service.end(failed=False)
     assert sorted(store.containers) == ["ducktest"] and fake_docker.containers == {}
@@ -349,7 +349,7 @@ def test_a_container_that_holds_what_it_seeds_is_used_as_it_is_and_left(found, d
     found.containers["open"] = {**files_of(data), "theirs.csv": b"x"}
     found.public["open"] = "container"
     made = Made("r1")
-    service = made.create(az_local(containers=[container("open", seed=[(data, "")], public=True)]))
+    service = made.create(AzureServiceDef.azurite(containers=[container("open", seed=[(data, "")], public=True)]))
     assert service.made_containers == [] and [c for c in found.calls if c[1] == "open"] == []
     made.end(failed=False)
     assert "theirs.csv" in found.containers["open"]
@@ -361,7 +361,7 @@ def test_a_container_that_is_there_with_other_content_is_refused_and_not_touched
     if what == "content":
         found.containers["data"]["l.csv"] = b"changed"
     made = Made("r1")
-    service = made.create(az_local(containers=[container("data", seed=[(data, "")], public=what == "public")]))
+    service = made.create(AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")], public=what == "public")]))
     assert "does not change a container it did not make" in service.refused["data"]
     assert made.errors == {} and [c for c in found.calls if c[1] == "data"] == []
 
@@ -369,14 +369,14 @@ def test_a_container_that_is_there_with_other_content_is_refused_and_not_touched
 def test_a_container_that_fails_half_way_is_removed_and_the_others_stay(found, data):
     found.fail_on = "set_public_access"
     made = Made("r1")
-    service = made.create(az_local(containers=[container("data", seed=[(data, "")]), container("open", public=True)]))
+    service = made.create(AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")]), container("open", public=True)]))
     assert "set_public_access: AuthorizationFailure" in service.refused["open"] and list(service.refused) == ["open"]
     assert sorted(found.containers) == ["data", "ducktest"] and service.made_containers == ["data"]
     assert made.errors == {}, "the server stays up"
 
 
 def test_a_seed_directory_that_is_not_there_makes_no_container(found, tmp_path):
-    service = Made("r1").create(az_local(containers=[container("data", seed=[(str(tmp_path / "gone"), "")])]))
+    service = Made("r1").create(AzureServiceDef.azurite(containers=[container("data", seed=[(str(tmp_path / "gone"), "")])]))
     assert "no directory at" in service.refused["data"]
     assert [c for c in found.calls if c[0] != "create_container" or c[1] != "ducktest"] == []
 
@@ -385,13 +385,13 @@ def test_a_failure_to_make_its_own_container_means_the_server_is_not_up(found):
     found.fail_on = "create_container"
     made = Made("r1")
     with pytest.raises(ServiceNotUp, match="its container: RuntimeError"):
-        made.create(az_local())
+        made.create(AzureServiceDef.azurite())
     assert "az" in made.errors
 
 
 def test_a_test_needs_the_containers_of_its_storages_or_every_container_when_it_binds_none():
-    az = az_local(containers=[container("data"), container("open")])
-    data, own = az.storage("d", "lake", container="data"), az.storage("own", "lake")
+    az = AzureServiceDef.azurite(containers=[container("data"), container("open")])
+    data, own = az.storage("d", path="lake", container="data"), az.storage("own", path="lake")
     key = az.credential("key", scopes=["d", "own"])
     assert az.parts_needed([data, key]) == ["data"]
     assert az.parts_needed([own, key]) == []
@@ -401,7 +401,7 @@ def test_a_test_needs_the_containers_of_its_storages_or_every_container_when_it_
 @pytest.mark.parametrize("retain, kept", [("never", False), ("on_failure", True), ("always", True)])
 def test_retain_keeps_a_made_container_after_a_failed_run(fake_docker, store, data, retain, kept):
     made = Made("r1")
-    made.create(az_local(containers=[container("data", seed=[(data, "")], retain=retain)]))
+    made.create(AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")], retain=retain)]))
     made.end(failed=True)
     assert ("data" in store.containers) is kept
 
@@ -418,26 +418,26 @@ def test_a_public_level_is_true_blob_or_container():
 
 
 def test_its_containers_are_part_of_what_it_is(data):
-    assert az_local().identity() != az_local(containers=[container("data", seed=[(data, "")])]).identity()
+    assert AzureServiceDef.azurite().identity() != AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")])]).identity()
 
 
 def test_reaching_the_server_after_the_run_makes_none_of_its_containers(found, data):
-    definition = az_local(containers=[container("data", seed=[(data, "")])])
+    definition = AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")])])
     Made("r1").create(definition.reached_at("http://172.18.0.1:10000"))
     assert "data" not in found.containers
 
 
 def test_a_storage_on_it_removes_what_the_run_wrote_through_rclone(found):
-    definition = az_local()
+    definition = AzureServiceDef.azurite()
     service = Made("r1").create(definition)
     found.containers["ducktest"] = {"lake/temp/r1/k1/x.csv": b"1"}
     removed = []
     found.list = lambda uri: ["k1"]
     found.delete = removed.append
-    storage = definition.storage("blobs", "lake").make({"az": service}, run_token="r1")
+    storage = definition.storage("blobs", path="lake").make({"az": service}, run_token="r1")
     assert storage.clear("r1") == ["az://ducktest/lake/temp/r1/k1"] and removed == ["az://ducktest/lake/temp/r1/k1"]
 
 
 def test_docker_is_never_called_with_the_well_known_key(fake_docker):
-    az_local().make(run_token="r1").create()
+    AzureServiceDef.azurite().make(run_token="r1").create()
     assert not any(AZURITE_KEY in a for run in fake_docker.runs for a in run)

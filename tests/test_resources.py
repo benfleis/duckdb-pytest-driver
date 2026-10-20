@@ -548,7 +548,7 @@ def test_a_storage_is_shared_rw_and_mints_children_for_an_exclusive_writer():
     assert child is not store and child.owned
 
 
-def test_a_writer_with_a_key_gets_a_prefix_of_its_own(tmp_path):
+def test_a_writer_with_a_key_gets_a_path_of_its_own(tmp_path):
     store = StorageDef("local", str(tmp_path)).make(run_token="run1")
     parent_identity = store.identity
     one, two = store.acquire(RW, "t1"), store.acquire(RW, "t2")

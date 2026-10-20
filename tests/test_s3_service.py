@@ -13,8 +13,8 @@ from ducktest.engines.duckdb import duckdb_engine
 from ducktest.resources import RW, ServiceNotUp, check_contract
 from ducktest.resources.dialect import render
 from ducktest.resources.made import FOUND, Made
-from ducktest.services import s3local
-from ducktest.services.s3local import bucket, s3_answers, s3_local, s3_settings
+from ducktest.services import s3 as s3_module
+from ducktest.services.s3 import bucket, s3_answers, S3ServiceDef, s3_settings
 
 
 class FakeStore:
@@ -81,8 +81,8 @@ def files_of(source):
 @pytest.fixture
 def store(monkeypatch):
     fake = FakeStore()
-    monkeypatch.setattr(s3local, "S3Api", lambda *args: fake)
-    monkeypatch.setattr(s3local, "remote_for", lambda access: fake)
+    monkeypatch.setattr(s3_module, "S3Api", lambda *args: fake)
+    monkeypatch.setattr(s3_module, "remote_for", lambda access: fake)
     return fake
 
 
@@ -115,9 +115,9 @@ class FakeDocker:
 @pytest.fixture
 def fake_docker(monkeypatch, store):
     fake = FakeDocker()
-    monkeypatch.setattr(s3local, "docker", fake)
-    monkeypatch.setattr(s3local, "has_docker", lambda: True)
-    monkeypatch.setattr(s3local, "s3_answers", fake.answers)
+    monkeypatch.setattr(s3_module, "docker", fake)
+    monkeypatch.setattr(s3_module, "has_docker", lambda: True)
+    monkeypatch.setattr(s3_module, "s3_answers", fake.answers)
     return fake
 
 
@@ -127,12 +127,12 @@ def no_service_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_s3_local_keeps_the_contract(fake_docker):
-    check_contract(lambda run_token: s3_local().make(run_token=run_token))
+def test_rustfs_keeps_the_contract(fake_docker):
+    check_contract(lambda run_token: S3ServiceDef.rustfs().make(run_token=run_token))
 
 
-def test_s3_local_runs_in_a_container_named_for_the_run_and_makes_its_bucket(fake_docker, store):
-    service = s3_local().make(run_token="r1")
+def test_rustfs_runs_in_a_container_named_for_the_run_and_makes_its_bucket(fake_docker, store):
+    service = S3ServiceDef.rustfs().make(run_token="r1")
     service.create()
     assert fake_docker.containers == {"ducktest-s3-r1": True}
     assert store.created == ["ducktest"]
@@ -148,7 +148,7 @@ def test_s3_local_runs_in_a_container_named_for_the_run_and_makes_its_bucket(fak
 
 
 def test_the_server_is_started_as_rustfs(fake_docker):
-    s3_local().make(run_token="r1").create()
+    S3ServiceDef.rustfs().make(run_token="r1").create()
     (run,) = fake_docker.runs
     assert list(run[run.index("-p") + 2 :]) == [
         "-e", "RUSTFS_ACCESS_KEY=admin", "-e", "RUSTFS_SECRET_KEY=password", "-e", "RUSTFS_VOLUMES=/data",
@@ -157,13 +157,13 @@ def test_the_server_is_started_as_rustfs(fake_docker):
 
 
 def test_the_flavor_names_what_backs_it():
-    assert s3_local().flavor == "rustfs"
+    assert S3ServiceDef.rustfs().flavor == "rustfs"
     with pytest.raises(UsageError, match="flavor 'minio'; it is one of rustfs"):
-        s3_local(flavor="minio")
+        S3ServiceDef("s3", flavor="minio")
 
 
 def test_a_failed_run_leaves_the_container_stopped(fake_docker):
-    service = s3_local().make(run_token="r1")
+    service = S3ServiceDef.rustfs().make(run_token="r1")
     service.create()
     service.end(failed=True)
     assert fake_docker.containers == {"ducktest-s3-r1": False}
@@ -172,8 +172,8 @@ def test_a_failed_run_leaves_the_container_stopped(fake_docker):
 
 
 def test_it_produces_a_credential_scoped_to_its_storage_and_emits_no_aws_names(fake_docker):
-    definition = s3_local()
-    storage_def = definition.storage("lake", "lake")
+    definition = S3ServiceDef.rustfs()
+    storage_def = definition.storage("lake", path="lake")
     credential_def = definition.credential("s3_keys", scopes=["lake"])
     service = definition.make(run_token="r1")
     service.create()
@@ -190,8 +190,8 @@ def test_it_produces_a_credential_scoped_to_its_storage_and_emits_no_aws_names(f
 
 
 def test_its_credential_takes_provider_config_for_a_build_without_aws(fake_docker):
-    definition = s3_local()
-    storage_def = definition.storage("lake", "lake")
+    definition = S3ServiceDef.rustfs()
+    storage_def = definition.storage("lake", path="lake")
     credential_def = definition.credential("s3_keys", scopes=["lake"], provider="config")
     service = definition.make(run_token="r1")
     service.create()
@@ -208,10 +208,10 @@ def test_its_credential_takes_provider_config_for_a_build_without_aws(fake_docke
 
 
 def test_an_engine_bound_to_its_credential_acquires_it(fake_docker):
-    definition = s3_local()
+    definition = S3ServiceDef.rustfs()
     service = definition.make(run_token="r1")
     service.create()
-    storage = definition.storage("lake", "lake").make({"s3": service})
+    storage = definition.storage("lake", path="lake").make({"s3": service})
     credential = definition.credential("s3_keys", scopes=["lake"]).make({"s3": service})
     engine, made = opened(duckdb_engine("duck"), {"lake": storage, "s3_keys": credential})
     engine.acquire(RW)
@@ -219,16 +219,16 @@ def test_an_engine_bound_to_its_credential_acquires_it(fake_docker):
     assert credential.secrets["AWS_ACCESS_KEY_ID"].get() == "admin", "the engine's own credential is acquired too"
 
 
-def test_a_storage_with_no_prefix_is_the_whole_bucket(fake_docker):
-    definition = s3_local()
+def test_a_storage_with_no_path_is_the_whole_bucket(fake_docker):
+    definition = S3ServiceDef.rustfs()
     service = definition.make(run_token="r1")
     service.create()
     assert definition.storage("all").make({"s3": service}).root == "s3://ducktest"
 
 
 def test_an_existing_server_is_adopted_its_bucket_made_and_never_stopped(fake_docker, monkeypatch, store):
-    monkeypatch.setattr(s3local, "s3_answers", lambda endpoint: endpoint == "http://172.18.0.1:9999")
-    service = s3_local().as_existing(address="http://172.18.0.1:9999").make(run_token="r1")
+    monkeypatch.setattr(s3_module, "s3_answers", lambda endpoint: endpoint == "http://172.18.0.1:9999")
+    service = S3ServiceDef.rustfs().as_existing(address="http://172.18.0.1:9999").make(run_token="r1")
     service.create()
     assert service.attributes["endpoint"].get() == "http://172.18.0.1:9999" and store.created == ["ducktest"]
     service.end(failed=False)
@@ -237,7 +237,7 @@ def test_an_existing_server_is_adopted_its_bucket_made_and_never_stopped(fake_do
 
 def test_an_error_making_its_bucket_is_not_hidden_and_the_server_it_started_goes(fake_docker, store):
     store.fail_on = "create_bucket"
-    service = s3_local().make(run_token="r1")
+    service = S3ServiceDef.rustfs().make(run_token="r1")
     with pytest.raises(ServiceNotUp, match="create_bucket: AccessDenied"):
         service.create()
     assert fake_docker.containers == {}
@@ -270,11 +270,11 @@ def test_a_server_that_already_answers_is_used_as_it_is(no_service_env, monkeypa
 
     monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
     monkeypatch.setenv("DUCKTEST_S3_LOCAL_PORT", "9999")
-    monkeypatch.setattr(s3local, "docker", no_docker)
-    monkeypatch.setattr(s3local, "s3_answers", lambda endpoint: endpoint == "http://172.18.0.1:9999")
+    monkeypatch.setattr(s3_module, "docker", no_docker)
+    monkeypatch.setattr(s3_module, "s3_answers", lambda endpoint: endpoint == "http://172.18.0.1:9999")
     made = Made("r1")
     with caplog.at_level(logging.INFO):
-        service = made.create(s3_local())
+        service = made.create(S3ServiceDef.rustfs())
     assert made.modes["s3"] == FOUND and service.existing and not service.owned
     assert service.attributes["endpoint"].get() == "http://172.18.0.1:9999" and store.created == ["ducktest"]
     assert "found running at http://172.18.0.1:9999" in caplog.text
@@ -289,10 +289,10 @@ def test_a_server_that_already_answers_is_used_as_it_is(no_service_env, monkeypa
 
 def test_with_nothing_answering_and_no_docker_it_says_where_it_looked(no_service_env, monkeypatch, store):
     monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
-    monkeypatch.setattr(s3local, "has_docker", lambda: False)
-    monkeypatch.setattr(s3local, "s3_answers", lambda endpoint: False)
-    monkeypatch.setattr(s3local, "docker", FakeDocker())
-    service = s3_local().make(run_token="r1")
+    monkeypatch.setattr(s3_module, "has_docker", lambda: False)
+    monkeypatch.setattr(s3_module, "s3_answers", lambda endpoint: False)
+    monkeypatch.setattr(s3_module, "docker", FakeDocker())
+    service = S3ServiceDef.rustfs().make(run_token="r1")
     with pytest.raises(ServiceNotUp, match="nothing answers at http://172.18.0.1:9000, and there is no docker here"):
         service.create()
     assert service.list("r1") == [] and service.read() is None
@@ -309,7 +309,7 @@ def test_docker_missing_is_a_clear_error_and_a_no_op_for_cleanup(monkeypatch):
 
 
 def test_an_existing_server_that_does_not_answer_is_service_not_up(fake_docker):
-    service = s3_local().as_existing(address="http://172.18.0.1:9").make(run_token="r1")
+    service = S3ServiceDef.rustfs().as_existing(address="http://172.18.0.1:9").make(run_token="r1")
     with pytest.raises(ServiceNotUp, match="does not answer at http://172.18.0.1:9"):
         service.create()
 
@@ -323,9 +323,9 @@ def test_a_refused_request_is_an_answer_and_a_server_error_is_not(monkeypatch):
 
         return urlopen
 
-    monkeypatch.setattr(s3local.urllib.request, "urlopen", refused(403))
+    monkeypatch.setattr(s3_module.urllib.request, "urlopen", refused(403))
     assert s3_answers("http://store:9000")
-    monkeypatch.setattr(s3local.urllib.request, "urlopen", refused(503))
+    monkeypatch.setattr(s3_module.urllib.request, "urlopen", refused(503))
     assert not s3_answers("http://store:9000")
 
 
@@ -335,7 +335,7 @@ LIVE_S3 = f"http://{HOST}:{os.environ.get('DUCKTEST_S3_LOCAL_PORT', '9000')}"
 
 @pytest.mark.skipif(not s3_answers(LIVE_S3), reason=f"no S3 server answers at {LIVE_S3}")
 def test_a_live_existing_server_keeps_the_contract():
-    check_contract(lambda run_token: s3_local().as_existing(address=LIVE_S3).make(run_token=run_token))
+    check_contract(lambda run_token: S3ServiceDef.rustfs().as_existing(address=LIVE_S3).make(run_token=run_token))
 
 
 # -----------------------------------------------------------------------------
@@ -356,8 +356,8 @@ def dat(tmp_path):
 @pytest.fixture
 def found(no_service_env, monkeypatch, store):
     """A server found running: what it holds is the fake store."""
-    monkeypatch.setattr(s3local, "docker", FakeDocker())
-    monkeypatch.setattr(s3local, "s3_answers", lambda endpoint: True)
+    monkeypatch.setattr(s3_module, "docker", FakeDocker())
+    monkeypatch.setattr(s3_module, "s3_answers", lambda endpoint: True)
     store.buckets["ducktest"] = {}
     return store
 
@@ -369,7 +369,7 @@ def _holding(store, name, dat, public=False):
 
 
 def test_buckets_are_made_filled_and_opened_with_the_server_and_stay_on_one_found_running(found, dat, caplog):
-    definition = s3_local(
+    definition = S3ServiceDef.rustfs(
         buckets=[bucket("data", seed=[(dat, "dat")]), bucket("open", seed=[(dat, "dat")], public=True)]
     )
     made = Made("r1")
@@ -392,7 +392,7 @@ def test_a_bucket_that_holds_what_it_seeds_is_used_as_it_is_and_left(found, dat)
     _holding(found, "open", dat, public=True)
     found.buckets["open"]["theirs.csv"] = b"x"
     made = Made("r1")
-    service = made.create(s3_local(buckets=[bucket("open", seed=[(dat, "dat")], public=True)]))
+    service = made.create(S3ServiceDef.rustfs(buckets=[bucket("open", seed=[(dat, "dat")], public=True)]))
     assert service.made_buckets == [] and [c for c in found.calls if c[1] == "open"] == []
     made.end(failed=False)
     assert "theirs.csv" in found.buckets["open"] and [c for c in found.calls if c[1] == "open"] == []
@@ -404,27 +404,27 @@ def test_a_bucket_that_is_there_with_other_content_is_refused_and_not_touched(fo
     if what == "content":
         found.buckets["data"]["dat/t1/part-0.parquet"] = b"changed"
     made = Made("r1")
-    service = made.create(s3_local(buckets=[bucket("data", seed=[(dat, "dat")], public=what == "public")]))
+    service = made.create(S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dat, "dat")], public=what == "public")]))
     assert "does not change a bucket it did not make" in service.refused["data"]
     assert made.errors == {} and [c for c in found.calls if c[1] == "data"] == []
 
 
 def test_a_bucket_that_fails_half_way_is_removed_and_the_others_stay(found, dat):
     found.fail_on = "make_public"
-    service = Made("r1").create(s3_local(buckets=[bucket("data", seed=[(dat, "dat")]), bucket("open", public=True)]))
+    service = Made("r1").create(S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dat, "dat")]), bucket("open", public=True)]))
     assert "make_public: AccessDenied" in service.refused["open"] and list(service.refused) == ["open"]
     assert sorted(found.buckets) == ["data", "ducktest"] and service.made_buckets == ["data"]
 
 
 def test_a_seed_directory_that_is_not_there_makes_no_bucket(found, tmp_path):
-    service = Made("r1").create(s3_local(buckets=[bucket("data", seed=[(str(tmp_path / "gone"), "dat")])]))
+    service = Made("r1").create(S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(str(tmp_path / "gone"), "dat")])]))
     assert "no directory at" in service.refused["data"]
     assert [c for c in found.calls if c[0] != "create_bucket" or c[1] != "ducktest"] == []
 
 
 def test_a_test_needs_the_buckets_of_its_storages_or_every_bucket_when_it_binds_none():
-    s3 = s3_local(buckets=[bucket("data"), bucket("open")])
-    data, own = s3.storage("d", "lake", bucket="data"), s3.storage("own", "lake")
+    s3 = S3ServiceDef.rustfs(buckets=[bucket("data"), bucket("open")])
+    data, own = s3.storage("d", path="lake", bucket="data"), s3.storage("own", path="lake")
     keys = s3.credential("keys", scopes=["d", "own"])
     assert s3.parts_needed([data, keys]) == ["data"]
     assert s3.parts_needed([own, keys]) == []
@@ -434,31 +434,31 @@ def test_a_test_needs_the_buckets_of_its_storages_or_every_bucket_when_it_binds_
 @pytest.mark.parametrize("retain, kept", [("never", False), ("on_failure", True), ("always", True)])
 def test_retain_keeps_a_made_bucket_after_a_failed_run(fake_docker, store, dat, retain, kept):
     made = Made("r1")
-    made.create(s3_local(buckets=[bucket("data", seed=[(dat, "dat")], retain=retain)]))
+    made.create(S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dat, "dat")], retain=retain)]))
     made.end(failed=True)
     assert ("data" in store.buckets) is kept
 
 
 def test_buckets_of_a_server_the_run_started_go_before_it_stops(fake_docker, store, dat):
-    service = s3_local(buckets=[bucket("data", seed=[(dat, "dat")])]).make(run_token="r1")
+    service = S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dat, "dat")])]).make(run_token="r1")
     service.create()
     service.end(failed=False)
     assert sorted(store.buckets) == ["ducktest"] and fake_docker.containers == {}
 
 
 def test_a_storage_names_one_of_its_buckets():
-    definition = s3_local(buckets=[bucket("data")])
-    assert definition.storage("d", "lake", bucket="data").root == "s3://data/lake"
-    assert definition.storage("own", "lake").root == "s3://{s3.bucket}/lake"
+    definition = S3ServiceDef.rustfs(buckets=[bucket("data")])
+    assert definition.storage("d", path="lake", bucket="data").root == "s3://data/lake"
+    assert definition.storage("own", path="lake").root == "s3://{s3.bucket}/lake"
     with pytest.raises(UsageError, match="'nope' is not one of its buckets"):
         definition.storage("x", bucket="nope")
 
 
 def test_its_buckets_are_part_of_what_it_is(dat):
-    assert s3_local().identity() != s3_local(buckets=[bucket("data", seed=[(dat, "dat")])]).identity()
+    assert S3ServiceDef.rustfs().identity() != S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dat, "dat")])]).identity()
 
 
 def test_reaching_the_server_after_the_run_makes_none_of_its_buckets(found, dat):
-    definition = s3_local(buckets=[bucket("data", seed=[(dat, "dat")])])
+    definition = S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dat, "dat")])])
     Made("r1").create(definition.reached_at("http://172.18.0.1:9999"))
     assert "data" not in found.buckets

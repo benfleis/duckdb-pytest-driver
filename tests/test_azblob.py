@@ -9,7 +9,7 @@ import threading
 import pytest
 
 from ducktest.services.azblob import BlobApi, BlobApiError, sign, string_to_sign
-from ducktest.services.azlocal import AZURITE_ACCOUNT, AZURITE_KEY
+from ducktest.services.azure import AZURITE_ACCOUNT, AZURITE_KEY
 
 NOW = datetime.datetime(2026, 10, 1, 12, 0, tzinfo=datetime.timezone.utc)
 ENDPOINT = "http://127.0.0.1:10000/devstoreaccount1"

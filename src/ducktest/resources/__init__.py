@@ -30,8 +30,11 @@ from .credential import (  # noqa: F401
 from .service import Service, ServiceDef, ServiceNotUp  # noqa: F401
 from .engine import BootedEngineDef, Engine, EngineDef  # noqa: F401
 from .storage import (  # noqa: F401
+    AzureStorageDef,
     DefaultStorage,
     DefaultStorageDef,
+    LocalStorageDef,
+    S3StorageDef,
     StorageDef,
     default_storage,
     local_path,

@@ -1,7 +1,8 @@
-"""A local S3-compatible server, as a Service: run in docker, or found running at an address.
+"""A server that speaks S3, as a Service: a local one run in docker, or found running at an address.
 
-`flavor` names what backs it; RustFS is the only one (`DUCKTEST_S3_LOCAL_IMAGE` overrides its image). A server that already answers where
-the run reaches it is used as it is, so a machine with no docker runs against one started elsewhere.
+`flavor` names what backs it; RustFS, a local server, is the only one built (`DUCKTEST_S3_LOCAL_IMAGE`
+overrides its image). A server that already answers where the run reaches it is used as it is, so a
+machine with no docker runs against one started elsewhere.
 A test does not see the server directly; it sees the endpoint, the bucket, and the credential the
 service produces.
 
@@ -21,7 +22,7 @@ from dataclasses import dataclass, field
 from .. import names
 from ..binary import UsageError
 from ..host import docker, has_docker, in_url, service_bind, service_host
-from ..resources import NEVER, ON_FAILURE, S3CredentialDef, Service, ServiceDef, ServiceNotUp, StorageDef
+from ..resources import NEVER, ON_FAILURE, S3CredentialDef, S3StorageDef, Service, ServiceDef, ServiceNotUp
 from ..resources.remote import S3Access, remote_for
 from .parts import Part, Parts, parts_needed
 from .s3api import S3Api
@@ -109,18 +110,22 @@ class _BucketCalls:
 
 
 def bucket(name: str, seed=(), public: bool = False, retain: str = NEVER) -> Bucket:
-    """A bucket on a local S3 server: `s3_local(buckets=[bucket("data", seed=[("dir", "prefix")])])`."""
+    """A bucket on a local S3 server: `S3ServiceDef.rustfs(buckets=[bucket("data", seed=[("dir", "path")])])`;
+    each seed entry copies a local directory to a path in the bucket."""
     return Bucket(name, tuple(tuple(s) for s in seed), public, retain)
 
 
 @dataclass(eq=False)
-class S3LocalDef(ServiceDef):
-    """A local S3-compatible server with its bucket made: one that already answers where the run
-    reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_S3_LOCAL_PORT), else in a docker container named for the
-    run, or the one `.as_existing(address=...)` names. `flavor` is what backs it: `rustfs`. Its attributes are
-    `endpoint`, `host_port` (the endpoint without its scheme), `bucket` and `region`; its keys come
-    from the environment (DUCKTEST_S3_LOCAL_ACCESS_KEY, DUCKTEST_S3_LOCAL_SECRET_KEY) and reach a test
-    through `credential(name, scopes=[...])`. `storage(name, prefix)` declares a storage in its bucket.
+class S3ServiceDef(ServiceDef):
+    """A server that speaks S3, with its bucket made. `flavor` is what backs it: `rustfs`, a local
+    server, is the only one built (`S3ServiceDef.rustfs(...)`); a cloud flavor such as a future `aws`
+    would be one too, only ever found running at its endpoint. A local one is used where it already
+    answers where the run reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_S3_LOCAL_PORT), else run in a
+    docker container named for the run; `.as_existing(address=...)` names one elsewhere. Its
+    attributes are `endpoint`, `host_port` (the endpoint without its scheme), `bucket` and `region`;
+    its keys come from the environment (DUCKTEST_S3_LOCAL_ACCESS_KEY, DUCKTEST_S3_LOCAL_SECRET_KEY)
+    and reach a test through `credential(name, scopes=[...])`. `storage(name, bucket=..., path=...)`
+    declares a storage on it.
 
     `buckets` are more buckets, each a `bucket(...)`, made when the server is and filled from local
     directories. The run removes a bucket it made at the end, but on a server found running, where
@@ -129,14 +134,14 @@ class S3LocalDef(ServiceDef):
     other content is refused, and blocks only the tests that need it (`parts_needed`). `bucket`
     itself is made when it is not there, and never removed."""
 
-    kind = "s3_local"
+    kind = "s3_service"
     detached = True
     attributes = ("endpoint", "host_port", "bucket", "region")
     secret_attributes = ("access_key", "secret_key")
     credential_type = S3CredentialDef
     delivers = {"key_id": "access_key", "secret": "secret_key", "region": "region"}
 
-    name: str = "s3"
+    name: str
     flavor: str = "rustfs"
     bucket: str = "ducktest"
     buckets: list = field(default_factory=list)
@@ -150,7 +155,12 @@ class S3LocalDef(ServiceDef):
         if self.flavor not in FLAVORS:
             raise UsageError(f"service {self.name!r}: flavor {self.flavor!r}; it is one of {', '.join(FLAVORS)}")
 
-    def reached_at(self, address: str) -> S3LocalDef:
+    @classmethod
+    def rustfs(cls, name: str = "s3", **fields) -> S3ServiceDef:
+        """A local RustFS server: found running where the run reaches it, else run in docker."""
+        return cls(name, flavor="rustfs", **fields)
+
+    def reached_at(self, address: str) -> S3ServiceDef:
         # Cleanup after the run reaches the server for its storages; the buckets the run made are gone.
         return dataclasses.replace(self.as_existing(address), buckets=[])
 
@@ -160,32 +170,27 @@ class S3LocalDef(ServiceDef):
     def parts_needed(self, inputs) -> list:
         return parts_needed(self, inputs, [b.name for b in self.buckets], "s3")
 
-    def storage(self, name: str, prefix: str = "", bucket: str | None = None, **fields) -> StorageDef:
-        """A storage at `s3://<bucket>/<prefix>` on this server; `bucket` names one of `buckets`, else
+    def storage(self, name: str, *, bucket: str | None = None, path: str = "", **fields) -> S3StorageDef:
+        """A storage at `s3://<bucket>/<path>` on this server; `bucket` names one of `buckets`, else
         it is the server's own."""
         if bucket is not None:
             if not isinstance(bucket, str) and not any(bucket is b for b in self.buckets):
                 raise UsageError(
                     f"service {self.name!r}: bucket {getattr(bucket, 'name', bucket)!r} is not one of its buckets; "
-                    f"add it to s3_local(buckets=[...])"
+                    f"add it to S3ServiceDef(buckets=[...])"
                 )
             bucket = names.ref(bucket, "bucket", f"service {self.name!r}: storage({name!r})")
             if bucket not in [b.name for b in self.buckets]:
                 raise UsageError(f"service {self.name!r}: {bucket!r} is not one of its buckets")
-        root = f"s3://{bucket or '{' + self.name + '.bucket}'}/{prefix}".rstrip("/")
-        return StorageDef(name, root, endpoint=f"{{{self.name}.endpoint}}", inputs=[self], **fields)
-
-
-def s3_local(name: str = "s3", **fields) -> S3LocalDef:
-    """A local S3-compatible server; see S3LocalDef."""
-    return S3LocalDef(name, **fields)
+        root = f"s3://{bucket or '{' + self.name + '.bucket}'}/{path}".rstrip("/")
+        return S3StorageDef(name, root, endpoint=f"{{{self.name}.endpoint}}", inputs=[self], **fields)
 
 
 def _container(service_id, run_token):
     return f"ducktest-{service_id}-{run_token}"
 
 
-class S3Local(Service):
+class S3Service(Service):
     """A stopped container is kept when `retain` keeps it; dealloc removes it. One found running is
     never touched: no docker call is made for it."""
 
@@ -277,4 +282,4 @@ class S3Local(Service):
         return [n for n in found.stdout.split() if n == name]
 
 
-S3LocalDef.instance = S3Local
+S3ServiceDef.instance = S3Service

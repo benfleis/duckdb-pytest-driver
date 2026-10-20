@@ -24,14 +24,14 @@ _log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class Part:
     """A part the server holds while the run uses it: `seed` copies each local directory to its
-    prefix, `public` opens it to anonymous reads. A part the run made goes at the end, unless `retain`
+    path in the part, `public` opens it to anonymous reads. A part the run made goes at the end, unless `retain`
     keeps it; it defaults to `never`, as a kept one would be used by the next run with whatever the
     tests wrote into it."""
 
     noun: ClassVar[str] = "part"
 
     name: str
-    seed: tuple = ()  # ((local directory, prefix in the part), ...)
+    seed: tuple = ()  # ((local directory, path in the part), ...)
     public: bool | str | None = None
     retain: str = NEVER
 
@@ -100,13 +100,13 @@ class Parts:
                 _log.info("%s: %s", calls.scheme, self.refused[p.name])
                 self.remove(calls, lambda x: x.name == p.name)
 
-    def _uri(self, calls, p, prefix):
-        return f"{calls.scheme}://{p.name}/{prefix}".rstrip("/")
+    def _uri(self, calls, p, path):
+        return f"{calls.scheme}://{p.name}/{path}".rstrip("/")
 
     def _differs(self, calls, p):
         """What in part `p` is not as declared, or None: it is."""
-        for source, prefix in p.seed:
-            if not calls.check(source, uri := self._uri(calls, p, prefix)):
+        for source, path in p.seed:
+            if not calls.check(source, uri := self._uri(calls, p, path)):
                 return f"{uri} does not hold what is in {source}"
         if p.public and not calls.is_public(p):
             return f"{calls.scheme}://{p.name} is not open to anonymous reads as declared ({p.public})"
@@ -127,8 +127,8 @@ class Parts:
         calls.make(p.name)
         if p.name not in self.made:
             self.made.append(p.name)
-        for source, prefix in p.seed:
-            calls.copy(source, self._uri(calls, p, prefix))
+        for source, path in p.seed:
+            calls.copy(source, self._uri(calls, p, path))
         if p.public:
             calls.make_public(p)
 

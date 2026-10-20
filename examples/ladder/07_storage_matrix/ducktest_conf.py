@@ -2,12 +2,12 @@ import os
 
 from ducktest import Project, default
 from ducktest.resources import StorageDef
-from ducktest.services.s3local import s3_local
+from ducktest.services.s3 import S3ServiceDef
 
 LOCAL = StorageDef("local", os.path.join(os.path.dirname(os.path.abspath(__file__)), "local"))
 # The run uses a server that answers at DUCKTEST_SERVICE_HOST:DUCKTEST_S3_LOCAL_PORT, else starts one in docker.
-S3 = s3_local()
-LAKE = S3.storage("lake", "lake")
+S3 = S3ServiceDef.rustfs()
+LAKE = S3.storage("lake", path="lake")
 
 project = Project(
     storages=[LOCAL, LAKE],

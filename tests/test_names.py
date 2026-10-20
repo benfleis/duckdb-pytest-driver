@@ -15,9 +15,9 @@ HEAD = """
     from ducktest import Project, Rules, default, match
     from ducktest.engines.duckdb import duckdb_engine
     from ducktest.resources import S3CredentialDef, StorageDef, from_env
-    from ducktest.services.azlocal import az_local, container
+    from ducktest.services.azure import AzureServiceDef, container
     from ducktest.services.http import HttpServerDef
-    from ducktest.services.s3local import bucket, s3_local
+    from ducktest.services.s3 import bucket, S3ServiceDef
 """
 
 
@@ -100,9 +100,9 @@ def test_every_reference_slot_takes_the_object_and_gives_its_name_as_a_plain_str
         tmp_path,
         {
             "test/ducktest_conf.py": """
-                AZ = az_local(containers=[container("data")])
+                AZ = AzureServiceDef.azurite(containers=[container("data")])
                 DATA = AZ.parts()[0]
-                BLOBS = AZ.storage("blobs", "lake", container=DATA)
+                BLOBS = AZ.storage("blobs", path="lake", container=DATA)
                 LAKE = StorageDef("lake", "s3://lake")
                 KEYS = S3CredentialDef("keys", sources=[from_env({"K": "key_id", "S": "secret"})], scopes=[(LAKE, "ro")])
                 HTTP = HttpServerDef("http")
@@ -163,7 +163,7 @@ def test_two_declarations_of_one_name_are_an_error(tmp_path):
 
 
 def test_a_derived_declaration_takes_the_place_of_the_one_it_came_from(tmp_path):
-    body = 'S3 = s3_local()\nproject = Project(services=[S3.as_existing(address="http://h:1")])'
+    body = 'S3 = S3ServiceDef.rustfs()\nproject = Project(services=[S3.as_existing(address="http://h:1")])'
     _, project = tree(tmp_path, conf(body))
     assert project.services["s3"].address == "http://h:1"
 
@@ -194,17 +194,17 @@ def test_a_reference_by_object_to_a_declaration_that_is_not_bound_says_where_to_
 
 
 def test_a_container_that_is_not_given_to_its_server_says_where_to_give_it(tmp_path):
-    body = 'EXTRA = container("extra")\nAZ = az_local()\nproject = Project(storages=[AZ.storage("x", container=EXTRA)])'
+    body = 'EXTRA = container("extra")\nAZ = AzureServiceDef.azurite()\nproject = Project(storages=[AZ.storage("x", container=EXTRA)])'
     with pytest.raises(
         UsageError,
-        match=r"service 'az': container 'extra' is not one of its containers; add it to az_local\(containers=\[...\]\)",
+        match=r"service 'az': container 'extra' is not one of its containers; add it to AzureServiceDef\(containers=\[...\]\)",
     ):
         tree(tmp_path, conf(body))
 
 
 def test_a_bucket_is_named_within_its_server(tmp_path):
     body = """
-        S3 = s3_local(buckets=[bucket("data")])
+        S3 = S3ServiceDef.rustfs(buckets=[bucket("data")])
         project = Project(storages=[S3.storage("a", bucket="data"), S3.storage("b", bucket="nope")])
     """
     with pytest.raises(UsageError, match="service 's3': 'nope' is not one of its buckets"):
@@ -239,7 +239,7 @@ def test_a_storage_template_names_an_attribute_its_input_has(tmp_path):
 
 UNUSED = """
     SPARE = StorageDef("spare", "/s")
-    AZ = az_local(containers=[container("used")])
+    AZ = AzureServiceDef.azurite(containers=[container("used")])
     LOOSE = container("loose")
     project = Project(storages=[StorageDef("lake", "/l"), AZ.storage("blobs")])
 """
@@ -250,7 +250,7 @@ def test_a_declaration_nothing_uses_is_a_warning(tmp_path, caplog):
         _, project = tree(tmp_path, conf(UNUSED))
     assert [w.split(": ", 1)[1] for w in project.unused] == [
         "storage 'spare' is declared and not used; bind it in Project(storages=[...]), or remove it",
-        "container 'loose' is declared and not used; bind it in az_local(containers=[...]), or remove it",
+        "container 'loose' is declared and not used; bind it in AzureServiceDef(containers=[...]), or remove it",
     ]
     assert "storage 'spare' is declared and not used" in caplog.text
 
