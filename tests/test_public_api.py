@@ -214,9 +214,9 @@ def test_a_path_may_be_nested_and_a_storage_path_empty():
 EXPORTED = (
     "Project Rules Rule default match test skip from_env bucket container S3ServiceDef AzureServiceDef "
     "StorageDef S3StorageDef AzureStorageDef LocalStorageDef HttpServerDef S3CredentialDef AzureCredentialDef "
-    "DuckDBEngineDef SparkEngineDef default_storage EngineDef ServiceDef Skip L"
+    "DuckEngineDef SparkEngineDef default_storage EngineDef ServiceDef Skip L"
 ).split()
-REMOVED = "s3_local az_local duckdb_engine delta_spark s3_credential azure_credential S3LocalDef AZLocalDef".split()
+REMOVED = "s3_local az_local duckdb_engine delta_spark s3_credential azure_credential S3LocalDef AZLocalDef DuckDBEngineDef".split()
 
 
 def test_a_conf_imports_everything_from_ducktest():
@@ -241,6 +241,14 @@ def test_a_removed_name_is_gone(name):
     ):
         with pytest.raises(ImportError):
             exec(f"from {module} import {name}", {})
+
+
+def test_the_built_in_duckdb_engine_is_a_duck_engine_named_duck():
+    from ducktest import DuckEngineDef
+    from ducktest.leases import DEFAULT
+
+    assert isinstance(DEFAULT, DuckEngineDef)
+    assert (DEFAULT.name, DEFAULT.kind) == ("duck", "duck")
 
 
 @pytest.mark.parametrize("module", ["ducktest.services.s3local", "ducktest.services.azlocal"])

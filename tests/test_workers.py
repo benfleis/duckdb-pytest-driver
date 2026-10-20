@@ -13,7 +13,7 @@ import time
 import pytest
 
 from ducktest import events, phases, sqllogic
-from ducktest.engines.duckdb import DuckDBShell, DuckDBEngineDef
+from ducktest.engines.duckdb import DuckDBShell, DuckEngineDef
 from test_run import FAKE, FakeShell, go, matrix_value, outcomes, py_test, sql_test
 
 SLEEP_S = 0.3  # long enough that tests overlap, short enough for a self-test
@@ -121,7 +121,7 @@ def test_every_worker_has_a_shell_of_its_own_and_keeps_it_warm(tmp_path):
         body = recorder.body(name)
 
         def run(ctx):
-            ctx.client("duckdb").oks(f"SELECT '{name}'")
+            ctx.client("duck").oks(f"SELECT '{name}'")
             body(ctx)
 
         run.__name__ = name
@@ -143,7 +143,7 @@ def test_a_test_that_changes_the_environment_still_gets_a_shell_of_its_own(tmp_p
             made.append(self)
 
     def body(ctx):
-        ctx.client("duckdb").oks("SELECT 1")
+        ctx.client("duck").oks("SELECT 1")
 
     tests = [
         py_test(body, {"auth": matrix_value("profile", process_env={"AWS_PROFILE": "ducktest"})}, path="test/env.py"),
@@ -374,7 +374,7 @@ def test_a_body_that_sleeps_past_its_timeout_ends_error_and_the_run_moves_on(tmp
 @pytest.mark.parametrize("workers", [1, 4])
 def test_a_hung_duckdb_statement_is_released_and_reported_once(tmp_path, workers):
     def hangs(ctx):
-        ctx.client("duckdb").oks("SELECT drip")
+        ctx.client("duck").oks("SELECT drip")
 
     tests = [py_test(_named(hangs, "hangs"), path="test/hangs.py", timeout=0.3), *_quick_tests(3)]
     code, run_dir, report, _ = go(tmp_path, tests, workers=workers, duckdb_bin=FAKE_SHELL, shell_factory=DuckDBShell)
@@ -406,7 +406,7 @@ def test_a_body_stuck_past_its_timeout_frees_its_slot_its_mutex_and_its_run_engi
     def after(ctx):
         ctx.client("solo").oks("SELECT 2")
 
-    engine = DuckDBEngineDef("solo", lifetime="run")
+    engine = DuckEngineDef("solo", lifetime="run")
     tests = [
         py_test(_named(stuck, "stuck"), path="test/stuck.py", timeout=0.3, engines=["solo"], mutex=["port"]),
         py_test(_named(after, "after"), path="test/after.py", engines=["solo"], mutex=["port"]),
@@ -475,7 +475,7 @@ def test_two_names_for_one_engine_in_one_test_are_two_instances(tmp_path):
         ctx.client("writer").oks("SELECT 1")
         ctx.client("reader").oks("SELECT 2")
 
-    engines = [DuckDBEngineDef("writer"), DuckDBEngineDef("reader")]
+    engines = [DuckEngineDef("writer"), DuckEngineDef("reader")]
     tests = [
         py_test(_named(both, "both"), path="test/both.py", engines=["writer", "reader"]),
         py_test(_named(both, "again"), path="test/again.py", engines=["reader", "writer"]),
@@ -498,8 +498,8 @@ def test_engines_of_lifetime_run_named_in_opposite_orders_do_not_deadlock(tmp_pa
         return _named(run, f"{name}_first")
 
     engines = [
-        DuckDBEngineDef("x", lifetime="run", settings={"threads": 1}),
-        DuckDBEngineDef("y", lifetime="run", settings={"threads": 2}),
+        DuckEngineDef("x", lifetime="run", settings={"threads": 1}),
+        DuckEngineDef("y", lifetime="run", settings={"threads": 2}),
     ]
     tests = [
         py_test(uses("x"), path="test/x.py", engines=["x", "y"]),

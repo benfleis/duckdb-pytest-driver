@@ -6,7 +6,7 @@ engine spark -- did not come up: RuntimeError: no JVM (log: /runs/2026-09-21T10-
 [2/6] FAILED   sql/rows.test::rows  (1.25s)
 [3/6] SKIPPED  sql/needs_env.test::needs_env  (0.33s)
 [4/6] PASSED   sql/flaky.test::flaky  (2.6s)  [passed on attempt 2 of 2]
-[5/6] ERROR    py/write.py::write_then_read  (0.9s: duckdb 0.72s)
+[5/6] ERROR    py/write.py::write_then_read  (0.9s: duck 0.72s)
 [6/6] BLOCKED  py/spark.py::roundtrip[backend=oss]  [spark did not come up]
 
 --- sql/rows.test::rows
@@ -32,7 +32,7 @@ engine spark -- did not come up: RuntimeError: no JVM (log: /runs/2026-09-21T10-
   py/write.py:14
 
   setup failed
-  [duckdb] statement failed: Catalog Error: Table with name t does not exist
+  [duck] statement failed: Catalog Error: Table with name t does not exist
       SELECT * FROM t;
 
   require: httpfs  <- matrix storage=s3

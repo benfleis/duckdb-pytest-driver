@@ -204,7 +204,7 @@ def test_an_f_string_as_the_sql_of_a_verb_is_refused_at_import(tmp_path, monkeyp
     monkeypatch.chdir(tmp_path)
     (tmp_path / "t.py").write_text(
         "from ducktest import test\n\n\n@test()\ndef t(ctx):\n    n = 1\n"
-        '    ctx.client("duckdb").oks(f"SELECT {n}")\n'
+        '    ctx.client("duck").oks(f"SELECT {n}")\n'
     )
     with pytest.raises(UsageError) as e:
         scan(str(tmp_path), working_dir=str(tmp_path))
@@ -217,7 +217,7 @@ def test_an_f_string_as_the_sql_of_a_verb_is_refused_at_import(tmp_path, monkeyp
 def test_sql_built_on_its_own_line_and_passed_by_name_is_not_refused(tmp_path):
     (tmp_path / "t.py").write_text(
         "from ducktest import test\n\n\n@test()\ndef t(ctx):\n    n = 1\n"
-        '    sql = f"SELECT {n}"\n    ctx.client("duckdb").oks(sql)\n'
+        '    sql = f"SELECT {n}"\n    ctx.client("duck").oks(sql)\n'
     )
     tests, _ = scan(str(tmp_path), working_dir=str(tmp_path))
     assert [t.name for t in tests] == ["t.py::t"]

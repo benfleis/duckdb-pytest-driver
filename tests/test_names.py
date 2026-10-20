@@ -13,7 +13,7 @@ from ducktest.conf import Project, Rules, match
 from ducktest.scan import scan
 
 HEAD = """
-    from ducktest import AzureServiceDef, DuckDBEngineDef, HttpServerDef, Project, Rules, S3CredentialDef
+    from ducktest import AzureServiceDef, DuckEngineDef, HttpServerDef, Project, Rules, S3CredentialDef
     from ducktest import S3ServiceDef, StorageDef, bucket, container, default, from_env, match
 """
 
@@ -103,7 +103,7 @@ def test_every_reference_slot_takes_the_object_and_gives_its_name_as_a_plain_str
                 LAKE = StorageDef("lake", "s3://lake")
                 KEYS = S3CredentialDef("keys", sources=[from_env({"K": "key_id", "S": "secret"})], scopes=[(LAKE, "ro")])
                 HTTP = HttpServerDef("http")
-                DUCK = DuckDBEngineDef("duck")
+                DUCK = DuckEngineDef("duck")
                 project = Project(
                     engines=[DUCK],
                     services=[HTTP],
@@ -180,7 +180,7 @@ def test_a_reference_to_a_body_name_nothing_declares_is_an_error_where_the_body_
 
 
 def test_an_engine_is_listed_not_reached(tmp_path):
-    body = 'SPARE = DuckDBEngineDef("spare")\nproject = Project(rules=[default(engines=[SPARE])])'
+    body = 'SPARE = DuckEngineDef("spare")\nproject = Project(rules=[default(engines=[SPARE])])'
     with pytest.raises(
         UsageError,
         match=r"engine 'spare' \(declared at ducktest_conf.py:\d+\) is not one of the project's engines; "
@@ -396,7 +396,7 @@ def test_a_matrix_parameter_no_test_runs_over_is_a_warning(tmp_path):
 
 
 def test_a_listed_engine_no_test_drives_is_a_warning(tmp_path):
-    body = 'project = Project(engines=[DuckDBEngineDef("duck"), DuckDBEngineDef("spare")], rules=[default(engines=["duck"])])'
+    body = 'project = Project(engines=[DuckEngineDef("duck"), DuckEngineDef("spare")], rules=[default(engines=["duck"])])'
     _, project = tree(tmp_path, conf(body))
     assert [w.split(": ", 1)[1].split(";")[0] for w in project.unused] == [
         "engine 'spare' is listed and no test drives it"

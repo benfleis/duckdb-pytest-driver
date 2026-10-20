@@ -2,7 +2,7 @@
 
 A test names engines on `@test(engines=...)`, by a rule or by a matrix value; each gets a Client, and one
 that names no DuckDB engine gets a Client on the default one: the project's DuckDB engine when it
-declares exactly one, the built-in bare one when it declares none. With several, a test that names
+declares exactly one, the built-in bare one, `duck`, when it declares none. With several, a test that names
 none is a scan error. Each engine is bound to what the test gets:
 its storage and credential inputs, and, for a DuckDB engine, the test environment's requires, init
 SQL and process variables. What it is bound to is part of the engine's identity, so a test with
@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .binary import UsageError
-from .engines.duckdb import DuckDBEngineDef
+from .engines.duckdb import DuckEngineDef
 from .engines.unittest import UnittestEngineDef
 from .model import SQLLOGIC
 from .provision import MASK, SECRET_NAME
@@ -32,7 +32,7 @@ from .resources.engine import Delivered
 from .resources.made import planned_identity
 from .testenv import Entry, set_entry
 
-DEFAULT = DuckDBEngineDef("duckdb")
+DEFAULT = DuckEngineDef("duck")
 
 
 def named(test, project) -> list:

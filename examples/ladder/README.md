@@ -51,10 +51,10 @@ that is all: build it, go to the top of the checkout, and run
 ## 01_solo
 
 A Python body and a `.test` file, and no `ducktest_conf.py` in this directory or above it. Both run
-on the built-in DuckDB engine, `duckdb`: the `.test` file in a `unittest` process, the body through
-`ctx.client("duckdb")`, a Client on that engine's shell. Each runs one query. A body that
+on the built-in DuckDB engine, `duck`: the `.test` file in a `unittest` process, the body through
+`ctx.client("duck")`, a Client on that engine's shell. Each runs one query. A body that
 needs a second connection, such as a thread that must run beside the first, asks for
-`ctx.client("duckdb", new=True)`: a shell of its own, with the same preamble, closed when the test
+`ctx.client("duck", new=True)`: a shell of its own, with the same preamble, closed when the test
 ends.
 
 `paired_solo.py` calls `ctx.run_paired()`, which runs `paired_solo.test`, the file of its stem beside

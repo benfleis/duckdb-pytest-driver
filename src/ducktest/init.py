@@ -27,10 +27,10 @@ STARTER_CONF = '''\
 # Every field is optional, and a tree of plain .test files needs no file at all.
 # For the fields, see the ducktest docs: design.md, "Options" and "The conf file"; examples/ladder/ shows each idea.
 
-# from ducktest import DuckDBEngineDef, Project, default, match
+# from ducktest import DuckEngineDef, Project, default, match
 #
 # project = Project(
-#     engines=[DuckDBEngineDef("duck", requires=["parquet"])],
+#     engines=[DuckEngineDef("duck", requires=["parquet"])],
 #     rules=[
 #         default(engines=["duck"]),
 #         match("slow/**", tags=["opt-in"]),

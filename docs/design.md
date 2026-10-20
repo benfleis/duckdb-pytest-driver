@@ -26,7 +26,7 @@ form of this release; the delta repo carries the earlier form until it is repinn
 
 **Nouns are classes with `Def`, verbs are functions; the long form lives on the class.** A
 declaration is a class whose name ends in `Def`: it declares, the run makes the instance
-(`S3ServiceDef`, `S3StorageDef`, `S3CredentialDef`, `DuckDBEngineDef`). A class's makers are on the
+(`S3ServiceDef`, `S3StorageDef`, `S3CredentialDef`, `DuckEngineDef`). A class's makers are on the
 class: `S3ServiceDef.rustfs(...)`, `SparkEngineDef.delta(...)`, `Rule.default(...)`,
 `Rule.match(...)`. A function is a verb that builds something: `default(...)` and `match(...)` are
 the convenience for the two `Rule` makers, and `bucket`, `container`, `from_env`, `default_storage`,
@@ -55,7 +55,7 @@ whichever slot bound it. From `examples/ladder/02_rules/`, `ducktest_conf.py` an
 ```python
 SCRATCH_A = LocalStorageDef("scratch_a", f"{SCRATCH}/scratch_a")
 SCRATCH_B = LocalStorageDef("scratch_b", f"{SCRATCH}/scratch_b")
-DUCK = DuckDBEngineDef("duck", requires=["parquet"])
+DUCK = DuckEngineDef("duck", requires=["parquet"])
 
 project = Project(engines=[DUCK], rules=[default(storage=SCRATCH_A, temp=SCRATCH_A)])
 ```
@@ -95,7 +95,7 @@ Names are case-insensitive: `ctx.values.auth` in Python is `{AUTH}` in a `.test`
 
 A body can also wrap a `.test` of the same name: Python does what SQL cannot, then `ctx.run_paired()`
 runs the file through the binary, with the same values. From `examples/ladder/03_credentials/paired_scoped_secret.py`,
-with the engine `duck` of 1.1 (rung 03 declares no engine, so there it is the built-in `duckdb`):
+with the engine `duck` of 1.1 (rung 03 declares none; the built-in one is `duck` too):
 
 ```python
 @test()
@@ -195,7 +195,7 @@ the binary skips the file that `ctx.run_paired()` runs, the body ends SKIPPED wi
    `ducktest run test/sql --suite default` (rung 00). For Python bodies, `ducktest init` writes
    the repo's test environment, `pyproject.toml`, with the runner pinned (README, Install); it also
    makes sure `.gitignore` ignores the runner's default temp root.
-2. Extensions the tests need go on the engine: `DuckDBEngineDef("duck", requires=[...])`.
+2. Extensions the tests need go on the engine: `DuckEngineDef("duck", requires=[...])`.
 3. Scripts that export keys become a typed credential, such as `S3CredentialDef` with `from_env`
    (2.5). CI keeps its secrets. Keys of the shell's own env no longer reach the engines by
    themselves: declare `S3CredentialDef.from_aws_env(...)` where a test means to use them.
@@ -332,14 +332,14 @@ through what a test binds, and the project's one DuckDB engine is the default of
 when `engines=` lists it. From `examples/ladder/05_s3/ducktest_conf.py`:
 
 ```python
-from ducktest import DuckDBEngineDef, Project, S3ServiceDef, default
+from ducktest import DuckEngineDef, Project, S3ServiceDef, default
 
 LOCAL_S3 = S3ServiceDef.rustfs("local_s3")
 LOCAL_LAKE = LOCAL_S3.storage("local_lake", path="lake")
 LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])
 
 project = Project(
-    engines=[DuckDBEngineDef("duck", requires=["httpfs"])],
+    engines=[DuckEngineDef("duck", requires=["httpfs"])],
     rules=[default(storage=LOCAL_LAKE, temp=LOCAL_LAKE)],  # temp=: {TEMP_DIR} is on the server
 )
 ```
@@ -364,7 +364,7 @@ given. `ro` is ducktest's word for which credential to pick; it does not restric
 
 **Names.** Every resource has a name, its first argument: `S3ServiceDef.rustfs("local_s3")` (`s3`
 when left out), `LOCAL_S3.storage("local_lake", ...)`, `LOCAL_S3.credential("local_keys", ...)`,
-`DuckDBEngineDef("duck")`. It is a label you pick; what a resource is (its identity) is its content,
+`DuckEngineDef("duck")`. It is a label you pick; what a resource is (its identity) is its content,
 so two names may stand for one identity. The examples keep UPPER_CASE variables and lowercase names,
 each saying its domain and role (`LOCAL_LAKE`, `"local_lake"`), never a bare `S3` or `LAKE`.
 Engines, services, storages and credentials share one namespace, the one a value's `{name.attr}`
@@ -686,7 +686,7 @@ Spark on one Delta table, each test on local storage and on S3 (`[storage=local]
 ```python
 import os
 
-from ducktest import DuckDBEngineDef, Project, S3ServiceDef, SparkEngineDef, bucket, default_storage, match
+from ducktest import DuckEngineDef, Project, S3ServiceDef, SparkEngineDef, bucket, default_storage, match
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.abspath(os.environ.get("BUILD_DIR") or os.path.join(REPO, "build", "debug"))
@@ -709,7 +709,7 @@ LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])
 
 project = Project(
     # The only DuckDB engine is the default one, so the .test files run on it too.
-    engines=[DuckDBEngineDef("duck", requires=["delta", "json"]), SparkEngineDef.delta(s3a=True)],
+    engines=[DuckEngineDef("duck", requires=["delta", "json"]), SparkEngineDef.delta(s3a=True)],
     # Each value binds the storage the test is about and writes under it.
     matrix={
         "storage": {

@@ -6,7 +6,7 @@ module's top-level names: two of them in one file is an error, and so is a `Proj
 or a `Rules` in it; a file with neither is a warning.
 
     project = Project(
-        engines=[DuckDBEngineDef("duck", requires=["delta"])],
+        engines=[DuckEngineDef("duck", requires=["delta"])],
         matrix={
             "storage": {
                 "local": {"storage": LOCAL_DIR, "temp": LOCAL_DIR},
@@ -49,7 +49,7 @@ is named after (`storage`, `data`, `temp`, `credential`, `service`). `matrix=["s
 A cell is one more rule, applied last, that binds the slots its value names; a test's roots follow
 from whatever that binds, as from any rule.
 
-`engines=` holds `EngineDef`s (`DuckDBEngineDef(...)`, `SparkEngineDef.delta(...)`, ...); `engines=["duck"]` on a
+`engines=` holds `EngineDef`s (`DuckEngineDef(...)`, `SparkEngineDef.delta(...)`, ...); `engines=["duck"]` on a
 rule names the engines a test drives, each through a Client of its own. An engine stays a kind of service
 internally -- one lifecycle, one provisioning path -- so a service that is an input of an engine is one of
 the project's services too.
@@ -182,7 +182,7 @@ _LISTS = ("engines", "services", "storages", "credentials", "inherit_env", "pyth
 class Project:
     """What the root `ducktest_conf.py` declares, as `project = Project(...)`. Every field is optional.
 
-    engines       DuckDB and Spark engines the tests drive: `DuckDBEngineDef(...)`, `SparkEngineDef.delta(...)`
+    engines       DuckDB and Spark engines the tests drive: `DuckEngineDef(...)`, `SparkEngineDef.delta(...)`
     services      more servers, besides those the rules and tests reach: `S3ServiceDef.rustfs(...)`,
                   `AzureServiceDef.azurite(...)`, `HttpServerDef(...)`
     storages      more storages, besides those the rules and tests reach: `LOCAL_S3.storage(...)`

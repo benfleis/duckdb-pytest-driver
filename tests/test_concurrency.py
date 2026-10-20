@@ -8,7 +8,7 @@ import pytest
 from ducktest_real_build import missing
 
 from ducktest.ctx import Context
-from ducktest.engines.duckdb import DuckDBShell, DuckDBEngineDef
+from ducktest.engines.duckdb import DuckDBShell, DuckEngineDef
 from ducktest.model import PYTHON, Test, TestDef
 from ducktest.resources.engine import Runtime
 from ducktest.run import run
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(_shell() is None, reason="no duckdb shell (set $
 def ctx(tmp_path):
     test = Test(TestDef(path="t.py", name="t", type=PYTHON, body=lambda ctx: None))
     home = str(tmp_path / "home")
-    engine = DuckDBEngineDef("duckdb").make()
+    engine = DuckEngineDef("duck").make()
     engine.runtime = Runtime(shell=lambda env: DuckDBShell(_shell(), home=home, env=env))
     engine.start()
     context = Context(test, resolve(test), [engine], temp_dir=str(tmp_path))
@@ -38,14 +38,14 @@ def ctx(tmp_path):
 
 
 def test_new_clients_are_warm_and_do_not_see_each_others_instance(ctx):
-    first = ctx.client("duckdb", new=True)
-    second = ctx.client("duckdb", new=True)
+    first = ctx.client("duck", new=True)
+    second = ctx.client("duck", new=True)
     for client in (first, second):
         client.oks("CREATE TABLE mine (i INT)")
     first.oks("INSERT INTO mine VALUES (1)")
     first.expects("SELECT count(*) FROM mine", [1])  # the same shell answered twice: it stayed warm
     second.expects("SELECT count(*) FROM mine", [0])
-    ctx.client("duckdb").expects("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'mine'", [0])
+    ctx.client("duck").expects("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'mine'", [0])
 
 
 @pytest.mark.skipif(
@@ -55,7 +55,7 @@ def test_what_a_new_client_persists_lands_under_the_runs_private_home(ctx, tmp_p
     users_home = tmp_path / "users-home"
     users_home.mkdir()
     monkeypatch.setenv("HOME", str(users_home))
-    ctx.client("duckdb", new=True).oks("CREATE PERSISTENT SECRET probe (TYPE s3, KEY_ID 'k', SECRET 'x')")
+    ctx.client("duck", new=True).oks("CREATE PERSISTENT SECRET probe (TYPE s3, KEY_ID 'k', SECRET 'x')")
     assert (tmp_path / "home" / ".duckdb" / "stored_secrets" / "probe.duckdb_secret").exists()
     assert list(users_home.iterdir()) == []
 
@@ -105,5 +105,5 @@ def test_an_error_the_body_did_not_expect_is_reported_with_the_statement(tmp_pat
     code, printed = proof(tmp_path, break_it)
     assert code == 1
     assert "ATTACH failed for a reason this test does not expect" in printed
-    assert "[duckdb] exec, failed: IO Error: Could not set lock on file" in printed
+    assert "[duck] exec, failed: IO Error: Could not set lock on file" in printed
     assert "ATTACH '" in printed and "shared.db' AS shared" in printed

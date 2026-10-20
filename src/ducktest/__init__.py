@@ -5,7 +5,7 @@ declaration, not the running thing), each with its makers on the class; verbs ar
 
 from .conf import Project, Rule, Rules, default, match
 from .declare import test
-from .engines.duckdb import DuckDBEngineDef
+from .engines.duckdb import DuckEngineDef
 from .engines.spark import SparkEngineDef
 from .outcomes import Skip, skip
 from .resources import (
@@ -29,7 +29,7 @@ __all__ = [
     "AzureCredentialDef",
     "AzureServiceDef",
     "AzureStorageDef",
-    "DuckDBEngineDef",
+    "DuckEngineDef",
     "EngineDef",
     "HttpServerDef",
     "L",

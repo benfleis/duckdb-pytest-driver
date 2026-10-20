@@ -321,9 +321,9 @@ def _closure(roots, registry) -> dict:
 
 def _default_engine(engines) -> dict:
     """The project's one DuckDB engine, which a test that names none drives."""
-    from .engines.duckdb import DuckDBEngineDef
+    from .engines.duckdb import DuckEngineDef
 
-    duckdb = [d for d in engines.values() if isinstance(d, DuckDBEngineDef)]
+    duckdb = [d for d in engines.values() if isinstance(d, DuckEngineDef)]
     return {id(duckdb[0]): duckdb[0]} if len(duckdb) == 1 else {}
 
 

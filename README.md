@@ -113,7 +113,7 @@ A conf imports everything from `ducktest`, in one line. A declaration is a class
 (`default(...)`, `match(...)`, `bucket(...)`). The name, the first argument, is what
 `ctx.client(...)`, `{local_s3.host_port}` and `--existing-service local_s3=...` use. A maker gives one
 when it is left out: `s3` for `S3ServiceDef.rustfs()`, `az` for `AzureServiceDef.azurite()`, `spark`
-for `SparkEngineDef.delta()`; the built-in DuckDB engine is `duckdb`.
+for `SparkEngineDef.delta()`; the built-in DuckDB engine is `duck`.
 
 ## Where services run
 

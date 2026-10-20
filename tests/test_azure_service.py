@@ -8,7 +8,7 @@ from test_leases import opened
 from test_s3_service import FakeDocker, files_of
 
 from ducktest.binary import UsageError
-from ducktest.engines.duckdb import DuckDBEngineDef
+from ducktest.engines.duckdb import DuckEngineDef
 from ducktest.resources import RW, ServiceNotUp, StorageDef, check_contract
 from ducktest.resources.dialect import render
 from ducktest.resources.made import FOUND, Made
@@ -176,7 +176,7 @@ def test_an_engine_bound_to_its_credential_acquires_it(fake_docker):
     service.create()
     storage = definition.storage("blobs", path="lake").make({"az": service})
     credential = definition.credential("az_keys", scopes=["blobs"]).make({"az": service})
-    engine, made = opened(DuckDBEngineDef("duck"), {"blobs": storage, "az_keys": credential})
+    engine, made = opened(DuckEngineDef("duck"), {"blobs": storage, "az_keys": credential})
     engine.acquire(RW)
     assert "CREATE SECRET ducktest_az_keys (TYPE azure, PROVIDER config, CONNECTION_STRING getenv(" in made[0].calls[-1]
     assert credential.secrets["AZURE_STORAGE_CONNECTION_STRING"].get() == CONNECTION

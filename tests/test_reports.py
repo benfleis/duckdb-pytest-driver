@@ -152,7 +152,7 @@ def test_normal_is_the_live_output_without_the_progress_count(report):
 def test_verbose_adds_the_statements_a_body_ran(report):
     produced = rendered(report, format="text", level="verbose")
     golden("verbose.txt", produced)
-    assert "0.51s  [duckdb] CREATE TABLE u (id INTEGER);" in produced
+    assert "0.51s  [duck] CREATE TABLE u (id INTEGER);" in produced
 
 
 def test_terse_has_no_banner_and_no_passed_test(report):

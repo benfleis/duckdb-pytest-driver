@@ -82,23 +82,23 @@ DEFAULT_TIMEOUT_S = 120  # for one statement
 
 
 @dataclass(eq=False)
-class DuckDBEngineDef(EngineDef):
+class DuckEngineDef(EngineDef):
     """DuckDB as an engine: a shell process of its own for each instance, with the process
     variables of `process_env`."""
 
-    kind = "duckdb"
+    kind = "duck"
     dialect = "duckdb"
 
     def open(self, runtime):
         return runtime.shell(environ(self.process_env))
 
 
-class DuckDBEngine(Engine):
+class DuckEngine(Engine):
     def run(self, statements, *, timeout=None):
         return self.live.run(statements, timeout=timeout or self.definition.statement_timeout or DEFAULT_TIMEOUT_S)
 
 
-DuckDBEngineDef.instance = DuckDBEngine
+DuckEngineDef.instance = DuckEngine
 
 
 class DuckDBShell:

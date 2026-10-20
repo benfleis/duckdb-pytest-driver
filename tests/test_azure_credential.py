@@ -208,9 +208,9 @@ def test_spark_renders_no_azure_secret(connection):
 #
 
 CONF = """
-from ducktest import AzureCredentialDef, DuckDBEngineDef, Project, StorageDef, from_env, match
+from ducktest import AzureCredentialDef, DuckEngineDef, Project, StorageDef, from_env, match
 project = Project(
-    engines=[DuckDBEngineDef("duck")],
+    engines=[DuckEngineDef("duck")],
     storages=[StorageDef("blobs", "az://data/lake"), StorageDef("tables", "s3://bucket")],
     credentials=[AzureCredentialDef("az", sources=[from_env({"DT_CONN": "connection_string"})], scopes=["blobs"])],
     rules=[match("existing.test", credential="az", values={"AZ_TEMP_DIR": "writes"})],

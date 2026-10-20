@@ -30,7 +30,7 @@
   py/write.py:14
 
   setup failed
-  [duckdb] statement failed: Catalog Error: Table with name t does not exist
+  [duck] statement failed: Catalog Error: Table with name t does not exist
       SELECT * FROM t;
 
   require: httpfs  &lt;- matrix storage=s3

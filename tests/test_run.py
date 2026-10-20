@@ -24,7 +24,7 @@ from ducktest.events import read as read_events
 from ducktest.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef, Value
 from ducktest.options import Options
 from ducktest.provision import EXISTING
-from ducktest.engines.duckdb import DuckDBEngineDef
+from ducktest.engines.duckdb import DuckEngineDef
 from ducktest.resources import ON_FAILURE, RW, BootedEngineDef, Service, ServiceDef, StorageDef
 from ducktest.resources.engine import Runtime
 from ducktest.resources.made import Made
@@ -786,9 +786,9 @@ def test_each_test_has_one_event_line(tmp_path):
 #
 
 
-def held(live, engine="duckdb"):
+def held(live, engine="duck"):
     """An open engine instance on `live`, as the run leases one to a test."""
-    d = DuckDBEngineDef(engine) if engine == "duckdb" else BootedEngineDef(engine)
+    d = DuckEngineDef(engine) if engine == "duck" else BootedEngineDef(engine)
     instance = d.make()
     instance.runtime = Runtime(shell=lambda env: live, booted={engine: live})
     instance.start()
@@ -912,7 +912,7 @@ def test_an_engine_the_test_did_not_name_is_a_usage_error_that_says_where_to_nam
     (test,) = report["tests"]
     assert test["outcome"] == "error"
     assert (
-        "ctx.client('spark'): this test holds engines ['duckdb']; add 'spark' to @test(engines=[...])"
+        "ctx.client('spark'): this test holds engines ['duck']; add 'spark' to @test(engines=[...])"
         in test["problems"][0]
     )
 
@@ -950,7 +950,7 @@ def asks_for_a_binary_that_is_not_there(ctx):
 
 
 def gives_rows_the_wrong_shape(ctx):
-    ctx.client("duckdb").expects("SELECT 1", 1)
+    ctx.client("duck").expects("SELECT 1", 1)
 
 
 @pytest.mark.parametrize(
@@ -1007,7 +1007,7 @@ def test_the_test_environment_reaches_the_preamble_in_the_order_of_the_init_file
     seen = []
 
     def body(ctx):
-        seen.extend(ctx.client("duckdb").engine.live.preambles)
+        seen.extend(ctx.client("duck").engine.live.preambles)
 
     value = matrix_value(
         "s3",
@@ -1054,7 +1054,7 @@ def test_a_test_whose_environment_differs_from_the_runs_gets_a_shell_of_its_own(
         return made[-1]
 
     def body(ctx):
-        ctx.client("duckdb").oks("SELECT 1")
+        ctx.client("duck").oks("SELECT 1")
 
     value = matrix_value("no-key", process_env={"AWS_PROFILE": "ducktest", "AWS_ACCESS_KEY_ID": None})
     tests = [py_test(body, path="test/plain.py"), py_test(body, {"auth": value}, path="test/env.py")]
@@ -1072,12 +1072,12 @@ def test_a_new_client_whose_preamble_fails_is_a_setup_error(tmp_path):
         return made[-1]
 
     def body(ctx):
-        ctx.client("duckdb", new=True)
+        ctx.client("duck", new=True)
 
     value = matrix_value("s3", init_sql="CREATE SECRET s")
     _, _, report, _ = go(tmp_path, [py_test(body, {"k": value})], shell_factory=factory)
     assert report["tests"][0]["outcome"] == "error"
-    assert "[duckdb] the preamble failed: Catalog Error" in report["tests"][0]["problems"][0]
+    assert "[duck] the preamble failed: Catalog Error" in report["tests"][0]["problems"][0]
 
 
 def test_a_new_client_is_a_warm_shell_of_its_own_closed_when_the_test_ends(tmp_path):
@@ -1092,9 +1092,9 @@ def test_a_new_client_is_a_warm_shell_of_its_own_closed_when_the_test_ends(tmp_p
     made_closed = []
 
     def body(ctx):
-        shared = ctx.client("duckdb")
-        first = ctx.client("duckdb", new=True)
-        second = ctx.client("duckdb", new=True)
+        shared = ctx.client("duck")
+        first = ctx.client("duck", new=True)
+        second = ctx.client("duck", new=True)
         first.oks("SELECT 1")
         second.oks("SELECT 2")
         shared.oks("SELECT 3")
@@ -1162,7 +1162,7 @@ def test_duckdb_gets_a_home_under_the_run_dir(tmp_path):
     seen = {}
 
     def body(ctx):
-        seen["home"] = ctx.client("duckdb").engine.live.home
+        seen["home"] = ctx.client("duck").engine.live.home
 
     _, run_dir, _, _ = go(tmp_path, [py_test(body)])
     assert seen == {"home": str(run_dir / "home")}
@@ -1172,12 +1172,12 @@ def test_the_timeout_of_the_engine_reaches_each_statement_of_a_new_client_too(tm
     seen = []
 
     def body(ctx):
-        ctx.client("duckdb").oks("SELECT 1")
-        new = ctx.client("duckdb", new=True)
+        ctx.client("duck").oks("SELECT 1")
+        new = ctx.client("duck", new=True)
         new.oks("SELECT 2")
-        seen.extend(ctx.client("duckdb").engine.live.timeouts + new.engine.live.timeouts)
+        seen.extend(ctx.client("duck").engine.live.timeouts + new.engine.live.timeouts)
 
-    assert go(tmp_path, [py_test(body)], engines=[DuckDBEngineDef("duckdb", statement_timeout=7)])[0] == 0
+    assert go(tmp_path, [py_test(body)], engines=[DuckEngineDef("duck", statement_timeout=7)])[0] == 0
     assert seen == [7, 7]
 
 
@@ -1185,15 +1185,15 @@ def test_the_scan_record_names_every_engine_a_test_runs_on_and_its_version(tmp_p
     project = LoadedProject(str(tmp_path), {"fake": FakeEngine().engine()}, {}, {}, {})
     record = py_test(passes, engines=["fake"]).record(project)
     assert record["preconditions"]["engines"] == [
-        {"name": "duckdb", "version": "duckdb"},
+        {"name": "duck", "version": "duck"},
         {"name": "fake", "version": "fake:1"},
     ]
-    assert sql_test("a.test").record(project)["preconditions"]["engines"] == [{"name": "duckdb", "version": "duckdb"}]
+    assert sql_test("a.test").record(project)["preconditions"]["engines"] == [{"name": "duck", "version": "duck"}]
 
 
 def test_select_explain_shows_an_engine_named_on_test(tmp_path, capsys, monkeypatch):
     (tmp_path / "ducktest_conf.py").write_text(
-        "from ducktest import Project\nfrom ducktest.engines.duckdb import DuckDBEngineDef\nproject = Project(engines=[DuckDBEngineDef('duck')])\n"
+        "from ducktest import Project\nfrom ducktest.engines.duckdb import DuckEngineDef\nproject = Project(engines=[DuckEngineDef('duck')])\n"
     )
     (tmp_path / "t.py").write_text("from ducktest import test\n\n\n@test(engines=['duck'])\ndef t(ctx):\n    pass\n")
     monkeypatch.chdir(tmp_path)
@@ -1299,7 +1299,7 @@ def test_a_body_that_skips_is_skipped_with_its_reason_and_keeps_its_statement_lo
     from ducktest.reports import Report, junit
 
     def skips(ctx):
-        ctx.client("duckdb").oks("SELECT 1")
+        ctx.client("duck").oks("SELECT 1")
         ctx.skip("this build has no retry")
 
     code, run_dir, report, text = go(tmp_path, [py_test(skips), py_test(passes, path="test/p.py")])
