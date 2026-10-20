@@ -151,6 +151,24 @@ def test_a_name_that_names_another_kind_is_an_error(tmp_path):
 #
 
 
+@pytest.mark.parametrize(
+    "declared",
+    ['StorageDef("duck", "/d")', 'HttpServerDef("duck")', 'S3CredentialDef("duck")'],
+)
+def test_the_built_in_duckdb_engine_s_name_is_not_for_another_kind(tmp_path, declared):
+    kind = declared.split("(")[0]
+    with pytest.raises(
+        UsageError,
+        match=rf"ducktest_conf.py:\d+: {kind}\('duck'\): 'duck' is the built-in DuckDB engine's name; pick another$",
+    ):
+        tree(tmp_path, conf(f"project = Project()\nx = {declared}"))
+
+
+def test_a_duckdb_engine_may_be_declared_under_the_built_in_name(tmp_path):
+    _, project = tree(tmp_path, conf('project = Project(engines=[DuckEngineDef("duck", requires=["json"])])'))
+    assert project.engines["duck"].requires == ["json"]
+
+
 def test_two_declarations_of_one_name_are_an_error(tmp_path):
     body = 'project = Project(storages=[StorageDef("lake", "/a")], services=[HttpServerDef("lake")])'
     with pytest.raises(

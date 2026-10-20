@@ -229,10 +229,19 @@ class Names:
         return out
 
     def _collisions(self):
+        from .leases import DEFAULT
+
         by_name = {}
         for d in self.live():
             if d.kind not in PARTS:
                 by_name.setdefault(d.name, []).append(d)
+        # the built-in engine is never declared, so the one-declaration check below cannot see it
+        for d in by_name.get(DEFAULT.name, []):
+            if d.kind != "engine":
+                raise UsageError(
+                    f"{self.show(d.where)}: {type(d.obj).__name__}({d.name!r}): {d.name!r} is the built-in DuckDB "
+                    "engine's name; pick another"
+                )
         for name, found in by_name.items():
             if len(found) > 1:
                 where = ", ".join(f"{d.kind} at {self.show(d.where)}" for d in found)
