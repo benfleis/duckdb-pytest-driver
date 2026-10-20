@@ -11,7 +11,7 @@ import pytest
 
 from ducktest.binary import UsageError
 from ducktest.cli import main
-from ducktest.resources import AzureCredential, AzureCredentialDef, StorageDef, azure_credential, from_env
+from ducktest.resources import AzureCredential, StorageDef, AzureCredentialDef, from_env
 from ducktest.resources import credential as credential_module
 from ducktest.resources.dialect import Preamble, render
 from ducktest.scan import scan
@@ -41,7 +41,7 @@ def made(definition):
 
 def test_an_azure_credential_def_makes_an_azure_credential(monkeypatch):
     monkeypatch.setenv("DT_CONN", CONNECTION)
-    credential = made(azure_credential("az", sources=[from_env({"DT_CONN": "connection_string"})]))
+    credential = made(AzureCredentialDef("az", sources=[from_env({"DT_CONN": "connection_string"})]))
     assert isinstance(credential, AzureCredential) and credential.definition.provider == "config"
     assert credential.secrets["AZURE_STORAGE_CONNECTION_STRING"].get() == CONNECTION
 
@@ -49,28 +49,28 @@ def test_an_azure_credential_def_makes_an_azure_credential(monkeypatch):
 @pytest.mark.parametrize(
     "make, message",
     [
-        (lambda: azure_credential("a", provider="sas"), "provider 'sas'; it is one of config, service_principal"),
-        (lambda: azure_credential("a", chain="env"), "chain is for provider 'credential_chain', not 'config'"),
+        (lambda: AzureCredentialDef("a", provider="sas"), "provider 'sas'; it is one of config, service_principal"),
+        (lambda: AzureCredentialDef("a", chain="env"), "chain is for provider 'credential_chain', not 'config'"),
         (
-            lambda: azure_credential("a", sources=[from_env(["AZURE_TENANT_ID"])]),
+            lambda: AzureCredentialDef("a", sources=[from_env(["AZURE_TENANT_ID"])]),
             "gives no 'connection_string' or 'account_name'; a source must give every required field "
             "(connection_string or account_name)",
         ),
         (
-            lambda: azure_credential("a", provider="service_principal", sources=[from_env(SPN[:2])]),
+            lambda: AzureCredentialDef("a", provider="service_principal", sources=[from_env(SPN[:2])]),
             "gives no 'client_secret' or 'client_certificate_path'",
         ),
         (
-            lambda: azure_credential("a", provider="credential_chain", chain="env", sources=[from_env(SPN[:1])]),
+            lambda: AzureCredentialDef("a", provider="credential_chain", chain="env", sources=[from_env(SPN[:1])]),
             "gives no 'client_id'",
         ),
         (
-            lambda: azure_credential(
+            lambda: AzureCredentialDef(
                 "a", sources=[from_env(["AZURE_STORAGE_CONNECTION_STRING", "AZURE_CLIENT_SECRET"])]
             ),
             "provider 'config' takes connection_string, account_name; not client_secret",
         ),
-        (lambda: azure_credential("a", sources=[from_env(["AZURE_KEY"])]), "AZURE_KEY is not an env name"),
+        (lambda: AzureCredentialDef("a", sources=[from_env(["AZURE_KEY"])]), "AZURE_KEY is not an env name"),
     ],
 )
 def test_an_azure_credential_of_the_wrong_shape_is_a_usage_error(make, message):
@@ -79,20 +79,20 @@ def test_an_azure_credential_of_the_wrong_shape_is_a_usage_error(make, message):
 
 
 def test_an_account_name_alone_is_a_config_credential_for_anonymous_reads():
-    credential = made(azure_credential("public", account_name="acct"))
+    credential = made(AzureCredentialDef("public", account_name="acct"))
     assert {n: a.get() for n, a in credential.fields.items()} == {"account_name": "acct"}
     assert {n: a.get() for n, a in credential.secrets.items()} == {"AZURE_STORAGE_ACCOUNT": "acct"}
 
 
 def test_a_chain_of_env_waits_for_the_service_principal_and_another_chain_needs_nothing(monkeypatch, spn_env):
     names = from_env(SPN)
-    assert set(made(azure_credential("a", provider="credential_chain", chain="env", sources=[names])).secrets) == set(
+    assert set(made(AzureCredentialDef("a", provider="credential_chain", chain="env", sources=[names])).secrets) == set(
         SPN
     )
     monkeypatch.delenv("AZURE_CLIENT_SECRET")
     with pytest.raises(UsageError, match="none of its sources resolved"):
-        made(azure_credential("a", provider="credential_chain", chain="env", sources=[names]))
-    assert made(azure_credential("cli", provider="credential_chain", chain="cli")).secrets == {}
+        made(AzureCredentialDef("a", provider="credential_chain", chain="env", sources=[names]))
+    assert made(AzureCredentialDef("cli", provider="credential_chain", chain="cli")).secrets == {}
 
 
 def test_from_azure_env_reads_the_names_its_provider_takes(spn_env):
@@ -105,8 +105,8 @@ def test_from_azure_env_reads_the_names_its_provider_takes(spn_env):
 
 
 def test_the_provider_and_chain_are_part_of_what_it_is():
-    assert len({azure_credential("a", account_name="x").identity(), azure_credential("a").identity()}) == 2
-    chains = [azure_credential("a", provider="credential_chain", chain=c).identity() for c in ("env;cli", "cli")]
+    assert len({AzureCredentialDef("a", account_name="x").identity(), AzureCredentialDef("a").identity()}) == 2
+    chains = [AzureCredentialDef("a", provider="credential_chain", chain=c).identity() for c in ("env;cli", "cli")]
     assert chains[0] != chains[1]
 
 
@@ -118,7 +118,7 @@ def test_the_provider_and_chain_are_part_of_what_it_is():
 @pytest.fixture
 def connection(monkeypatch):
     monkeypatch.setenv("DT_CONN", CONNECTION)
-    return made(azure_credential("az-keys", sources=[from_env({"DT_CONN": "connection_string"})], scopes=["blobs"]))
+    return made(AzureCredentialDef("az-keys", sources=[from_env({"DT_CONN": "connection_string"})], scopes=["blobs"]))
 
 
 def test_duckdb_gets_the_connection_string_as_a_scoped_secret_by_its_env_name(connection):
@@ -142,7 +142,7 @@ def test_the_unittest_binary_gets_the_name_never_the_value_and_requires_azure(co
 
 def test_an_account_name_alone_is_a_secret_for_anonymous_reads(monkeypatch):
     monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "acct")
-    credential = made(azure_credential("anon", sources=[from_env(["AZURE_STORAGE_ACCOUNT"])]))
+    credential = made(AzureCredentialDef("anon", sources=[from_env(["AZURE_STORAGE_ACCOUNT"])]))
     assert render("duckdb", "secret", [StorageDef("blobs", "az://data/lake").make()], credential).sql == [
         "CREATE SECRET ducktest_anon (TYPE azure, PROVIDER config, ACCOUNT_NAME getenv('AZURE_STORAGE_ACCOUNT'), "
         "SCOPE 'az://data/lake');"
@@ -152,7 +152,7 @@ def test_an_account_name_alone_is_a_secret_for_anonymous_reads(monkeypatch):
 def test_an_access_token_is_in_the_secret_by_reference(monkeypatch):
     monkeypatch.setenv("AZURE_ACCESS_TOKEN", "a-token")
     credential = made(
-        azure_credential("tok", provider="access_token", sources=[from_env(["AZURE_ACCESS_TOKEN"])], account_name="a")
+        AzureCredentialDef("tok", provider="access_token", sources=[from_env(["AZURE_ACCESS_TOKEN"])], account_name="a")
     )
     storage = StorageDef("blobs", "az://data/lake").make()
     sql = [render(d, "secret", [storage], credential).sql[0] for d in ("duckdb", "unittest")]
@@ -166,7 +166,7 @@ def test_an_access_token_is_in_the_secret_by_reference(monkeypatch):
 
 
 def test_a_service_principal_secret_names_each_of_its_fields_and_the_account_an_abfss_root_names(spn_env):
-    credential = made(azure_credential("spn", provider="service_principal", sources=[from_env(SPN)]))
+    credential = made(AzureCredentialDef("spn", provider="service_principal", sources=[from_env(SPN)]))
     storage = StorageDef("lake", "abfss://data@acct.dfs.core.windows.net/lake").make()
     assert render("duckdb", "secret", [storage], credential).sql == [
         "CREATE SECRET ducktest_spn (TYPE azure, PROVIDER service_principal, TENANT_ID getenv('AZURE_TENANT_ID'), "
@@ -177,7 +177,7 @@ def test_a_service_principal_secret_names_each_of_its_fields_and_the_account_an_
 
 def test_a_chain_secret_holds_no_key_the_sdk_reads_them_from_the_env(spn_env):
     credential = made(
-        azure_credential("ci", provider="credential_chain", chain="env", sources=[from_env(SPN)], account_name="acct")
+        AzureCredentialDef("ci", provider="credential_chain", chain="env", sources=[from_env(SPN)], account_name="acct")
     )
     storages = [StorageDef("a", "az://one").make(), StorageDef("b", "az://two").make()]
     assert render("unittest", "secret", storages, credential).sql == [
@@ -187,7 +187,7 @@ def test_a_chain_secret_holds_no_key_the_sdk_reads_them_from_the_env(spn_env):
 
 
 def test_storages_of_two_accounts_get_no_one_secret(spn_env):
-    credential = made(azure_credential("ci", provider="credential_chain"))
+    credential = made(AzureCredentialDef("ci", provider="credential_chain"))
     storages = [StorageDef("a", "az://one", account="x").make(), StorageDef("b", "az://two", account="y").make()]
     with pytest.raises(UsageError, match="of different accounts"):
         render("duckdb", "secret", storages, credential)
@@ -209,10 +209,10 @@ def test_spark_renders_no_azure_secret(connection):
 
 CONF = """
 from ducktest import Project, match
-from ducktest.engines.duckdb import duckdb_engine
+from ducktest.engines.duckdb import DuckDBEngineDef
 from ducktest.resources import AzureCredentialDef, StorageDef, from_env
 project = Project(
-    engines=[duckdb_engine("duck")],
+    engines=[DuckDBEngineDef("duck")],
     storages=[StorageDef("blobs", "az://data/lake"), StorageDef("tables", "s3://bucket")],
     credentials=[AzureCredentialDef("az", sources=[from_env({"DT_CONN": "connection_string"})], scopes=["blobs"])],
     rules=[match("existing.test", credential="az", values={"AZ_TEMP_DIR": "writes"})],

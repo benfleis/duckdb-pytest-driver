@@ -422,11 +422,6 @@ class S3Credential(Credential):
 S3CredentialDef.instance = S3Credential
 
 
-def s3_credential(name: str, **fields) -> S3CredentialDef:
-    """An S3 credential; see S3CredentialDef."""
-    return S3CredentialDef(name, **fields)
-
-
 _SPN = ("tenant_id", "client_id", ("client_secret", "client_certificate_path"))
 
 
@@ -519,11 +514,6 @@ class AzureCredential(Credential):
 
 
 AzureCredentialDef.instance = AzureCredential
-
-
-def azure_credential(name: str, **fields) -> AzureCredentialDef:
-    """An Azure credential; see AzureCredentialDef."""
-    return AzureCredentialDef(name, **fields)
 
 
 @dataclass(frozen=True)

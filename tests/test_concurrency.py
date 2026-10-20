@@ -8,7 +8,7 @@ import pytest
 from ducktest_real_build import missing
 
 from ducktest.ctx import Context
-from ducktest.engines.duckdb import DuckDBShell, duckdb_engine
+from ducktest.engines.duckdb import DuckDBShell, DuckDBEngineDef
 from ducktest.model import PYTHON, Test, TestDef
 from ducktest.resources.engine import Runtime
 from ducktest.run import run
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(_shell() is None, reason="no duckdb shell (set $
 def ctx(tmp_path):
     test = Test(TestDef(path="t.py", name="t", type=PYTHON, body=lambda ctx: None))
     home = str(tmp_path / "home")
-    engine = duckdb_engine().make()
+    engine = DuckDBEngineDef("duckdb").make()
     engine.runtime = Runtime(shell=lambda env: DuckDBShell(_shell(), home=home, env=env))
     engine.start()
     context = Context(test, resolve(test), [engine], temp_dir=str(tmp_path))

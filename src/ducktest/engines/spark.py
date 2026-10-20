@@ -1,9 +1,13 @@
 """An embedded PySpark session with Delta Lake, as an engine booted once per run. pyspark is imported at boot, not here."""
 
+from __future__ import annotations
+
 import contextlib
 import functools
 import logging
 import os
+
+from dataclasses import dataclass
 
 from ..binary import UsageError
 from ..resources.client import SqlError
@@ -175,22 +179,29 @@ def env_provider(hadoop=None):
     return V2_ENV_PROVIDER if (major, minor) >= (3, 4) else V1_ENV_PROVIDER
 
 
-def delta_spark(name="spark", *, s3a=False, **fields):
-    """Local Spark with the delta-spark that matches the installed pyspark. `s3a=True` puts the
-    hadoop-aws that matches Spark's Hadoop on the classpath, so it can take an s3 storage as input.
-    `fields` are those of every engine (`settings`, `lifetime`, ...)."""
-    from importlib.metadata import PackageNotFoundError, version
+@dataclass(eq=False)
+class SparkEngineDef(BootedEngineDef):
+    """Spark as an engine, booted once per run; `SparkEngineDef.delta(...)` is local Spark with Delta Lake."""
 
-    def v(dist):
-        try:
-            return ".".join(version(dist).split(".")[:2])
-        except PackageNotFoundError:
-            return "missing"
+    dialect: str | None = "spark"
 
-    if s3a and _hadoop_version() is None:
-        raise UsageError(f"delta_spark({name!r}, s3a=True): pyspark is not installed, so its Hadoop is not known")
-    packages = (f"org.apache.hadoop:hadoop-aws:{_hadoop_version()}",) if s3a else ()
-    booted = f"spark:{v('pyspark')}:delta-{v('delta-spark')}:local" + (":s3a" if s3a else "")
-    return BootedEngineDef(
-        name, version=booted, boot=lambda log: _boot_delta(log, packages, s3a)[0], dialect="spark", **fields
-    )
+    @classmethod
+    def delta(cls, name: str = "spark", *, s3a: bool = False, **fields) -> SparkEngineDef:
+        """Local Spark with the delta-spark that matches the installed pyspark. `s3a=True` puts the
+        hadoop-aws that matches Spark's Hadoop on the classpath, so it can take an s3 storage as input.
+        `fields` are those of every engine (`settings`, `lifetime`, ...)."""
+        from importlib.metadata import PackageNotFoundError, version
+
+        def v(dist):
+            try:
+                return ".".join(version(dist).split(".")[:2])
+            except PackageNotFoundError:
+                return "missing"
+
+        if s3a and _hadoop_version() is None:
+            raise UsageError(
+                f"SparkEngineDef.delta({name!r}, s3a=True): pyspark is not installed, so its Hadoop is not known"
+            )
+        packages = (f"org.apache.hadoop:hadoop-aws:{_hadoop_version()}",) if s3a else ()
+        booted = f"spark:{v('pyspark')}:delta-{v('delta-spark')}:local" + (":s3a" if s3a else "")
+        return cls(name, version=booted, boot=lambda log: _boot_delta(log, packages, s3a)[0], **fields)

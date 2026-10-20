@@ -24,7 +24,7 @@ from ducktest.events import read as read_events
 from ducktest.model import PAIRED, PYTHON, SQLLOGIC, Test, TestDef, Value
 from ducktest.options import Options
 from ducktest.provision import EXISTING
-from ducktest.engines.duckdb import duckdb_engine
+from ducktest.engines.duckdb import DuckDBEngineDef
 from ducktest.resources import ON_FAILURE, RW, BootedEngineDef, Service, ServiceDef, StorageDef
 from ducktest.resources.engine import Runtime
 from ducktest.resources.made import Made
@@ -788,7 +788,7 @@ def test_each_test_has_one_event_line(tmp_path):
 
 def held(live, engine="duckdb"):
     """An open engine instance on `live`, as the run leases one to a test."""
-    d = duckdb_engine(engine) if engine == "duckdb" else BootedEngineDef(engine)
+    d = DuckDBEngineDef(engine) if engine == "duckdb" else BootedEngineDef(engine)
     instance = d.make()
     instance.runtime = Runtime(shell=lambda env: live, booted={engine: live})
     instance.start()
@@ -1177,7 +1177,7 @@ def test_the_timeout_of_the_engine_reaches_each_statement_of_a_new_client_too(tm
         new.oks("SELECT 2")
         seen.extend(ctx.client("duckdb").engine.live.timeouts + new.engine.live.timeouts)
 
-    assert go(tmp_path, [py_test(body)], engines=[duckdb_engine("duckdb", statement_timeout=7)])[0] == 0
+    assert go(tmp_path, [py_test(body)], engines=[DuckDBEngineDef("duckdb", statement_timeout=7)])[0] == 0
     assert seen == [7, 7]
 
 
@@ -1193,7 +1193,7 @@ def test_the_scan_record_names_every_engine_a_test_runs_on_and_its_version(tmp_p
 
 def test_select_explain_shows_an_engine_named_on_test(tmp_path, capsys, monkeypatch):
     (tmp_path / "ducktest_conf.py").write_text(
-        "from ducktest import Project\nfrom ducktest.engines.duckdb import duckdb_engine\nproject = Project(engines=[duckdb_engine('duck')])\n"
+        "from ducktest import Project\nfrom ducktest.engines.duckdb import DuckDBEngineDef\nproject = Project(engines=[DuckDBEngineDef('duck')])\n"
     )
     (tmp_path / "t.py").write_text("from ducktest import test\n\n\n@test(engines=['duck'])\ndef t(ctx):\n    pass\n")
     monkeypatch.chdir(tmp_path)

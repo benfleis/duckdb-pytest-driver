@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .binary import UsageError
-from .engines.duckdb import duckdb_engine
+from .engines.duckdb import DuckDBEngineDef
 from .engines.unittest import UnittestEngineDef
 from .model import SQLLOGIC
 from .provision import MASK, SECRET_NAME
@@ -32,7 +32,7 @@ from .resources.engine import Delivered
 from .resources.made import planned_identity
 from .testenv import Entry, set_entry
 
-DEFAULT = duckdb_engine("duckdb")
+DEFAULT = DuckDBEngineDef("duckdb")
 
 
 def named(test, project) -> list:

@@ -12,7 +12,7 @@ from ducktest import leases, phases
 from ducktest.binary import UsageError
 from ducktest.cli import main
 from ducktest.conf import LoadedProject
-from ducktest.engines.duckdb import DuckDBShell, duckdb_engine
+from ducktest.engines.duckdb import DuckDBShell, DuckDBEngineDef
 from ducktest.engines.spark import SparkHandle, env_provider
 from ducktest.engines.unittest import UnittestEngineDef
 from ducktest.model import PYTHON, SQLLOGIC, Test, TestDef, Value
@@ -64,22 +64,22 @@ def opened(definition, inputs=None):
 
 
 def test_identity_is_the_content_not_the_label_lifetime_or_statement_timeout():
-    one = duckdb_engine("duck", requires=["delta"])
-    assert one.identity() == duckdb_engine("other", requires=["delta"], lifetime="run", statement_timeout=5).identity()
-    assert one.identity() != duckdb_engine("duck", requires=["httpfs"]).identity()
+    one = DuckDBEngineDef("duck", requires=["delta"])
+    assert one.identity() == DuckDBEngineDef("other", requires=["delta"], lifetime="run", statement_timeout=5).identity()
+    assert one.identity() != DuckDBEngineDef("duck", requires=["httpfs"]).identity()
     assert one.identity() != BootedEngineDef("duck", requires=["delta"]).identity()
 
 
 def test_identity_follows_the_inputs_and_the_env_it_is_bound_to(tmp_path):
     storage = StorageDef("local", str(tmp_path))
-    bound = duckdb_engine("duck", inputs=[storage])
+    bound = DuckDBEngineDef("duck", inputs=[storage])
     assert bound.identity({"local": "a"}) != bound.identity({"local": "b"})
-    assert duckdb_engine("duck").identity() != duckdb_engine("duck").with_(process_env={"AWS_PROFILE": None}).identity()
+    assert DuckDBEngineDef("duck").identity() != DuckDBEngineDef("duck").with_(process_env={"AWS_PROFILE": None}).identity()
 
 
 def test_an_unknown_lifetime_is_a_usage_error():
     with pytest.raises(UsageError, match="lifetime 'test'"):
-        duckdb_engine("duck", lifetime="test")
+        DuckDBEngineDef("duck", lifetime="test")
 
 
 # -----------------------------------------------------------------------------
@@ -88,7 +88,7 @@ def test_an_unknown_lifetime_is_a_usage_error():
 
 
 def test_acquire_opens_then_every_test_gets_a_fresh_instance_and_the_preamble_again():
-    engine, made = opened(duckdb_engine("duck", requires=["delta"]))
+    engine, made = opened(DuckDBEngineDef("duck", requires=["delta"]))
     for _ in range(2):
         engine.release(engine.acquire(RW), RW)
     assert len(made) == 1
@@ -96,14 +96,14 @@ def test_acquire_opens_then_every_test_gets_a_fresh_instance_and_the_preamble_ag
 
 
 def test_after_a_failed_test_the_engine_is_closed_and_opened_again():
-    engine, made = opened(duckdb_engine("duck"))
+    engine, made = opened(DuckDBEngineDef("duck"))
     engine.release(engine.acquire(RW), RW, failed=True)
     engine.release(engine.acquire(RW), RW)
     assert [live.calls for live in made] == [["begin_test", "close"], ["begin_test"]]
 
 
 def test_a_preamble_that_fails_leaves_the_engine_free_for_the_next_test():
-    engine, made = opened(duckdb_engine("duck", requires=["nope"]))
+    engine, made = opened(DuckDBEngineDef("duck", requires=["nope"]))
     fail = [True]
 
     def add_preamble(sql):
@@ -119,7 +119,7 @@ def test_a_preamble_that_fails_leaves_the_engine_free_for_the_next_test():
 
 
 def test_engine_contract():
-    check_contract(lambda run_token: opened(duckdb_engine("duck"))[0])
+    check_contract(lambda run_token: opened(DuckDBEngineDef("duck"))[0])
 
 
 class FakeSparkSession:
@@ -161,7 +161,7 @@ def remote_inputs(monkeypatch):
 
 def test_a_duckdb_engine_sends_its_scoped_secret_as_sql(remote_inputs):
     defs, inputs = remote_inputs
-    engine, made = opened(duckdb_engine("duck", requires=["httpfs"], inputs=defs), inputs)
+    engine, made = opened(DuckDBEngineDef("duck", requires=["httpfs"], inputs=defs), inputs)
     engine.acquire(RW)
     assert made[0].calls == [
         "begin_test",
@@ -181,7 +181,7 @@ def test_a_shell_without_the_aws_extension_says_the_s3_credential_needs_it(remot
             )
 
     defs, inputs = remote_inputs
-    engine, _ = opened(duckdb_engine("duck", inputs=defs), inputs)
+    engine, _ = opened(DuckDBEngineDef("duck", inputs=defs), inputs)
     engine.runtime = Runtime(shell=lambda *_: NoAws())
     with pytest.raises(SqlError, match=r"(?s)^S3CredentialDef\('remote-key'\) needs the aws extension: .*Autoloading"):
         engine.acquire(RW)
@@ -391,7 +391,7 @@ def test_a_batch_scoped_engine_is_closed_when_its_python_test_ends(tmp_path):
 
     tests = [py_test(body, path=f"test/{n}.py", engines=["own"]) for n in "ab"]
     code, _, _, _ = go(
-        tmp_path, tests, shell_factory=factory, workers=1, engines=[duckdb_engine("own", lifetime="batch")]
+        tmp_path, tests, shell_factory=factory, workers=1, engines=[DuckDBEngineDef("own", lifetime="batch")]
     )
     assert code == 0
     assert [s.closed >= 1 for s in made] == [True, True]
@@ -401,7 +401,7 @@ def test_an_engine_that_cannot_open_is_a_setup_error_of_the_test(tmp_path):
     def body(ctx):
         pass
 
-    engines = [duckdb_engine("bad", requires=["nope"])]
+    engines = [DuckDBEngineDef("bad", requires=["nope"])]
     factory = lambda b, **kw: FakeShell(preamble_fails=True)  # noqa: E731
     _, _, report, _ = go(tmp_path, [py_test(body, engines=["bad"])], shell_factory=factory, engines=engines)
     assert report["tests"][0]["outcome"] == "error"
@@ -530,7 +530,7 @@ def test_a_context_holds_one_client_per_engine_and_its_identity_is_theirs_and_th
 
 def test_engines_are_declared_among_the_engines_and_named_by_a_test(tmp_path):
     (tmp_path / "ducktest_conf.py").write_text(
-        "from ducktest import Project\nfrom ducktest.engines.duckdb import duckdb_engine\nproject = Project(engines=[duckdb_engine('duck', requires=['delta'])])\n"
+        "from ducktest import Project\nfrom ducktest.engines.duckdb import DuckDBEngineDef\nproject = Project(engines=[DuckDBEngineDef('duck', requires=['delta'])])\n"
     )
     (tmp_path / "t.py").write_text(
         "from ducktest import test\n\n@test(engines=['duck'])\ndef a(ctx):\n    pass\n\n"
@@ -546,13 +546,13 @@ def test_engines_are_declared_among_the_engines_and_named_by_a_test(tmp_path):
 
 ENGINES_CONF = """
 from ducktest import Project, match
-from ducktest.engines.duckdb import duckdb_engine
+from ducktest.engines.duckdb import DuckDBEngineDef
 
 project = Project(
     engines=[
-        duckdb_engine("delta", requires=["delta"]),
-        duckdb_engine("json", requires=["json"]),
-        duckdb_engine("also_json", requires=["json"]),
+        DuckDBEngineDef("delta", requires=["delta"]),
+        DuckDBEngineDef("json", requires=["json"]),
+        DuckDBEngineDef("also_json", requires=["json"]),
     ],
     rules=[
         match("delta.test", engines=["delta"]),
@@ -622,7 +622,7 @@ def test_scan_env_shows_the_clients_of_each_test_and_what_their_engines_render(b
 
 
 def test_the_engine_comes_first_in_the_init_file_and_nothing_is_given_twice():
-    duck = duckdb_engine("duck", requires=["httpfs", "json"], settings={"threads": 2, "memory_limit": "1GB"})
+    duck = DuckDBEngineDef("duck", requires=["httpfs", "json"], settings={"threads": 2, "memory_limit": "1GB"})
     project = LoadedProject("/p", {"duck": duck}, {}, {}, {})
     test = sql_test(
         "a.test", {"storage": matrix_value("s3", requires=["httpfs"])}, engines=["duck"], settings={"threads": 4}
@@ -639,15 +639,15 @@ def test_the_engine_comes_first_in_the_init_file_and_nothing_is_given_twice():
 def test_the_batch_of_a_test_file_is_given_its_engine(tmp_path):
     (tmp_path / "a.test").write_text("query I\nSELECT 1\n----\n1\n")
     test = sql_test("a.test", engines=["duck"])
-    _, run_dir, _, _ = go(tmp_path, [test], engines=[duckdb_engine("duck", requires=["delta"])], keep=True)
+    _, run_dir, _, _ = go(tmp_path, [test], engines=[DuckDBEngineDef("duck", requires=["delta"])], keep=True)
     (init,) = run_dir.glob("batches/*/init.sqllogic")
     assert init.read_text() == "require delta\n"
 
 
 def test_a_test_file_runs_on_one_engine(tmp_path):
     (tmp_path / "ducktest_conf.py").write_text(
-        "from ducktest import Project, default\nfrom ducktest.engines.duckdb import duckdb_engine\n"
-        "project = Project(engines=[duckdb_engine('a'), duckdb_engine('b')], rules=[default(engines=['a', 'b'])])\n"
+        "from ducktest import Project, default\nfrom ducktest.engines.duckdb import DuckDBEngineDef\n"
+        "project = Project(engines=[DuckDBEngineDef('a'), DuckDBEngineDef('b')], rules=[default(engines=['a', 'b'])])\n"
     )
     (tmp_path / "x.test").write_text("query I\nSELECT 1\n----\n1\n")
     with pytest.raises(UsageError, match=r"names engines \['a', 'b'\]; a .test body runs on one engine"):
@@ -662,7 +662,7 @@ def test_a_test_file_runs_on_one_engine(tmp_path):
 def engines_project(root, engines, rules="[]"):
     root.mkdir()
     (root / "ducktest_conf.py").write_text(
-        "from ducktest import Project, default\nfrom ducktest.engines.duckdb import duckdb_engine\n"
+        "from ducktest import Project, default\nfrom ducktest.engines.duckdb import DuckDBEngineDef\n"
         f"project = Project(engines=[{engines}], rules={rules})\n"
     )
     (root / "x.test").write_text("query I\nSELECT 1\n----\n1\n")
@@ -679,7 +679,7 @@ def default_roots(root):
 
 
 def test_the_projects_only_duckdb_engine_is_the_default(tmp_path, monkeypatch, capsys):
-    tests, project = engines_project(tmp_path / "p", "duckdb_engine('duck', requires=['json'])")
+    tests, project = engines_project(tmp_path / "p", "DuckDBEngineDef('duck', requires=['json'])")
     assert [d.name for d in leases.bind(tests["body"], resolve(tests["body"]), project)] == ["duck"]
     assert leases.environment(tests["x"], resolve(tests["x"]), project).extensions == ["json"]
     monkeypatch.chdir(tmp_path / "p")
@@ -699,9 +699,9 @@ def test_the_projects_only_duckdb_engine_is_the_default(tmp_path, monkeypatch, c
 
 def test_with_several_duckdb_engines_a_test_names_one(tmp_path):
     with pytest.raises(UsageError, match=re.escape("names no DuckDB engine, and the project declares ['a', 'b']")):
-        engines_project(tmp_path / "unnamed", "duckdb_engine('a'), duckdb_engine('b')")
+        engines_project(tmp_path / "unnamed", "DuckDBEngineDef('a'), DuckDBEngineDef('b')")
     tests, project = engines_project(
-        tmp_path / "named", "duckdb_engine('a'), duckdb_engine('b')", "[default(engines=['b'])]"
+        tmp_path / "named", "DuckDBEngineDef('a'), DuckDBEngineDef('b')", "[default(engines=['b'])]"
     )
     assert {name: leases.duckdb_of(t, project).name for name, t in tests.items()} == {"body": "b", "x": "b"}
 

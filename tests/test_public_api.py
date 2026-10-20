@@ -6,6 +6,8 @@ import pytest
 
 from ducktest.binary import UsageError
 from ducktest.conf import Rule, default, match
+from ducktest.engines.spark import SparkEngineDef
+from ducktest.resources import BootedEngineDef
 from ducktest.resources import AzureStorageDef, LocalStorageDef, S3StorageDef, StorageDef
 from ducktest.services.azure import AzureServiceDef, container
 from ducktest.services.s3 import S3ServiceDef, bucket
@@ -53,6 +55,18 @@ def test_a_service_class_needs_its_name():
         S3ServiceDef()
     with pytest.raises(TypeError):
         AzureServiceDef()
+
+
+# -----------------------------------------------------------------------------
+# Engines
+#
+
+
+def test_spark_delta_is_a_booted_spark_engine():
+    spark = SparkEngineDef.delta()
+    assert isinstance(spark, BootedEngineDef) and type(spark) is SparkEngineDef
+    assert (spark.name, spark.dialect) == ("spark", "spark")
+    assert spark.version.startswith("spark:") and spark.version.endswith(":local")
 
 
 # -----------------------------------------------------------------------------

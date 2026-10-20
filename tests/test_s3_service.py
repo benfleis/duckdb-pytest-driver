@@ -9,7 +9,7 @@ from test_leases import opened
 
 from ducktest import host
 from ducktest.binary import UsageError
-from ducktest.engines.duckdb import duckdb_engine
+from ducktest.engines.duckdb import DuckDBEngineDef
 from ducktest.resources import RW, ServiceNotUp, check_contract
 from ducktest.resources.dialect import render
 from ducktest.resources.made import FOUND, Made
@@ -213,7 +213,7 @@ def test_an_engine_bound_to_its_credential_acquires_it(fake_docker):
     service.create()
     storage = definition.storage("lake", path="lake").make({"s3": service})
     credential = definition.credential("s3_keys", scopes=["lake"]).make({"s3": service})
-    engine, made = opened(duckdb_engine("duck"), {"lake": storage, "s3_keys": credential})
+    engine, made = opened(DuckDBEngineDef("duck"), {"lake": storage, "s3_keys": credential})
     engine.acquire(RW)
     assert "CREATE SECRET ducktest_s3_keys" in made[0].calls[-1]
     assert credential.secrets["AWS_ACCESS_KEY_ID"].get() == "admin", "the engine's own credential is acquired too"

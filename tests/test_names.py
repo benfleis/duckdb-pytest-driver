@@ -13,7 +13,7 @@ from ducktest.scan import scan
 
 HEAD = """
     from ducktest import Project, Rules, default, match
-    from ducktest.engines.duckdb import duckdb_engine
+    from ducktest.engines.duckdb import DuckDBEngineDef
     from ducktest.resources import S3CredentialDef, StorageDef, from_env
     from ducktest.services.azure import AzureServiceDef, container
     from ducktest.services.http import HttpServerDef
@@ -106,7 +106,7 @@ def test_every_reference_slot_takes_the_object_and_gives_its_name_as_a_plain_str
                 LAKE = StorageDef("lake", "s3://lake")
                 KEYS = S3CredentialDef("keys", sources=[from_env({"K": "key_id", "S": "secret"})], scopes=[(LAKE, "ro")])
                 HTTP = HttpServerDef("http")
-                DUCK = duckdb_engine("duck")
+                DUCK = DuckDBEngineDef("duck")
                 project = Project(
                     engines=[DUCK],
                     services=[HTTP],

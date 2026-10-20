@@ -13,7 +13,7 @@ import time
 import pytest
 
 from ducktest import events, phases, sqllogic
-from ducktest.engines.duckdb import DuckDBShell, duckdb_engine
+from ducktest.engines.duckdb import DuckDBShell, DuckDBEngineDef
 from test_run import FAKE, FakeShell, go, matrix_value, outcomes, py_test, sql_test
 
 SLEEP_S = 0.3  # long enough that tests overlap, short enough for a self-test
@@ -406,7 +406,7 @@ def test_a_body_stuck_past_its_timeout_frees_its_slot_its_mutex_and_its_run_engi
     def after(ctx):
         ctx.client("solo").oks("SELECT 2")
 
-    engine = duckdb_engine("solo", lifetime="run")
+    engine = DuckDBEngineDef("solo", lifetime="run")
     tests = [
         py_test(_named(stuck, "stuck"), path="test/stuck.py", timeout=0.3, engines=["solo"], mutex=["port"]),
         py_test(_named(after, "after"), path="test/after.py", engines=["solo"], mutex=["port"]),
@@ -475,7 +475,7 @@ def test_two_names_for_one_engine_in_one_test_are_two_instances(tmp_path):
         ctx.client("writer").oks("SELECT 1")
         ctx.client("reader").oks("SELECT 2")
 
-    engines = [duckdb_engine("writer"), duckdb_engine("reader")]
+    engines = [DuckDBEngineDef("writer"), DuckDBEngineDef("reader")]
     tests = [
         py_test(_named(both, "both"), path="test/both.py", engines=["writer", "reader"]),
         py_test(_named(both, "again"), path="test/again.py", engines=["reader", "writer"]),
@@ -498,8 +498,8 @@ def test_engines_of_lifetime_run_named_in_opposite_orders_do_not_deadlock(tmp_pa
         return _named(run, f"{name}_first")
 
     engines = [
-        duckdb_engine("x", lifetime="run", settings={"threads": 1}),
-        duckdb_engine("y", lifetime="run", settings={"threads": 2}),
+        DuckDBEngineDef("x", lifetime="run", settings={"threads": 1}),
+        DuckDBEngineDef("y", lifetime="run", settings={"threads": 2}),
     ]
     tests = [
         py_test(uses("x"), path="test/x.py", engines=["x", "y"]),

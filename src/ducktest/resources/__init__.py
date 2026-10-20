@@ -17,14 +17,12 @@ from .contract import check_contract  # noqa: F401
 from .credential import (  # noqa: F401
     AzureCredential,
     AzureCredentialDef,
-    azure_credential,
     Credential,
     CredentialDef,
     Field,
     S3Credential,
     S3CredentialDef,
     from_env,
-    s3_credential,
     pick_credentials,
 )
 from .service import Service, ServiceDef, ServiceNotUp  # noqa: F401

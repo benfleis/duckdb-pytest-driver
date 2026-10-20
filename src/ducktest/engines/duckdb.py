@@ -101,10 +101,6 @@ class DuckDBEngine(Engine):
 DuckDBEngineDef.instance = DuckDBEngine
 
 
-def duckdb_engine(name="duckdb", **fields) -> DuckDBEngineDef:
-    return DuckDBEngineDef(name, **fields)
-
-
 class DuckDBShell:
     def __init__(self, binary, *, timeout=DEFAULT_TIMEOUT_S, home=None, env=None):
         self.binary = binary
