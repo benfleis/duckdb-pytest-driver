@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from ..resources.client import SqlError
 from ..resources.credential import engine_env
 from ..resources.dialect import DUCK_SHELL
+from ..resources.base import RW
 from ..resources.engine import Engine, EngineDef, environ
 from ..sqltext import split_statements
 
@@ -97,10 +98,16 @@ class DuckEngineDef(EngineDef):
 
 class DuckEngine(Engine):
     def start(self):
-        if self.live is None:
-            _log.info("%s: %s opened%s", self.name, DUCK_SHELL, f" for {self.holder}" if self.holder else "")
+        opens = self.live is None
         super().start()
         self.live.label, self.live.holder = f"{self.name}: {DUCK_SHELL}", self.holder
+        if opens:
+            _log.info("%s: %s opened%s", self.name, DUCK_SHELL, f" for {self.holder}" if self.holder else "")
+
+    def release(self, held, mode=RW, *, failed=False):
+        if self.live is not None:
+            self.live.holder = None
+        super().release(held, mode, failed=failed)
 
     def run(self, statements, *, timeout=None):
         return self.live.run(statements, timeout=timeout or self.definition.statement_timeout or DEFAULT_TIMEOUT_S)
@@ -122,6 +129,7 @@ class DuckDBShell:
         self._preambles = []  # of the running test, in order: what a new shell must redo
         self.label, self.holder = DUCK_SHELL, None  # for the log: whose shell, held by which test
         self._spawns = 0
+        self._gone = None  # (holder, why) of the shell that ended, `why` None where it died on its own
 
     # -- lifecycle ------------------------------------------------------------
     def begin_test(self):
@@ -130,7 +138,13 @@ class DuckDBShell:
             try:
                 self._dot(".open :memory:")
             except SqlError:
-                self.close()  # a shell that cannot reopen is replaced at the next statement
+                self._stop("open failed")  # a shell that cannot reopen is replaced at the next statement
+        elif self._spawns and self._gone is None:
+            self._gone = (None, None)
+
+    def _stop(self, why):
+        self._gone = (self.holder, why)
+        self.close()
 
     def add_preamble(self, preamble):
         self._preambles.append(preamble)
@@ -184,7 +198,7 @@ class DuckDBShell:
         with self._busy:
             if not self._alive():
                 if self._spawns:
-                    _log.info("%s died under %s; opened again", self.label, self.holder or "no test")
+                    _log.info("%s %s; opened again", self.label, self._ended())
                 self._spawn()
                 if numbered:  # the shell died under this test; give it back what the test set up
                     self._replay()
@@ -196,6 +210,13 @@ class DuckDBShell:
                 if _is_error(output):
                     raise SqlError(output, statement=n if numbered else None)
             return output
+
+    def _ended(self):
+        holder, why = self._gone or (self.holder, None)
+        self._gone = None
+        if why:
+            return f"stopped under {holder or 'no test'} ({why})"
+        return f"died under {holder}" if holder else "died between tests"
 
     def _dot(self, command):
         with self._busy:
@@ -217,10 +238,10 @@ class DuckDBShell:
                 try:
                     line = self._lines.get(timeout=max(0.0, deadline - time.monotonic()))
                 except queue.Empty:
-                    self.close()
+                    self._stop("statement timeout")
                     raise SqlError(f"the statement was not done in {limit}s; the duckdb shell was killed") from None
                 if line is None:
-                    self._process = None
+                    self._process, self._gone = None, (self.holder, None)
                     raise SqlError("the duckdb shell exited: " + "".join(out).strip())
                 if line.strip() == mark:
                     return "".join(out).strip()
