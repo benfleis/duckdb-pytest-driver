@@ -541,6 +541,15 @@ class AmbiguousCredential(UsageError):
         super().__init__(f"storage {storage!r} has credentials {ids} and none is named or flagged default=True")
 
 
+class ReadOnlyCredential(UsageError):
+    """A test writes to a storage, and every credential scoped to it is scoped `ro`."""
+
+    def __init__(self, storage, candidates):
+        self.storage, self.mode, self.candidates = storage, RW, candidates
+        ids = sorted(c.name for c in candidates)
+        super().__init__(f"storage {storage!r} is written to and its credentials {ids} are scoped {RO!r}")
+
+
 def pick_credentials(
     storages: Mapping[str, str],
     declared: Iterable[CredentialDef],
@@ -551,13 +560,17 @@ def pick_credentials(
     credential may serve several storages of one test. A named credential wins over scope. A storage
     with no named one gets the credential scoped to it; of several, the ones whose scope is exactly the
     mode needed (`ro` for a storage only read), then the one flagged `default` among those; with none
-    left to tell them apart, an `AmbiguousCredential` (per storage)."""
+    left to tell them apart, an `AmbiguousCredential` (per storage). A storage written to whose
+    credentials are all scoped `ro` is a `ReadOnlyCredential`."""
     chosen = list(named)
     covered = {s for c in chosen for s in c.scope_storages}
     for storage, mode in storages.items():
         if storage in covered:
             continue
         matches = [c for c in declared if storage in c.scope_storages and (c.scope_mode(storage) == RW or mode == RO)]
+        if not matches and mode == RW:
+            if read_only := [c for c in declared if storage in c.scope_storages]:
+                raise ReadOnlyCredential(storage, read_only)
         if len(matches) > 1:
             matches = [c for c in matches if c.scope_mode(storage) == mode] or matches
         if len(matches) > 1:

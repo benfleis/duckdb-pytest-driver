@@ -23,7 +23,7 @@ from .options import Settled
 from .model import BODY_SUFFIXES, PAIRED, PYTHON, SQLLOGIC, Test, TestDef, Value
 from .resources.dialect import rendered_classes, secret_renderer
 from .resources import RO, RW, BootedEngineDef, CredentialDef, DefaultStorageDef, StorageDef, pick_credentials
-from .resources.credential import AmbiguousCredential
+from .resources.credential import AmbiguousCredential, ReadOnlyCredential
 from .resources.storage import At
 from .testenv import resolve
 
@@ -53,7 +53,7 @@ def _roles(bindings, where):
     }
 
 
-def _ambiguous(exc, bindings, project, where):
+def _credential_choice(exc, bindings, project, where):
     names = project.names
     sources = " and ".join(source for _, d, source, _ in bindings if d.name == exc.storage)
     candidates = []
@@ -63,6 +63,12 @@ def _ambiguous(exc, bindings, project, where):
         if c.name in names.pulled:
             how.append("pulled in by its scopes=")
         candidates.append(f"{c.name!r} ({', '.join(how)})" if how else repr(c.name))
+    if isinstance(exc, ReadOnlyCredential):
+        return (
+            f"{where}: storage {exc.storage!r} <- {sources}: the test needs to write to it, and the credentials "
+            f"scoped to it, {', '.join(candidates)}, are scoped ro; add an rw scope to one, "
+            "or bind an rw credential with credential="
+        )
     need = "read" if exc.mode == RO else "write to"
     return (
         f"{where}: storage {exc.storage!r} <- {sources}: credentials {', '.join(candidates)} are scoped "
@@ -84,8 +90,8 @@ def _inputs(bindings, project, where):
     named = [d for d, _ in bound if isinstance(d, CredentialDef)]
     try:
         credentials = pick_credentials(mode, project.credentials.values(), named)
-    except AmbiguousCredential as exc:
-        raise UsageError(_ambiguous(exc, bindings, project, where)) from None
+    except (AmbiguousCredential, ReadOnlyCredential) as exc:
+        raise UsageError(_credential_choice(exc, bindings, project, where)) from None
     return tuple((d, mode.get(d.name, RW)) for d, _ in bound if not isinstance(d, CredentialDef)) + tuple(
         (c, RO) for c in credentials
     )

@@ -561,3 +561,25 @@ def test_a_body_that_fails_to_import_is_told_before_a_name_a_conf_misspells(tmp_
     files = conf('project = Project(rules=[default(storage="nolake")])', **{"test/own.py": body})
     with pytest.raises(UsageError, match=r"own.py could not be imported: RuntimeError: broken"):
         tree(tmp_path, files)
+
+
+def test_a_test_that_reads_and_writes_a_storage_gets_its_rw_credential(tmp_path):
+    files = {"test/ducktest_conf.py": PAIR + "project = Project(rules=[default(data=LOCAL_LAKE, temp=LOCAL_LAKE)])"}
+    tests, _ = tree(tmp_path, {**files, "test/a.test": ""})
+    assert [d.name for d, _ in tests[0].inputs if d.kind == "credential"] == ["rw_keys"]
+
+
+def test_a_test_that_writes_a_storage_only_ro_credentials_cover_is_an_error_naming_the_fix(tmp_path):
+    body = """
+        LOCAL_S3 = S3ServiceDef.rustfs("local_s3")
+        LOCAL_LAKE = LOCAL_S3.storage("local_lake", path="lake")
+        RO_KEYS = LOCAL_S3.credential("ro_keys", scopes=[(LOCAL_LAKE, "ro")])
+        project = Project(rules=[default(temp=LOCAL_LAKE)])
+    """
+    with pytest.raises(
+        UsageError,
+        match=r"^a.test::a: storage 'local_lake' <- ducktest_conf.py: default: the test needs to write to it, and the "
+        r"credentials scoped to it, 'ro_keys' \(ducktest_conf.py:\d+, pulled in by its scopes=\), are scoped ro; "
+        r"add an rw scope to one, or bind an rw credential with credential=$",
+    ):
+        tree(tmp_path, conf(body))
