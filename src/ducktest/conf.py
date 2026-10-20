@@ -88,6 +88,16 @@ from .resources.made import services_in
 _log = logging.getLogger(__name__)
 
 
+def default(**fields) -> Rule:
+    """Convenience for `Rule.default(...)`."""
+    return Rule.default(**fields)
+
+
+def match(pattern: str, *, requires_env: str | None = None, **fields) -> Rule:
+    """Convenience for `Rule.match(...)`."""
+    return Rule.match(pattern, requires_env=requires_env, **fields)
+
+
 @dataclass(frozen=True)
 class Rule:
     """What a conf file gives the tests below it, all of them or by path; made by `Rule.default(...)` or
@@ -126,18 +136,6 @@ class Rule:
         if requires_env is not None and not isinstance(requires_env, str):
             raise UsageError(f"rule {pattern!r}: requires_env={requires_env!r}; it is one name")
         return cls(pattern, Options.of(fields, f"rule {pattern!r}"), requires_env)
-
-
-def default(**fields) -> Rule:
-    """Convenience for `Rule.default(**fields)`, the long form: a rule for every test definition below
-    this file."""
-    return Rule.default(**fields)
-
-
-def match(pattern: str, *, requires_env: str | None = None, **fields) -> Rule:
-    """Convenience for `Rule.match(pattern, ...)`, the long form: a rule for the test definitions whose
-    path, relative to this file, matches `pattern`."""
-    return Rule.match(pattern, requires_env=requires_env, **fields)
 
 
 @functools.lru_cache(maxsize=None)
