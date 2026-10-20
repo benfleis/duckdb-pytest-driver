@@ -332,7 +332,9 @@ def _templates(project, storages):
             for key, value in given.get(field_name, {}).items():
                 if isinstance(value, str):
                     out.append((f"{label}: {field_name}[{key!r}]", value))
-        out += [(f"{label}: init_sql[{n}]", sql) for n, sql in enumerate(given.get("init_sql", ())) if isinstance(sql, str)]
+        out += [
+            (f"{label}: init_sql[{n}]", sql) for n, sql in enumerate(given.get("init_sql", ())) if isinstance(sql, str)
+        ]
     for storage in storages:
         for attr in ("root", "endpoint", "account"):
             value = getattr(storage, attr, None)

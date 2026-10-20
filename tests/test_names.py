@@ -340,11 +340,16 @@ def test_a_template_that_names_what_the_test_does_not_hold_is_an_error(tmp_path,
 
 @pytest.mark.parametrize(
     "given, label",
-    [('settings={"s3_endpoint": "{htp.url}"}', r"settings\['s3_endpoint'\]"), ("init_sql=\"SELECT '{htp.url}'\"", r"init_sql\[0\]")],
+    [
+        ('settings={"s3_endpoint": "{htp.url}"}', r"settings\['s3_endpoint'\]"),
+        ("init_sql=\"SELECT '{htp.url}'\"", r"init_sql\[0\]"),
+    ],
 )
 def test_an_unknown_name_in_settings_or_init_sql_is_an_error(tmp_path, given, label):
     body = f'HTTP = HttpServerDef("http")\nproject = Project(rules=[default(service=HTTP, {given})])'
-    with pytest.raises(UsageError, match=rf"default: {label}: \{{htp.url\}}: no resource is named 'htp'; did you mean 'http'\?"):
+    with pytest.raises(
+        UsageError, match=rf"default: {label}: \{{htp.url\}}: no resource is named 'htp'; did you mean 'http'\?"
+    ):
         tree(tmp_path, conf(body))
 
 
@@ -410,7 +415,10 @@ def cleanup_project(tmp_path, monkeypatch):
 
 def test_cleanup_takes_what_the_run_used_from_its_records_also_what_only_a_body_binds(tmp_path, monkeypatch):
     body = "from ducktest import test\n\n@test(storage='other_lake')\ndef own(ctx):\n    pass\n"
-    tree(tmp_path, conf(CHAIN + 'project = Project(rules=[match("a.test", storage="local_lake")])', **{"test/own.py": body}))
+    tree(
+        tmp_path,
+        conf(CHAIN + 'project = Project(rules=[match("a.test", storage="local_lake")])', **{"test/own.py": body}),
+    )
     project = cleanup_project(tmp_path, monkeypatch)
     assert declared(project) == {"services": ["local_s3"], "storages": ["local_lake", "other_lake"], "credentials": []}
 
@@ -460,7 +468,9 @@ def test_a_def_made_in_a_helper_a_body_imports_is_an_error_at_the_helpers_line(t
     helper = "from ducktest import StorageDef\n\nSHARED = StorageDef('shared_lake', '/s')\n"
     body = "import helper_makes_a_def\nfrom ducktest import test\n\n@test()\ndef own(ctx):\n    pass\n"
     files = conf("project = Project()", **{"test/helper_makes_a_def.py": helper, "test/own.py": body})
-    with pytest.raises(UsageError, match=r"^helper_makes_a_def.py:3: StorageDef\('shared_lake'\) is declared in a test"):
+    with pytest.raises(
+        UsageError, match=r"^helper_makes_a_def.py:3: StorageDef\('shared_lake'\) is declared in a test"
+    ):
         tree(tmp_path, files)
 
 

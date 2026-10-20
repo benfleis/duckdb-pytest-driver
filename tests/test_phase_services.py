@@ -131,9 +131,16 @@ def test_cleanup_ends_what_provision_started_and_may_run_twice(tree, tmp_path, c
 def test_cleanup_ends_a_service_that_only_a_body_binds(tree, tmp_path, capsys):
     tree()
     conf = tmp_path / "test/ducktest_conf.py"
-    conf.write_text(conf.read_text().replace('project = Project(services=[StoreDef()], rules=[match("s/**", service="store")])', "STORE = StoreDef()\nproject = Project()"))
+    conf.write_text(
+        conf.read_text().replace(
+            'project = Project(services=[StoreDef()], rules=[match("s/**", service="store")])',
+            "STORE = StoreDef()\nproject = Project()",
+        )
+    )
     (tmp_path / "test/s/x.test").unlink()
-    (tmp_path / "test/s/own.py").write_text("from ducktest import test\n\n@test(service='store')\ndef own(ctx):\n    pass\n")
+    (tmp_path / "test/s/own.py").write_text(
+        "from ducktest import test\n\n@test(service='store')\ndef own(ctx):\n    pass\n"
+    )
     plan()
     assert main(["provision", "--run-dir", "apart"]) == 0
     assert running(tmp_path) == ["apart"]
