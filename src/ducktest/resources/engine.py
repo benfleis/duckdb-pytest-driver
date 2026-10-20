@@ -160,13 +160,15 @@ class Engine(Service):
     def read(self):
         return {"name": self.name, "identity": self.identity, "open": self.live is not None}
 
-    def acquire(self, mode=RW, key=None):
-        """Held by one test: opened if it is closed, then reset."""
+    def acquire(self, mode=RW, key=None, *, holder=None):
+        """Held by one test, `holder`: opened if it is closed, then reset."""
         held = super().acquire(mode, key)
+        self.holder = holder  # only now: a test that waits for a run-lifetime engine must not rename its holder
         try:
             self.start()
             self.reset()
         except BaseException:
+            self.holder = None
             super().release(held, mode)
             raise
         return held
@@ -174,6 +176,7 @@ class Engine(Service):
     def release(self, held, mode=RW, *, failed=False):
         if failed:
             self.close()
+        self.holder = None
         super().release(held, mode)
 
     def run(self, statements, *, timeout=None):

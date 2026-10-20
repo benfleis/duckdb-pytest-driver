@@ -418,6 +418,28 @@ def test_a_body_stuck_past_its_timeout_frees_its_slot_its_mutex_and_its_run_engi
     assert outcomes(report) == {"stuck": "error", "after": "passed"}
 
 
+def test_a_test_that_waits_for_a_run_engine_does_not_rename_the_test_that_holds_it(tmp_path, caplog):
+    def body(ctx):
+        solo = ctx.client("solo")
+        solo.oks("SELECT echo1")
+        shell = solo.engine.live
+        time.sleep(SLEEP_S)  # the others queue for the engine meanwhile
+        shell._process.kill()
+        shell._process.wait()
+        solo.oks("SELECT echo2")
+
+    names = ["a", "b", "c"]
+    tests = [py_test(_named(body, n), path=f"test/{n}.py", engines=["solo"]) for n in names]
+    engine = DuckEngineDef("solo", lifetime="run")
+    with caplog.at_level(logging.INFO, logger="ducktest.engines.duckdb"):
+        code, _, _, _ = within(
+            GUARD_S, go, tmp_path, tests, engines=[engine], workers=3, duckdb_bin=FAKE_SHELL, shell_factory=DuckDBShell
+        )
+    assert code == 0
+    died = sorted(m for m in caplog.messages if "died under" in m)
+    assert died == [f"solo: duck-shell died under test/{n}.py::{n}; opened again" for n in names]
+
+
 @pytest.mark.skipif(not os.path.isdir("/proc"), reason="the check for leftovers reads /proc")
 @pytest.mark.parametrize("stop", [None, signal.SIGINT])
 def test_a_process_with_a_stuck_body_ends_when_the_run_does(tmp_path, stop):
