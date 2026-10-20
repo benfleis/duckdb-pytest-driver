@@ -146,7 +146,7 @@ A GitHub Actions job for a repo that `ducktest init` set up:
       - run: .venv/bin/ducktest run --strict --junit ducktest.xml
 ```
 
-`--strict` makes a declaration in a `ducktest_conf.py` that nothing uses an error, not a warning:
+`--strict` makes a declaration in a `ducktest_conf.py` that nothing reaches an error, not a warning:
 right for CI, where nobody reads the warnings. The exit code is red when nothing passed, so a job
 whose tests all skip (a missing secret, an unset variable) fails. On a hosted runner, docker and the
 tests share the machine, so the servers need no address settings. When the job runs in a

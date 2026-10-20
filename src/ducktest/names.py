@@ -10,8 +10,8 @@ value) takes a plain name or the object, records it, and gives a plain string on
 
 `derive()` makes the project's declared set from them, once the bodies are imported. What a rule, a matrix
 value or a body's `@test(...)` names in a slot, or in a `{name.attr}` of its values, settings or init_sql,
-is reached; a reached storage pulls its inputs and every credential scoped to it, a reached credential
-the services among its inputs. The declared set is that, with what `Project(services=, storages=,
+is reached (a rule no `rules=` holds reaches nothing); a reached storage pulls its inputs and every
+credential scoped to it, a reached credential the services among its inputs. The declared set is that, with what `Project(services=, storages=,
 credentials=)` lists, and what each listed one pulls. Engines are not reached: `Project(engines=)` lists
 them. The checks run on that set:
 
@@ -90,6 +90,8 @@ class Reference:
     obj: object | None  # the declaration, when the slot was given the object
     where: tuple | None
     reach: bool = True  # a slot of a rule, a matrix value or @test: what it names is in the declared set
+    slot: str | None = None  # the slot, where the kind alone does not say it (`scopes`)
+    place: object | None = None  # the Options it was given in: it reaches only when a place in use holds them
 
 
 @dataclass
@@ -100,6 +102,7 @@ class Names:
     confs: set = field(default_factory=set)  # every conf file the loader ran
     declared: list = field(default_factory=list)
     references: list = field(default_factory=list)
+    rules: list = field(default_factory=list)  # (Rule, where) of each rule made
     pulled: set = field(default_factory=set)  # names in the declared set only because something pulled them
     _superseded: set = field(default_factory=set)  # id() of a declaration a derived one replaced
 
@@ -129,8 +132,8 @@ class Names:
         """`new` was derived from `old` (`as_existing`, `with_`): it is the declaration from now on."""
         self._superseded.add(id(old))
 
-    def refer(self, kind, name, obj=None, reach=True) -> None:
-        self.references.append(Reference(kind, name, obj, here(), reach))
+    def refer(self, kind, name, obj=None, reach=True, slot=None) -> None:
+        self.references.append(Reference(kind, name, obj, here(), reach, slot))
 
     def live(self) -> list[Declared]:
         return [d for d in self.declared if id(d.obj) not in self._superseded]
@@ -158,7 +161,12 @@ class Names:
         for ref in self.references:
             if ref.kind not in PARTS:
                 self._resolve(ref, registry, project.engines)
-        reach = [registry[r.name] for r in self.references if r.reach and r.kind not in PARTS]
+        placed = {id(options) for _, options in _places(project)}
+        reach = [
+            registry[r.name]
+            for r in self.references
+            if r.reach and r.kind not in PARTS and (r.place is None or id(r.place) in placed)
+        ]
         reach += [registry[n] for n in _template_names(project) if n in registry]
         reached = _closure(reach, registry)
         declared = _closure(listed + reach, registry)
@@ -172,6 +180,13 @@ class Names:
                     raise UsageError(f"two {kind}s are named {d.name!r}; a {kind} is one declaration")
         self._attributes(project, out, registry)
         warnings = self._unused(project, declared, reached | _default_engine(project.engines))
+        in_use = {id(rule) for rules in project._rules_by_dir.values() for rule in rules}
+        warnings += [
+            f"{self.show(where)}: {_made_as(rule)} is in no Project(rules=[...]) or Rules(...), so it gives "
+            "nothing; put it in one, or remove it"
+            for rule, where in self.rules
+            if id(rule) not in in_use
+        ]
         warnings += [
             f"{project.project_file}: matrix parameter {p!r}: no rule or test runs over it; "
             f"give matrix=[{p!r}] where tests need it, or remove it"
@@ -192,7 +207,8 @@ class Names:
             if d.kind in PARTS:
                 if id(d.obj) not in parts_of_declared and id(d.obj) not in named_objects:
                     out.append(
-                        f"{at}: {d.kind} {d.name!r} is declared and not used; bind it in {BIND_IN[d.kind]}, or remove it"
+                        f"{at}: {d.kind} {d.name!r} is declared and nothing reaches it; "
+                        f"give it to {BIND_IN[d.kind]}, or remove it"
                     )
             elif d.kind == "engine":
                 if d.name not in project.engines:
@@ -227,11 +243,13 @@ class Names:
     def _resolve(self, ref, registry, engines):
         at = self.show(ref.where)
         target = registry.get(ref.name)
+        shown = f"{ref.slot}= names {ref.kind} {ref.name!r}," if ref.slot else f"{ref.kind}={ref.name!r}"
         if target is None:
             known = sorted(n for n, d in registry.items() if kind_of(d) == ref.kind)
-            raise UsageError(f"{at}: {ref.kind}={ref.name!r} is not declared{_did_you_mean(ref.name, known)}")
+            which = ", which" if ref.slot else ""
+            raise UsageError(f"{at}: {shown.rstrip(',')}{which} is not declared{_did_you_mean(ref.name, known)}")
         if kind_of(target) != ref.kind:
-            raise UsageError(f"{at}: {ref.kind}={ref.name!r} names a {kind_of(target)}, not a {ref.kind}")
+            raise UsageError(f"{at}: {shown} names a {kind_of(target)}, not a {ref.kind}")
         if ref.kind == "engine" and ref.name not in engines:
             raise UsageError(f"{at}: {self._engine_not_listed(ref.name)}")
 
@@ -261,6 +279,10 @@ class Names:
 
 
 _REACH = "name it in a rule, a matrix value or @test(...)"
+
+
+def _made_as(rule):
+    return "default(...)" if rule.pattern == "**" and rule.requires_env is None else f"match({rule.pattern!r}, ...)"
 
 
 def _parts(obj):
@@ -389,6 +411,26 @@ def loading(names: Names):
         _current.reset(token)
 
 
+def made_rule(rule) -> None:
+    """A rule exists; it gives something only once a `Project(rules=...)` or `Rules(...)` holds it."""
+    names = _current.get()
+    if names is not None:
+        names.rules.append((rule, here()))
+
+
+def placed(options, start) -> None:
+    """The references made since `start` were given in `options`."""
+    names = _current.get()
+    if names is not None:
+        for r in names.references[start:]:
+            r.place = options
+
+
+def mark() -> int:
+    names = _current.get()
+    return len(names.references) if names is not None else 0
+
+
 def declare(obj) -> None:
     """A constructor's registration: the declaration exists, bound or not."""
     names = _current.get()
@@ -403,18 +445,19 @@ def supersede(old, new):
     return new
 
 
-def ref(value, kind, where, *, reach=True):
+def ref(value, kind, where, *, reach=True, slot=None):
     """What a reference slot gives on: the name of `value`, a plain string. `value` is a name or the
     object; either is recorded for the checks at the end of the scan. `reach=False`: the reference does
-    not pull what it names into the declared set (a credential's `scopes=`)."""
+    not pull what it names into the declared set (a credential's `scopes=`); `slot` names the slot in an
+    error where the kind alone would not."""
     names = _current.get()
     if isinstance(value, str):
         if names is not None:
-            names.refer(kind, value, reach=reach)
+            names.refer(kind, value, reach=reach, slot=slot)
         return value
     if kind_of(value) == kind:
         if names is not None:
-            names.refer(kind, value.name, value, reach)
+            names.refer(kind, value.name, value, reach, slot)
         return value.name
     name = getattr(value, "name", None)
     shown = f"{type(value).__name__}({name!r})" if isinstance(name, str) else repr(value)

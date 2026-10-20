@@ -13,7 +13,7 @@ ducktest runs the `.test` files it finds on disk, whether the build lists them o
 
 Rung 02 on has a `ducktest_conf.py`: one `project = Project(...)` with the rules that name what the
 tests need (`help(Project)` lists the fields; design.md, 1.9). What a rule, a matrix value or a
-body's `@test(...)` names is declared, with what it pulls: a storage its server and the credential
+body's `@test(...)` names is declared, with what it pulls: a storage its server and the credentials
 scoped to it. So no rung lists its storages, credentials or services; `engines=` is listed, as an
 engine is not reached that way. Each imports what it uses from `ducktest` in one
 line. Its variables are UPPER_CASE and its declared names lowercase, each saying the domain and the

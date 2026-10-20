@@ -35,9 +35,7 @@ _NOT_TESTS = (CONF_FILE, "conftest.py", "__init__.py")
 def _bindings(test, project):
     """(slot, Def, source, ref) for each input a test binds, after its options merged (`options.py`)."""
     o = test.options
-    return [
-        (slot, bound_def(project, slot, ref, test.name), o.source_of("bind", slot), ref) for slot, ref in o.bind.items()
-    ]
+    return [(slot, bound_def(project, slot, ref), o.source_of("bind", slot), ref) for slot, ref in o.bind.items()]
 
 
 def _roles(bindings, where):
@@ -146,7 +144,7 @@ def _suffix_tags(path):
 
 def scan(start, *, working_dir=".", strict=False):
     """Returns (tests, project): every test under the project root, in a stable order. `strict`: a
-    declaration nothing uses is an error."""
+    warning of the names check (a declaration nothing reaches, ...) is an error."""
     project = load_project(start)
     asserts.rewrite_under(project.root)
     bodies, scripts = _walk(project.root)

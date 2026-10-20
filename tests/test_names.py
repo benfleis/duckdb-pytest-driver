@@ -247,7 +247,8 @@ def test_a_declaration_nothing_uses_is_a_warning(tmp_path, caplog):
     assert [w.split(": ", 1)[1] for w in project.unused] == [
         "storage 'spare' is declared and nothing reaches it; name it in a rule, a matrix value or @test(...), "
         "or remove it",
-        "container 'loose' is declared and not used; bind it in AzureServiceDef(containers=[...]), or remove it",
+        "container 'loose' is declared and nothing reaches it; give it to AzureServiceDef(containers=[...]), "
+        "or remove it",
         "storage 'lake' is listed in Project(storages=[...]) and nothing reaches it; name it in a rule, "
         "a matrix value or @test(...), or take it out of the list",
         "storage 'blobs' is listed in Project(storages=[...]) and nothing reaches it; name it in a rule, "
@@ -531,3 +532,32 @@ def test_two_credentials_that_may_write_a_storage_are_an_error_naming_each_and_t
         r"or set default=True on one$",
     ):
         tree(tmp_path, conf(body))
+
+
+# -----------------------------------------------------------------------------
+# What reaches, and the order of the errors
+#
+
+
+def test_a_rule_in_no_rules_reaches_nothing_and_warns(tmp_path):
+    body = CHAIN + "SPARE = default(storage=LOCAL_LAKE)\nproject = Project()"
+    _, project = tree(tmp_path, conf(body))
+    assert declared(project) == {"services": [], "storages": [], "credentials": []}
+    assert [w.split(": ", 1)[1].split(";")[0] for w in project.unused][-1] == (
+        "default(...) is in no Project(rules=[...]) or Rules(...), so it gives nothing"
+    )
+
+
+def test_an_unknown_name_in_scopes_says_scopes(tmp_path):
+    body = 'KEYS = S3CredentialDef("keys", scopes=["nolake"])\nproject = Project(rules=[default(credential=KEYS)])'
+    with pytest.raises(
+        UsageError, match=r"^ducktest_conf.py:\d+: scopes= names storage 'nolake', which is not declared$"
+    ):
+        tree(tmp_path, conf(body))
+
+
+def test_a_body_that_fails_to_import_is_told_before_a_name_a_conf_misspells(tmp_path):
+    body = "from ducktest import test\n\nraise RuntimeError('broken')\n\n@test()\ndef own(ctx):\n    pass\n"
+    files = conf('project = Project(rules=[default(storage="nolake")])', **{"test/own.py": body})
+    with pytest.raises(UsageError, match=r"own.py could not be imported: RuntimeError: broken"):
+        tree(tmp_path, files)

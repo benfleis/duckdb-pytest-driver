@@ -155,7 +155,10 @@ def main(argv=None):
         )
         p.add_argument("--root", default=None, help="where the tests are (default: ./test, else .)")
         p.add_argument(
-            "--strict", action="store_true", help="a declaration of a ducktest_conf.py that nothing uses is an error"
+            "--strict",
+            action="store_true",
+            help="a warning of the names check is an error: a declaration nothing reaches, a listed engine no test "
+            "drives, a matrix parameter no test runs over, a rule in no rules=",
         )
         if name == "select":
             p.add_argument(

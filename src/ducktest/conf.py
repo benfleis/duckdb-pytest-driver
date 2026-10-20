@@ -17,7 +17,7 @@ or a `Rules` in it; a file with neither is a warning.
     )
 
 The project's services, storages and credentials are what the rules, the matrix values and the bodies'
-`@test(...)` name, with what those pull: a storage brings its service and the credential scoped to it, a
+`@test(...)` name, with what those pull: a storage brings its service and the credentials scoped to it, a
 credential the service it is made of (`names.py`). `Project(services=, storages=, credentials=)` adds to
 that set and is never needed; the checks run on the set once the bodies are imported. `engines=` is
 different: an engine is not reached through what a test binds, and the project's one DuckDB engine is the
@@ -126,7 +126,9 @@ class Rule:
     @classmethod
     def default(cls, **fields) -> Rule:
         """A rule for every test definition below this file."""
-        return cls("**", Options.of(fields, "rule '**'"))
+        rule = cls("**", Options.of(fields, "rule '**'"))
+        _names.made_rule(rule)
+        return rule
 
     @classmethod
     def match(cls, pattern: str, *, requires_env: str | None = None, **fields) -> Rule:
@@ -139,7 +141,9 @@ class Rule:
         move to tags or paths."""
         if requires_env is not None and not isinstance(requires_env, str):
             raise UsageError(f"rule {pattern!r}: requires_env={requires_env!r}; it is one name")
-        return cls(pattern, Options.of(fields, f"rule {pattern!r}"), requires_env)
+        rule = cls(pattern, Options.of(fields, f"rule {pattern!r}"), requires_env)
+        _names.made_rule(rule)
+        return rule
 
 
 @functools.lru_cache(maxsize=None)
@@ -268,7 +272,7 @@ class LoadedProject:
     listed: dict = field(default_factory=dict)  # kind -> what Project(...) lists of it, as written
     body_options: list = field(default_factory=list)  # (label, Options) of each body's @test(...)
     project_file: str = CONF_FILE  # the root conf file, relative to the root
-    unused: list = field(default_factory=list)  # declarations nothing uses
+    unused: list = field(default_factory=list)  # warnings: what nothing reaches, drives or runs over
 
     def __post_init__(self):
         if self.default_storage is None:
@@ -581,11 +585,8 @@ def _matrix(given, where):
     return out
 
 
-def bound_def(project, slot, ref, where):
+def bound_def(project, slot, ref):
     """The Def that a binding slot (`storage=`, `temp=`, `credential=`, ...) names; for `At`, its storage's."""
     kind = kind_of_slot(slot)
     declared = {"storage": project.storages, "credential": project.credentials, "service": project.services}[kind]
-    name = ref.name if isinstance(ref, At) else ref
-    if name in declared:
-        return declared[name]
-    raise UsageError(f"{where}: {slot}={ref!r} is not declared; the project's are {sorted(declared)}")
+    return declared[ref.name if isinstance(ref, At) else ref]

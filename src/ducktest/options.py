@@ -14,7 +14,7 @@ is about: it gives the storage's values. `data=` is where fixtures are read (`{D
 where the test writes (`{TEMP_DIR}`, `{TEMP_DIR_ROOT}`); each takes a storage or
 `STORAGE.at("sub/path")`, a place under one, and is the default storage's where nothing binds it.
 Binding a storage in one slot gives nothing of the others; in any slot, it puts the storage in the
-scope of the credential scoped to it.
+scope of the credentials scoped to it.
 
 `matrix` names the parameters a test runs over, so it is not an option of a project matrix value. A
 cell's values give way to nothing: a value or a binding one gives that a rule, `@test` or another
@@ -141,6 +141,7 @@ class Options:
     @classmethod
     def of(cls, given, where, *, leave_out=()):
         """Checks the names and the shape of each; `leave_out` names what this place does not take."""
+        start = names.mark()
         known = [n for n in NAMES if n not in leave_out]
         unknown = sorted(set(given) - set(known))
         if unknown:
@@ -164,7 +165,9 @@ class Options:
             elif name == "retries" and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
                 raise UsageError(f"{where}: retries={value!r}; it is a whole number, 0 or more")
             out[name] = value
-        return cls(out)
+        options = cls(out)
+        names.placed(options, start)
+        return options
 
 
 @dataclass(kw_only=True)
