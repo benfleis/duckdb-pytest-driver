@@ -928,8 +928,8 @@ def test_an_engine_the_test_did_not_name_is_a_usage_error_that_says_where_to_nam
     (test,) = report["tests"]
     assert test["outcome"] == "error"
     assert (
-        "ctx.client('spark'): this test holds engines ['duck']; add 'spark' to @test(engines=[...])"
-        in test["problems"][0]
+        "ctx.client('spark'): this test has clients 'duck'; a DuckDB engine with no declaration is named 'duck'; "
+        "any other engine goes in @test(engines=[...])" in test["problems"][0]
     )
 
 

@@ -295,6 +295,22 @@ def test_a_python_bodys_shell_gets_the_credentials_sdk_env(tmp_path, remote_inpu
     assert (env["AWS_ACCESS_KEY_ID"], env["AWS_SECRET_ACCESS_KEY"]) == ("admin", "password")
 
 
+def test_a_body_that_asks_for_the_duckdb_engine_by_another_name_is_told_its_name(tmp_path):
+    said = []
+
+    def body(ctx):
+        with pytest.raises(UsageError) as e:
+            ctx.client("duckdb")
+        said.append(str(e.value))
+
+    code, _, _, _ = go(tmp_path, [py_test(body)])
+    assert code == 0
+    assert said == [
+        "ctx.client('duckdb'): this test has clients 'duck'; a DuckDB engine with no declaration is named 'duck'; "
+        "any other engine goes in @test(engines=[...])"
+    ]
+
+
 def test_a_body_reads_the_credentials_it_holds_with_their_values_masked(tmp_path, remote_inputs, monkeypatch):
     seen = {}
 

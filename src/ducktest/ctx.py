@@ -66,10 +66,14 @@ class Context:
         ends. A client takes one statement at a time, so threads that share one wait for each
         other; statements that must run at the same time need a client each."""
         if name not in self.clients:
-            raise UsageError(
-                f"ctx.client({name!r}): this test holds engines {sorted(self.clients)}; "
-                f"add {name!r} to @test(engines=[...])"
+            held = ", ".join(repr(n) for n in sorted(self.clients)) or "none"
+            duck = self.clients.get("duck")
+            hint = (
+                "a DuckDB engine with no declaration is named 'duck'; any other engine goes in @test(engines=[...])"
+                if duck is not None and duck.engine.definition.kind == "duck"
+                else f"add {name!r} to @test(engines=[...])"
             )
+            raise UsageError(f"ctx.client({name!r}): this test has clients {held}; {hint}")
         if not new:
             return self.clients[name]
         engine = self.clients[name].engine.twin()
