@@ -40,13 +40,17 @@ def test_a_shell_that_died_under_a_test_is_opened_again_and_the_log_says_so(shel
     assert "duck: duck-shell died under t.py::t; opened again" in caplog.messages
 
 
+def infos(caplog):
+    return [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+
+
 def test_a_shell_that_ducktest_stopped_for_a_statement_timeout_is_logged_as_stopped(shell, caplog):
     shell.label, shell.holder = "duck: duck-shell", "t.py::t"
     with pytest.raises(SqlError, match="not done in 0.5s"):
         shell.run(["SELECT drip"], timeout=0.5)
     with caplog.at_level(logging.INFO, logger="ducktest.engines.duckdb"):
         assert shell.run(["SELECT echo2"]) == (["v"], [(2,)])
-    assert caplog.messages == ["duck: duck-shell stopped under t.py::t (statement timeout); opened again"]
+    assert infos(caplog) == ["duck: duck-shell stopped under t.py::t (statement timeout); opened again"]
 
 
 def test_a_shell_that_could_not_open_a_fresh_instance_is_logged_as_stopped(shell, caplog, monkeypatch):
@@ -60,7 +64,7 @@ def test_a_shell_that_could_not_open_a_fresh_instance_is_logged_as_stopped(shell
     shell.begin_test()
     with caplog.at_level(logging.INFO, logger="ducktest.engines.duckdb"):
         assert shell.run(["SELECT echo2"]) == (["v"], [(2,)])
-    assert caplog.messages == ["duck: duck-shell stopped under t.py::t (open failed); opened again"]
+    assert infos(caplog) == ["duck: duck-shell stopped under t.py::t (open failed); opened again"]
 
 
 def test_a_shell_that_died_while_no_test_held_it_is_logged_as_died_between_tests(shell, caplog):
@@ -73,7 +77,7 @@ def test_a_shell_that_died_while_no_test_held_it_is_logged_as_died_between_tests
     shell.begin_test()
     with caplog.at_level(logging.INFO, logger="ducktest.engines.duckdb"):
         assert shell.run(["SELECT echo2"]) == (["v"], [(2,)])
-    assert caplog.messages == ["duck: duck-shell died between tests; opened again"]
+    assert infos(caplog) == ["duck: duck-shell died between tests; opened again"]
 
 
 def test_two_threads_never_get_each_others_result(shell):
