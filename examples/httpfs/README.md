@@ -26,11 +26,11 @@ HTTP server needs nothing: the run starts it.
 
 ## What it shows
 
-- **A service with buckets.** `s3_local(buckets=[...])` is a local S3 server (RustFS) with the
+- **A service with buckets.** `S3ServiceDef.rustfs("local_s3", buckets=[...])` is a local S3 server (RustFS) with the
   three buckets of httpfs CI. The run makes the buckets, seeds `test-bucket` from `test/s3_seed/`,
   and removes them at the end.
 - **A credential, given by the file's own `require-env` line.**
-  `match("**", requires_env="S3_TEST_SERVER_AVAILABLE", credential=S3_KEYS)` gives the S3 keys only
+  `match("**", requires_env="S3_TEST_SERVER_AVAILABLE", credential=LOCAL_KEYS)` gives the S3 keys only
   to the files that ask for them. The keys reach the engine as `AWS_*` env. Without an S3 server,
   only these files are BLOCKED; the other files run.
 - **A matrix.** The parameter `httpfs_client` in the project's `matrix=` runs each test once with curl and once with
@@ -81,7 +81,7 @@ With no S3 server (`DUCKTEST_S3_LOCAL_PORT=9998`): 72 BLOCKED. These are the 36 
 
 ## Known gaps
 
-- `process_env` does not fill `{s3.host_port}` as `values` do, so the conf builds the address itself.
+- `process_env` does not fill `{local_s3.host_port}` as `values` do, so the conf builds the address itself.
 - No bucket host names on the local server, so the conf sets `s3_url_style=path` for every test.
 - No bucket versioning, second user or presigned URLs on the local server.
 - CI's `skip_tests` for httplib are not mapped here (a `suites=` entry with `skip` could do it).

@@ -55,7 +55,7 @@ _LABELS = {
     "kept": "process env kept",
 }
 _ERRNO = re.compile(r"\[Errno \d+\] ")
-_INPUT_REF = re.compile(r"\{([\w-]+)\.(\w+)\}")  # {s3.host_port}: an attribute of an input
+_INPUT_REF = re.compile(r"\{([\w-]+)\.(\w+)\}")  # {local_s3.host_port}: an attribute of an input
 
 
 @dataclass(frozen=True)

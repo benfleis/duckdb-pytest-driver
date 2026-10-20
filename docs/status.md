@@ -1,4 +1,4 @@
-# ducktest: status (2026-10-19)
+# ducktest: status (2026-10-20)
 
 ## What it is
 
@@ -13,7 +13,8 @@ Code: `src/ducktest/` in this repo, branch `dev/v0.5`.
 
 | What | Result |
 | --- | --- |
-| Runner self-tests | 896 passed, 2 skipped (2026-10-19, a v2.0 debug build of duckdb-delta's; no live S3 or Azurite) |
+| Runner self-tests | 924 passed, 2 skipped (2026-10-20, a v2.0 debug build of duckdb-delta's; no live S3 or Azurite) |
+| A conf's imports | one line, `from ducktest import ...`: classes with `Def` and their makers, and the verbs (design.md, Part 1) |
 | `storage=`, `data=`, `temp=` | three slots: `storage=` gives a storage's values, `data=` `{DATA_DIR}`, `temp=` `{TEMP_DIR}`; `STORAGE.at("sub")` a place under one (design.md, 1.1) |
 | The ladder, rungs 00-07 | pass; the self-tests compare them with goldens |
 | Rung 05 (S3) with a live RustFS server | passes; its golden is the BLOCKED case (no server) |
@@ -47,11 +48,11 @@ earlier form until they are repinned to this release.
 Where a local S3 or Azure server runs, and how a run finds one, is in `README.md` ("Where services
 run"). Settings of the servers themselves:
 
-- S3, `s3_local()`: RustFS. `DUCKTEST_S3_LOCAL_*`: `PORT` (9000), `ACCESS_KEY`, `SECRET_KEY` (default
+- S3, `S3ServiceDef.rustfs()`: RustFS, the one flavor built. `DUCKTEST_S3_LOCAL_*`: `PORT` (9000), `ACCESS_KEY`, `SECRET_KEY` (default
   `admin`, `password`), `REGION`, `BUCKET`, `IMAGE`. The files of an S3 storage (cleanup, a bucket's
-  seed) need `rclone` on PATH. A server's buckets (`s3_local(buckets=[bucket(...)])`) are made by
+  seed) need `rclone` on PATH. A server's buckets (`S3ServiceDef.rustfs(buckets=[bucket(...)])`) are made by
   the server's own S3 API calls.
-- Azure blob, `az_local()`: Azurite. `DUCKTEST_AZ_LOCAL_*`: `PORT` (10000), `ACCOUNT`, `KEY`
+- Azure blob, `AzureServiceDef.azurite()`: Azurite, the one flavor built. `DUCKTEST_AZ_LOCAL_*`: `PORT` (10000), `ACCOUNT`, `KEY`
   (Azurite's own `devstoreaccount1` and its well-known key when unset), `CONTAINER`, `IMAGE`.
 - If Spark does not start in a container, try `JAVA_TOOL_OPTIONS=-XX:-UseContainerSupport`.
 

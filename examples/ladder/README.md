@@ -12,7 +12,9 @@ before. Rung 00 is a repo that has never heard of ducktest. Run these from insid
 ducktest runs the `.test` files it finds on disk, whether the build lists them or not.
 
 Rung 02 on has a `ducktest_conf.py`: one `project = Project(...)` that declares what the tests need
-(`help(Project)` lists the fields; design.md, 1.9). A file below it would hold only rules, `rules =
+(`help(Project)` lists the fields; design.md, 1.9). Each imports what it uses from `ducktest` in one
+line. Its variables are UPPER_CASE and its declared names lowercase, each saying the domain and the
+role: `LOCAL_S3 = S3ServiceDef.rustfs("local_s3")`, `LOCAL_LAKE`, `"local_lake"`. A file below it would hold only rules, `rules =
 Rules(...)`. The scan checks the names the file declares and refers to; `--strict` also fails on one
 that nothing uses.
 
@@ -58,7 +60,8 @@ A `.test` file with a body of its stem is not a test of its own; only the body r
 
 ## 02_rules
 
-`ducktest_conf.py` holds the project, `project = Project(...)`: two local storages and, among its
+`ducktest_conf.py` holds the project, `project = Project(...)`: two local storages, each a
+`LocalStorageDef`, and, among its
 engines, a DuckDB engine, `duck`, that loads `parquet`. Each is bound to a variable, and the rules
 refer to it by that object: `default(storage=SCRATCH_A, temp=SCRATCH_A, engines=[DUCK])` binds that
 storage for every test and names `duck` in `engines=`, so every test drives that engine, through a
@@ -94,7 +97,7 @@ itself; an input that does not come up makes the test BLOCKED (rung 04).
 
 A run writes its records to `ducktest_temp/<run>/` in the working directory, and what its
 tests write under `<storage>/temp/<run>/` of the storage `temp=` binds (`STORAGE.at("sub")` makes it
-`<storage>/sub/<run>/`); when the run ends, that prefix goes, but the places of the tests that failed.
+`<storage>/sub/<run>/`); when the run ends, that path goes, but the places of the tests that failed.
 
 The batches in `02-plan.yaml`, in the run directory, are labelled by the identity of their tests.
 The two `.test` files run in one `unittest` process, although `rule_matched.test` has an inline
@@ -106,7 +109,7 @@ of its identity.
 
 ## 03_credentials
 
-The storage is now an S3 bucket that nothing reads. `S3CredentialDef("fake_key", ...)` is scoped to it,
+The storage is now an S3 bucket that nothing reads, an `S3StorageDef`. `S3CredentialDef("fake_key", ...)` is scoped to it,
 `scopes=[FAKE_S3]`, and takes its two fields, `key_id` and `secret`, from `LADDER_FAKE_KEY_ID` and `LADDER_FAKE_SECRET`;
 set both before a run. The rule binds the bucket for the `scoped_*` tests with `storage=`, so they
 hold the credential; their `{TEMP_DIR}` stays in the run directory, as nothing binds `temp=`.
@@ -130,10 +133,10 @@ the `.test` file beside it with `ctx.run_paired()`, which checks again.
 
 The storage is now served over HTTP by a service the run starts: `HttpServerDef` serves a copy of
 `data/` from a thread, on a free port, and the storage `served` takes it as an input, with its root
-`{http.url}`. The rule binds it with `data=` too: a test whose `data=` binds nothing reads the
+`{local_http.url}`. The rule binds it with `data=` too: a test whose `data=` binds nothing reads the
 default, `data/` at the top of the repository; here `{DATA_DIR}`, in `served.test` and in
 the SQL of `served_body.py`, is that server's address, and both read `cities.csv` from it. Before a run the address is not known:
-`scan --env` shows the root as `<from service http>`. The run starts the server before any test and
+`scan --env` shows the root as `<from service local_http>`. The run starts the server before any test and
 stops it after the last one.
 
 `blocked.test` binds a second storage in both slots, whose server listens on an address no machine has, so it
@@ -142,16 +145,17 @@ green.
 
 ## 05_s3
 
-The storage is now a prefix in a bucket of a local S3-compatible server, `s3_local(flavor="rustfs")`:
-the run starts one in docker. `flavor` names what backs it, RustFS (the default, and the only one
-now); the tests do not say it. `S3.storage("lake", "lake")` is
-`s3://ducktest/lake` on it, and `S3.credential("keys", scopes=[LAKE])` is an `S3CredentialDef` of
-the server's keys, from `DUCKTEST_S3_LOCAL_ACCESS_KEY` and `DUCKTEST_S3_LOCAL_SECRET_KEY` (`admin` and
-`password` when unset). The rule binds `storage=LAKE, temp=LAKE`. Both bodies find one secret, `ducktest_keys`, scoped to the storage (the
-Python body checks it against `ctx.credential("keys")`), and write and read `{TEMP_DIR}/answer.csv`: a Python
-body under `s3://ducktest/lake/temp/<run>/<key>`, a `.test` file under the run's prefix, where the
-binary makes its own place. When the run ends, that prefix goes, but the places of the tests that
-failed.
+The storage is now a path in a bucket of a server that speaks S3, `S3ServiceDef.rustfs("local_s3")`:
+a local RustFS, which the run starts in docker. `S3ServiceDef` names the protocol and the role; its
+`flavor` names what backs it, `rustfs` (the only one now), and the tests do not say it.
+`LOCAL_S3.storage("local_lake", path="lake")` is an `S3StorageDef` at `s3://ducktest/lake` on it,
+and `LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])` is an `S3CredentialDef` of the server's
+keys, from `DUCKTEST_S3_LOCAL_ACCESS_KEY` and `DUCKTEST_S3_LOCAL_SECRET_KEY` (`admin` and `password`
+when unset). The rule binds `storage=LOCAL_LAKE, temp=LOCAL_LAKE`. Both bodies find one secret,
+`ducktest_local_keys`, scoped to the storage (the Python body checks it against
+`ctx.credential("local_keys")`), and write and read `{TEMP_DIR}/answer.csv`: a Python body under
+`s3://ducktest/lake/temp/<run>/<key>`, a `.test` file under the run's path, where the binary makes
+its own place. When the run ends, that path goes, but the places of the tests that failed.
 
 With no S3 server to reach, and no docker to start one, both tests end BLOCKED; that is the golden,
 where the self-tests name a server at an address nothing answers.
@@ -169,20 +173,21 @@ machine at, e.g. `172.18.0.1`, and start the server with `ducktest provision` or
 tests run, set `DUCKTEST_SERVICE_HOST` to that same address. Set `DUCKTEST_S3_LOCAL_PORT` on both sides if
 the port is not 9000.
 
-`--existing-service s3=http://HOST:PORT` still names a server at any address, but a server that
+`--existing-service local_s3=http://HOST:PORT` still names a server at any address, but a server that
 answers where the run reaches it needs no flag.
 
 ## 06_azurite
 
-Rung 05 again, on Azure blob storage: `az_local()` is a local Azure blob server, Azurite
-(`flavor="azurite"`, the only one), started in docker or found running. `AZ.storage("blobs",
-"lake")` is `az://ducktest/lake` on it, and `AZ.credential("keys", scopes=[BLOBS])` is an
+Rung 05 again, on Azure blob storage: `AzureServiceDef.azurite("local_az")` is a local Azure blob
+server, Azurite (`flavor="azurite"`, the only one), started in docker or found running.
+`LOCAL_AZ.storage("local_blobs", path="lake")` is an `AzureStorageDef` at `az://ducktest/lake` on it,
+and `LOCAL_AZ.credential("local_keys", scopes=[LOCAL_BLOBS])` is an
 `AzureCredentialDef` of the server's connection string, made of Azurite's own account,
 `devstoreaccount1`, and its well-known key (`DUCKTEST_AZ_LOCAL_ACCOUNT` and `DUCKTEST_AZ_LOCAL_KEY`
 give another). The connection string reaches every engine process of the test as
 `AZURE_STORAGE_CONNECTION_STRING`; DuckDB gets a `TYPE azure` secret scoped to the storage, which
 names it (`getenv(...)` in the shell, `'{...}'` in a `.test` init file) and never holds the value.
-The rule binds `temp=BLOBS` beside `storage=BLOBS`, so both tests write and read `{TEMP_DIR}/answer.csv`
+The rule binds `temp=LOCAL_BLOBS` beside `storage=LOCAL_BLOBS`, so both tests write and read `{TEMP_DIR}/answer.csv`
 under it, and the run removes what they wrote with rclone's `azureblob` backend.
 
 With no Azurite to reach, and no docker to start one, both tests end BLOCKED; that is the golden.
@@ -196,12 +201,12 @@ as it has no DFS endpoint.
 
 One `.test` file, `write_read.test`, on both cells of a storage matrix: it writes
 `{TEMP_DIR}/answer.csv` and reads it back, and says nothing of where. The project's `matrix=` gives
-the parameter `storage` two values, `local`, a directory under the rung, and `s3`, the storage `lake`
-on a local S3 server as in rung 05; each binds `storage=` and `temp=`, so `{TEMP_DIR}` is on that
+the parameter `storage` two values, `local`, the storage `local_dir`, a directory under the rung, and
+`s3`, the storage `local_lake` on a local S3 server as in rung 05; each binds `storage=` and `temp=`, so `{TEMP_DIR}` is on that
 storage. `default(matrix=["storage"])` puts every test on the matrix, so the file runs twice:
 `write_read.test::write_read[storage=local]` and `write_read.test::write_read[storage=s3]`. The
 `s3` value also has `requires=["httpfs"]`, which only that cell loads, and it holds the credential
-`keys`, as its storage is in the credential's scope; the `local` cell holds none. The two cells run in
+`local_keys`, as its storage is in the credential's scope; the `local` cell holds none. The two cells run in
 batches of their own, as their bindings differ.
 
 With no S3 server to reach, and no docker to start one, the `s3` cell ends BLOCKED and the `local`

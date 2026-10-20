@@ -90,30 +90,32 @@ The common case: `.test` files that hold `require-env S3_TEST_SERVER_AVAILABLE` 
 server and its keys. `test/ducktest_conf.py`:
 
 ```python
-from ducktest import Project, match
-from ducktest.services.s3local import s3_local
+from ducktest import Project, S3ServiceDef, match
 
-S3 = s3_local()
-KEYS = S3.credential("keys", scopes=[])
+LOCAL_S3 = S3ServiceDef.rustfs("local_s3")
+LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[])
 
-project = Project(credentials=[KEYS], rules=[
-    match("**", requires_env="S3_TEST_SERVER_AVAILABLE", credential=KEYS,
-          values={"S3_TEST_SERVER_AVAILABLE": "1", "S3_ENDPOINT": "{s3.host_port}"}),
+project = Project(credentials=[LOCAL_KEYS], rules=[
+    match("**", requires_env="S3_TEST_SERVER_AVAILABLE", credential=LOCAL_KEYS,
+          values={"S3_TEST_SERVER_AVAILABLE": "1", "S3_ENDPOINT": "{local_s3.host_port}"}),
 ])
 ```
 
 The rule selects the files with that `require-env` line, gives them the keys, and fills the names
-they require; `{s3.host_port}` is the address of the server. `ducktest select --strict --explain`
+they require; `{local_s3.host_port}` is the address of the server. `ducktest select --strict --explain`
 checks the conf before you run. The ladder adds one idea per rung, and `docs/design.md` has every
 field.
 
-A declaration without a name takes a default: `duckdb` for the built-in DuckDB engine and for
-`duckdb_engine()`, `spark` for `delta_spark()`, `s3` for `s3_local()`, `az` for `az_local()`. These
-are the names that `ctx.client(...)`, `{s3.host_port}` and `--existing-service s3=...` use.
+A conf imports everything from `ducktest`, in one line. A declaration is a class whose name ends in
+`Def`, with its makers on the class (`S3ServiceDef.rustfs(...)`); a function is a verb
+(`default(...)`, `match(...)`, `bucket(...)`). The name, the first argument, is what
+`ctx.client(...)`, `{local_s3.host_port}` and `--existing-service local_s3=...` use. A maker gives one
+when it is left out: `s3` for `S3ServiceDef.rustfs()`, `az` for `AzureServiceDef.azurite()`, `spark`
+for `SparkEngineDef.delta()`; the built-in DuckDB engine is `duckdb`.
 
 ## Where services run
 
-A local server (`s3_local()`, `az_local()`) is reached at `DUCKTEST_SERVICE_HOST` and its port
+A local server (`S3ServiceDef.rustfs()`, `AzureServiceDef.azurite()`) is reached at `DUCKTEST_SERVICE_HOST` and its port
 (`DUCKTEST_S3_LOCAL_PORT`, default 9000; `DUCKTEST_AZ_LOCAL_PORT`, default 10000). When a server
 already answers there, the run uses it and never stops it. Else the run starts one in docker and
 publishes it at `DUCKTEST_SERVICE_BIND`. Both addresses default to `127.0.0.1`; with only

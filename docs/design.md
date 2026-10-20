@@ -20,8 +20,19 @@ form of this release; the delta repo carries the earlier form until it is repinn
 | client | the SQL verbs on one engine, for one test | `ctx.client("duck")` |
 | rule | gives tests what they need, all or by file | `Project(rules=[...])`, `Rules(...)`: `default(...)`, `match(...)` |
 | matrix | parameters, each with named values; a test runs once per cell | `Project(matrix=...)`; `matrix=[...]` on a rule or `@test` |
-| name | the label of a resource; a reference takes it, or the object | the first argument: `StorageDef("scratch_a", ...)` |
+| name | the label of a resource; a reference takes it, or the object | the first argument: `LocalStorageDef("scratch_a", ...)` |
+| path | a place under something rooted: a storage, a bucket, a container | `storage(path=)`, a seed's `(dir, path)`, `STORAGE.at(path)` |
 | Context | the one object a Python body gets | `def body(ctx)` |
+
+**Nouns are classes with `Def`, verbs are functions; the long form lives on the class.** A
+declaration is a class whose name ends in `Def`: it declares, the run makes the instance
+(`S3ServiceDef`, `S3StorageDef`, `S3CredentialDef`, `DuckDBEngineDef`). A class's makers are on the
+class: `S3ServiceDef.rustfs(...)`, `SparkEngineDef.delta(...)`, `Rule.default(...)`,
+`Rule.match(...)`. A function is a verb that builds something: `default(...)` and `match(...)` are
+the convenience for the two `Rule` makers, and `bucket`, `container`, `from_env`, `default_storage`,
+`test` and `skip` the others. A service class names the protocol and the role; its `flavor` says what
+backs it (`S3ServiceDef(name, flavor="rustfs")`). A storage class names its protocol. A conf imports
+all of them in one line, `from ducktest import ...`.
 
 ## 1.1 A `.test`, with no configuration and on a storage
 
@@ -42,9 +53,9 @@ them, it is the default's: `data/` and the run directory. A credential scoped to
 whichever slot bound it. From `examples/ladder/02_rules/`, `ducktest_conf.py` and `default.test`, shortened:
 
 ```python
-SCRATCH_A = StorageDef("scratch_a", f"{SCRATCH}/scratch_a")
-SCRATCH_B = StorageDef("scratch_b", f"{SCRATCH}/scratch_b")
-DUCK = duckdb_engine("duck", requires=["parquet"])
+SCRATCH_A = LocalStorageDef("scratch_a", f"{SCRATCH}/scratch_a")
+SCRATCH_B = LocalStorageDef("scratch_b", f"{SCRATCH}/scratch_b")
+DUCK = DuckDBEngineDef("duck", requires=["parquet"])
 
 project = Project(engines=[DUCK], storages=[SCRATCH_A, SCRATCH_B], rules=[default(storage=SCRATCH_A, temp=SCRATCH_A)])
 ```
@@ -184,7 +195,7 @@ the binary skips the file that `ctx.run_paired()` runs, the body ends SKIPPED wi
    `ducktest run test/sql --suite default` (rung 00). For Python bodies, `ducktest init` writes
    the repo's test environment, `pyproject.toml`, with the runner pinned (README, Install); it also
    makes sure `.gitignore` ignores the runner's default temp root.
-2. Extensions the tests need go on the engine: `duckdb_engine("duck", requires=[...])`.
+2. Extensions the tests need go on the engine: `DuckDBEngineDef("duck", requires=[...])`.
 3. Scripts that export keys become a typed credential, such as `S3CredentialDef` with `from_env`
    (2.5). CI keeps its secrets. Keys of the shell's own env no longer reach the engines by
    themselves: declare `S3CredentialDef.from_aws_env(...)` where a test means to use them.
@@ -221,11 +232,11 @@ from whatever that rule binds, as from any other: a value that binds `storage=` 
 
 ```python
 project = Project(
-    storages=[LOCAL, S3_LAKE],
+    storages=[LOCAL_DEFAULT, LOCAL_LAKE],
     matrix={
         "storage": {
-            "local": {"storage": LOCAL, "temp": LOCAL},
-            "s3": {"storage": S3_LAKE, "temp": S3_LAKE},  # the tables go under {TEMP_DIR} on the server
+            "local": {"storage": LOCAL_DEFAULT, "temp": LOCAL_DEFAULT},
+            "s3": {"storage": LOCAL_LAKE, "temp": LOCAL_LAKE},  # the tables go under {TEMP_DIR} on the server
         }
     },
     rules=[match("cross_engine/**", matrix=["storage"])],
@@ -304,20 +315,26 @@ is a `TypeError` at import, and a type checker says "did you mean `credentials`"
 `examples/ladder/05_s3/ducktest_conf.py`:
 
 ```python
-S3 = s3_local(flavor="rustfs")
-LAKE = S3.storage("lake", "lake")
+from ducktest import DuckDBEngineDef, Project, S3ServiceDef, default
+
+LOCAL_S3 = S3ServiceDef.rustfs("local_s3")
+LOCAL_LAKE = LOCAL_S3.storage("local_lake", path="lake")
+LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])
 
 project = Project(
-    engines=[duckdb_engine("duck", requires=["httpfs"])],
-    storages=[LAKE],
-    credentials=[S3.credential("keys", scopes=[LAKE])],
-    rules=[default(storage=LAKE, temp=LAKE)],  # temp=: {TEMP_DIR} is on the server
+    engines=[DuckDBEngineDef("duck", requires=["httpfs"])],
+    storages=[LOCAL_LAKE],
+    credentials=[LOCAL_KEYS],
+    rules=[default(storage=LOCAL_LAKE, temp=LOCAL_LAKE)],  # temp=: {TEMP_DIR} is on the server
 )
 ```
 
-**Names.** Every resource has a name, its first argument: `s3_local("s3")` (the default), `S3.storage("lake", ...)`,
-`S3.credential("keys", ...)`, `duckdb_engine("duck")`. It is a label you pick; what a resource is
-(its identity) is its content, so two names may stand for one identity. Engines, services, storages
+**Names.** Every resource has a name, its first argument: `S3ServiceDef.rustfs("local_s3")` (`s3` when
+left out), `LOCAL_S3.storage("local_lake", ...)`, `LOCAL_S3.credential("local_keys", ...)`,
+`DuckDBEngineDef("duck")`. It is a label you pick; what a resource is (its identity) is its
+content, so two names may stand for one identity. The examples keep UPPER_CASE variables and
+lowercase names, each saying its domain and role (`LOCAL_LAKE`, `"local_lake"`), never a bare `S3`
+or `LAKE`. Engines, services, storages
 and credentials share one namespace, the one a value's `{name.attr}` reads (2.3); a bucket or a
 container is named within its server. A reference slot takes the name or the object itself:
 `storage=`, `data=`, `temp=`, `credential=`, `service=`, `engines=[...]`, `scopes=[...]`, `container=`,
@@ -331,7 +348,7 @@ binds; either way the run sees the name.
 | two declarations of one name | error |
 | a reference to a name nothing declares | error, with the closest name |
 | `{name.attr}` with an attribute the kind of `name` does not have | error, with the ones it has |
-| a reference to a declaration the project does not bind (a storage not in `storages=`, a container not given to `az_local(containers=...)`) | error, naming where to bind it |
+| a reference to a declaration the project does not bind (a storage not in `storages=`, a container not given to `AzureServiceDef(containers=...)`) | error, naming where to bind it |
 | `STORAGE.at(...)` in a slot other than `data=`/`temp=`, or on the default storage; a path with `..` or `/` at the start | error |
 | a declaration nothing binds or names | warning; `--strict` (scan, select, run) makes it an error |
 
@@ -400,7 +417,7 @@ follows the slot (1.1). **Values** are the
 | at run time | | `ctx.values.set(...)`, then `client.values.set(...)`, then the verb's keywords |
 
 A value may name an attribute of an input the test holds, or of an input of one, as `{name.attr}`:
-`values={"AWS_ENDPOINT": "{s3.host_port}"}` in a test that holds a credential the `s3` service makes.
+`values={"AWS_ENDPOINT": "{local_s3.host_port}"}` in a test that holds a credential the `local_s3` service makes.
 It is filled when the test runs; `scan --env` shows it as written. The scan checks that the name is
 declared and that its kind has the attribute (1.9). A rule's `requires=["httpfs"]` loads an extension
 first, as a matrix value's does, so its `settings` can name a setting of it.
@@ -421,7 +438,8 @@ One `run_token` per invocation (`2026-09-30T12-57-31Z--swift-raven-54`); one `ba
 | `TEMP_DIR` | Python: `<run>/<key>`; `.test`: `<run>/<batch_token>/<test id>`, made by the binary |
 
 `DATA_DIR` is the root of the storage `data=` binds, or `<root>/<path>` for `data=STORAGE.at(path)`;
-the same in every run, never removed. `StorageDef` has no `data=`: where fixtures are read is a
+the same in every run, never removed. The place of `temp=STORAGE` is the storage's `temp_path`
+(`temp` by default). `StorageDef` has no `data=`: where fixtures are read is a
 binding, so one bucket can be one test's fixtures and another's scratch. `default_storage()` is the
 implicit default of both slots: `DATA_DIR` = `<repo>/data`, `TEMP_DIR` = the test's own place in the
 run dir (`ducktest_temp/<run_token>/tests/<key>` for Python). A project may name it in `storages=`;
@@ -438,13 +456,13 @@ every engine process of the test, removes SDK names that come from the shell's e
 `scan --env` and in a failure's made-of.
 
 **Typed.** A credential is declared as a typed `FooDef` (a `CredentialDef`); the run makes a `Foo` (a
-`Credential`) from it. `S3CredentialDef` (or `s3_credential(...)`) has the fields `key_id`, `secret`
+`Credential`) from it. `S3CredentialDef` has the fields `key_id`, `secret`
 (both required and secret), `session_token` (secret) and `region`, DuckDB's secret options in lower
 case, and their SDK env names (`AWS_ACCESS_KEY_ID`, ..., `region` as `AWS_REGION` and
 `AWS_DEFAULT_REGION`). Its `provider` is `credential_chain` (the default) or `config`; another is a
 scan error. A bare `CredentialDef` is a scan error.
 
-`AzureCredentialDef` (or `azure_credential(...)`) takes DuckDB's azure secret providers as
+`AzureCredentialDef` takes DuckDB's azure secret providers as
 `provider`: `config` (`connection_string`, or only `account_name` for anonymous reads),
 `service_principal` (`tenant_id`, `client_id`, `client_secret` or `client_certificate_path`),
 `credential_chain` (with `chain`: `'env'`, `'cli'`, `'managed_identity'`, `'cli;env'`, ...) and
@@ -496,24 +514,29 @@ binary fills. The rule: **bind the storage** (any of `storage=`, `data=`, `temp=
 the run sets DuckDB up for it (the scoped secret; `{TEMP_DIR}` there with `temp=`); **bind only the credential**,
 and the test gets the keys in its process env and nothing else, and sets DuckDB up itself. No secret
 is made where no storage of the test is in the scope; the env is delivered all the same. An Azure credential is a scoped `TYPE azure` secret for every provider, a connection string
-(`az_local`'s, or provider `config`) included: `CONNECTION_STRING
+(an `AzureServiceDef`'s, or provider `config`) included: `CONNECTION_STRING
 getenv('AZURE_STORAGE_CONNECTION_STRING')`, never the global setting
 `azure_storage_connection_string`, which a `current_setting()` would read back; an `access_token` is in it by reference
 (`AZURE_ACCESS_TOKEN`, ducktest's name: the Azure SDK reads no bearer token from env). A test that
 binds the storage but makes its own secret is not supported yet; there is no flag for it. Spark gets, per scoped bucket,
 the env credentials provider and the bucket's endpoint, never a key. A body reads what it holds with
 `ctx.credential(name)` and `ctx.credentials()`: name, type, `secret_name`, storages, scope, env names,
-fields masked, source. A service can make a credential: `s3.credential("keys", scopes=["lake"])`, and
+fields masked, source. A service can make a credential: `LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])`, and
 `provider=` passes through to it.
 
 ## 2.6 Services
 
-A service runs; a test reaches it through a storage on it (`StorageDef("served", "{http.url}",
-inputs=[HTTP])`), a credential it makes, or `service=`. Kinds: `HttpServerDef`, `S3LocalDef` (a local S3
-server, `s3_local(flavor="rustfs")`: the flavor is what backs the protocol, RustFS the default and
-only one today, and the tests do not see it; `s3.storage("lake", "prefix")` declares a storage on it), `AZLocalDef` (a local Azure blob server, `az_local(flavor="azurite")`;
-`az.storage("blobs", "prefix")` is `az://ducktest/prefix`, and `az.credential(...)` an
-`AzureCredentialDef` of its connection string), and the engines. The run starts each needed service once, before any test, and stops it after the last.
+A service runs; a test reaches it through a storage on it (`StorageDef("served", "{local_http.url}",
+inputs=[LOCAL_HTTP])`), a credential it makes, or `service=`. A service class names the protocol and
+the role, and its `flavor` is what backs it; the tests do not see the flavor. Kinds: `HttpServerDef`,
+`S3ServiceDef` (a server that speaks S3; `S3ServiceDef.rustfs("local_s3")` is a local RustFS, the
+only flavor built; `LOCAL_S3.storage("local_lake", path="lake")` is an `S3StorageDef` at
+`s3://ducktest/lake` on it), `AzureServiceDef` (a server that speaks Azure blob;
+`AzureServiceDef.azurite("local_az")` is a local Azurite; `LOCAL_AZ.storage("local_blobs",
+path="lake")` is an `AzureStorageDef` at `az://ducktest/lake`, and `LOCAL_AZ.credential(...)` an
+`AzureCredentialDef` of its connection string), and the engines. A cloud flavor (a future `aws`) is
+one more flavor of the same class, only ever found running at its endpoint. `storage()` takes the name
+by position and the rest by keyword: `bucket=` (or `container=`) and `path=`. The run starts each needed service once, before any test, and stops it after the last.
 `.as_existing(address=...)` or `--existing-service NAME=URL` is the same service found running: adopted
 when it answers, never removed. A service whose kind knows its address before it starts (S3) is
 adopted the same way, with no flag, when it already answers there (mode `found running`). The run
@@ -522,10 +545,11 @@ reaches services at `DUCKTEST_SERVICE_HOST` and publishes the ones it starts at
 BIND, a machine that only reaches the services sets HOST. A service that does not come up makes its
 tests BLOCKED.
 
-**Buckets belong to the service.** `s3_local(buckets=[bucket("data", seed=[(dir, "prefix")]),
+**Buckets belong to the service.** `S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dir, "path")]),
 bucket("open", public=True)])` declares more buckets beside the server's own (`ducktest`); they are
 made when the server is, before any test, so a test that reaches the server (a storage on it, a
-credential it makes) has them. `S3.storage("lake", "prefix", bucket="data")` is a storage in one. The
+credential it makes) has them. `LOCAL_S3.storage("in_data", bucket="data", path="lake")` is a storage in one; a seed
+copies each local directory to its path in the bucket. The
 bucket calls are the service's own: create, head, remove (with what is in it), a public-read policy,
 as signed S3 API requests. Per bucket: one the run made is removed at the end unless its `retain`
 (default `never`) keeps it, or the server was found running (a bucket has a fixed name, so other runs
@@ -534,13 +558,13 @@ asked, is used as it is and never changed; one there with other content (or that
 refused, and blocks only the tests that need it: a test needs the bucket of each storage on the server
 it binds, and every bucket when it binds none (only the credential) or the server itself. `03` lists
 what was refused.
-`az_local(containers=[container("data", seed=[(dir, "")], public="blob")])` is the same for
+`AzureServiceDef.azurite(containers=[container("data", seed=[(dir, "")], public="blob")])` is the same for
 Azure, a container per bucket, with the same rules per container (one module holds them for both), and
 Blob service calls signed with the account key (SharedKey); `public` is `True` or
 `"container"` (list and read), or `"blob"` (read). Azurite serves blob only: a storage on it other than
 `az://`, such as `abfss://`, is a scan error, as it has no DFS endpoint.
 
-**A storage is a URL and a credential.** Its files -- list, remove a prefix, copy and sync a local
+**A storage is a URL and a credential.** Its files -- list, remove a path, copy and sync a local
 directory in, check one -- go through rclone, whose verbs are the same for S3, Azure blob, GCS and R2;
 the store's access object gives rclone its backend. A seed is copied in with it. A run that needs one
 of these and finds no rclone on PATH says to install it.
@@ -620,11 +644,7 @@ Spark on one Delta table, each test on local storage and on S3 (`[storage=local]
 ```python
 import os
 
-from ducktest import Project, match
-from ducktest.engines.duckdb import duckdb_engine
-from ducktest.engines.spark import delta_spark
-from ducktest.resources import default_storage
-from ducktest.services.s3local import bucket, s3_local
+from ducktest import DuckDBEngineDef, Project, S3ServiceDef, SparkEngineDef, bucket, default_storage, match
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.abspath(os.environ.get("BUILD_DIR") or os.path.join(REPO, "build", "debug"))
@@ -632,28 +652,29 @@ DAT = os.path.join(BUILD, "rust/src/delta_kernel/acceptance/tests/dat/out/reader
 
 # The run uses a server that answers at DUCKTEST_SERVICE_HOST:DUCKTEST_S3_LOCAL_PORT, else starts one in docker.
 # Its buckets hold the DAT tables the s3_local files read, as scripts/s3/populate.sh fills them in CI.
-S3 = s3_local(
+LOCAL_S3 = S3ServiceDef.rustfs(
+    "local_s3",
     buckets=[
         bucket("test-bucket", seed=[(DAT, "dat")]),
         bucket("test-bucket-public", seed=[(DAT, "dat")], public=True),
-    ]
+    ],
 )
 
 # The default storage: {DATA_DIR} is <repo>/data, {TEMP_DIR} the test's own place in this run.
-LOCAL = default_storage()
-S3_LAKE = S3.storage("s3_lake", "delta")
-S3_KEYS = S3.credential("s3_keys", scopes=[S3_LAKE])
+LOCAL_DEFAULT = default_storage()
+LOCAL_LAKE = LOCAL_S3.storage("local_lake", path="delta")
+LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])
 
 project = Project(
     # The only DuckDB engine is the default one, so the .test files run on it too.
-    engines=[duckdb_engine("duck", requires=["delta", "json"]), delta_spark(s3a=True)],
-    storages=[LOCAL, S3_LAKE],
-    credentials=[S3_KEYS],
+    engines=[DuckDBEngineDef("duck", requires=["delta", "json"]), SparkEngineDef.delta(s3a=True)],
+    storages=[LOCAL_DEFAULT, LOCAL_LAKE],
+    credentials=[LOCAL_KEYS],
     # Each value binds the storage the test is about and writes under it.
     matrix={
         "storage": {
-            "local": {"storage": LOCAL, "temp": LOCAL},
-            "s3": {"storage": S3_LAKE, "temp": S3_LAKE},
+            "local": {"storage": LOCAL_DEFAULT, "temp": LOCAL_DEFAULT},
+            "s3": {"storage": LOCAL_LAKE, "temp": LOCAL_LAKE},
         }
     },
     rules=[
@@ -663,13 +684,13 @@ project = Project(
         # reached by address, so path style.
         match(
             "sql/cloud/s3_local/**",
-            credential=S3_KEYS,
+            credential=LOCAL_KEYS,
             requires=["httpfs"],
             settings={"s3_url_style": "path"},
-            values={"DUCKDB_S3_TEST_SERVER_AVAILABLE": "1", "AWS_ENDPOINT": "{s3.host_port}"},
+            values={"DUCKDB_S3_TEST_SERVER_AVAILABLE": "1", "AWS_ENDPOINT": "{local_s3.host_port}"},
         ),
         # Its tables go under {TEMP_DIR} on the S3 server, so a second run starts from nothing.
-        match("sql/cloud/s3_local/create_table_s3.test", storage=S3_LAKE, temp=S3_LAKE),
+        match("sql/cloud/s3_local/create_table_s3.test", storage=LOCAL_LAKE, temp=LOCAL_LAKE),
     ],
 )
 ```
@@ -692,7 +713,7 @@ def duckdb_creates_then_spark_and_duckdb_interleave(ctx):
 
 # Appendix C. Next
 
-- **Azure**: the azure extension's 10 local `.test` files run on `az_local()` unchanged (2026-10-16);
+- **Azure**: the azure extension's 10 local `.test` files run on `AzureServiceDef.azurite()` unchanged (2026-10-16);
   next, one storage family on three cells, Azurite blob, Azure blob and Azure DFS (`BRIEF-azure.md`
   in the maintainers' notes).
 - **httpfs**: a `storage` parameter (http, s3, s3 through a proxy) and an `httpfs_client` parameter (curl,

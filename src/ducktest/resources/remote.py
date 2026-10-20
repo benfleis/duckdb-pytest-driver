@@ -1,4 +1,4 @@
-"""What the run does to the files of a storage: list, delete a prefix, copy and sync a local directory
+"""What the run does to the files of a storage: list, delete a path, copy and sync a local directory
 in, check that one is there. rclone does all of it, for every kind of store: its verbs read the same
 for S3, Azure blob, GCS and R2, and only the backend it is given differs.
 
@@ -111,8 +111,8 @@ class RcloneRemote:
         return f"{self.name}:{bucket}/{key}" if key else f"{self.name}:{bucket}"
 
     def list(self, uri) -> list[str]:
-        """The names directly under `uri` (`s3://bucket/prefix`, `az://container/prefix`), objects and
-        prefixes alike."""
+        """The names directly under `uri` (`s3://bucket/path`, `az://container/path`), files and
+        directories alike."""
         out = self._run("lsf", self._path(uri))
         return [line.rstrip("/") for line in (out or "").splitlines() if line]
 
