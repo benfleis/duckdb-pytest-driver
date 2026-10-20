@@ -534,9 +534,10 @@ only flavor built; `LOCAL_S3.storage("local_lake", path="lake")` is an `S3Storag
 `s3://ducktest/lake` on it), `AzureServiceDef` (a server that speaks Azure blob;
 `AzureServiceDef.azurite("local_az")` is a local Azurite; `LOCAL_AZ.storage("local_blobs",
 path="lake")` is an `AzureStorageDef` at `az://ducktest/lake`, and `LOCAL_AZ.credential(...)` an
-`AzureCredentialDef` of its connection string), and the engines. A cloud flavor (a future `aws`) is
-one more flavor of the same class, only ever found running at its endpoint. `storage()` takes the name
-by position and the rest by keyword: `bucket=` (or `container=`) and `path=`. The run starts each needed service once, before any test, and stops it after the last.
+`AzureCredentialDef` of its connection string), and the engines. A flavor that is only ever found
+running at its endpoint also fits this shape; whether and how cloud flavors come is open.
+`storage()` takes the name by position and the rest by keyword: `bucket=` (or `container=`) and
+`path=`. The run starts each needed service once, before any test, and stops it after the last.
 `.as_existing(address=...)` or `--existing-service NAME=URL` is the same service found running: adopted
 when it answers, never removed. A service whose kind knows its address before it starts (S3) is
 adopted the same way, with no flag, when it already answers there (mode `found running`). The run

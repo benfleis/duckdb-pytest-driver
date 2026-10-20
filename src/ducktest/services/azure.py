@@ -132,10 +132,10 @@ def container(name: str, seed=(), public: bool | str = False, retain: str = NEVE
 
 @dataclass(eq=False)
 class AzureServiceDef(ServiceDef):
-    """A server that speaks Azure blob, with its container made. `flavor` is what backs it: `azurite`, a
-    local server, is the only one built (`AzureServiceDef.azurite(...)`); a cloud flavor such as a
-    future `azure` would be one too, only ever found running at its endpoint. A local one is used
-    where it already answers where the run reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_AZ_LOCAL_PORT),
+    """A server that speaks Azure blob, with its container made. `flavor` names what backs it; today
+    that is `azurite`, a local server (`AzureServiceDef.azurite(...)`). A flavor that is only ever
+    found running at its endpoint also fits this shape. A local one is used where it already answers
+    where the run reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_AZ_LOCAL_PORT),
     else run in a docker container named for the run; `.as_existing(address="http://HOST:PORT")` names
     one elsewhere. Its attributes are `endpoint` (the blob service URL, with the account), `account`
     and `container`; its key comes from the environment (DUCKTEST_AZ_LOCAL_ACCOUNT,

@@ -118,11 +118,11 @@ def bucket(name: str, seed=(), public: bool = False, retain: str = NEVER) -> Buc
 
 @dataclass(eq=False)
 class S3ServiceDef(ServiceDef):
-    """A server that speaks S3, with its bucket made. `flavor` is what backs it: `rustfs`, a local
-    server, is the only one built (`S3ServiceDef.rustfs(...)`); a cloud flavor such as a future `aws`
-    would be one too, only ever found running at its endpoint. A local one is used where it already
-    answers where the run reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_S3_LOCAL_PORT), else run in a
-    docker container named for the run; `.as_existing(address=...)` names one elsewhere. Its
+    """A server that speaks S3, with its bucket made. `flavor` names what backs it; today that is
+    `rustfs`, a local server (`S3ServiceDef.rustfs(...)`). A flavor that is only ever found running at
+    its endpoint also fits this shape. A local one is used where it already answers where the run
+    reaches it (DUCKTEST_SERVICE_HOST, DUCKTEST_S3_LOCAL_PORT), else run in a docker container named
+    for the run; `.as_existing(address=...)` names one elsewhere. Its
     attributes are `endpoint`, `host_port` (the endpoint without its scheme), `bucket` and `region`;
     its keys come from the environment (DUCKTEST_S3_LOCAL_ACCESS_KEY, DUCKTEST_S3_LOCAL_SECRET_KEY)
     and reach a test through `credential(name, scopes=[...])`. `storage(name, bucket=..., path=...)`
