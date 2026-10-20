@@ -299,7 +299,9 @@ paired with a `.test` matches by either file's path, so `match("sql/*.test")` re
 
 What a slot names is declared by that: a rule, a matrix value or `@test(...)` names exactly what the
 test needs, and the run declares it, with what it pulls (1.9). A `{name.attr}` in `values=`,
-`settings=` or `init_sql=` reaches what it names too; the run fills it only in `values=`.
+`settings=` or `init_sql=` does not bind `name`: it reads an input the test holds, bound or pulled
+through its chain (a storage's service, a credential's service), and a template that names anything
+else is a scan error. The run fills it only in `values=`.
 
 A value of a cell gives way to nothing: a value or binding it gives that a rule, `@test` or another
 parameter of the cell gives too is a scan error; only what `default()` binds gives way to it. That
@@ -320,8 +322,10 @@ is a `TypeError` at import, and a type checker says "did you mean `credentials`"
 **What a project declares is what its tests reach.** A rule, a matrix value or a body's `@test(...)`
 names what a test needs (`temp=LOCAL_LAKE`), by the object or by its name, and that is declared: a
 storage brings its service and every credential whose `scopes=` names it; a credential brings the
-service it is made of; `SERVICE.storage(...)` is on that service. So a conf writes no list of its
-services, storages or credentials. `services=`, `storages=` and `credentials=` stay, as additions:
+service it is made of; `SERVICE.storage(...)` is on that service. A rule reaches only from a
+`rules=`: one made and held by no `Project(rules=)` or `Rules(...)` gives nothing, and warns. A
+`{name.attr}` template reaches what it names, but the test must also hold it (1.8). So a conf
+writes no list of its services, storages or credentials. `services=`, `storages=` and `credentials=` stay, as additions:
 what they list is declared with what it pulls, and the scan warns when nothing reaches it.
 `engines=` is different, and needed for every engine but the built-in one: an engine is not reached
 through what a test binds, and the project's one DuckDB engine is the default of every test only
@@ -342,6 +346,22 @@ project = Project(
 
 The rule reaches `local_lake`, which brings `local_s3` and `local_keys`.
 
+**Declarations are in conf files.** A test file declares nothing: a service, storage, credential,
+engine, bucket or container made while a body is imported, or by a helper module it imports, is a
+scan error at that line. A body binds what the conf declares by name, `@test(storage="local_lake")`;
+a body that imports `ducktest_conf.py` is told so. `ducktest cleanup` reads no body: it takes the
+services and storages a run used from the run directory (`03-provision.yaml`, and each test's needs
+in `01-tests.yaml`), makes each from the conf files by name, and runs none of these checks.
+
+**A storage's credential, by the mode the test needs.** A test that holds a storage only through
+`data=` reads it; through `storage=` or `temp=` (also beside `data=`) it writes it. Of the
+credentials whose `scopes=` cover the storage, those whose scope allows that mode are the
+candidates (an `rw` scope allows both). Of several, the ones scoped with exactly that mode win, so a
+pair `(LOCAL_LAKE, "ro")` and `LOCAL_LAKE` gives a `data=` test the first and a `temp=` test the
+second; of several still, `default=True` picks one, else the scan says which and how to choose
+(`credential=` on the rule, or `default=True`). A credential named with `credential=` is used as
+given. `ro` is ducktest's word for which credential to pick; it does not restrict the keys.
+
 **Names.** Every resource has a name, its first argument: `S3ServiceDef.rustfs("local_s3")` (`s3`
 when left out), `LOCAL_S3.storage("local_lake", ...)`, `LOCAL_S3.credential("local_keys", ...)`,
 `DuckDBEngineDef("duck")`. It is a label you pick; what a resource is (its identity) is its content,
@@ -355,18 +375,21 @@ editor's go-to-definition from a rule to what it binds; either way the run sees 
 
 **Checks.** At scan, over every conf file of the tree and every body (not only what a run
 selects). They run once the bodies are imported, on the declared set, so what only a body names
-counts:
+counts; a body that fails to import is told first, before an error of the conf's names:
 
 | What | |
 | --- | --- |
 | two declarations of one name | error |
 | a reference to a name nothing declares | error, with the closest name |
-| `{name.attr}` in a value, with an attribute the kind of `name` does not have | error, with the ones it has |
+| `{name.attr}` in `values=`, `settings=` or `init_sql=`, with an attribute the kind of `name` does not have | error, with the ones it has |
+| `{name.attr}` that names what the test does not hold, bound or through its chain | error, naming the test and how to bind it |
+| a Def made in a test file or a helper it imports; a body that imports `ducktest_conf.py` | error, at that line |
+| a storage with several credentials for the mode the test needs, none `default=True`; a storage a test writes whose credentials are all scoped `ro` | error, naming the test, each credential's line and the fix |
 | a reference to an engine `engines=` does not list | error, naming where to list it |
 | a container not given to `AzureServiceDef(containers=...)`, a bucket not given to `S3ServiceDef(buckets=...)` | error, naming where to give it |
 | a credential scoped to a storage of another scheme; a storage its service cannot serve | error |
 | `STORAGE.at(...)` in a slot other than `data=`/`temp=`, or on the default storage; a path with `..` or `/` at the start | error |
-| a declaration nothing reaches; one `services=`, `storages=` or `credentials=` lists that nothing reaches; a listed engine no test drives; a matrix parameter no rule or test runs over | warning; `--strict` (scan, select, run) makes it an error |
+| a declaration nothing reaches; one `services=`, `storages=` or `credentials=` lists that nothing reaches; a listed engine no test drives; a matrix parameter no rule or test runs over; a rule in no `rules=` | warning; `--strict` (scan, select, run) makes it an error |
 
 ---
 
@@ -501,8 +524,10 @@ source that misses a required field, an unknown field or env name, or a credenti
 storage of another scheme is a scan error. `values=` gives a test that holds it plain `{NAME}`s, such
 as the signal an existing file checks with `require-env`.
 
-**Binding.** `scopes` lists storages, each its name or the StorageDef, or `(storage, "ro")`. A named credential wins; else the one scoped
-to the storage; several need one `default=True`. A test without a credential is a definition of its
+**Binding.** `scopes` lists storages, each its name or the StorageDef, or `(storage, "ro")`. A
+named credential wins; else the one scoped to the storage with the mode the test needs, `ro` for a
+storage it only reads (1.9); several need one `default=True`; a storage it writes whose credentials
+are all scoped `ro` is a scan error. A test without a credential is a definition of its
 own that binds no storage in the scope. A test that holds a credential that does not resolve is
 BLOCKED, never SKIPPED. A process has one set of each SDK's names, so a test holds one credential of a
 type, and a booted engine (Spark) one for the whole run; several are a scan error: not supported yet.

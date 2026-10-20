@@ -11,8 +11,8 @@ value) takes a plain name or the object, records it, and gives a plain string on
 `derive()` makes the project's declared set from them, once the bodies are imported. What a rule, a matrix
 value or a body's `@test(...)` names in a slot, or in a `{name.attr}` of its values, settings or init_sql,
 is reached (a rule no `rules=` holds reaches nothing); a reached storage pulls its inputs and every
-credential scoped to it, a reached credential the services among its inputs. The declared set is that, with what `Project(services=, storages=,
-credentials=)` lists, and what each listed one pulls. Engines are not reached: `Project(engines=)` lists
+credential scoped to it, a reached credential the services among its inputs. The declared set is that,
+with what `Project(services=, storages=, credentials=)` lists, and what each listed one pulls. Engines are not reached: `Project(engines=)` lists
 them. The checks run on that set:
 
     collision                       two declarations of one name                    error
