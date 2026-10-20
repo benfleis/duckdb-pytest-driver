@@ -115,6 +115,7 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
     assert capsys.readouterr().out == textwrap.dedent(
         f"""\
         a/x.test::x[storage=s3]
+          engine: duck, as duck-sqllogic  <- built-in
           bind: storage=served  <- matrix storage=s3
           bind: temp=served  <- matrix storage=s3
           require: httpfs  <- matrix storage=s3

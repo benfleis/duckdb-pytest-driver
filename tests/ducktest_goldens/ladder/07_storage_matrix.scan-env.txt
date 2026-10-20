@@ -1,10 +1,12 @@
 write_read.test::write_read[storage=local]
+  engine: duck, as duck-sqllogic  <- built-in
   bind: storage=local_dir  <- matrix storage=local
   bind: temp=local_dir  <- matrix storage=local
   values: storage=local  <- matrix storage
   root: temp_dir_root=<tmp>/repo/07_storage_matrix/local/temp/<run_token>  <- storage local_dir
   root: data_dir=<tmp>/repo/07_storage_matrix/data  <- default storage
 write_read.test::write_read[storage=s3]
+  engine: duck, as duck-sqllogic  <- built-in
   bind: storage=local_lake  <- matrix storage=s3
   bind: temp=local_lake  <- matrix storage=s3
   require: httpfs  <- matrix storage=s3

@@ -728,6 +728,23 @@ def test_the_projects_only_duckdb_engine_is_the_default(tmp_path, monkeypatch, c
     )
 
 
+def test_scan_env_shows_a_spark_body_s_dialect_beside_the_built_in_duckdb_shell(tmp_path, monkeypatch, capsys):
+    (tmp_path / "ducktest_conf.py").write_text(
+        "from ducktest import Project\nfrom ducktest.engines.spark import SparkEngineDef\n"
+        "project = Project(engines=[SparkEngineDef('spark', boot=lambda log: None, settings={'spark.x': 2})])\n"
+    )
+    (tmp_path / "body.py").write_text("from ducktest import test\n\n@test(engines=['spark'])\ndef body(ctx):\n    pass\n")
+    monkeypatch.chdir(tmp_path)
+    assert main(["scan", "--env"]) == 0
+    assert capsys.readouterr().out == (
+        "body.py::body\n"
+        "  client: duck, as duck-shell  <- built-in\n"
+        "  client: spark (spark)  <- engines spark\n"
+        "    set: spark.x=2  <- engine spark\n"
+        f"{default_roots(tmp_path)}"
+    )
+
+
 def test_with_several_duckdb_engines_a_test_names_one(tmp_path):
     with pytest.raises(UsageError, match=re.escape("names no DuckDB engine, and the project declares ['a', 'b']")):
         engines_project(tmp_path / "unnamed", "DuckEngineDef('a'), DuckEngineDef('b')")
@@ -743,4 +760,11 @@ def test_with_no_duckdb_engine_a_test_runs_on_the_built_in_one(tmp_path, monkeyp
     monkeypatch.chdir(tmp_path / "p")
     assert main(["scan", "--env"]) == 0
     roots = default_roots(tmp_path / "p")
-    assert capsys.readouterr().out == f"body.py::body\n{roots}x.test::x\n{roots}"
+    assert capsys.readouterr().out == (
+        "body.py::body\n"
+        "  client: duck, as duck-shell  <- built-in\n"
+        f"{roots}"
+        "x.test::x\n"
+        "  engine: duck, as duck-sqllogic  <- built-in\n"
+        f"{roots}"
+    )

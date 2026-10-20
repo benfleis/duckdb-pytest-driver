@@ -137,11 +137,13 @@ def planned(test, test_env, project) -> str:
 def lines(test, project) -> list[str]:
     """What `scan --env` says of each engine the test names: for a DuckDB engine the process kind
     that runs the test (`engine: duck, as duck-sqllogic` for a `.test`, `client: duck, as duck-shell`
-    for a body), for another the dialect of its Client; then what the engine gives."""
+    for a body, `<- built-in` where no conf declares it), for another the dialect of its Client; then
+    what the engine gives."""
     shown = [(d, f"engines {d.name}") for d in named(test, project)]
     duckdb = duckdb_of(test, project)
-    if duckdb is not DEFAULT and all(d is not duckdb for d, _ in shown):
-        shown.insert(0, (duckdb, f"engines {duckdb.name} (the only DuckDB engine)"))
+    if all(d is not duckdb for d, _ in shown):
+        why = "built-in" if duckdb is DEFAULT else f"engines {duckdb.name} (the only DuckDB engine)"
+        shown.insert(0, (duckdb, why))
     out = []
     for d, source in shown:
         where = f"engine {d.name}"

@@ -618,6 +618,7 @@ def test_scan_env_shows_the_storage_roots_and_the_credential_masked(tree, capsys
     assert capsys.readouterr().out.replace(str(tree), "ROOT") == textwrap.dedent(
         """\
         a/x.test::x[storage=local]
+          engine: duck, as duck-sqllogic  <- built-in
           bind: storage=local  <- matrix storage=local
           bind: temp=local  <- matrix storage=local
           require: httpfs  <- credential local-key, storage local
