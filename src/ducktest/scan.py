@@ -213,6 +213,7 @@ def scan(start, *, working_dir=".", strict=False):
         leases.check(test.definition, [leases.duckdb_of(test, project)])
         _one_set_per_type(test)
         _renderable(test, project)
+        _templates_held(test, project)
     _one_set_per_booted_engine(tests, project)
     _warn_ungiven_env_gates(tests, project, working_dir)
     return tests, project
@@ -260,6 +261,44 @@ def _parameters(definition, project):
             )
         out.append([Value(item.name, name, data=data) for name, data in item.values.items()])
     return out
+
+
+_FIX = {
+    "service": "bind it (service={0}) or bind a storage or credential of it",
+    "storage": "bind it (storage={0}, data= or temp=)",
+    "credential": "bind it (credential={0})",
+}
+
+
+def _templates_held(test, project):
+    """Each `{name.attr}` in a test's values, settings and init_sql names an input the test holds, or an
+    input of one: the run fills nothing else, so a template that names anything else would stay as written."""
+    registry = {**project.services, **project.storages, **project.credentials}
+    held = set()
+
+    def walk(d):
+        if d is not None and d.name not in held:
+            held.add(d.name)
+            for name, _, sub in d.edges():
+                walk(sub if sub is not None else registry.get(name))
+
+    for d, _ in test.inputs:
+        walk(d)
+    o = test.options
+    texts = [("values", k, v) for k, v in o.values.items()] + [("settings", k, v) for k, v in o.settings.items()]
+    texts += [("init_sql", n, sql) for n, sql in enumerate(o.init_sql)]
+    for field_name, key, text in texts:
+        for m in _names.ATTRIBUTE_REF.finditer(text) if isinstance(text, str) else ():
+            name = m.group(1)
+            if name in held:
+                continue
+            kind = _names.kind_of(registry.get(name) or project.engines.get(name)) or "resource"
+            fix = _FIX[kind].format(name) if kind in _FIX else "a template names a service, storage or credential"
+            shown = f"{field_name} {key}" if field_name != "init_sql" else f"init_sql[{key}]"
+            raise UsageError(
+                f"{test.name}: {o.source_of(field_name, key)}: {shown} names '{m.group()}' but the test does not "
+                f"hold {kind} {name!r}; {fix}"
+            )
 
 
 def _renderable(test, project):

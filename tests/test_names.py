@@ -309,10 +309,53 @@ def test_a_credential_pulls_the_services_among_its_inputs(tmp_path):
     assert declared(project) == {"services": ["local_s3"], "storages": [], "credentials": ["local_keys"]}
 
 
-def test_a_template_in_a_value_reaches_what_it_names(tmp_path):
-    body = 'HTTP = HttpServerDef("http")\nproject = Project(rules=[default(values={"U": "{http.url}"})])'
-    _, project = tree(tmp_path, conf(body))
+def test_a_template_in_a_value_reaches_what_the_test_binds(tmp_path):
+    body = 'HTTP = HttpServerDef("http")\nproject = Project(rules=[default(service=HTTP, values={"U": "{http.url}"})])'
+    _, project = tree(tmp_path, conf(body), strict=True)
     assert declared(project)["services"] == ["http"] and project.unused == []
+
+
+def test_a_template_is_held_through_a_credential_of_its_service(tmp_path):
+    body = CHAIN + 'project = Project(rules=[default(credential=LOCAL_KEYS, values={"E": "{local_s3.host_port}"})])'
+    tests, _ = tree(tmp_path, conf(body))
+    assert [t.name for t in tests] == ["a.test::a"]
+
+
+@pytest.mark.parametrize(
+    "given, shown",
+    [
+        ('values={"U": "{http.url}"}', "values U"),
+        ('settings={"s3_endpoint": "{http.url}"}', "settings s3_endpoint"),
+        ("init_sql=\"SELECT '{http.url}'\"", r"init_sql\[0\]"),
+    ],
+)
+def test_a_template_that_names_what_the_test_does_not_hold_is_an_error(tmp_path, given, shown):
+    with pytest.raises(
+        UsageError,
+        match=rf"^a.test::a: ducktest_conf.py: default: {shown} names '\{{http.url\}}' but the test does not hold "
+        r"service 'http'; bind it \(service=http\) or bind a storage or credential of it$",
+    ):
+        tree(tmp_path, conf(f'HTTP = HttpServerDef("http")\nproject = Project(rules=[default({given})])'))
+
+
+@pytest.mark.parametrize(
+    "given, label",
+    [('settings={"s3_endpoint": "{htp.url}"}', r"settings\['s3_endpoint'\]"), ("init_sql=\"SELECT '{htp.url}'\"", r"init_sql\[0\]")],
+)
+def test_an_unknown_name_in_settings_or_init_sql_is_an_error(tmp_path, given, label):
+    body = f'HTTP = HttpServerDef("http")\nproject = Project(rules=[default(service=HTTP, {given})])'
+    with pytest.raises(UsageError, match=rf"default: {label}: \{{htp.url\}}: no resource is named 'htp'; did you mean 'http'\?"):
+        tree(tmp_path, conf(body))
+
+
+def test_a_storage_template_reaches_an_input_given_by_name(tmp_path):
+    body = """
+        HTTP = HttpServerDef("http")
+        SERVED = StorageDef("served", "{http.url}", inputs=["http"])
+        project = Project(rules=[default(storage=SERVED, values={"U": "{http.url}"})])
+    """
+    _, project = tree(tmp_path, conf(body), strict=True)
+    assert declared(project) == {"services": ["http"], "storages": ["served"], "credentials": []}
 
 
 def test_a_body_reaches_a_storage_no_conf_names_and_it_is_not_unused(tmp_path, monkeypatch, capsys):
@@ -352,12 +395,6 @@ def test_a_listed_engine_no_test_drives_is_a_warning(tmp_path):
     assert [w.split(": ", 1)[1].split(";")[0] for w in project.unused] == [
         "engine 'spare' is listed and no test drives it"
     ]
-
-
-@pytest.mark.parametrize("given", ['settings={"s3_endpoint": "{http.url}"}', 'init_sql="SELECT \'{http.url}\'"'])
-def test_a_template_in_settings_or_init_sql_reaches_what_it_names(tmp_path, given):
-    _, project = tree(tmp_path, conf(f'HTTP = HttpServerDef("http")\nproject = Project(rules=[default({given})])'))
-    assert declared(project)["services"] == ["http"]
 
 
 def test_cleanup_reads_no_body_so_every_declaration_counts(tmp_path):

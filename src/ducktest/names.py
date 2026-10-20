@@ -158,7 +158,7 @@ class Names:
             if ref.kind not in PARTS:
                 self._resolve(ref, registry, project.engines)
         reach = [registry[r.name] for r in self.references if r.reach and r.kind not in PARTS]
-        reach += [registry[n] for n in _template_names(project, every=True) if n in registry]
+        reach += [registry[n] for n in _template_names(project) if n in registry]
         if everything:
             reach += [d for d in registry.values() if kind_of(d) != "engine"]
         reached = _closure(reach, registry)
@@ -324,13 +324,16 @@ def _places(project):
 
 
 def _templates(project, storages):
-    """(label, text) of every string the run fills with `{name.attr}`: the values of the rules, matrix
-    values and bodies, and the templates of `storages`."""
+    """(label, text) of every string that may hold a `{name.attr}`: the values, settings and init_sql of the
+    rules, matrix values and bodies, and the templates of `storages`."""
     out = []
     for label, options in _places(project):
-        for key, value in options.given.get("values", {}).items():
-            if isinstance(value, str):
-                out.append((f"{label}: values[{key!r}]", value))
+        given = options.given
+        for field_name in ("values", "settings"):
+            for key, value in given.get(field_name, {}).items():
+                if isinstance(value, str):
+                    out.append((f"{label}: {field_name}[{key!r}]", value))
+        out += [(f"{label}: init_sql[{n}]", sql) for n, sql in enumerate(given.get("init_sql", ())) if isinstance(sql, str)]
     for storage in storages:
         for attr in ("root", "endpoint", "account"):
             value = getattr(storage, attr, None)
@@ -339,17 +342,9 @@ def _templates(project, storages):
     return out
 
 
-def _template_names(project, every=False):
-    """The names `{name.attr}` speaks of in the places' values; `every`: in their settings and init_sql
-    too, which the run does not fill."""
-    texts = []
-    for _, options in _places(project):
-        given = options.given
-        texts += [v for v in given.get("values", {}).values() if isinstance(v, str)]
-        if every:
-            texts += [v for v in given.get("settings", {}).values() if isinstance(v, str)]
-            texts += [v for v in given.get("init_sql", ()) if isinstance(v, str)]
-    return [m.group(1) for text in texts for m in ATTRIBUTE_REF.finditer(text)]
+def _template_names(project):
+    """The names `{name.attr}` speaks of in the places' values, settings and init_sql."""
+    return [m.group(1) for _, text in _templates(project, ()) for m in ATTRIBUTE_REF.finditer(text)]
 
 
 def _did_you_mean(name, known) -> str:
