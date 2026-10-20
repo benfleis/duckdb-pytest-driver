@@ -47,8 +47,8 @@ from .resources.made import Made, services_in
 _log = logging.getLogger(__name__)
 
 TESTS_FILE, PLAN_FILE, PROVISION_FILE = "01-tests.yaml", "02-plan.yaml", "03-provision.yaml"
-TESTS_SCHEMA = PROVISION_SCHEMA = 1
-PLAN_SCHEMA = 2  # 2: a batch's runner is a process kind, duck-sqllogic or duck-shell
+TESTS_SCHEMA = PLAN_SCHEMA = PROVISION_SCHEMA = 1
+RUNNERS = (DUCK_SHELL, DUCK_SQLLOGIC)
 
 KEPT_OUTCOMES = (FAILED, ERROR, BLOCKED)  # what a test must end with for its files to stay
 
@@ -227,7 +227,15 @@ def write_plan(run_dir, doc, *, force=False):
 
 
 def read_plan(run_dir):
-    return read(run_dir, PLAN_FILE, PLAN_SCHEMA, made_by="plan")
+    doc = read(run_dir, PLAN_FILE, PLAN_SCHEMA, made_by="plan")
+    for batch in doc.get("batches") or []:
+        if batch.get("runner") not in RUNNERS:
+            plan_dir = (os.path.dirname(run_dir) or ".") if os.path.isfile(run_dir) else run_dir
+            raise UsageError(
+                f"{PLAN_FILE}: batch {batch.get('name')} has runner {batch.get('runner')!r}; this ducktest runs "
+                f"{' and '.join(repr(r) for r in RUNNERS)}; plan again: ducktest plan --run-dir {plan_dir} --force"
+            )
+    return doc
 
 
 def ids_of_plan(doc):

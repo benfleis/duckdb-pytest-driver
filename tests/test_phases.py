@@ -85,9 +85,8 @@ def test_each_phase_writes_its_own_file_and_the_files_say_what_schema_they_are(t
     phases_of("apart")
     for name in (phases.TESTS_FILE, phases.PLAN_FILE, phases.PROVISION_FILE, events.EVENTS_FILE):
         assert os.path.isfile(os.path.join("apart", name))
-    schemas = {phases.TESTS_FILE: 1, phases.PLAN_FILE: 2, phases.PROVISION_FILE: 1}
-    for name, schema in schemas.items():
-        assert yaml.safe_load(open(os.path.join("apart", name)))["schema"] == schema
+    for name in (phases.TESTS_FILE, phases.PLAN_FILE, phases.PROVISION_FILE):
+        assert yaml.safe_load(open(os.path.join("apart", name)))["schema"] == 1
 
 
 def test_the_plan_names_the_batches_the_tests_and_the_knobs(tree):
@@ -134,6 +133,25 @@ def test_a_file_of_a_schema_we_do_not_know_stops_the_phase(tree, capsys):
     assert main(["plan", "--run-dir", "apart"]) == 2
     said = capsys.readouterr().err
     assert "schema 99" in said and "newer ducktest" in said
+
+
+def test_a_plan_with_a_runner_we_do_not_run_stops_exec_and_says_to_plan_again(tree, capsys):
+    phases_of("apart")
+    with open(os.path.join("apart", phases.PLAN_FILE), "w") as f:
+        f.write(
+            textwrap.dedent("""
+                schema: 1
+                batches:
+                - {name: b001, runner: duck-sqllogic, order: 1, tests: [a/x.test::x], files: [a/x.test]}
+                - {name: b002, runner: python, order: 2, tests: [b/body.py::passes], files: [b/body.py]}
+            """)
+        )
+    capsys.readouterr()
+    assert main(["exec", "--run-dir", "apart", "--resume", *binaries()]) == 2
+    assert capsys.readouterr().err.strip().endswith(
+        "02-plan.yaml: batch b002 has runner 'python'; this ducktest runs 'duck-shell' and 'duck-sqllogic'; "
+        "plan again: ducktest plan --run-dir apart --force"
+    )
 
 
 def test_a_phase_that_has_no_input_says_which_phase_to_run_first(tree, capsys):
