@@ -97,9 +97,7 @@ def test_scan_prints_the_record_of_each_selected_test(tree, capsys):
 def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, capsys):
     (tree / "test" / "ducktest_conf.py").write_text(
         textwrap.dedent("""
-            from ducktest import Project, default, match
-            from ducktest.resources import StorageDef
-            from ducktest.services.http import HttpServerDef
+            from ducktest import HttpServerDef, Project, StorageDef, default, match
             project = Project(
                 storages=[StorageDef("served", "{store.url}", inputs=[HttpServerDef("store")])],
                 matrix={"storage": {"s3": {
@@ -134,8 +132,7 @@ def test_scan_env_prints_what_each_test_is_given_and_where_it_came_from(tree, ca
 def test_a_rule_loads_an_extension_for_its_setting_and_a_value_from_an_input_shows_as_written(tree, capsys):
     (tree / "test" / "ducktest_conf.py").write_text(
         textwrap.dedent("""
-            from ducktest import Project, match
-            from ducktest.services.s3 import S3ServiceDef
+            from ducktest import Project, S3ServiceDef, match
             S3 = S3ServiceDef.rustfs()
             project = Project(
                 credentials=[S3.credential("keys", scopes=[])],
@@ -278,8 +275,7 @@ def test_the_command_line_moves_the_default_storage_for_the_run(tree, capsys):
 
 
 STORAGE_CONF = """
-    from ducktest import Project, default
-    from ducktest.resources import StorageDef
+    from ducktest import Project, StorageDef, default
     SCRATCH = StorageDef("scratch", "/srv/scratch")
     project = Project(storages=[SCRATCH], rules=[default({slots})])
 """

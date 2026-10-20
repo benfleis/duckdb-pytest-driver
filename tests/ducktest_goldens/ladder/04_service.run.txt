@@ -1,7 +1,7 @@
 service nowhere ...
 service nowhere -- did not come up: OSError: [Errno 99] Cannot assign requested address
-service http ...
-service http -- managed
+service local_http ...
+service local_http -- managed
 [1/3] BLOCKED  blocked.test::blocked  [nowhere did not come up]
 [2/3] PASSED   served.test::served  (<s>)
 [3/3] PASSED   served_body.py::served_body  (<s>)

@@ -12,12 +12,8 @@ from ducktest.conf import Project, Rules, match
 from ducktest.scan import scan
 
 HEAD = """
-    from ducktest import Project, Rules, default, match
-    from ducktest.engines.duckdb import DuckDBEngineDef
-    from ducktest.resources import S3CredentialDef, StorageDef, from_env
-    from ducktest.services.azure import AzureServiceDef, container
-    from ducktest.services.http import HttpServerDef
-    from ducktest.services.s3 import bucket, S3ServiceDef
+    from ducktest import AzureServiceDef, DuckDBEngineDef, HttpServerDef, Project, Rules, S3CredentialDef
+    from ducktest import S3ServiceDef, StorageDef, bucket, container, default, from_env, match
 """
 
 

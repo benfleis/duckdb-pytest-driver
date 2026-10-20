@@ -7,9 +7,9 @@ served.test::served
   bind: storage=served  <- ducktest_conf.py: default
   bind: data=served  <- ducktest_conf.py: default
   root: temp_dir_root=<tmp>/repo/04_service/ducktest_temp/<run_token>  <- default storage
-  root: <from service http>  <- storage served
+  root: <from service local_http>  <- storage served
 served_body.py::served_body
   bind: storage=served  <- ducktest_conf.py: default
   bind: data=served  <- ducktest_conf.py: default
   root: temp_dir_root=<tmp>/repo/04_service/ducktest_temp/<run_token>  <- default storage
-  root: <from service http>  <- storage served
+  root: <from service local_http>  <- storage served

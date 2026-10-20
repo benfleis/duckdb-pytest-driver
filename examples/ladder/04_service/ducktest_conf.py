@@ -1,16 +1,14 @@
 import os
 
-from ducktest import Project, default, match
-from ducktest.resources import StorageDef
-from ducktest.services.http import HttpServerDef
+from ducktest import HttpServerDef, Project, StorageDef, default, match
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
-HTTP = HttpServerDef("http", source=DATA)
+LOCAL_HTTP = HttpServerDef("local_http", source=DATA)
 # No machine has 192.0.2.1 (it is reserved for documentation), so this server never starts.
 NOWHERE = HttpServerDef("nowhere", source=DATA, host="192.0.2.1")
 
-SERVED = StorageDef("served", "{http.url}", inputs=[HTTP])
+SERVED = StorageDef("served", "{local_http.url}", inputs=[LOCAL_HTTP])
 UNSERVED = StorageDef("unserved", "{nowhere.url}", inputs=[NOWHERE])
 
 project = Project(

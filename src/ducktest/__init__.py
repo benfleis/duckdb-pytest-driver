@@ -1,7 +1,55 @@
-"""ducktest: scan -> plan -> provision -> exec -> cleanup, with no pytest underneath."""
+"""ducktest: scan -> plan -> provision -> exec -> cleanup, with no pytest underneath.
 
-from .conf import Project, Rules, default, match  # noqa: F401
-from .declare import test  # noqa: F401
-from .outcomes import Skip, skip  # noqa: F401
-from .resources import EngineDef, ServiceDef  # noqa: F401
-from .sqltext import L  # noqa: F401
+A conf or a body imports what it needs from here, in one line. Nouns are classes with `Def` (a
+declaration, not the running thing), each with its makers on the class; verbs are functions."""
+
+from .conf import Project, Rule, Rules, default, match
+from .declare import test
+from .engines.duckdb import DuckDBEngineDef
+from .engines.spark import SparkEngineDef
+from .outcomes import Skip, skip
+from .resources import (
+    AzureCredentialDef,
+    AzureStorageDef,
+    EngineDef,
+    LocalStorageDef,
+    S3CredentialDef,
+    S3StorageDef,
+    ServiceDef,
+    StorageDef,
+    default_storage,
+    from_env,
+)
+from .services.azure import AzureServiceDef, container
+from .services.http import HttpServerDef
+from .services.s3 import S3ServiceDef, bucket
+from .sqltext import L
+
+__all__ = [
+    "AzureCredentialDef",
+    "AzureServiceDef",
+    "AzureStorageDef",
+    "DuckDBEngineDef",
+    "EngineDef",
+    "HttpServerDef",
+    "L",
+    "LocalStorageDef",
+    "Project",
+    "Rule",
+    "Rules",
+    "S3CredentialDef",
+    "S3ServiceDef",
+    "S3StorageDef",
+    "ServiceDef",
+    "Skip",
+    "SparkEngineDef",
+    "StorageDef",
+    "bucket",
+    "container",
+    "default",
+    "default_storage",
+    "from_env",
+    "match",
+    "skip",
+    "test",
+]

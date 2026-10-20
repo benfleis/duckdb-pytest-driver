@@ -1,15 +1,13 @@
 import os
 import tempfile
 
-from ducktest import Project, default, match
-from ducktest.engines.duckdb import DuckDBEngineDef
-from ducktest.resources import StorageDef
+from ducktest import DuckDBEngineDef, LocalStorageDef, Project, default, match
 
 # Under the system temp directory; a run removes what it wrote there when it ends, but a failed test's place.
 SCRATCH = os.path.join(tempfile.gettempdir(), "ducktest-ladder")
 
-SCRATCH_A = StorageDef("scratch_a", f"{SCRATCH}/scratch_a")
-SCRATCH_B = StorageDef("scratch_b", f"{SCRATCH}/scratch_b")
+SCRATCH_A = LocalStorageDef("scratch_a", f"{SCRATCH}/scratch_a")
+SCRATCH_B = LocalStorageDef("scratch_b", f"{SCRATCH}/scratch_b")
 DUCK = DuckDBEngineDef("duck", requires=["parquet"])
 
 project = Project(

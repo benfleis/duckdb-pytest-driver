@@ -119,8 +119,8 @@ def rung_copy(tmp_path, monkeypatch):
     for name in [n for n in os.environ if n.startswith(sdk_prefixes())]:  # the goldens list what the shell's env holds
         monkeypatch.delenv(name)
     # Nothing answers there, so the servers of rungs 05 to 07 are BLOCKED the same way with or without docker.
-    monkeypatch.setenv("DUCKTEST_EXISTING_SERVICE_S3", "http://127.0.0.1:9")
-    monkeypatch.setenv("DUCKTEST_EXISTING_SERVICE_AZ", "http://127.0.0.1:9")
+    monkeypatch.setenv("DUCKTEST_EXISTING_SERVICE_LOCAL_S3", "http://127.0.0.1:9")
+    monkeypatch.setenv("DUCKTEST_EXISTING_SERVICE_LOCAL_AZ", "http://127.0.0.1:9")
     (tmp_path / "tmp").mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
     monkeypatch.setattr(sys, "dont_write_bytecode", True)

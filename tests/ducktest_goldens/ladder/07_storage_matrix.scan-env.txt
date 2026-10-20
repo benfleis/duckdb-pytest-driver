@@ -1,14 +1,14 @@
 write_read.test::write_read[storage=local]
-  bind: storage=local  <- matrix storage=local
-  bind: temp=local  <- matrix storage=local
+  bind: storage=local_dir  <- matrix storage=local
+  bind: temp=local_dir  <- matrix storage=local
   values: storage=local  <- matrix storage
-  root: temp_dir_root=<tmp>/repo/07_storage_matrix/local/temp/<run_token>  <- storage local
+  root: temp_dir_root=<tmp>/repo/07_storage_matrix/local/temp/<run_token>  <- storage local_dir
   root: data_dir=<tmp>/repo/07_storage_matrix/data  <- default storage
 write_read.test::write_read[storage=s3]
-  bind: storage=lake  <- matrix storage=s3
-  bind: temp=lake  <- matrix storage=s3
+  bind: storage=local_lake  <- matrix storage=s3
+  bind: temp=local_lake  <- matrix storage=s3
   require: httpfs  <- matrix storage=s3
   values: storage=s3  <- matrix storage
   root: data_dir=<tmp>/repo/07_storage_matrix/data  <- default storage
-  root: <from service s3>  <- storage lake
-  process env: <from service s3>  <- credential keys
+  root: <from service local_s3>  <- storage local_lake
+  process env: <from service local_s3>  <- credential local_keys

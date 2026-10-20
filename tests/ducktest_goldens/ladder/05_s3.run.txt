@@ -1,30 +1,30 @@
-service s3 ...
-service s3 -- did not come up: existing service 's3' does not answer at http://127.0.0.1:9
-[1/2] BLOCKED  scoped_write.test::scoped_write  [s3 did not come up]
-[2/2] BLOCKED  scoped_write_body.py::scoped_write_body  [s3 did not come up]
+service local_s3 ...
+service local_s3 -- did not come up: existing service 'local_s3' does not answer at http://127.0.0.1:9
+[1/2] BLOCKED  scoped_write.test::scoped_write  [local_s3 did not come up]
+[2/2] BLOCKED  scoped_write_body.py::scoped_write_body  [local_s3 did not come up]
 
 --- scoped_write.test::scoped_write
 
-  s3 did not come up
+  local_s3 did not come up
 
   require: httpfs  <- engine duck
   root: data_dir=<tmp>/repo/05_s3/data  <- default storage
-  not served: s3 did not come up (existing service 's3' does not answer at http://127.0.0.1:9)  <- storage lake
-  not served: s3 did not come up (existing service 's3' does not answer at http://127.0.0.1:9)  <- credential keys
+  not served: local_s3 did not come up (existing service 'local_s3' does not answer at http://127.0.0.1:9)  <- storage local_lake
+  not served: local_s3 did not come up (existing service 'local_s3' does not answer at http://127.0.0.1:9)  <- credential local_keys
   again: ducktest run --id scoped_write.test::scoped_write
 
 --- scoped_write_body.py::scoped_write_body
 
-  s3 did not come up
+  local_s3 did not come up
 
   root: data_dir=<tmp>/repo/05_s3/data  <- default storage
-  not served: s3 did not come up (existing service 's3' does not answer at http://127.0.0.1:9)  <- storage lake
-  not served: s3 did not come up (existing service 's3' does not answer at http://127.0.0.1:9)  <- credential keys
+  not served: local_s3 did not come up (existing service 'local_s3' does not answer at http://127.0.0.1:9)  <- storage local_lake
+  not served: local_s3 did not come up (existing service 'local_s3' does not answer at http://127.0.0.1:9)  <- credential local_keys
   again: ducktest run --id scoped_write_body.py::scoped_write_body
 
 
-'s3' did not come up: 2 tests blocked
-  existing service 's3' does not answer at http://127.0.0.1:9
+'local_s3' did not come up: 2 tests blocked
+  existing service 'local_s3' does not answer at http://127.0.0.1:9
 
 0 passed, 2 blocked in <s>
 run dir: <run>

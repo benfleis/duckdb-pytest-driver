@@ -200,9 +200,7 @@ def test_an_abfss_storage_on_it_is_a_scan_error(tmp_path, monkeypatch, capsys):
     (tmp_path / "test").mkdir()
     (tmp_path / "test" / "x.test").write_text("")
     (tmp_path / "test" / "ducktest_conf.py").write_text(
-        "from ducktest import Project\n"
-        "from ducktest.resources import StorageDef\n"
-        "from ducktest.services.azure import AzureServiceDef\n"
+        "from ducktest import AzureServiceDef, Project, StorageDef\n"
         "AZ = AzureServiceDef.azurite()\n"
         'project = Project(storages=[StorageDef("dfs", "abfss://ducktest@devstoreaccount1.dfs.core.windows.net", inputs=[AZ])])\n'
     )
@@ -234,7 +232,9 @@ def test_a_server_that_already_answers_is_used_as_it_is(no_service_env, monkeypa
 
     monkeypatch.setenv("DUCKTEST_SERVICE_HOST", "172.18.0.1")
     monkeypatch.setattr(azure_module, "docker", no_docker)
-    monkeypatch.setattr(azure_module, "az_answers", lambda endpoint: endpoint == "http://172.18.0.1:10000/devstoreaccount1")
+    monkeypatch.setattr(
+        azure_module, "az_answers", lambda endpoint: endpoint == "http://172.18.0.1:10000/devstoreaccount1"
+    )
     made = Made("r1")
     with caplog.at_level(logging.INFO):
         service = made.create(AzureServiceDef.azurite())
@@ -248,7 +248,9 @@ def test_a_server_that_already_answers_is_used_as_it_is(no_service_env, monkeypa
 
 
 def test_an_existing_server_is_named_by_its_address_without_the_account(fake_docker, monkeypatch, store):
-    monkeypatch.setattr(azure_module, "az_answers", lambda endpoint: endpoint == "http://172.18.0.1:10999/devstoreaccount1")
+    monkeypatch.setattr(
+        azure_module, "az_answers", lambda endpoint: endpoint == "http://172.18.0.1:10999/devstoreaccount1"
+    )
     service = AzureServiceDef.azurite().as_existing(address="http://172.18.0.1:10999").make(run_token="r1")
     service.create()
     assert service.attributes["endpoint"].get() == "http://172.18.0.1:10999/devstoreaccount1"
@@ -361,7 +363,9 @@ def test_a_container_that_is_there_with_other_content_is_refused_and_not_touched
     if what == "content":
         found.containers["data"]["l.csv"] = b"changed"
     made = Made("r1")
-    service = made.create(AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")], public=what == "public")]))
+    service = made.create(
+        AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")], public=what == "public")])
+    )
     assert "does not change a container it did not make" in service.refused["data"]
     assert made.errors == {} and [c for c in found.calls if c[1] == "data"] == []
 
@@ -369,14 +373,18 @@ def test_a_container_that_is_there_with_other_content_is_refused_and_not_touched
 def test_a_container_that_fails_half_way_is_removed_and_the_others_stay(found, data):
     found.fail_on = "set_public_access"
     made = Made("r1")
-    service = made.create(AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")]), container("open", public=True)]))
+    service = made.create(
+        AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")]), container("open", public=True)])
+    )
     assert "set_public_access: AuthorizationFailure" in service.refused["open"] and list(service.refused) == ["open"]
     assert sorted(found.containers) == ["data", "ducktest"] and service.made_containers == ["data"]
     assert made.errors == {}, "the server stays up"
 
 
 def test_a_seed_directory_that_is_not_there_makes_no_container(found, tmp_path):
-    service = Made("r1").create(AzureServiceDef.azurite(containers=[container("data", seed=[(str(tmp_path / "gone"), "")])]))
+    service = Made("r1").create(
+        AzureServiceDef.azurite(containers=[container("data", seed=[(str(tmp_path / "gone"), "")])])
+    )
     assert "no directory at" in service.refused["data"]
     assert [c for c in found.calls if c[0] != "create_container" or c[1] != "ducktest"] == []
 
@@ -418,7 +426,10 @@ def test_a_public_level_is_true_blob_or_container():
 
 
 def test_its_containers_are_part_of_what_it_is(data):
-    assert AzureServiceDef.azurite().identity() != AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")])]).identity()
+    assert (
+        AzureServiceDef.azurite().identity()
+        != AzureServiceDef.azurite(containers=[container("data", seed=[(data, "")])]).identity()
+    )
 
 
 def test_reaching_the_server_after_the_run_makes_none_of_its_containers(found, data):

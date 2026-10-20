@@ -981,8 +981,7 @@ def test_retries_is_a_rule_field_and_a_whole_number(tmp_path):
 
 
 BIND_CONF = """
-    from ducktest import Project, default
-    from ducktest.resources import StorageDef
+    from ducktest import Project, StorageDef, default
 
     project = Project(
         storages=[StorageDef("a", "/tmp/a"), StorageDef("b", "/tmp/b")],
@@ -1016,8 +1015,7 @@ def test_a_tests_own_binding_of_a_kind_replaces_the_rules(tmp_path):
 
 
 MATRIX_BIND_CONF = """
-    from ducktest import Project, default, match
-    from ducktest.resources import StorageDef
+    from ducktest import Project, StorageDef, default, match
 
     project = Project(
         storages=[StorageDef("a", "/tmp/a"), StorageDef("b", "/tmp/b")],
@@ -1055,8 +1053,7 @@ def test_a_kind_a_matrix_value_and_a_match_or_test_both_bind_is_an_error(tmp_pat
 
 def test_a_kind_two_matrix_values_of_one_test_both_bind_is_an_error(tmp_path):
     conf = """
-        from ducktest import Project, default
-        from ducktest.resources import StorageDef
+        from ducktest import Project, StorageDef, default
 
         project = Project(
             storages=[StorageDef("s3", "s3://b"), StorageDef("proxied", "/tmp/p")],
@@ -1100,7 +1097,7 @@ def test_a_binding_names_a_declared_storage_credential_or_service(tmp_path):
 
 def test_a_binding_names_one_of_its_own_kind(tmp_path):
     conf = BIND_CONF.replace('rules=[default(storage="a", temp="a")]', 'rules=[default(credential="a")]')
-    with pytest.raises(UsageError, match="ducktest_conf.py:7: credential='a' names a storage, not a credential"):
+    with pytest.raises(UsageError, match="ducktest_conf.py:6: credential='a' names a storage, not a credential"):
         tree(tmp_path, {"test/ducktest_conf.py": conf, "test/t.test": ""})
 
 
@@ -1119,8 +1116,7 @@ def test_bind_is_not_a_keyword_any_more_and_the_error_names_the_ones_there_are(t
 
 def test_a_matrix_value_that_unsets_a_credentials_names_does_not_hide_it(tmp_path, monkeypatch):
     conf = """
-        from ducktest import Project, default
-        from ducktest.resources import S3CredentialDef, StorageDef
+        from ducktest import Project, S3CredentialDef, StorageDef, default
 
         project = Project(
             storages=[StorageDef("bucket", "s3://bucket")],
@@ -1460,8 +1456,7 @@ def test_a_matrix_value_takes_no_matrix_and_an_unknown_slot_names_the_ones_there
 
 def test_a_string_value_fills_the_slot_the_parameter_is_named_after(tmp_path):
     conf = """
-        from ducktest import Project, default
-        from ducktest.resources import StorageDef
+        from ducktest import Project, StorageDef, default
 
         project = Project(
             storages=[StorageDef("a", "/tmp/a"), StorageDef("b", "/tmp/b")],
@@ -1510,8 +1505,7 @@ def test_a_matrix_that_cannot_make_cells_is_a_scan_error(tmp_path, conf, body, m
 
 
 OWN_BIND_CONF = """
-    from ducktest import Project
-    from ducktest.resources import S3CredentialDef, StorageDef, from_env
+    from ducktest import Project, S3CredentialDef, StorageDef, from_env
 
     KEYS = from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})
     project = Project(
@@ -1616,8 +1610,7 @@ def test_a_requires_env_rule_warns_that_the_file_skips_when_nothing_gives_the_bi
     else:
         monkeypatch.delenv("DT_KEY", raising=False)
     conf = f"""
-        from ducktest import Project, match
-        from ducktest.resources import S3CredentialDef, from_env
+        from ducktest import Project, S3CredentialDef, from_env, match
 
         KEYS = {KEYS}
         project = Project(credentials=[KEYS], rules=[match('**', requires_env={name!r}{rule})])
@@ -1636,8 +1629,7 @@ def test_a_requires_env_rule_warns_that_the_file_skips_when_nothing_gives_the_bi
 #
 
 SLOTS_CONF = """
-    from ducktest import Project, default, match
-    from ducktest.resources import S3CredentialDef, StorageDef, from_env
+    from ducktest import Project, S3CredentialDef, StorageDef, default, from_env, match
 
     PRIVATE = StorageDef("private", "s3://private", endpoint="http://store:9000")
     WRITES = StorageDef("writes", "s3://writes", endpoint="http://store:9000")
@@ -1764,8 +1756,7 @@ def test_a_test_file_under_a_rule_and_a_body_under_test_with_the_same_slots_get_
 
 def test_the_default_storage_has_no_places(tmp_path):
     conf = """
-        from ducktest import Project, default
-        from ducktest.resources import default_storage
+        from ducktest import Project, default, default_storage
 
         DEFAULT = default_storage()
         project = Project(storages=[DEFAULT], rules=[default(temp=DEFAULT.at("x"))])

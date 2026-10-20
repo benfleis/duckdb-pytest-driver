@@ -65,7 +65,9 @@ def opened(definition, inputs=None):
 
 def test_identity_is_the_content_not_the_label_lifetime_or_statement_timeout():
     one = DuckDBEngineDef("duck", requires=["delta"])
-    assert one.identity() == DuckDBEngineDef("other", requires=["delta"], lifetime="run", statement_timeout=5).identity()
+    assert (
+        one.identity() == DuckDBEngineDef("other", requires=["delta"], lifetime="run", statement_timeout=5).identity()
+    )
     assert one.identity() != DuckDBEngineDef("duck", requires=["httpfs"]).identity()
     assert one.identity() != BootedEngineDef("duck", requires=["delta"]).identity()
 
@@ -74,7 +76,10 @@ def test_identity_follows_the_inputs_and_the_env_it_is_bound_to(tmp_path):
     storage = StorageDef("local", str(tmp_path))
     bound = DuckDBEngineDef("duck", inputs=[storage])
     assert bound.identity({"local": "a"}) != bound.identity({"local": "b"})
-    assert DuckDBEngineDef("duck").identity() != DuckDBEngineDef("duck").with_(process_env={"AWS_PROFILE": None}).identity()
+    assert (
+        DuckDBEngineDef("duck").identity()
+        != DuckDBEngineDef("duck").with_(process_env={"AWS_PROFILE": None}).identity()
+    )
 
 
 def test_an_unknown_lifetime_is_a_usage_error():
@@ -545,8 +550,7 @@ def test_engines_are_declared_among_the_engines_and_named_by_a_test(tmp_path):
 #
 
 ENGINES_CONF = """
-from ducktest import Project, match
-from ducktest.engines.duckdb import DuckDBEngineDef
+from ducktest import DuckDBEngineDef, Project, match
 
 project = Project(
     engines=[

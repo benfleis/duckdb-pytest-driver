@@ -584,8 +584,7 @@ def test_storage_contract(tmp_path):
 
 SECRET = "s3cr3t-value-never-written"
 CONF = """
-from ducktest import Project, default, match
-from ducktest.resources import S3CredentialDef, StorageDef, from_env
+from ducktest import Project, S3CredentialDef, StorageDef, default, from_env, match
 project = Project(
     storages=[StorageDef("local", "s3://bucket/store")],
     credentials=[S3CredentialDef("local-key", sources=[from_env({"DT_KEY": "key_id", "DT_SECRET": "secret"})], scopes=["local"])],
@@ -671,7 +670,7 @@ def test_a_matrix_value_naming_an_undeclared_input_is_a_usage_error(tree, capsys
     conf.write_text(conf.read_text().replace('{"storage": "local", "temp"', '{"storage": "nope", "temp"'))
     assert main(["scan", "test/a/x.test", "--env"]) == 2
     assert (
-        "ducktest_conf.py:4: storage='nope' is not declared; the declared ones are 'local'" in capsys.readouterr().err
+        "ducktest_conf.py:3: storage='nope' is not declared; the declared ones are 'local'" in capsys.readouterr().err
     )
 
 

@@ -6,9 +6,14 @@ module's top-level names: two of them in one file is an error, and so is a `Proj
 or a `Rules` in it; a file with neither is a warning.
 
     project = Project(
-        engines=[duckdb_engine("duck", requires=["delta"])],
-        storages=[LOCAL, S3_LAKE],
-        matrix={"storage": {"local": {"storage": LOCAL, "temp": LOCAL}, "s3": {"storage": S3_LAKE, "temp": S3_LAKE}}},
+        engines=[DuckDBEngineDef("duck", requires=["delta"])],
+        storages=[LOCAL_DIR, LOCAL_LAKE],
+        matrix={
+            "storage": {
+                "local": {"storage": LOCAL_DIR, "temp": LOCAL_DIR},
+                "s3": {"storage": LOCAL_LAKE, "temp": LOCAL_LAKE},
+            }
+        },
         rules=[match("cross_engine/**", matrix=["storage"])],
     )
 
@@ -31,14 +36,14 @@ they merge in one order: the root file first, then each file on the way down to 
 in a file, the rules as listed; then the definition's own `@test(...)`, then the matrix values of
 its cell. `why` records which place gave what.
 
-`matrix={"storage": {"local": "default", "s3": S3_LAKE}}` declares the project's parameters: each
+`matrix={"storage": {"local": "default", "s3": LOCAL_LAKE}}` declares the project's parameters: each
 maps a value name to a dict of slots, or to a name or a declaration that fills the slot the parameter
 is named after (`storage`, `data`, `temp`, `credential`, `service`). `matrix=["storage"]` on a rule or
 `@test` runs a test once per value; `matrix=[{"case": CASES}]` defines a parameter of that place's own.
 A cell is one more rule, applied last, that binds the slots its value names; a test's roots follow
 from whatever that binds, as from any rule.
 
-`engines=` holds `EngineDef`s (`duckdb_engine(...)`, `delta_spark(...)`, ...); `engines=["duck"]` on a
+`engines=` holds `EngineDef`s (`DuckDBEngineDef(...)`, `SparkEngineDef.delta(...)`, ...); `engines=["duck"]` on a
 rule names the engines a test drives, each through a Client of its own. `services=` holds the
 project's other `ServiceDef`s of `resources`. An engine stays a kind of service internally -- one lifecycle, one
 provisioning path -- so a service that is an input of a storage, a credential or an engine is one
@@ -171,13 +176,14 @@ _LISTS = ("engines", "services", "storages", "credentials", "inherit_env", "pyth
 class Project:
     """What the root `ducktest_conf.py` declares, as `project = Project(...)`. Every field is optional.
 
-    engines       DuckDB and Spark engines the tests drive: `duckdb_engine(...)`, `delta_spark(...)`
-    services      servers the tests use: `s3_local(...)`, `az_local(...)`, `HttpServerDef(...)`; one that
-                  is an input of a bound storage, credential or engine is a service of the project too
-    storages      what `storage=`, `data=` and `temp=` bind: `default_storage()`, `S3.storage(...)`
-    credentials   keys, delivered as SDK env: `S3.credential(...)`, `S3CredentialDef.from_aws_env(...)`
+    engines       DuckDB and Spark engines the tests drive: `DuckDBEngineDef(...)`, `SparkEngineDef.delta(...)`
+    services      servers the tests use: `S3ServiceDef.rustfs(...)`, `AzureServiceDef.azurite(...)`,
+                  `HttpServerDef(...)`; one that is an input of a bound storage, credential or engine
+                  is a service of the project too
+    storages      what `storage=`, `data=` and `temp=` bind: `default_storage()`, `LOCAL_S3.storage(...)`
+    credentials   keys, delivered as SDK env: `LOCAL_S3.credential(...)`, `S3CredentialDef.from_aws_env(...)`
     matrix        parameter -> value name -> a dict of slots, or a name or declaration that fills the
-                  slot named like the parameter: {"storage": {"local": "default", "s3": S3_LAKE}}
+                  slot named like the parameter: {"storage": {"local": "default", "s3": LOCAL_LAKE}}
     suites        named selections over tags and paths (`all` is built in)
     inherit_env   names engine processes keep from the shell's env despite the SDK-prefix removal
     rules         `default(...)` and `match(...)`, in order

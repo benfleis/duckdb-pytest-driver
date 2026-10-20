@@ -1,8 +1,7 @@
-from ducktest import Project, match
-from ducktest.resources import S3CredentialDef, StorageDef, from_env
+from ducktest import Project, S3CredentialDef, S3StorageDef, from_env, match
 
 # Nothing reads this bucket: the tests only look at the secret made for it.
-FAKE_S3 = StorageDef("fake_s3", "s3://ladder-fake")
+FAKE_S3 = S3StorageDef("fake_s3", "s3://ladder-fake")
 FAKE_KEY = S3CredentialDef(
     "fake_key",
     sources=[from_env({"LADDER_FAKE_KEY_ID": "key_id", "LADDER_FAKE_SECRET": "secret"})],

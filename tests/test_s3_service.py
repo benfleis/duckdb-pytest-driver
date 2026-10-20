@@ -411,7 +411,9 @@ def test_a_bucket_that_is_there_with_other_content_is_refused_and_not_touched(fo
 
 def test_a_bucket_that_fails_half_way_is_removed_and_the_others_stay(found, dat):
     found.fail_on = "make_public"
-    service = Made("r1").create(S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dat, "dat")]), bucket("open", public=True)]))
+    service = Made("r1").create(
+        S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dat, "dat")]), bucket("open", public=True)])
+    )
     assert "make_public: AccessDenied" in service.refused["open"] and list(service.refused) == ["open"]
     assert sorted(found.buckets) == ["data", "ducktest"] and service.made_buckets == ["data"]
 
@@ -455,7 +457,10 @@ def test_a_storage_names_one_of_its_buckets():
 
 
 def test_its_buckets_are_part_of_what_it_is(dat):
-    assert S3ServiceDef.rustfs().identity() != S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dat, "dat")])]).identity()
+    assert (
+        S3ServiceDef.rustfs().identity()
+        != S3ServiceDef.rustfs(buckets=[bucket("data", seed=[(dat, "dat")])]).identity()
+    )
 
 
 def test_reaching_the_server_after_the_run_makes_none_of_its_buckets(found, dat):

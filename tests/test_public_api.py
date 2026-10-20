@@ -35,7 +35,12 @@ def test_match_is_rule_match():
 
 def test_rustfs_is_an_s3_service_of_flavor_rustfs():
     local_s3 = S3ServiceDef.rustfs()
-    assert (type(local_s3), local_s3.name, local_s3.flavor, local_s3.bucket) == (S3ServiceDef, "s3", "rustfs", "ducktest")
+    assert (type(local_s3), local_s3.name, local_s3.flavor, local_s3.bucket) == (
+        S3ServiceDef,
+        "s3",
+        "rustfs",
+        "ducktest",
+    )
     assert local_s3.buckets == [] and local_s3.address is None and local_s3.port is None
     assert S3ServiceDef.rustfs("local_s3").identity() == S3ServiceDef("other", flavor="rustfs").identity()
 
@@ -117,3 +122,39 @@ def test_path_names_a_place_under_a_storage_a_bucket_and_temp(tmp_path):
     assert made.temp_dir() == os.path.join(str(tmp_path), "scratch", "r1")
     assert local.at("other").path == "other"
     assert local.temp_places() == ["scratch", "other"]
+
+
+# -----------------------------------------------------------------------------
+# One import line
+#
+
+EXPORTED = (
+    "Project Rules Rule default match test skip from_env bucket container S3ServiceDef AzureServiceDef "
+    "StorageDef S3StorageDef AzureStorageDef LocalStorageDef HttpServerDef S3CredentialDef AzureCredentialDef "
+    "DuckDBEngineDef SparkEngineDef default_storage EngineDef ServiceDef Skip L"
+).split()
+REMOVED = "s3_local az_local duckdb_engine delta_spark s3_credential azure_credential S3LocalDef AZLocalDef".split()
+
+
+def test_a_conf_imports_everything_from_ducktest():
+    import ducktest
+
+    assert sorted(ducktest.__all__) == sorted(EXPORTED)
+    namespace = {}
+    exec(f"from ducktest import {', '.join(EXPORTED)}", namespace)
+    assert all(namespace[name] is getattr(ducktest, name) for name in EXPORTED)
+
+
+@pytest.mark.parametrize("name", REMOVED)
+def test_a_removed_name_is_gone(name):
+    with pytest.raises(ImportError):
+        exec(f"from ducktest import {name}", {})
+    for module in (
+        "ducktest.resources",
+        "ducktest.services.s3",
+        "ducktest.services.azure",
+        "ducktest.engines.duckdb",
+        "ducktest.engines.spark",
+    ):
+        with pytest.raises(ImportError):
+            exec(f"from {module} import {name}", {})

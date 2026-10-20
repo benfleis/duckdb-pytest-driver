@@ -1,11 +1,11 @@
 run   write_read.test::write_read[storage=local]
         matrix=['storage']  <- ducktest_conf.py: default
-        storage='local'  <- matrix storage=local
-        temp='local'  <- matrix storage=local
+        storage='local_dir'  <- matrix storage=local
+        temp='local_dir'  <- matrix storage=local
 run   write_read.test::write_read[storage=s3]
         matrix=['storage']  <- ducktest_conf.py: default
-        storage='lake'  <- matrix storage=s3
-        temp='lake'  <- matrix storage=s3
+        storage='local_lake'  <- matrix storage=s3
+        temp='local_lake'  <- matrix storage=s3
         requires=['httpfs']  <- matrix storage=s3
 
 2 of 2 tests
