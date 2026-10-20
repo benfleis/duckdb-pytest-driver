@@ -11,12 +11,15 @@ before. Rung 00 is a repo that has never heard of ducktest. Run these from insid
 `run` needs a DuckDB build: set `BUILD_DIR` to the directory that holds `duckdb` and `test/unittest`.
 ducktest runs the `.test` files it finds on disk, whether the build lists them or not.
 
-Rung 02 on has a `ducktest_conf.py`: one `project = Project(...)` that declares what the tests need
-(`help(Project)` lists the fields; design.md, 1.9). Each imports what it uses from `ducktest` in one
+Rung 02 on has a `ducktest_conf.py`: one `project = Project(...)` with the rules that name what the
+tests need (`help(Project)` lists the fields; design.md, 1.9). What a rule, a matrix value or a
+body's `@test(...)` names is declared, with what it pulls: a storage its server and the credential
+scoped to it. So no rung lists its storages, credentials or services; `engines=` is listed, as an
+engine is not reached that way. Each imports what it uses from `ducktest` in one
 line. Its variables are UPPER_CASE and its declared names lowercase, each saying the domain and the
 role: `LOCAL_S3 = S3ServiceDef.rustfs("local_s3")`, `LOCAL_LAKE`, `"local_lake"`. A file below it
 would hold only rules, `rules = Rules(...)`. The scan checks the names the file declares and refers
-to; `--strict` also fails on one that nothing uses.
+to; `--strict` also fails on one that nothing reaches.
 
 ## 00_existing
 
@@ -60,9 +63,9 @@ A `.test` file with a body of its stem is not a test of its own; only the body r
 
 ## 02_rules
 
-`ducktest_conf.py` holds the project, `project = Project(...)`: two local storages, each a
-`LocalStorageDef`, and, among its engines, a DuckDB engine, `duck`, that loads `parquet`. Each is
-bound to a variable, and the rules refer to it by that object:
+`ducktest_conf.py` declares two local storages, each a `LocalStorageDef`, and a DuckDB engine,
+`duck`, that loads `parquet`, listed in the engines of `project = Project(...)`. Each is bound to a
+variable, and the rules refer to it by that object; what they name is what the project declares:
 `default(storage=SCRATCH_A, temp=SCRATCH_A, engines=[DUCK])` binds that storage for every test and
 names `duck` in `engines=`, so every test drives that engine, through a Client made for it.
 `storage=` says what a test is about; `temp=` is where it writes, so its `{TEMP_DIR}` is under

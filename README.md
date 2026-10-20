@@ -95,14 +95,16 @@ from ducktest import Project, S3ServiceDef, match
 LOCAL_S3 = S3ServiceDef.rustfs("local_s3")
 LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[])
 
-project = Project(credentials=[LOCAL_KEYS], rules=[
+project = Project(rules=[
     match("**", requires_env="S3_TEST_SERVER_AVAILABLE", credential=LOCAL_KEYS,
           values={"S3_TEST_SERVER_AVAILABLE": "1", "S3_ENDPOINT": "{local_s3.host_port}"}),
 ])
 ```
 
 The rule selects the files with that `require-env` line, gives them the keys, and fills the names
-they require; `{local_s3.host_port}` is the address of the server. `ducktest select --strict --explain`
+they require; `{local_s3.host_port}` is the address of the server. What a rule names is all a conf
+declares: the keys bring their server, as a storage brings its server and the keys scoped to it.
+`Project(engines=[...])` is the one list you write, for an engine other than the built-in one. `ducktest select --strict --explain`
 checks the conf before you run. The ladder adds one idea per rung, and `docs/design.md` has every
 field.
 

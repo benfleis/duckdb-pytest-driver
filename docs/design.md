@@ -15,7 +15,7 @@ form of this release; the delta repo carries the earlier form until it is repinn
 | Word | What it is | Where you write it |
 | --- | --- | --- |
 | `{NAME}` | a value the test reads: `{TEMP_DIR}`, `{DATA_DIR}`, your own | SQL; `ctx.values.name` in Python |
-| storage | a place for files: a directory, a bucket, a URL | `Project(storages=[...])` in `ducktest_conf.py` |
+| storage | a place for files: a directory, a bucket, a URL | `ducktest_conf.py`; a rule or `@test` names it |
 | engine | a thing that runs SQL: DuckDB, Spark | `Project(engines=[...])`; `@test(engines=[...])` |
 | client | the SQL verbs on one engine, for one test | `ctx.client("duck")` |
 | rule | gives tests what they need, all or by file | `Project(rules=[...])`, `Rules(...)`: `default(...)`, `match(...)` |
@@ -57,7 +57,7 @@ SCRATCH_A = LocalStorageDef("scratch_a", f"{SCRATCH}/scratch_a")
 SCRATCH_B = LocalStorageDef("scratch_b", f"{SCRATCH}/scratch_b")
 DUCK = DuckDBEngineDef("duck", requires=["parquet"])
 
-project = Project(engines=[DUCK], storages=[SCRATCH_A, SCRATCH_B], rules=[default(storage=SCRATCH_A, temp=SCRATCH_A)])
+project = Project(engines=[DUCK], rules=[default(storage=SCRATCH_A, temp=SCRATCH_A)])
 ```
 
 ```
@@ -199,7 +199,8 @@ the binary skips the file that `ctx.run_paired()` runs, the body ends SKIPPED wi
 3. Scripts that export keys become a typed credential, such as `S3CredentialDef` with `from_env`
    (2.5). CI keeps its secrets. Keys of the shell's own env no longer reach the engines by
    themselves: declare `S3CredentialDef.from_aws_env(...)` where a test means to use them.
-4. `docker compose` services become `Project(services=[...])`; one that runs already is `.as_existing(address=...)`.
+4. `docker compose` services become service declarations (`S3ServiceDef.rustfs(...)`), which a test reaches
+   through a storage or a credential on them, or `service=`; one that runs already is `.as_existing(address=...)`.
 5. CI steps that start, wait, run and stop become one `ducktest run`.
 6. Helper code outside the test files' directories (`test/py`, `scripts`) goes on the path in the
    repo's `pyproject.toml`, `[tool.ducktest] pythonpath = ["test/py", "scripts"]`, relative to it, so
@@ -232,7 +233,6 @@ from whatever that rule binds, as from any other: a value that binds `storage=` 
 
 ```python
 project = Project(
-    storages=[LOCAL_DEFAULT, LOCAL_LAKE],
     matrix={
         "storage": {
             "local": {"storage": LOCAL_DEFAULT, "temp": LOCAL_DEFAULT},
@@ -283,7 +283,7 @@ paired with a `.test` matches by either file's path, so `match("sql/*.test")` re
 
 | Option | What it gives | Merge |
 | --- | --- | --- |
-| `storage=`, `credential=`, `service=` | one of the project's storages, credentials, services: its name or the object (2.3); `storage=` gives the storage's values | a later one replaces |
+| `storage=`, `credential=`, `service=` | a storage, a credential, a service, which the project then declares: its name or the object (2.3); `storage=` gives the storage's values | a later one replaces |
 | `data=`, `temp=` | a storage or `STORAGE.at("sub/path")`: where `{DATA_DIR}` is, where `{TEMP_DIR}` is made (1.1) | a later one replaces |
 | `values={...}` | `{NAME}`s | by name |
 | `requires=[...]` | extensions to load first | add up |
@@ -297,6 +297,10 @@ paired with a `.test` matches by either file's path, so `match("sql/*.test")` re
 | `timeout=N` | seconds for the whole test; past it, ERROR | a later one replaces |
 | `retries=N` | runs again, alone, after a FAILED or ERROR | a later one replaces |
 
+What a slot names is declared by that: a rule, a matrix value or `@test(...)` names exactly what the
+test needs, and the run declares it, with what it pulls (1.9). A `{name.attr}` in `values=`,
+`settings=` or `init_sql=` reaches what it names too; the run fills it only in `values=`.
+
 A value of a cell gives way to nothing: a value or binding it gives that a rule, `@test` or another
 parameter of the cell gives too is a scan error; only what `default()` binds gives way to it. That
 holds per slot: a cell's `temp=` and a `match(temp=...)` on the same test are an error, a cell's
@@ -309,10 +313,19 @@ the rules for the tests below it, `rules = Rules(default(...), match(...), ...)`
 by a scan of the module's top-level names; two in one file, a `Project` below the root, or a `Rules`
 in the root (its rules go in `Project(rules=[...])`) is a scan error that says what to write instead;
 a file with neither is a warning. `Project` takes keywords only, each optional: `engines`,
-`services`, `storages`, `credentials`, `matrix`, `suites`, `inherit_env`, `rules`, `pythonpath`
+`matrix`, `suites`, `inherit_env`, `rules`, `pythonpath`, and `services`, `storages`, `credentials`
 (`help(Project)` lists them). A misspelled one fails where it is written: `Project(credential=...)`
-is a `TypeError` at import, and a type checker says "did you mean `credentials`". From
-`examples/ladder/05_s3/ducktest_conf.py`:
+is a `TypeError` at import, and a type checker says "did you mean `credentials`".
+
+**What a project declares is what its tests reach.** A rule, a matrix value or a body's `@test(...)`
+names what a test needs (`temp=LOCAL_LAKE`), by the object or by its name, and that is declared: a
+storage brings its service and every credential whose `scopes=` names it; a credential brings the
+service it is made of; `SERVICE.storage(...)` is on that service. So a conf writes no list of its
+services, storages or credentials. `services=`, `storages=` and `credentials=` stay, as additions:
+what they list is declared with what it pulls, and the scan warns when nothing reaches it.
+`engines=` is different, and needed for every engine but the built-in one: an engine is not reached
+through what a test binds, and the project's one DuckDB engine is the default of every test only
+when `engines=` lists it. From `examples/ladder/05_s3/ducktest_conf.py`:
 
 ```python
 from ducktest import DuckDBEngineDef, Project, S3ServiceDef, default
@@ -323,11 +336,11 @@ LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])
 
 project = Project(
     engines=[DuckDBEngineDef("duck", requires=["httpfs"])],
-    storages=[LOCAL_LAKE],
-    credentials=[LOCAL_KEYS],
     rules=[default(storage=LOCAL_LAKE, temp=LOCAL_LAKE)],  # temp=: {TEMP_DIR} is on the server
 )
 ```
+
+The rule reaches `local_lake`, which brings `local_s3` and `local_keys`.
 
 **Names.** Every resource has a name, its first argument: `S3ServiceDef.rustfs("local_s3")` (`s3`
 when left out), `LOCAL_S3.storage("local_lake", ...)`, `LOCAL_S3.credential("local_keys", ...)`,
@@ -340,16 +353,20 @@ the object itself: `storage=`, `data=`, `temp=`, `credential=`, `service=`, `eng
 `scopes=[...]`, `container=`, `bucket=`, and a value of the project's matrix. The object gives an
 editor's go-to-definition from a rule to what it binds; either way the run sees the name.
 
-**Checks.** At scan, over every conf file of the tree (not only what a run selects):
+**Checks.** At scan, over every conf file of the tree and every body (not only what a run
+selects). They run once the bodies are imported, on the declared set, so what only a body names
+counts:
 
 | What | |
 | --- | --- |
 | two declarations of one name | error |
 | a reference to a name nothing declares | error, with the closest name |
-| `{name.attr}` with an attribute the kind of `name` does not have | error, with the ones it has |
-| a reference to a declaration the project does not bind (a storage not in `storages=`, a container not given to `AzureServiceDef(containers=...)`) | error, naming where to bind it |
+| `{name.attr}` in a value, with an attribute the kind of `name` does not have | error, with the ones it has |
+| a reference to an engine `engines=` does not list | error, naming where to list it |
+| a container not given to `AzureServiceDef(containers=...)`, a bucket not given to `S3ServiceDef(buckets=...)` | error, naming where to give it |
+| a credential scoped to a storage of another scheme; a storage its service cannot serve | error |
 | `STORAGE.at(...)` in a slot other than `data=`/`temp=`, or on the default storage; a path with `..` or `/` at the start | error |
-| a declaration nothing binds or names | warning; `--strict` (scan, select, run) makes it an error |
+| a declaration nothing reaches; one `services=`, `storages=` or `credentials=` lists that nothing reaches; a listed engine no test drives; a matrix parameter no rule or test runs over | warning; `--strict` (scan, select, run) makes it an error |
 
 ---
 
@@ -441,8 +458,8 @@ the same in every run, never removed. The place of `temp=STORAGE` is the storage
 (`temp` by default). `StorageDef` has no `data=`: where fixtures are read is a
 binding, so one bucket can be one test's fixtures and another's scratch. `default_storage()` is the
 implicit default of both slots: `DATA_DIR` = `<repo>/data`, `TEMP_DIR` = the test's own place in the
-run dir (`ducktest_temp/<run_token>/tests/<key>` for Python). A project may name it in `storages=`;
-it has no places (`--data-dir`, `--temp-dir-root` move it). At run end the run level of every place
+run dir (`ducktest_temp/<run_token>/tests/<key>` for Python). A matrix value or a rule may name it,
+`default_storage()`, as any storage; it has no places (`--data-dir`, `--temp-dir-root` move it). At run end the run level of every place
 goes, except the places of failed tests; a place is known to cleanup once a conf asks for it.
 
 ## 2.5 Credentials
@@ -668,8 +685,6 @@ LOCAL_KEYS = LOCAL_S3.credential("local_keys", scopes=[LOCAL_LAKE])
 project = Project(
     # The only DuckDB engine is the default one, so the .test files run on it too.
     engines=[DuckDBEngineDef("duck", requires=["delta", "json"]), SparkEngineDef.delta(s3a=True)],
-    storages=[LOCAL_DEFAULT, LOCAL_LAKE],
-    credentials=[LOCAL_KEYS],
     # Each value binds the storage the test is about and writes under it.
     matrix={
         "storage": {

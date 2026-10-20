@@ -4,7 +4,8 @@
 
 ducktest runs the tests of a DuckDB extension: `.test` files through DuckDB's `unittest` binary,
 and Python test bodies that drive DuckDB and Spark. It does not use pytest. One file,
-`ducktest_conf.py`, declares the engines, storages, credentials and services. ducktest makes what
+`ducktest_conf.py`, declares the engines, storages, credentials and services, and its rules name
+what each test needs; what they reach is declared, nothing else is listed. ducktest makes what
 each test needs, gives it to the test as `{NAME}` values, and removes it after the run.
 
 Code: `src/ducktest/` in this repo, branch `dev/v0.5`.
@@ -14,6 +15,7 @@ Code: `src/ducktest/` in this repo, branch `dev/v0.5`.
 | What | Result |
 | --- | --- |
 | Runner self-tests | 924 passed, 2 skipped (2026-10-20, a v2.0 debug build of duckdb-delta's; no live S3 or Azurite) |
+| The declared set | what the rules, the matrix values and the bodies reach, with what a storage or a credential pulls; `Project(engines=)` is the one list a conf writes (design.md, 1.9) |
 | A conf's imports | one line, `from ducktest import ...`: classes with `Def` and their makers, and the verbs (design.md, Part 1) |
 | `storage=`, `data=`, `temp=` | three slots: `storage=` gives a storage's values, `data=` `{DATA_DIR}`, `temp=` `{TEMP_DIR}`; `STORAGE.at("sub")` a place under one (design.md, 1.1) |
 | The ladder, rungs 00-07 | pass; the self-tests compare them with goldens |
