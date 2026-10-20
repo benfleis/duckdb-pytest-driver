@@ -18,6 +18,8 @@ form of this release; the delta repo carries the earlier form until it is repinn
 | storage | a place for files: a directory, a bucket, a URL | `ducktest_conf.py`; a rule or `@test` names it |
 | engine | a thing that runs SQL: DuckDB, Spark | `Project(engines=[...])`; `@test(engines=[...])` |
 | client | the SQL verbs on one engine, for one test | `ctx.client("duck")` |
+| `duck-shell` | how a DuckDB engine serves a Python body: the `duckdb` CLI | reports: `runner`, `[duck/duck-shell]` |
+| `duck-sqllogic` | how a DuckDB engine runs a `.test` batch: today the `unittest` binary | reports: `runner`, the plan's batches |
 | rule | gives tests what they need, all or by file | `Project(rules=[...])`, `Rules(...)`: `default(...)`, `match(...)` |
 | matrix | parameters, each with named values; a test runs once per cell | `Project(matrix=...)`; `matrix=[...]` on a rule or `@test` |
 | name | the label of a resource; a reference takes it, or the object | the first argument: `LocalStorageDef("scratch_a", ...)` |
@@ -167,7 +169,7 @@ A wrong row (in a copy of rung 02), shortened, then rung 04's golden
 
 ```
 --- wrong_row.py::wrong_row
-  ducktest.resources.client.ExpectationFailed: [duck] wrong result
+  ducktest.resources.client.ExpectationFailed: [duck/duck-shell] wrong result
     expected:
       43
     actual:
@@ -420,9 +422,12 @@ inputs, and it has no handlers.
 ## 2.2 Engines, clients, Context
 
 The Python objects are thin handles all the way down: the engines run elsewhere. A DuckDB engine is
-a `duckdb` shell process, Spark is a JVM (one clone per worker), a `.test` batch is a `unittest`
-process. An engine instance serves one test at a time and is reset between tests (DuckDB: a fresh
-database in the same shell process, and its preamble; Spark: its conf restored); after a failed test it is opened again.
+one build. It runs a `.test` batch as `duck-sqllogic` (the `unittest` binary) and serves a body as
+`duck-shell` (the `duckdb` CLI); both get the engine's extensions and settings. The plan, the
+events (`runner`), `scan --env` and a failure name the one that ran (`[duck/duck-shell] statement
+failed`); a test's `type` stays what the test is. Spark is a JVM (one clone per worker). An engine
+instance serves one test at a time and is reset between tests (DuckDB: a fresh database in the same
+shell process, and its preamble; Spark: its conf restored); after a failed test it is opened again.
 `lifetime` is `worker` (default), `batch` or `run`. `requires`, `settings`, `init_sql` and `process_env`
 are part of its identity; `lifetime` and `statement_timeout` (for one statement) are not. Tests one after the other share an
 instance of one identity; two names for engines of one identity in one test get two instances. A
@@ -616,7 +621,7 @@ of these and finds no rclone on PATH says to install it.
 `scan` (`01-tests.yaml`) -> `plan` (`02-plan.yaml`) -> `provision` (`03`) -> `exec` (`04-events.jsonl`)
 -> `cleanup` -> `report`; `run` does all. Identity is by content: `sha(kind, properties, input
 identities, mode)`; a child is `sha(parent, key)`; the name is only a label. A test's identity is its
-engine instances plus its test environment. `.test` files of one identity share one `unittest` batch (an inline
+engine instances plus its test environment. `.test` files of one identity share one `duck-sqllogic` batch (an inline
 `require` is body, not identity). A Python body is a batch of one; two of one identity may reuse a
 warm engine.
 
@@ -657,7 +662,7 @@ and of `ctx.client("...")` names; one project that includes another's conf and t
 qualified name that refers across projects; `.test` header blocks as rules; the `Run` object; the events of runs loaded into
 a DuckDB file, so a history is a query.
 
-One runner for `.test` files: the `unittest` binary. Convergence with DuckDB's own `test/run` -- its
+One runner for `.test` files, `duck-sqllogic`: today the `unittest` binary. Convergence with DuckDB's own `test/run` -- its
 coverage, its minimal-token output, its options -- is phase 2: needed, not dropped.
 
 ---

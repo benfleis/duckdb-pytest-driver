@@ -65,8 +65,8 @@ another build, use `--build release`, or set `BUILD_DIR` to the directory that h
   environment variable that is not set. The whole file is SKIPPED, also when statements above the
   `require` ran. DuckDB's `test/run` counts such a file as passed, so the counts can be different.
   A Python body skips with `ctx.skip(reason)`, or `ducktest.skip(reason)` from a helper.
-- **Speed.** `--workers N` (default 4) runs N batches at the same time. A batch is one `unittest`
-  process with up to 10 `.test` files. For a big run, `--level terse` prints only the tests that did not pass, and the summary.
+- **Speed.** `--workers N` (default 4) runs N batches at the same time. A batch is one `duck-sqllogic`
+  process (the `unittest` binary) with up to 10 `.test` files. For a big run, `--level terse` prints only the tests that did not pass, and the summary.
 - **Diagnostics.** `-v` and `-vv` print ducktest's own diagnostics on stderr, at INFO and DEBUG.
 
 Each run writes a run directory, `ducktest_temp/<run>/`, in the working directory. The

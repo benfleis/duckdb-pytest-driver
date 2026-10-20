@@ -14,8 +14,9 @@ Code: `src/ducktest/` in this repo, branch `dev/v0.5`.
 
 | What | Result |
 | --- | --- |
-| Runner self-tests | 980 passed, 2 skipped (2026-10-20, a v2.0 debug build of duckdb-delta's; no live S3 or Azurite) |
+| Runner self-tests | 986 passed, 2 skipped (2026-10-20, a v2.0 debug build of duckdb-delta's; no live S3 or Azurite) |
 | The declared set | what the rules, the matrix values and the bodies reach, with what a storage or a credential pulls; `Project(engines=)` is the one list a conf writes (design.md, 1.9) |
+| A DuckDB engine | `DuckEngineDef`, the built-in one named `duck`; it runs a `.test` batch as `duck-sqllogic` and serves a body as `duck-shell`, and reports name the one that ran (design.md, 2.2) |
 | A conf's imports | one line, `from ducktest import ...`: classes with `Def` and their makers, and the verbs (design.md, Part 1) |
 | `storage=`, `data=`, `temp=` | three slots: `storage=` gives a storage's values, `data=` `{DATA_DIR}`, `temp=` `{TEMP_DIR}`; `STORAGE.at("sub")` a place under one (design.md, 1.1) |
 | The ladder, rungs 00-07 | pass; the self-tests compare them with goldens |

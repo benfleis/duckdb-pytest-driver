@@ -51,8 +51,8 @@ that is all: build it, go to the top of the checkout, and run
 ## 01_solo
 
 A Python body and a `.test` file, and no `ducktest_conf.py` in this directory or above it. Both run
-on the built-in DuckDB engine, `duck`: the `.test` file in a `unittest` process, the body through
-`ctx.client("duck")`, a Client on that engine's shell. Each runs one query. A body that
+on the built-in DuckDB engine, `duck`: the `.test` file as `duck-sqllogic` (a `unittest` process),
+the body as `duck-shell`, through `ctx.client("duck")`, a Client on that engine's shell. Each runs one query. A body that
 needs a second connection, such as a thread that must run beside the first, asks for
 `ctx.client("duck", new=True)`: a shell of its own, with the same preamble, closed when the test
 ends.
@@ -102,10 +102,10 @@ A run writes its records to `ducktest_temp/<run>/` in the working directory, and
 tests write under `<storage>/temp/<run>/` of the storage `temp=` binds (`STORAGE.at("sub")` makes it
 `<storage>/sub/<run>/`); when the run ends, that path goes, but the places of the tests that failed.
 
-The batches in `02-plan.yaml`, in the run directory, are labelled by the identity of their tests.
-The two `.test` files run in one `unittest` process, although `rule_matched.test` has an inline
-`require json`: that is part of its body. A Python body leases the `duck` engine, not a `unittest`
-process, so its label is never that of a `.test` batch. `own_inputs.py` and `paired_own_inputs.py`
+The batches in `02-plan.yaml`, in the run directory, are labelled by the identity of their tests,
+beside the process kind that runs each. The two `.test` files run in one `duck-sqllogic` batch,
+although `rule_matched.test` has an inline `require json`: that is part of its body. A Python body
+leases the `duck` engine as `duck-shell`, not a batch, so its label is never that of a `.test` batch. `own_inputs.py` and `paired_own_inputs.py`
 share one label; their binding on `@test` gives them a label other than that of
 `rule_matched_body.py`. Each cell of `matrix_body.py` has a label of its own: its values are part
 of its identity.
